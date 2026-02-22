@@ -130,7 +130,10 @@ func (r *Runner) Run(ctx context.Context) error {
 			discovered := clitools.DiscoverTools(toolsDir)
 			cmdExec := &clitools.OSCommandExecutor{}
 			for _, dt := range discovered {
-				ct := tools.NewCustomTool(dt, cmdExec)
+				// Entrypoint must be relative to WorkDir so execution from agent root finds the file
+				dtCopy := dt
+				dtCopy.Entrypoint = filepath.Join("tools", dt.Entrypoint)
+				ct := tools.NewCustomTool(dtCopy, cmdExec)
 				if regErr := reg.Register(ct); regErr != nil {
 					r.logger.Warn("failed to register custom tool", map[string]any{
 						"tool": dt.Name, "error": regErr.Error(),

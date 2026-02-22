@@ -11,15 +11,15 @@ var (
 	agentIDPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
 	semverPattern  = regexp.MustCompile(`^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$`)
 
-	knownFrameworks    = map[string]bool{"crewai": true, "langchain": true, "custom": true}
+	knownFrameworks     = map[string]bool{"crewai": true, "langchain": true, "custom": true}
 	knownEgressProfiles = map[string]bool{"strict": true, "standard": true, "permissive": true}
 	knownEgressModes    = map[string]bool{"deny-all": true, "allowlist": true, "dev-open": true}
 	knownGuardrailTypes = map[string]bool{
-		"no_pii":                    true,
-		"jailbreak_protection":      true,
-		"tool_scope_enforcement":    true,
-		"output_format_validation":  true,
-		"content_filter":            true,
+		"no_pii":                   true,
+		"jailbreak_protection":     true,
+		"tool_scope_enforcement":   true,
+		"output_format_validation": true,
+		"content_filter":           true,
 	}
 )
 

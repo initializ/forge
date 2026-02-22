@@ -21,8 +21,8 @@ type webhookCallInput struct {
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
-func (t *webhookCallTool) Name() string            { return "webhook_call" }
-func (t *webhookCallTool) Description() string     { return "POST JSON payload to a webhook URL" }
+func (t *webhookCallTool) Name() string             { return "webhook_call" }
+func (t *webhookCallTool) Description() string      { return "POST JSON payload to a webhook URL" }
 func (t *webhookCallTool) Category() tools.Category { return tools.CategoryAdapter }
 
 func (t *webhookCallTool) InputSchema() json.RawMessage {

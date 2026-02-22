@@ -29,10 +29,10 @@ type LLMExecutor struct {
 
 // LLMExecutorConfig configures the LLM executor.
 type LLMExecutorConfig struct {
-	Client       llm.Client
-	Tools        ToolExecutor
-	Hooks        *HookRegistry
-	SystemPrompt string
+	Client        llm.Client
+	Tools         ToolExecutor
+	Hooks         *HookRegistry
+	SystemPrompt  string
 	MaxIterations int
 }
 

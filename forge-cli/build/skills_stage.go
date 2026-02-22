@@ -6,9 +6,9 @@ import (
 	"os"
 	"path/filepath"
 
-	coreskills "github.com/initializ/forge/forge-core/skills"
-	"github.com/initializ/forge/forge-core/pipeline"
 	cliskills "github.com/initializ/forge/forge-cli/skills"
+	"github.com/initializ/forge/forge-core/pipeline"
+	coreskills "github.com/initializ/forge/forge-core/skills"
 )
 
 // SkillsStage compiles skills.md into container artifacts.

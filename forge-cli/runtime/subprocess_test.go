@@ -46,8 +46,8 @@ func TestFindFreePort_Unique(t *testing.T) {
 
 func TestSubprocessRuntime_EnvMerge(t *testing.T) {
 	env := map[string]string{
-		"API_KEY":  "test-key",
-		"DB_HOST":  "localhost",
+		"API_KEY": "test-key",
+		"DB_HOST": "localhost",
 	}
 
 	rt := NewSubprocessRuntime("echo hello", t.TempDir(), env, coreruntime.NewJSONLogger(&bytes.Buffer{}, false))

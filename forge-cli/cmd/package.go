@@ -50,7 +50,6 @@ func init() {
 	packageCmd.Flags().BoolVar(&withChannels, "with-channels", false, "generate docker-compose.yaml with channel adapters")
 }
 
-
 func runPackage(cmd *cobra.Command, args []string) error {
 	// Mutual exclusivity check
 	if devMode && prodMode {

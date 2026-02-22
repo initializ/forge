@@ -23,11 +23,11 @@ type TaskStatus struct {
 
 // Task represents an A2A task exchanged between agents.
 type Task struct {
-	ID       string     `json:"id"`
-	Status   TaskStatus `json:"status"`
-	History  []Message  `json:"history,omitempty"`
-	Artifacts []Artifact `json:"artifacts,omitempty"`
-	Metadata map[string]any `json:"metadata,omitempty"`
+	ID        string         `json:"id"`
+	Status    TaskStatus     `json:"status"`
+	History   []Message      `json:"history,omitempty"`
+	Artifacts []Artifact     `json:"artifacts,omitempty"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
 }
 
 // MessageRole indicates who produced a message.
@@ -56,9 +56,9 @@ const (
 // Part is a flat union struct representing a piece of message content.
 // Exactly one of Text, Data, or File should be set, indicated by Kind.
 type Part struct {
-	Kind PartKind    `json:"kind"`
-	Text string      `json:"text,omitempty"`
-	Data any         `json:"data,omitempty"`
+	Kind PartKind     `json:"kind"`
+	Text string       `json:"text,omitempty"`
+	Data any          `json:"data,omitempty"`
 	File *FileContent `json:"file,omitempty"`
 }
 
@@ -79,10 +79,10 @@ type Artifact struct {
 
 // AgentCard describes an agent's capabilities for discovery.
 type AgentCard struct {
-	Name         string            `json:"name"`
-	Description  string            `json:"description,omitempty"`
-	URL          string            `json:"url"`
-	Skills       []Skill           `json:"skills,omitempty"`
+	Name         string             `json:"name"`
+	Description  string             `json:"description,omitempty"`
+	URL          string             `json:"url"`
+	Skills       []Skill            `json:"skills,omitempty"`
 	Capabilities *AgentCapabilities `json:"capabilities,omitempty"`
 }
 

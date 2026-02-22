@@ -53,8 +53,8 @@ func (p *Plugin) DetectProject(dir string) (bool, error) {
 }
 
 var (
-	reToolDef  = regexp.MustCompile(`@tool\s*\n\s*def\s+(\w+)\(`)
-	reToolDoc  = regexp.MustCompile(`@tool\s*\n\s*def\s+\w+\([^)]*\)[^:]*:\s*\n\s*"""([^"]+)"""`)
+	reToolDef   = regexp.MustCompile(`@tool\s*\n\s*def\s+(\w+)\(`)
+	reToolDoc   = regexp.MustCompile(`@tool\s*\n\s*def\s+\w+\([^)]*\)[^:]*:\s*\n\s*"""([^"]+)"""`)
 	reModelName = regexp.MustCompile(`Chat(?:OpenAI|Anthropic)\(\s*model\s*=\s*"([^"]+)"`)
 )
 

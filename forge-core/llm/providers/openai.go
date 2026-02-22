@@ -121,13 +121,13 @@ func (c *OpenAIClient) setHeaders(req *http.Request) {
 
 // openaiRequest is the OpenAI-specific request format.
 type openaiRequest struct {
-	Model         string              `json:"model"`
-	Messages      []openaiMessage     `json:"messages"`
+	Model         string               `json:"model"`
+	Messages      []openaiMessage      `json:"messages"`
 	Tools         []llm.ToolDefinition `json:"tools,omitempty"`
-	Temperature   *float64            `json:"temperature,omitempty"`
-	MaxTokens     int                 `json:"max_tokens,omitempty"`
-	Stream        bool                `json:"stream,omitempty"`
-	StreamOptions *streamOptions      `json:"stream_options,omitempty"`
+	Temperature   *float64             `json:"temperature,omitempty"`
+	MaxTokens     int                  `json:"max_tokens,omitempty"`
+	Stream        bool                 `json:"stream,omitempty"`
+	StreamOptions *streamOptions       `json:"stream_options,omitempty"`
 }
 
 type streamOptions struct {

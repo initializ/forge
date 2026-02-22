@@ -6,12 +6,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/initializ/forge/forge-core/pipeline"
-	"github.com/initializ/forge/forge-core/plugins"
-	"github.com/initializ/forge/forge-core/types"
 	"github.com/initializ/forge/forge-cli/plugins/crewai"
 	"github.com/initializ/forge/forge-cli/plugins/custom"
 	"github.com/initializ/forge/forge-cli/plugins/langchain"
+	"github.com/initializ/forge/forge-core/pipeline"
+	"github.com/initializ/forge/forge-core/plugins"
+	"github.com/initializ/forge/forge-core/types"
 )
 
 func newTestRegistry() *plugins.FrameworkRegistry {

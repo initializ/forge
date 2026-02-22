@@ -22,8 +22,8 @@ import (
 // CompileRequest contains the inputs for compiling a ForgeConfig into an AgentSpec.
 type CompileRequest struct {
 	Config       *types.ForgeConfig
-	PluginConfig *plugins.AgentConfig  // optional framework plugin config
-	SkillEntries []skills.SkillEntry   // optional skill entries
+	PluginConfig *plugins.AgentConfig // optional framework plugin config
+	SkillEntries []skills.SkillEntry  // optional skill entries
 }
 
 // CompileResult contains the outputs of a successful compilation.
@@ -114,13 +114,13 @@ func SimulateImport(spec *agentspec.AgentSpec) *validate.ImportSimResult {
 
 // RuntimeConfig configures the LLM agent runtime.
 type RuntimeConfig struct {
-	LLMClient    llm.Client
-	Tools        runtime.ToolExecutor
-	Hooks        *runtime.HookRegistry
-	SystemPrompt string
+	LLMClient     llm.Client
+	Tools         runtime.ToolExecutor
+	Hooks         *runtime.HookRegistry
+	SystemPrompt  string
 	MaxIterations int
-	Guardrails   *runtime.GuardrailEngine // optional
-	Logger       runtime.Logger           // optional
+	Guardrails    *runtime.GuardrailEngine // optional
+	Logger        runtime.Logger           // optional
 }
 
 // NewRuntime creates a new LLMExecutor configured for agent execution.

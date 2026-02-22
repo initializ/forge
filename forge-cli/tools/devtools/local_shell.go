@@ -29,8 +29,10 @@ func NewLocalShellTool(workDir string) *LocalShellTool {
 	return &LocalShellTool{workDir: workDir}
 }
 
-func (t *LocalShellTool) Name() string             { return "local_shell" }
-func (t *LocalShellTool) Description() string      { return "Execute shell commands in the project directory" }
+func (t *LocalShellTool) Name() string { return "local_shell" }
+func (t *LocalShellTool) Description() string {
+	return "Execute shell commands in the project directory"
+}
 func (t *LocalShellTool) Category() tools.Category { return tools.CategoryDev }
 
 func (t *LocalShellTool) InputSchema() json.RawMessage {

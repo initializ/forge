@@ -28,7 +28,7 @@ func TestRunCmd_InvalidConfig(t *testing.T) {
 	// Create a temp dir with no forge.yaml
 	dir := t.TempDir()
 	origDir, _ := os.Getwd()
-	os.Chdir(dir) //nolint:errcheck
+	os.Chdir(dir)           //nolint:errcheck
 	defer os.Chdir(origDir) //nolint:errcheck
 
 	err := runRun(nil, nil)
@@ -51,7 +51,7 @@ func TestRunCmd_InvalidConfigContent(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(cfgContent), 0644) //nolint:errcheck
 
 	origDir, _ := os.Getwd()
-	os.Chdir(dir) //nolint:errcheck
+	os.Chdir(dir)           //nolint:errcheck
 	defer os.Chdir(origDir) //nolint:errcheck
 
 	err := runRun(nil, nil)

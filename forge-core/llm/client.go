@@ -14,10 +14,10 @@ type Client interface {
 
 // ClientConfig holds configuration for creating an LLM client.
 type ClientConfig struct {
-	APIKey     string
-	BaseURL    string
-	Model      string
-	OrgID      string
-	MaxRetries int
+	APIKey      string
+	BaseURL     string
+	Model       string
+	OrgID       string
+	MaxRetries  int
 	TimeoutSecs int
 }

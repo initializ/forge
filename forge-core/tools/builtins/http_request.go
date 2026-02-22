@@ -23,8 +23,8 @@ type httpRequestInput struct {
 	Timeout int               `json:"timeout,omitempty"`
 }
 
-func (t *httpRequestTool) Name() string        { return "http_request" }
-func (t *httpRequestTool) Description() string { return "Make HTTP requests (GET, POST, PUT, DELETE)" }
+func (t *httpRequestTool) Name() string             { return "http_request" }
+func (t *httpRequestTool) Description() string      { return "Make HTTP requests (GET, POST, PUT, DELETE)" }
 func (t *httpRequestTool) Category() tools.Category { return tools.CategoryBuiltin }
 
 func (t *httpRequestTool) InputSchema() json.RawMessage {

@@ -18,9 +18,9 @@ func TestSlugify(t *testing.T) {
 		{"", ""},
 		{"---", ""},
 		{"a", "a"},
-		{"Hello   World", "hello---world"},  // spaces become hyphens, then collapsed
-		{"café-agent", "caf-agent"},          // non-ascii stripped
-		{"my_agent_name", "myagentname"},     // underscores stripped
+		{"Hello   World", "hello---world"}, // spaces become hyphens, then collapsed
+		{"café-agent", "caf-agent"},        // non-ascii stripped
+		{"my_agent_name", "myagentname"},   // underscores stripped
 		{"  --hello--world--  ", "hello-world"},
 	}
 

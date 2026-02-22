@@ -283,4 +283,3 @@ func computeSignature(secret, timestamp string, body []byte) string {
 	mac.Write([]byte(baseString))
 	return "v0=" + hex.EncodeToString(mac.Sum(nil))
 }
-

@@ -16,8 +16,10 @@ type jsonParseInput struct {
 	Query string `json:"query,omitempty"`
 }
 
-func (t *jsonParseTool) Name() string            { return "json_parse" }
-func (t *jsonParseTool) Description() string     { return "Parse JSON data and optionally query with dot notation" }
+func (t *jsonParseTool) Name() string { return "json_parse" }
+func (t *jsonParseTool) Description() string {
+	return "Parse JSON data and optionally query with dot notation"
+}
 func (t *jsonParseTool) Category() tools.Category { return tools.CategoryBuiltin }
 
 func (t *jsonParseTool) InputSchema() json.RawMessage {

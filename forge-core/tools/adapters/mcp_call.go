@@ -20,8 +20,8 @@ type mcpCallInput struct {
 	Arguments json.RawMessage `json:"arguments,omitempty"`
 }
 
-func (t *mcpCallTool) Name() string            { return "mcp_call" }
-func (t *mcpCallTool) Description() string     { return "Call a tool on an MCP server via JSON-RPC" }
+func (t *mcpCallTool) Name() string             { return "mcp_call" }
+func (t *mcpCallTool) Description() string      { return "Call a tool on an MCP server via JSON-RPC" }
 func (t *mcpCallTool) Category() tools.Category { return tools.CategoryAdapter }
 
 func (t *mcpCallTool) InputSchema() json.RawMessage {

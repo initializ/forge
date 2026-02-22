@@ -18,8 +18,8 @@ type mathCalculateInput struct {
 	Expression string `json:"expression"`
 }
 
-func (t *mathCalculateTool) Name() string            { return "math_calculate" }
-func (t *mathCalculateTool) Description() string     { return "Evaluate arithmetic expressions safely" }
+func (t *mathCalculateTool) Name() string             { return "math_calculate" }
+func (t *mathCalculateTool) Description() string      { return "Evaluate arithmetic expressions safely" }
 func (t *mathCalculateTool) Category() tools.Category { return tools.CategoryBuiltin }
 
 func (t *mathCalculateTool) InputSchema() json.RawMessage {

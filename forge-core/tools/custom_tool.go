@@ -27,9 +27,11 @@ func NewCustomTool(dt DiscoveredTool, executor CommandExecutor) *CustomTool {
 	}
 }
 
-func (t *CustomTool) Name() string            { return t.name }
-func (t *CustomTool) Description() string     { return fmt.Sprintf("Custom %s tool: %s", t.language, t.name) }
-func (t *CustomTool) Category() Category      { return CategoryCustom }
+func (t *CustomTool) Name() string { return t.name }
+func (t *CustomTool) Description() string {
+	return fmt.Sprintf("Custom %s tool: %s", t.language, t.name)
+}
+func (t *CustomTool) Category() Category { return CategoryCustom }
 
 func (t *CustomTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{"type": "object", "properties": {}, "additionalProperties": true}`)

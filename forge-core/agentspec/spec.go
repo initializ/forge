@@ -45,8 +45,8 @@ type Identity struct {
 
 // A2AConfig holds Agent-to-Agent protocol settings.
 type A2AConfig struct {
-	Endpoint     string          `json:"endpoint,omitempty" bson:"endpoint,omitempty" yaml:"endpoint,omitempty"`
-	Skills       []A2ASkill      `json:"skills,omitempty" bson:"skills,omitempty" yaml:"skills,omitempty"`
+	Endpoint     string           `json:"endpoint,omitempty" bson:"endpoint,omitempty" yaml:"endpoint,omitempty"`
+	Skills       []A2ASkill       `json:"skills,omitempty" bson:"skills,omitempty" yaml:"skills,omitempty"`
 	Capabilities *A2ACapabilities `json:"capabilities,omitempty" bson:"capabilities,omitempty" yaml:"capabilities,omitempty"`
 }
 

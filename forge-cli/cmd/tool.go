@@ -41,11 +41,11 @@ func toolListRun(cmd *cobra.Command, args []string) error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintf(w, "NAME\tCATEGORY\tDESCRIPTION\n")
+	_, _ = fmt.Fprintf(w, "NAME\tCATEGORY\tDESCRIPTION\n")
 
 	for _, name := range reg.List() {
 		t := reg.Get(name)
-		fmt.Fprintf(w, "%s\t%s\t%s\n", t.Name(), t.Category(), t.Description())
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", t.Name(), t.Category(), t.Description())
 	}
 	return w.Flush()
 }
@@ -57,15 +57,15 @@ func toolDescribeRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("unknown tool: %q", name)
 	}
 
-	fmt.Fprintf(os.Stdout, "Name:        %s\n", t.Name())
-	fmt.Fprintf(os.Stdout, "Category:    %s\n", t.Category())
-	fmt.Fprintf(os.Stdout, "Description: %s\n", t.Description())
-	fmt.Fprintf(os.Stdout, "\nInput Schema:\n")
+	_, _ = fmt.Fprintf(os.Stdout, "Name:        %s\n", t.Name())
+	_, _ = fmt.Fprintf(os.Stdout, "Category:    %s\n", t.Category())
+	_, _ = fmt.Fprintf(os.Stdout, "Description: %s\n", t.Description())
+	_, _ = fmt.Fprintf(os.Stdout, "\nInput Schema:\n")
 
 	var pretty json.RawMessage
 	if json.Unmarshal(t.InputSchema(), &pretty) == nil {
 		data, _ := json.MarshalIndent(pretty, "", "  ")
-		fmt.Fprintf(os.Stdout, "%s\n", data)
+		_, _ = fmt.Fprintf(os.Stdout, "%s\n", data)
 	}
 	return nil
 }

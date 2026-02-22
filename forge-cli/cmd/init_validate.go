@@ -116,7 +116,7 @@ func validateGeminiKey(ctx context.Context, apiKey string) error {
 		return fmt.Errorf("invalid Gemini API key (%d)", resp.StatusCode)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("Gemini API returned status %d", resp.StatusCode)
+		return fmt.Errorf("gemini API returned status %d", resp.StatusCode)
 	}
 	return nil
 }
@@ -135,7 +135,7 @@ func validateOllamaConnection(ctx context.Context) error {
 	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("Ollama returned status %d", resp.StatusCode)
+		return fmt.Errorf("ollama returned status %d", resp.StatusCode)
 	}
 	return nil
 }
@@ -169,7 +169,7 @@ func validatePerplexityKey(apiKey string) error {
 		return fmt.Errorf("invalid Perplexity API key (401 Unauthorized)")
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("Perplexity API returned status %d", resp.StatusCode)
+		return fmt.Errorf("perplexity API returned status %d", resp.StatusCode)
 	}
 	return nil
 }

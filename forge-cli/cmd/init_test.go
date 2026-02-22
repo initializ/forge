@@ -665,7 +665,7 @@ func TestScaffold_ForceOverwrite(t *testing.T) {
 	defer func() { _ = os.Chdir(origDir) }()
 
 	// Create existing directory
-	os.MkdirAll("force-test", 0o755)
+	_ = os.MkdirAll("force-test", 0o755)
 
 	opts := &initOptions{
 		Name:           "force-test",
@@ -693,7 +693,7 @@ func TestScaffold_ExistingDirBlocked(t *testing.T) {
 	defer func() { _ = os.Chdir(origDir) }()
 
 	// Create existing directory
-	os.MkdirAll("blocked-test", 0o755)
+	_ = os.MkdirAll("blocked-test", 0o755)
 
 	opts := &initOptions{
 		Name:           "blocked-test",

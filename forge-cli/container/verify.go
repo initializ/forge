@@ -55,7 +55,7 @@ func Verify(ctx context.Context, imageTag string) error {
 	if err != nil {
 		return fmt.Errorf("fetching agent.json: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -83,7 +83,7 @@ func waitForHealthy(ctx context.Context, client *http.Client, url string, timeou
 		}
 		resp, err := client.Get(url)
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				return nil
 			}

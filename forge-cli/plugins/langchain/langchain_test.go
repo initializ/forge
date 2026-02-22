@@ -15,7 +15,7 @@ func TestPlugin_Name(t *testing.T) {
 
 func TestPlugin_DetectProject_RequirementsTxt(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "requirements.txt"), []byte("langchain>=0.1\nlangchain-openai\n"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "requirements.txt"), []byte("langchain>=0.1\nlangchain-openai\n"), 0644)
 
 	p := &Plugin{}
 	ok, err := p.DetectProject(dir)
@@ -29,7 +29,7 @@ func TestPlugin_DetectProject_RequirementsTxt(t *testing.T) {
 
 func TestPlugin_DetectProject_PyprojectToml(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "pyproject.toml"), []byte(`[tool.poetry.dependencies]
+	_ = os.WriteFile(filepath.Join(dir, "pyproject.toml"), []byte(`[tool.poetry.dependencies]
 langchain = "^0.1"
 `), 0644)
 
@@ -45,7 +45,7 @@ langchain = "^0.1"
 
 func TestPlugin_DetectProject_PythonImport(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "agent.py"), []byte(`from langchain.agents import AgentExecutor
+	_ = os.WriteFile(filepath.Join(dir, "agent.py"), []byte(`from langchain.agents import AgentExecutor
 from langchain_openai import ChatOpenAI
 `), 0644)
 
@@ -61,7 +61,7 @@ from langchain_openai import ChatOpenAI
 
 func TestPlugin_DetectProject_NoMarkers(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "agent.py"), []byte("print('hello')\n"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "agent.py"), []byte("print('hello')\n"), 0644)
 
 	p := &Plugin{}
 	ok, err := p.DetectProject(dir)
@@ -75,7 +75,7 @@ func TestPlugin_DetectProject_NoMarkers(t *testing.T) {
 
 func TestPlugin_ExtractAgentConfig_ToolDecorators(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "tools.py"), []byte(`from langchain.tools import tool
+	_ = os.WriteFile(filepath.Join(dir, "tools.py"), []byte(`from langchain.tools import tool
 
 @tool
 def web_search(query: str) -> str:
@@ -107,7 +107,7 @@ def calculator(expression: str) -> str:
 
 func TestPlugin_ExtractAgentConfig_ModelExtraction(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "agent.py"), []byte(`from langchain_openai import ChatOpenAI
+	_ = os.WriteFile(filepath.Join(dir, "agent.py"), []byte(`from langchain_openai import ChatOpenAI
 llm = ChatOpenAI(model="gpt-4-turbo")
 `), 0644)
 

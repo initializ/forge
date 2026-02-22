@@ -64,7 +64,7 @@ func (c *OpenAIClient) Chat(ctx context.Context, req *llm.ChatRequest) (*llm.Cha
 	if err != nil {
 		return nil, fmt.Errorf("openai request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
@@ -101,7 +101,7 @@ func (c *OpenAIClient) ChatStream(ctx context.Context, req *llm.ChatRequest) (<-
 
 	ch := make(chan llm.StreamDelta, 32)
 	go func() {
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		defer close(ch)
 		c.readSSEStream(resp.Body, ch)
 	}()

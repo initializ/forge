@@ -72,10 +72,10 @@ func runChannelAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("opening .env: %w", err)
 	}
 	if _, err := f.WriteString(envContent); err != nil {
-		f.Close()
+		_ = f.Close()
 		return fmt.Errorf("writing .env: %w", err)
 	}
-	f.Close()
+	_ = f.Close()
 	fmt.Println("Updated .env with placeholder variables")
 
 	// 3. Update forge.yaml — add channel to channels list

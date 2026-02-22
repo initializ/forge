@@ -706,7 +706,7 @@ func writeEnvFile(dir string, vars []envVarEntry) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	for _, v := range vars {
 		if v.Comment != "" {

@@ -246,7 +246,7 @@ func TestLLMErrorReturnsFriendlyMessage(t *testing.T) {
 	if strings.Contains(errStr, "400") {
 		t.Errorf("error should not contain status codes, got: %s", errStr)
 	}
-	if !strings.Contains(errStr, "Something went wrong") {
+	if !strings.Contains(errStr, "something went wrong") {
 		t.Errorf("error should contain friendly message, got: %s", errStr)
 	}
 }

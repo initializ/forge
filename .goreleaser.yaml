@@ -23,13 +23,11 @@ archives:
       - goos: windows
         formats:
           - zip
-    name_template: "forge-{{ .Os }}-{{ .Arch }}"
-    replacements:
-      linux: Linux
-      darwin: Darwin
-      windows: Windows
-      amd64: x86_64    # matches uname -m
-      arm64: arm64      # matches uname -m
+    name_template: >-
+      forge-
+      {{- title .Os }}-
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
 
 checksum:
   name_template: "checksums.txt"

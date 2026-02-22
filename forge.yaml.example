@@ -1,0 +1,50 @@
+# forge.yaml — Example agent configuration for Initializ Forge
+#
+# This file defines the agent project settings used by the `forge` CLI
+# to build, validate, and deploy A2A-compliant agent artifacts.
+
+# Unique agent identifier (lowercase alphanumeric and hyphens only)
+agent_id: my-support-agent
+
+# Semantic version of the agent
+version: 0.1.0
+
+# Framework the agent is built with (crewai, langchain, or custom)
+framework: custom
+
+# Entrypoint script or module for the agent
+entrypoint: python agent.py
+
+# Model configuration
+model:
+  provider: openai
+  name: gpt-4o
+
+# Tools available to the agent
+tools:
+  - name: web_search
+    type: builtin
+  - name: http_request
+    type: builtin
+  - name: json_parse
+    type: builtin
+
+# Skills definition file
+skills:
+  path: skills.md
+
+# Communication channels the agent supports
+channels:
+  - slack
+  - telegram
+
+# Egress security controls
+egress:
+  profile: standard
+  mode: allowlist
+  allowed_domains:
+    - api.openai.com
+    - api.perplexity.ai
+  capabilities:
+    - slack
+    - telegram

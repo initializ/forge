@@ -1,0 +1,233 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://initializ.ai/schemas/agentspec.v1.0.schema.json",
+  "title": "AgentSpec",
+  "description": "Canonical schema for Initializ Forge agent specifications (v1.0)",
+  "type": "object",
+  "required": ["forge_version", "agent_id", "version", "name"],
+  "additionalProperties": false,
+  "properties": {
+    "forge_version": {
+      "type": "string",
+      "description": "Version of the Forge spec this agent targets"
+    },
+    "agent_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]+$",
+      "description": "Unique agent identifier (lowercase alphanumeric and hyphens)"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$",
+      "description": "Semantic version of the agent"
+    },
+    "name": {
+      "type": "string",
+      "description": "Human-readable agent name"
+    },
+    "description": {
+      "type": "string",
+      "description": "Brief description of the agent's purpose"
+    },
+    "runtime": {
+      "type": "object",
+      "description": "Container runtime configuration",
+      "properties": {
+        "image": {
+          "type": "string",
+          "description": "Base container image"
+        },
+        "entrypoint": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Container entrypoint command"
+        },
+        "port": {
+          "type": "integer",
+          "description": "Port the agent listens on"
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Environment variables"
+        }
+      },
+      "additionalProperties": false
+    },
+    "tools": {
+      "type": "array",
+      "description": "Tool definitions available to the agent",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "input_schema": {
+            "type": "object",
+            "description": "JSON Schema for tool input"
+          },
+          "permissions": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "forge_meta": {
+            "type": "object",
+            "properties": {
+              "allowed_tables": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "allowed_endpoints": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "network_scopes": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            },
+            "additionalProperties": false
+          },
+          "category": {
+            "type": "string",
+            "description": "Tool category (builtin, adapter, dev, custom)"
+          },
+          "skill_origin": {
+            "type": "string",
+            "description": "Skill ID this tool originated from"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "policy_scaffold": {
+      "type": "object",
+      "description": "Policy and guardrail configuration",
+      "properties": {
+        "guardrails": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "type": "string"
+              },
+              "config": {
+                "type": "object"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "identity": {
+      "type": "object",
+      "description": "Agent identity and authentication",
+      "properties": {
+        "issuer": {
+          "type": "string"
+        },
+        "audience": {
+          "type": "string"
+        },
+        "scopes": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "a2a": {
+      "type": "object",
+      "description": "A2A protocol configuration",
+      "properties": {
+        "endpoint": {
+          "type": "string"
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "name"],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "tags": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "capabilities": {
+          "type": "object",
+          "properties": {
+            "streaming": { "type": "boolean" },
+            "push_notifications": { "type": "boolean" },
+            "state_transition_history": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "tool_interface_version": {
+      "type": "string",
+      "description": "Version of the tool interface specification"
+    },
+    "skills_spec_version": {
+      "type": "string",
+      "description": "Version of the skills specification"
+    },
+    "forge_skills_ext_version": {
+      "type": "string",
+      "description": "Version of the Forge skills extension"
+    },
+    "egress_profile": {
+      "type": "string",
+      "enum": ["strict", "standard", "permissive"],
+      "description": "Egress security profile"
+    },
+    "egress_mode": {
+      "type": "string",
+      "enum": ["deny-all", "allowlist", "dev-open"],
+      "description": "Egress security mode"
+    },
+    "model": {
+      "type": "object",
+      "description": "Model configuration for the agent",
+      "properties": {
+        "provider": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

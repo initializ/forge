@@ -1,0 +1,19 @@
+# {{.Name}} Skills
+
+## Tool: example_tool
+
+A sample tool that demonstrates tool integration.
+
+**Input:** A text query.
+
+**Output:** The processed result.
+{{- range .Tools}}
+
+## Tool: {{.Name}}
+
+Description for {{.Name}}.
+
+**Input:** TBD
+
+**Output:** TBD
+{{- end}}

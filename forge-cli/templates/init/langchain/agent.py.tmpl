@@ -1,0 +1,40 @@
+"""{{.Name}} - A LangChain-based agent."""
+
+from langchain.agents import AgentExecutor, create_tool_calling_agent
+from langchain_core.prompts import ChatPromptTemplate
+{{- if eq .ModelProvider "openai"}}
+from langchain_openai import ChatOpenAI
+{{- else if eq .ModelProvider "anthropic"}}
+from langchain_anthropic import ChatAnthropic
+{{- else}}
+from langchain_openai import ChatOpenAI
+{{- end}}
+from tools.example_tool import example_tool
+
+
+def create_agent():
+    """Create and return the LangChain agent."""
+{{- if eq .ModelProvider "openai"}}
+    llm = ChatOpenAI(model="{{.ModelName}}")
+{{- else if eq .ModelProvider "anthropic"}}
+    llm = ChatAnthropic(model="{{.ModelName}}")
+{{- else}}
+    llm = ChatOpenAI(model="{{.ModelName}}")
+{{- end}}
+
+    tools = [example_tool]
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", "You are a helpful AI assistant."),
+        ("human", "{input}"),
+        ("placeholder", "{agent_scratchpad}"),
+    ])
+
+    agent = create_tool_calling_agent(llm, tools, prompt)
+    return AgentExecutor(agent=agent, tools=tools, verbose=True)
+
+
+if __name__ == "__main__":
+    executor = create_agent()
+    result = executor.invoke({"input": "Hello, what can you do?"})
+    print(result["output"])

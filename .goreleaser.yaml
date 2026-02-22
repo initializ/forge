@@ -1,0 +1,44 @@
+version: 2
+
+builds:
+  - dir: forge-cli
+    main: ./cmd/forge
+    binary: forge
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: "forge-{{ .Os }}-{{ .Arch }}"
+    replacements:
+      linux: Linux
+      darwin: Darwin
+      windows: Windows
+      amd64: x86_64    # matches uname -m
+      arm64: arm64      # matches uname -m
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"

@@ -1,0 +1,35 @@
+version: "3.8"
+services:
+  agent:
+    image: {{.ImageTag}}
+    ports:
+      - "{{.Port}}:{{.Port}}"
+    environment:
+{{- if .ModelProvider}}
+      - FORGE_PROVIDER={{.ModelProvider}}
+{{- end}}
+{{- if .ModelName}}
+      - FORGE_MODEL={{.ModelName}}
+{{- end}}
+      - FORGE_API_KEY=${FORGE_API_KEY}
+{{- if or .EgressProfile .EgressMode}}
+    labels:
+{{- if .EgressProfile}}
+      forge.egress.profile: {{.EgressProfile}}
+{{- end}}
+{{- if .EgressMode}}
+      forge.egress.mode: {{.EgressMode}}
+{{- end}}
+{{- end}}
+{{range .Channels}}
+  {{.Name}}-adapter:
+    image: {{$.ImageTag}}
+    command: ["forge", "channel", "serve", "{{.Name}}"]
+    environment:
+      - AGENT_URL=http://agent:{{$.Port}}
+{{- range .EnvVars}}
+      - {{.}}
+{{- end}}
+    depends_on:
+      - agent
+{{end}}

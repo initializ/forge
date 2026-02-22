@@ -95,7 +95,7 @@ func (c *OpenAIClient) ChatStream(ctx context.Context, req *llm.ChatRequest) (<-
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("openai stream error (status %d): %s", resp.StatusCode, string(respBody))
 	}
 

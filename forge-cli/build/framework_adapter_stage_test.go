@@ -27,7 +27,7 @@ func TestFrameworkAdapterStage_ExplicitFramework(t *testing.T) {
 	outDir := t.TempDir()
 
 	// Create a crewai project
-	os.WriteFile(filepath.Join(workDir, "agent.py"), []byte(`
+	_ = os.WriteFile(filepath.Join(workDir, "agent.py"), []byte(`
 from crewai import Agent
 agent = Agent(role="Tester", goal="Test things")
 `), 0644)
@@ -68,8 +68,8 @@ func TestFrameworkAdapterStage_AutoDetect(t *testing.T) {
 	outDir := t.TempDir()
 
 	// Create langchain markers
-	os.WriteFile(filepath.Join(workDir, "requirements.txt"), []byte("langchain\n"), 0644)
-	os.WriteFile(filepath.Join(workDir, "agent.py"), []byte(`
+	_ = os.WriteFile(filepath.Join(workDir, "requirements.txt"), []byte("langchain\n"), 0644)
+	_ = os.WriteFile(filepath.Join(workDir, "agent.py"), []byte(`
 from langchain.tools import tool
 @tool
 def search(query: str) -> str:

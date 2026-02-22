@@ -215,7 +215,7 @@ func (p *Plugin) getUpdates(ctx context.Context, offset int64) ([]telegramUpdate
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result struct {
 		OK     bool             `json:"ok"`
@@ -298,7 +298,7 @@ func (p *Plugin) sendMessage(payload map[string]any) error {
 	if err != nil {
 		return fmt.Errorf("posting to telegram: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)

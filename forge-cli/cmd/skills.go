@@ -84,7 +84,7 @@ func runSkillsValidate(cmd *cobra.Command, args []string) error {
 	envFilePath := filepath.Join(filepath.Dir(skillsPath), ".env")
 	if f, fErr := os.Open(envFilePath); fErr == nil {
 		// Simple line-based .env parsing
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		// Use the runtime's LoadEnvFile indirectly — just check OS env for now
 	}
 

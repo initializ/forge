@@ -2,7 +2,6 @@ package steps
 
 import (
 	"fmt"
-	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -15,13 +14,13 @@ type DeriveEgressFunc func(provider string, channels, tools, skills []string) []
 
 // EgressStep handles egress domain review.
 type EgressStep struct {
-	styles    *tui.StyleSet
-	display   components.EgressDisplay
-	complete  bool
-	domains   []string
-	deriveFn  DeriveEgressFunc
-	empty     bool
-	prepared  bool
+	styles   *tui.StyleSet
+	display  components.EgressDisplay
+	complete bool
+	domains  []string
+	deriveFn DeriveEgressFunc
+	empty    bool
+	prepared bool
 }
 
 // NewEgressStep creates a new egress review step.
@@ -129,9 +128,9 @@ func (s *EgressStep) Apply(ctx *tui.WizardContext) {
 func inferSource(domain string, ctx *tui.WizardContext) string {
 	// Provider domains
 	providerDomains := map[string]string{
-		"api.openai.com":                      "model provider",
-		"api.anthropic.com":                   "model provider",
-		"generativelanguage.googleapis.com":   "model provider",
+		"api.openai.com":                    "model provider",
+		"api.anthropic.com":                 "model provider",
+		"generativelanguage.googleapis.com": "model provider",
 	}
 	if src, ok := providerDomains[domain]; ok {
 		return src
@@ -158,22 +157,14 @@ func inferSource(domain string, ctx *tui.WizardContext) string {
 
 	// Skill domains
 	skillDomains := map[string]string{
-		"api.github.com":          "github skill",
-		"github.com":              "github skill",
-		"api.openweathermap.org":  "weather skill",
-		"api.weatherapi.com":      "weather skill",
+		"api.github.com":         "github skill",
+		"github.com":             "github skill",
+		"api.openweathermap.org": "weather skill",
+		"api.weatherapi.com":     "weather skill",
 	}
 	if src, ok := skillDomains[domain]; ok {
 		return src
 	}
 
 	return "configured"
-}
-
-// Ensure domain list is not empty for string representation.
-func formatDomains(domains []string) string {
-	if len(domains) == 0 {
-		return "none"
-	}
-	return strings.Join(domains, ", ")
 }

@@ -14,8 +14,8 @@ type KeyBinding struct {
 
 // KbdHint renders a horizontal keyboard shortcut hint bar.
 type KbdHint struct {
-	Bindings []KeyBinding
-	KeyStyle lipgloss.Style
+	Bindings  []KeyBinding
+	KeyStyle  lipgloss.Style
 	DescStyle lipgloss.Style
 }
 

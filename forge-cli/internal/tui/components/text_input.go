@@ -11,12 +11,12 @@ import (
 
 // TextInput is a styled text entry component wrapping bubbles/textinput.
 type TextInput struct {
-	Label       string
-	input       textinput.Model
-	done        bool
-	err         string
-	slugHint    bool // show slug hint below input
-	validateFn  func(string) error
+	Label      string
+	input      textinput.Model
+	done       bool
+	err        string
+	slugHint   bool // show slug hint below input
+	validateFn func(string) error
 
 	// Styles
 	LabelStyle  lipgloss.Style

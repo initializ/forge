@@ -19,12 +19,12 @@ const (
 
 // SecretInput is a masked text entry with validation feedback.
 type SecretInput struct {
-	Label      string
-	input      textinput.Model
-	done       bool
-	state      SecretInputState
-	err        string
-	allowSkip  bool
+	Label     string
+	input     textinput.Model
+	done      bool
+	state     SecretInputState
+	err       string
+	allowSkip bool
 
 	// Styles
 	LabelStyle   lipgloss.Style

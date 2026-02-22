@@ -108,18 +108,18 @@ type StyleSet struct {
 	Theme TermTheme
 
 	// Text styles
-	Title     lipgloss.Style
-	Subtitle  lipgloss.Style
-	AccentTxt lipgloss.Style
-	DimTxt    lipgloss.Style
-	SuccessTxt lipgloss.Style
-	WarningTxt lipgloss.Style
-	ErrorTxt  lipgloss.Style
-	PrimaryTxt lipgloss.Style
+	Title        lipgloss.Style
+	Subtitle     lipgloss.Style
+	AccentTxt    lipgloss.Style
+	DimTxt       lipgloss.Style
+	SuccessTxt   lipgloss.Style
+	WarningTxt   lipgloss.Style
+	ErrorTxt     lipgloss.Style
+	PrimaryTxt   lipgloss.Style
 	SecondaryTxt lipgloss.Style
 
 	// Border styles
-	ActiveBorder  lipgloss.Style
+	ActiveBorder   lipgloss.Style
 	InactiveBorder lipgloss.Style
 
 	// Item styles
@@ -155,14 +155,14 @@ func NewStyleSet(theme TermTheme) *StyleSet {
 	return &StyleSet{
 		Theme: theme,
 
-		Title:    lipgloss.NewStyle().Foreground(theme.Accent).Bold(true),
-		Subtitle: lipgloss.NewStyle().Foreground(theme.Secondary),
-		AccentTxt: lipgloss.NewStyle().Foreground(theme.Accent),
-		DimTxt:   lipgloss.NewStyle().Foreground(theme.Dim),
-		SuccessTxt: lipgloss.NewStyle().Foreground(theme.Success),
-		WarningTxt: lipgloss.NewStyle().Foreground(theme.Warning),
-		ErrorTxt: lipgloss.NewStyle().Foreground(theme.Error),
-		PrimaryTxt: lipgloss.NewStyle().Foreground(theme.Primary),
+		Title:        lipgloss.NewStyle().Foreground(theme.Accent).Bold(true),
+		Subtitle:     lipgloss.NewStyle().Foreground(theme.Secondary),
+		AccentTxt:    lipgloss.NewStyle().Foreground(theme.Accent),
+		DimTxt:       lipgloss.NewStyle().Foreground(theme.Dim),
+		SuccessTxt:   lipgloss.NewStyle().Foreground(theme.Success),
+		WarningTxt:   lipgloss.NewStyle().Foreground(theme.Warning),
+		ErrorTxt:     lipgloss.NewStyle().Foreground(theme.Error),
+		PrimaryTxt:   lipgloss.NewStyle().Foreground(theme.Primary),
 		SecondaryTxt: lipgloss.NewStyle().Foreground(theme.Secondary),
 
 		ActiveBorder: lipgloss.NewStyle().

@@ -2,15 +2,12 @@ package steps
 
 import (
 	"fmt"
-	"regexp"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/initializ/forge/forge-cli/internal/tui"
 	"github.com/initializ/forge/forge-cli/internal/tui/components"
 )
-
-var slugRegexp = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$`)
 
 // NameStep collects the agent name.
 type NameStep struct {
@@ -25,9 +22,6 @@ func NewNameStep(styles *tui.StyleSet, prefill string) *NameStep {
 	validate := func(val string) error {
 		if val == "" {
 			return fmt.Errorf("name is required")
-		}
-		if !slugRegexp.MatchString(val) && len(val) > 1 {
-			// Allow non-slug names — they'll be slugified
 		}
 		return nil
 	}

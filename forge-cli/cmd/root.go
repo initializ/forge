@@ -9,10 +9,10 @@ import (
 )
 
 var (
-	cfgFile        string
-	verbose        bool
-	outputDir      string
-	themeOverride  string
+	cfgFile       string
+	verbose       bool
+	outputDir     string
+	themeOverride string
 
 	appVersion = "dev"
 )

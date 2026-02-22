@@ -24,14 +24,14 @@ type SingleSelect struct {
 	done     bool
 
 	// Styles
-	ActiveBorder  lipgloss.Style
+	ActiveBorder   lipgloss.Style
 	InactiveBorder lipgloss.Style
-	ActiveBg      lipgloss.Color
-	AccentColor   lipgloss.Color
-	PrimaryColor  lipgloss.Color
+	ActiveBg       lipgloss.Color
+	AccentColor    lipgloss.Color
+	PrimaryColor   lipgloss.Color
 	SecondaryColor lipgloss.Color
-	DimColor      lipgloss.Color
-	kbd           KbdHint
+	DimColor       lipgloss.Color
+	kbd            KbdHint
 }
 
 // NewSingleSelect creates a new single-select component.
@@ -40,13 +40,13 @@ func NewSingleSelect(items []SingleSelectItem, accentColor, primaryColor, second
 	kbd.Bindings = SelectHints()
 
 	return SingleSelect{
-		Items:        items,
-		selected:     -1,
-		AccentColor:  accentColor,
-		PrimaryColor: primaryColor,
+		Items:          items,
+		selected:       -1,
+		AccentColor:    accentColor,
+		PrimaryColor:   primaryColor,
 		SecondaryColor: secondaryColor,
-		DimColor:     dimColor,
-		ActiveBg:     activeBg,
+		DimColor:       dimColor,
+		ActiveBg:       activeBg,
 		ActiveBorder: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(activeBorderColor).

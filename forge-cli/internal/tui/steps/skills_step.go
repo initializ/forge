@@ -12,11 +12,11 @@ import (
 
 // SkillInfo represents a registry skill for the skills step.
 type SkillInfo struct {
-	Name         string
-	DisplayName  string
-	Description  string
-	RequiredEnv  []string
-	RequiredBins []string
+	Name          string
+	DisplayName   string
+	Description   string
+	RequiredEnv   []string
+	RequiredBins  []string
 	EgressDomains []string
 }
 

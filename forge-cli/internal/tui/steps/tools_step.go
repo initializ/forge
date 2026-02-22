@@ -29,14 +29,14 @@ type ValidatePerplexityFunc func(key string) error
 
 // ToolsStep handles builtin tool selection.
 type ToolsStep struct {
-	styles       *tui.StyleSet
-	phase        toolsPhase
-	multiSelect  components.MultiSelect
-	keyInput     components.SecretInput
-	complete     bool
-	selected     []string
+	styles        *tui.StyleSet
+	phase         toolsPhase
+	multiSelect   components.MultiSelect
+	keyInput      components.SecretInput
+	complete      bool
+	selected      []string
 	perplexityKey string
-	validatePerp ValidatePerplexityFunc
+	validatePerp  ValidatePerplexityFunc
 }
 
 // NewToolsStep creates a new tools selection step.

@@ -17,8 +17,8 @@ type SummaryBox struct {
 	Rows []SummaryRow
 
 	// Styles
-	KeyStyle   lipgloss.Style
-	ValueStyle lipgloss.Style
+	KeyStyle    lipgloss.Style
+	ValueStyle  lipgloss.Style
 	BorderStyle lipgloss.Style
 }
 

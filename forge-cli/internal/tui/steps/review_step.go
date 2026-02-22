@@ -13,11 +13,11 @@ import (
 // ReviewStep handles the final summary and confirmation.
 // Actual scaffolding is handled by the caller after the wizard exits.
 type ReviewStep struct {
-	styles    *tui.StyleSet
-	summary   components.SummaryBox
-	complete  bool
-	kbd       components.KbdHint
-	prepared  bool
+	styles   *tui.StyleSet
+	summary  components.SummaryBox
+	complete bool
+	kbd      components.KbdHint
+	prepared bool
 }
 
 // NewReviewStep creates a new review step.

@@ -28,10 +28,10 @@ type FileEntry struct {
 
 // FileList shows progressive file generation with status icons.
 type FileList struct {
-	Files       []FileEntry
-	revealed    int // number of files revealed so far
-	spinner     spinner.Model
-	done        bool
+	Files    []FileEntry
+	revealed int // number of files revealed so far
+	spinner  spinner.Model
+	done     bool
 
 	// Styles
 	PrimaryStyle lipgloss.Style

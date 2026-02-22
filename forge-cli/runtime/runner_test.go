@@ -218,7 +218,7 @@ func waitForServer(t *testing.T, baseURL string, timeout time.Duration) {
 		}
 		resp, err := http.Get(baseURL + "/healthz")
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				return
 			}

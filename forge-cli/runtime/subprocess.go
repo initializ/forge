@@ -262,7 +262,7 @@ func (s *SubprocessRuntime) Healthy(ctx context.Context) bool {
 	if err != nil {
 		return false
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	return resp.StatusCode == http.StatusOK
 }
 

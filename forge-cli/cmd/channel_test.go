@@ -181,7 +181,7 @@ func TestChannelServeNoAgentURL(t *testing.T) {
 	defer os.Chdir(origDir) //nolint:errcheck
 
 	// Write a valid channel config
-	os.WriteFile(filepath.Join(dir, "slack-config.yaml"), []byte(`
+	_ = os.WriteFile(filepath.Join(dir, "slack-config.yaml"), []byte(`
 adapter: slack
 webhook_port: 3000
 settings:
@@ -201,7 +201,7 @@ func TestAddChannelToForgeYAML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "forge.yaml")
 
-	os.WriteFile(path, []byte(`
+	_ = os.WriteFile(path, []byte(`
 agent_id: test
 version: 0.1.0
 entrypoint: run.py
@@ -323,7 +323,7 @@ func TestAddChannelEgressIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "forge.yaml")
 
-	os.WriteFile(path, []byte(`
+	_ = os.WriteFile(path, []byte(`
 agent_id: test
 version: 0.1.0
 entrypoint: run.py

@@ -1,3 +1,6 @@
+// Deprecated: This file contains legacy promptui-based prompts.
+// The interactive wizard now uses Bubble Tea (see internal/tui/).
+// These helpers are retained for potential fallback or non-TUI contexts.
 package cmd
 
 import (

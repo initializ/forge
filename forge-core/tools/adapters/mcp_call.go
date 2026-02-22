@@ -65,7 +65,7 @@ func (t *mcpCallTool) Execute(ctx context.Context, args json.RawMessage) (string
 	if err != nil {
 		return "", fmt.Errorf("mcp call: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	return string(body), nil

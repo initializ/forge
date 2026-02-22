@@ -71,7 +71,7 @@ func (t *webSearchTool) Execute(ctx context.Context, args json.RawMessage) (stri
 	if err != nil {
 		return "", fmt.Errorf("calling Perplexity API: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {

@@ -53,7 +53,7 @@ func validateOpenAIKey(ctx context.Context, apiKey string) error {
 	if err != nil {
 		return fmt.Errorf("connecting to OpenAI: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode == http.StatusUnauthorized {
@@ -86,7 +86,7 @@ func validateAnthropicKey(ctx context.Context, apiKey string) error {
 	if err != nil {
 		return fmt.Errorf("connecting to Anthropic: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode == http.StatusUnauthorized {
@@ -109,7 +109,7 @@ func validateGeminiKey(ctx context.Context, apiKey string) error {
 	if err != nil {
 		return fmt.Errorf("connecting to Gemini: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
@@ -131,7 +131,7 @@ func validateOllamaConnection(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("connecting to Ollama at %s: %w", ollamaValidationURL, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
@@ -162,7 +162,7 @@ func validatePerplexityKey(apiKey string) error {
 	if err != nil {
 		return fmt.Errorf("connecting to Perplexity: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode == http.StatusUnauthorized {

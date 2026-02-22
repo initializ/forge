@@ -30,10 +30,10 @@ func TestValidateStage_Valid(t *testing.T) {
 
 	// Write agent.json
 	data, _ := json.MarshalIndent(spec, "", "  ")
-	os.WriteFile(filepath.Join(outDir, "agent.json"), data, 0644)
+	_ = os.WriteFile(filepath.Join(outDir, "agent.json"), data, 0644)
 
 	// Write Dockerfile
-	os.WriteFile(filepath.Join(outDir, "Dockerfile"), []byte("FROM python:3.12-slim\n"), 0644)
+	_ = os.WriteFile(filepath.Join(outDir, "Dockerfile"), []byte("FROM python:3.12-slim\n"), 0644)
 
 	stage := &ValidateStage{}
 	if err := stage.Execute(context.Background(), bc); err != nil {
@@ -48,8 +48,8 @@ func TestValidateStage_InvalidSpec(t *testing.T) {
 
 	// Write invalid agent.json (missing required fields)
 	data := []byte(`{"forge_version": "1.0"}`)
-	os.WriteFile(filepath.Join(outDir, "agent.json"), data, 0644)
-	os.WriteFile(filepath.Join(outDir, "Dockerfile"), []byte("FROM ubuntu\n"), 0644)
+	_ = os.WriteFile(filepath.Join(outDir, "agent.json"), data, 0644)
+	_ = os.WriteFile(filepath.Join(outDir, "Dockerfile"), []byte("FROM ubuntu\n"), 0644)
 
 	stage := &ValidateStage{}
 	err := stage.Execute(context.Background(), bc)
@@ -71,7 +71,7 @@ func TestValidateStage_MissingDockerfile(t *testing.T) {
 	bc.Spec = spec
 
 	data, _ := json.MarshalIndent(spec, "", "  ")
-	os.WriteFile(filepath.Join(outDir, "agent.json"), data, 0644)
+	_ = os.WriteFile(filepath.Join(outDir, "agent.json"), data, 0644)
 	// No Dockerfile
 
 	stage := &ValidateStage{}

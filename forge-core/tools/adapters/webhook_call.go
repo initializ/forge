@@ -58,7 +58,7 @@ func (t *webhookCallTool) Execute(ctx context.Context, args json.RawMessage) (st
 	if err != nil {
 		return "", fmt.Errorf("webhook call: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	result := map[string]any{

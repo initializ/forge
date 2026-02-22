@@ -62,7 +62,7 @@ func TestRunner_MockIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("healthz request: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("status: got %d", resp.StatusCode)
 		}
@@ -74,7 +74,7 @@ func TestRunner_MockIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("agent card request: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		var card a2a.AgentCard
 		json.NewDecoder(resp.Body).Decode(&card) //nolint:errcheck
@@ -103,7 +103,7 @@ func TestRunner_MockIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("send request: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		var rpcResp a2a.JSONRPCResponse
 		json.NewDecoder(resp.Body).Decode(&rpcResp) //nolint:errcheck
@@ -139,7 +139,7 @@ func TestRunner_MockIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("get request: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		var rpcResp a2a.JSONRPCResponse
 		json.NewDecoder(resp.Body).Decode(&rpcResp) //nolint:errcheck
@@ -163,7 +163,7 @@ func TestRunner_MockIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("cancel request: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		var rpcResp a2a.JSONRPCResponse
 		json.NewDecoder(resp.Body).Decode(&rpcResp) //nolint:errcheck

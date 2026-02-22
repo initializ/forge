@@ -245,7 +245,7 @@ func (p *Plugin) postMessage(payload map[string]any) error {
 	if err != nil {
 		return fmt.Errorf("posting to slack: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)

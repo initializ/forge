@@ -152,7 +152,7 @@ func (s *SubprocessRuntime) Invoke(ctx context.Context, taskID string, msg *a2a.
 	if err != nil {
 		return nil, fmt.Errorf("proxy request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var rpcResp a2a.JSONRPCResponse
 	if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
@@ -205,14 +205,14 @@ func (s *SubprocessRuntime) Stream(ctx context.Context, taskID string, msg *a2a.
 	if strings.HasPrefix(contentType, "text/event-stream") {
 		// Parse SSE events
 		go func() {
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			defer close(ch)
 			s.readSSEEvents(resp.Body, ch)
 		}()
 	} else {
 		// Graceful degradation: wrap sync response
 		go func() {
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			defer close(ch)
 
 			var rpcResp a2a.JSONRPCResponse

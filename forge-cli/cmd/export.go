@@ -109,7 +109,7 @@ func runExport(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "ERROR: %s\n", e)
 	}
 	if !compatResult.IsValid() {
-		return fmt.Errorf("Command compatibility check failed: %d error(s)", len(compatResult.Errors))
+		return fmt.Errorf("command compatibility check failed: %d error(s)", len(compatResult.Errors))
 	}
 
 	// 8. Include schemas if requested

@@ -60,7 +60,7 @@ func (c *AnthropicClient) Chat(ctx context.Context, req *llm.ChatRequest) (*llm.
 	if err != nil {
 		return nil, fmt.Errorf("anthropic request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
@@ -91,13 +91,13 @@ func (c *AnthropicClient) ChatStream(ctx context.Context, req *llm.ChatRequest) 
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("anthropic stream error (status %d): %s", resp.StatusCode, string(respBody))
 	}
 
 	ch := make(chan llm.StreamDelta, 32)
 	go func() {
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		defer close(ch)
 		c.readAnthropicStream(resp.Body, ch)
 	}()

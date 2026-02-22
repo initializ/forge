@@ -32,10 +32,7 @@ func TestToTelegramHTML_InlineCode(t *testing.T) {
 func TestToTelegramHTML_FencedCodeBlock(t *testing.T) {
 	input := "```go\nfmt.Println(\"hello\")\n```"
 	got := ToTelegramHTML(input)
-	want := `<pre><code class="language-go">fmt.Println(&quot;hello&quot;)</code></pre>`
-	// Note: quotes inside code are HTML-escaped via escapeHTML which handles &, <, >
-	// Actually our escapeHTML doesn't handle quotes. Let's check what we get.
-	want = `<pre><code class="language-go">fmt.Println("hello")</code></pre>`
+	want := `<pre><code class="language-go">fmt.Println("hello")</code></pre>`
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}

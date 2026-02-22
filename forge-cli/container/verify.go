@@ -70,8 +70,9 @@ func freePort() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port, nil
+	port := l.Addr().(*net.TCPAddr).Port
+	_ = l.Close()
+	return port, nil
 }
 
 func waitForHealthy(ctx context.Context, client *http.Client, url string, timeout time.Duration) error {

@@ -12,7 +12,7 @@ func ParseFile(path string) ([]coreskills.SkillEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return coreskills.Parse(f)
 }
 
@@ -22,6 +22,6 @@ func ParseFileWithMetadata(path string) ([]coreskills.SkillEntry, *coreskills.Sk
 	if err != nil {
 		return nil, nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return coreskills.ParseWithMetadata(f)
 }

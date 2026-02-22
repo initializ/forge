@@ -15,7 +15,7 @@ func TestValidateProviderKey_OpenAI_Success(t *testing.T) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"data": []}`))
+		_, _ = w.Write([]byte(`{"data": []}`))
 	}))
 	defer server.Close()
 
@@ -55,7 +55,7 @@ func TestValidateProviderKey_Anthropic_Success(t *testing.T) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"id": "msg_test"}`))
+		_, _ = w.Write([]byte(`{"id": "msg_test"}`))
 	}))
 	defer server.Close()
 
@@ -91,7 +91,7 @@ func TestValidateProviderKey_Anthropic_Unauthorized(t *testing.T) {
 func TestValidateProviderKey_Ollama_Success(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"models": []}`))
+		_, _ = w.Write([]byte(`{"models": []}`))
 	}))
 	defer server.Close()
 
@@ -136,7 +136,7 @@ func TestValidatePerplexityKey_Success(t *testing.T) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"choices": [{"message": {"content": "pong"}}]}`))
+		_, _ = w.Write([]byte(`{"choices": [{"message": {"content": "pong"}}]}`))
 	}))
 	defer server.Close()
 

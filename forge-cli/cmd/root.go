@@ -14,7 +14,6 @@ var (
 	outputDir string
 
 	appVersion = "dev"
-	appCommit  = "none"
 )
 
 var rootCmd = &cobra.Command{
@@ -42,7 +41,6 @@ func init() {
 // SetVersionInfo sets the version and commit for display.
 func SetVersionInfo(version, commit string) {
 	appVersion = version
-	appCommit = commit
 	rootCmd.Version = version
 	rootCmd.SetVersionTemplate(fmt.Sprintf("forge %s (commit: %s)\n", version, commit))
 }

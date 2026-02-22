@@ -54,7 +54,7 @@ func validateOpenAIKey(ctx context.Context, apiKey string) error {
 		return fmt.Errorf("connecting to OpenAI: %w", err)
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode == http.StatusUnauthorized {
 		return fmt.Errorf("invalid OpenAI API key (401 Unauthorized)")
@@ -87,7 +87,7 @@ func validateAnthropicKey(ctx context.Context, apiKey string) error {
 		return fmt.Errorf("connecting to Anthropic: %w", err)
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode == http.StatusUnauthorized {
 		return fmt.Errorf("invalid Anthropic API key (401 Unauthorized)")
@@ -96,7 +96,7 @@ func validateAnthropicKey(ctx context.Context, apiKey string) error {
 	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusBadRequest {
 		return nil
 	}
-	return fmt.Errorf("Anthropic API returned status %d", resp.StatusCode)
+	return fmt.Errorf("anthropic API returned status %d", resp.StatusCode)
 }
 
 func validateGeminiKey(ctx context.Context, apiKey string) error {
@@ -110,7 +110,7 @@ func validateGeminiKey(ctx context.Context, apiKey string) error {
 		return fmt.Errorf("connecting to Gemini: %w", err)
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		return fmt.Errorf("invalid Gemini API key (%d)", resp.StatusCode)
@@ -132,7 +132,7 @@ func validateOllamaConnection(ctx context.Context) error {
 		return fmt.Errorf("connecting to Ollama at %s: %w", ollamaValidationURL, err)
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("Ollama returned status %d", resp.StatusCode)
@@ -163,7 +163,7 @@ func validatePerplexityKey(apiKey string) error {
 		return fmt.Errorf("connecting to Perplexity: %w", err)
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode == http.StatusUnauthorized {
 		return fmt.Errorf("invalid Perplexity API key (401 Unauthorized)")

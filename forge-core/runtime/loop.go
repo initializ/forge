@@ -92,7 +92,7 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 		if err != nil {
 			_ = e.hooks.Fire(ctx, OnError, &HookContext{Error: err})
 			// Return user-friendly error (raw error is already logged via OnError hook)
-			return nil, fmt.Errorf("Something went wrong while processing your request. Please try again.")
+			return nil, fmt.Errorf("something went wrong while processing your request, please try again")
 		}
 
 		// Fire AfterLLMCall hook

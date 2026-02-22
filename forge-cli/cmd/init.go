@@ -414,7 +414,7 @@ func collectInteractive(opts *initOptions) error {
 
 	confirmed, _ := askConfirm("Create Agent?")
 	if !confirmed {
-		return fmt.Errorf("Agent creation cancelled")
+		return fmt.Errorf("agent creation cancelled")
 	}
 
 	return nil
@@ -444,11 +444,12 @@ func collectNonInteractive(opts *initOptions) error {
 	}
 
 	// Validate language
-	if opts.Framework == "crewai" || opts.Framework == "langchain" {
+	switch opts.Framework {
+	case "crewai", "langchain":
 		if opts.Language != "python" {
 			return fmt.Errorf("framework %q only supports python", opts.Framework)
 		}
-	} else if opts.Framework == "custom" {
+	case "custom":
 		switch opts.Language {
 		case "python", "typescript", "go":
 		default:
@@ -641,10 +642,10 @@ func scaffold(opts *initOptions) error {
 		}
 
 		if err := tmpl.Execute(out, data); err != nil {
-			out.Close()
+			_ = out.Close()
 			return fmt.Errorf("rendering template %s: %w", f.TemplatePath, err)
 		}
-		out.Close()
+		_ = out.Close()
 	}
 
 	// Write .env file with collected env vars
@@ -709,9 +710,9 @@ func writeEnvFile(dir string, vars []envVarEntry) error {
 
 	for _, v := range vars {
 		if v.Comment != "" {
-			fmt.Fprintf(f, "# %s\n", v.Comment)
+			_, _ = fmt.Fprintf(f, "# %s\n", v.Comment)
 		}
-		fmt.Fprintf(f, "%s=%s\n", v.Key, v.Value)
+		_, _ = fmt.Fprintf(f, "%s=%s\n", v.Key, v.Value)
 	}
 	return nil
 }

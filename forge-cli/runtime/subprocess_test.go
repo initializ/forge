@@ -26,7 +26,7 @@ func TestFindFreePort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen error: %v", err)
 	}
-	ln.Close()
+	_ = ln.Close()
 }
 
 func TestFindFreePort_Unique(t *testing.T) {
@@ -75,7 +75,7 @@ func TestSubprocessRuntime_HealthCheck(t *testing.T) {
 	port := ln.Addr().(*net.TCPAddr).Port
 	srv := &http.Server{Handler: mux}
 	go srv.Serve(ln) //nolint:errcheck
-	defer srv.Close()
+	defer func() { _ = srv.Close() }()
 
 	rt := &SubprocessRuntime{
 		internalPort: port,

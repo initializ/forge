@@ -182,10 +182,10 @@ func TestMathCalculateTool_DivisionByZero(t *testing.T) {
 
 func TestWebSearchTool_NoKey(t *testing.T) {
 	orig := os.Getenv("PERPLEXITY_API_KEY")
-	os.Unsetenv("PERPLEXITY_API_KEY")
+	_ = os.Unsetenv("PERPLEXITY_API_KEY")
 	defer func() {
 		if orig != "" {
-			os.Setenv("PERPLEXITY_API_KEY", orig)
+			_ = os.Setenv("PERPLEXITY_API_KEY", orig)
 		}
 	}()
 

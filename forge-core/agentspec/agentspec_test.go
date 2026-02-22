@@ -123,7 +123,7 @@ func TestToolSpec_Category(t *testing.T) {
 	tool2 := ToolSpec{Name: "test"}
 	data2, _ := json.Marshal(tool2)
 	var raw map[string]any
-	json.Unmarshal(data2, &raw)
+	_ = json.Unmarshal(data2, &raw)
 	if _, ok := raw["category"]; ok {
 		t.Error("expected category to be omitted when empty")
 	}

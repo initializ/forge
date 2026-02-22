@@ -184,7 +184,7 @@ func WriteSSEEvent(w http.ResponseWriter, flusher http.Flusher, event string, da
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, jsonData)
+	_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, jsonData)
 	flusher.Flush()
 	return nil
 }

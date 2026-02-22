@@ -80,7 +80,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 	for k, v := range envVars {
 		if os.Getenv(k) == "" {
-			os.Setenv(k, v)
+			_ = os.Setenv(k, v)
 		}
 	}
 

@@ -71,7 +71,7 @@ func (w *FileWatcher) Watch(ctx context.Context) {
 
 func (w *FileWatcher) scan() map[string]time.Time {
 	modMap := make(map[string]time.Time)
-	filepath.WalkDir(w.dir, func(path string, d os.DirEntry, err error) error {
+	_ = filepath.WalkDir(w.dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}

@@ -44,7 +44,9 @@ Summarize text content.
 	}
 
 	outDir := filepath.Join(tmpDir, "output")
-	os.MkdirAll(outDir, 0755)
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		t.Fatalf("creating output dir: %v", err)
+	}
 
 	bc := pipeline.NewBuildContext(pipeline.PipelineOptions{OutputDir: outDir, WorkDir: tmpDir})
 	bc.Config = &types.ForgeConfig{AgentID: "test", Version: "1.0.0", Entrypoint: "python main.py"}
@@ -79,13 +81,17 @@ func TestSkillsStage_CustomPath(t *testing.T) {
 A custom skill.
 `
 	customDir := filepath.Join(tmpDir, "custom")
-	os.MkdirAll(customDir, 0755)
+	if err := os.MkdirAll(customDir, 0755); err != nil {
+		t.Fatalf("creating custom dir: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(customDir, "my-skills.md"), []byte(skillsContent), 0644); err != nil {
 		t.Fatalf("writing skills file: %v", err)
 	}
 
 	outDir := filepath.Join(tmpDir, "output")
-	os.MkdirAll(outDir, 0755)
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		t.Fatalf("creating output dir: %v", err)
+	}
 
 	bc := pipeline.NewBuildContext(pipeline.PipelineOptions{OutputDir: outDir, WorkDir: tmpDir})
 	bc.Config = &types.ForgeConfig{

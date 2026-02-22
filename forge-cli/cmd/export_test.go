@@ -143,8 +143,10 @@ func TestRunExport_DefaultFilename(t *testing.T) {
 
 	// Change to temp dir so default filename is written there
 	origDir, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(origDir)
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(origDir) }()
 
 	err := runExport(nil, nil)
 	if err != nil {
@@ -266,7 +268,7 @@ func TestRunExport_SimulateImport(t *testing.T) {
 
 	err := runExport(nil, nil)
 
-	w.Close()
+	_ = w.Close()
 	os.Stdout = oldStdout
 
 	if err != nil {

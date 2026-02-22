@@ -15,7 +15,7 @@ func TestPlugin_Name(t *testing.T) {
 
 func TestPlugin_DetectProject_RequirementsTxt(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "requirements.txt"), []byte("crewai>=0.30\ncrewai-tools\n"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "requirements.txt"), []byte("crewai>=0.30\ncrewai-tools\n"), 0644)
 
 	p := &Plugin{}
 	ok, err := p.DetectProject(dir)
@@ -29,7 +29,7 @@ func TestPlugin_DetectProject_RequirementsTxt(t *testing.T) {
 
 func TestPlugin_DetectProject_PyprojectToml(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "pyproject.toml"), []byte(`[tool.poetry.dependencies]
+	_ = os.WriteFile(filepath.Join(dir, "pyproject.toml"), []byte(`[tool.poetry.dependencies]
 crewai = "^0.30"
 `), 0644)
 
@@ -45,7 +45,7 @@ crewai = "^0.30"
 
 func TestPlugin_DetectProject_PythonImport(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "agent.py"), []byte(`from crewai import Agent, Task, Crew
+	_ = os.WriteFile(filepath.Join(dir, "agent.py"), []byte(`from crewai import Agent, Task, Crew
 agent = Agent(role="researcher")
 `), 0644)
 
@@ -61,7 +61,7 @@ agent = Agent(role="researcher")
 
 func TestPlugin_DetectProject_NoMarkers(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "agent.py"), []byte("print('hello')\n"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "agent.py"), []byte("print('hello')\n"), 0644)
 
 	p := &Plugin{}
 	ok, err := p.DetectProject(dir)
@@ -88,7 +88,7 @@ func TestPlugin_DetectProject_EmptyDir(t *testing.T) {
 
 func TestPlugin_ExtractAgentConfig_FullPattern(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "agent.py"), []byte(`
+	_ = os.WriteFile(filepath.Join(dir, "agent.py"), []byte(`
 from crewai import Agent, Task, Crew
 from crewai_tools import BaseTool
 

@@ -247,8 +247,10 @@ func TestGetFileManifestCommonFiles(t *testing.T) {
 func TestScaffoldIntegration(t *testing.T) {
 	tmpDir := t.TempDir()
 	origDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origDir)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(origDir) }()
 
 	opts := &initOptions{
 		Name:          "Test Agent",
@@ -314,8 +316,10 @@ func TestScaffoldIntegration(t *testing.T) {
 func TestScaffoldLangchainWithSkills(t *testing.T) {
 	tmpDir := t.TempDir()
 	origDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origDir)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(origDir) }()
 
 	opts := &initOptions{
 		Name:          "My Agent",
@@ -350,8 +354,10 @@ func TestScaffoldLangchainWithSkills(t *testing.T) {
 func TestScaffold_GeneratesEnvFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	origDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origDir)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(origDir) }()
 
 	opts := &initOptions{
 		Name:           "env-test",
@@ -382,8 +388,10 @@ func TestScaffold_GeneratesEnvFile(t *testing.T) {
 func TestScaffold_VendorsSkills(t *testing.T) {
 	tmpDir := t.TempDir()
 	origDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origDir)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(origDir) }()
 
 	opts := &initOptions{
 		Name:           "skill-test",
@@ -414,8 +422,10 @@ func TestScaffold_VendorsSkills(t *testing.T) {
 func TestScaffold_EgressInForgeYAML(t *testing.T) {
 	tmpDir := t.TempDir()
 	origDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origDir)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(origDir) }()
 
 	opts := &initOptions{
 		Name:           "egress-test",
@@ -453,8 +463,10 @@ func TestScaffold_EgressInForgeYAML(t *testing.T) {
 func TestScaffold_GitignoreIncludesEnv(t *testing.T) {
 	tmpDir := t.TempDir()
 	origDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origDir)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(origDir) }()
 
 	opts := &initOptions{
 		Name:           "gi-test",
@@ -647,8 +659,10 @@ func TestBuildEnvVars_Gemini(t *testing.T) {
 func TestScaffold_ForceOverwrite(t *testing.T) {
 	tmpDir := t.TempDir()
 	origDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origDir)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(origDir) }()
 
 	// Create existing directory
 	os.MkdirAll("force-test", 0o755)
@@ -673,8 +687,10 @@ func TestScaffold_ForceOverwrite(t *testing.T) {
 func TestScaffold_ExistingDirBlocked(t *testing.T) {
 	tmpDir := t.TempDir()
 	origDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origDir)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(origDir) }()
 
 	// Create existing directory
 	os.MkdirAll("blocked-test", 0o755)

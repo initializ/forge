@@ -306,7 +306,7 @@ func findFreePort() (int, error) {
 		return 0, err
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
-	ln.Close()
+	_ = ln.Close()
 	return port, nil
 }
 

@@ -13,8 +13,8 @@ import (
 	"github.com/initializ/forge/forge-core/channels"
 
 	clichannels "github.com/initializ/forge/forge-cli/channels"
-	"github.com/initializ/forge/forge-cli/channels/slack"
-	"github.com/initializ/forge/forge-cli/channels/telegram"
+	"github.com/initializ/forge/forge-plugins/channels/slack"
+	"github.com/initializ/forge/forge-plugins/channels/telegram"
 )
 
 // mockA2AServer returns an httptest server that responds to tasks/send with a

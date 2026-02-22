@@ -23,10 +23,10 @@ type ForgeConfig struct {
 
 // EgressRef configures egress security controls.
 type EgressRef struct {
-	Profile        string   `yaml:"profile,omitempty"`         // strict, standard, permissive
-	Mode           string   `yaml:"mode,omitempty"`            // deny-all, allowlist, dev-open
+	Profile        string   `yaml:"profile,omitempty"` // strict, standard, permissive
+	Mode           string   `yaml:"mode,omitempty"`    // deny-all, allowlist, dev-open
 	AllowedDomains []string `yaml:"allowed_domains,omitempty"`
-	Capabilities   []string `yaml:"capabilities,omitempty"`    // capability bundles (e.g., "slack", "telegram")
+	Capabilities   []string `yaml:"capabilities,omitempty"` // capability bundles (e.g., "slack", "telegram")
 }
 
 // SkillsRef references a skills definition file.

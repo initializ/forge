@@ -9,10 +9,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/initializ/forge/forge-cli/build"
 	"github.com/initializ/forge/forge-core/agentspec"
 	"github.com/initializ/forge/forge-core/pipeline"
 	"github.com/initializ/forge/forge-core/types"
-	"github.com/initializ/forge/forge-cli/build"
 )
 
 // findProjectRoot walks up from the current directory to find go.mod.

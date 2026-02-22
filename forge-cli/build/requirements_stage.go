@@ -3,9 +3,9 @@ package build
 import (
 	"context"
 
-	coreskills "github.com/initializ/forge/forge-core/skills"
 	"github.com/initializ/forge/forge-core/agentspec"
 	"github.com/initializ/forge/forge-core/pipeline"
+	coreskills "github.com/initializ/forge/forge-core/skills"
 )
 
 // RequirementsStage validates skill requirements and populates the agent spec.

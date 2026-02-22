@@ -11,8 +11,8 @@ import (
 
 type uuidGenerateTool struct{}
 
-func (t *uuidGenerateTool) Name() string            { return "uuid_generate" }
-func (t *uuidGenerateTool) Description() string     { return "Generate a random UUID v4" }
+func (t *uuidGenerateTool) Name() string             { return "uuid_generate" }
+func (t *uuidGenerateTool) Description() string      { return "Generate a random UUID v4" }
 func (t *uuidGenerateTool) Category() tools.Category { return tools.CategoryBuiltin }
 
 func (t *uuidGenerateTool) InputSchema() json.RawMessage {

@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"text/template"
 
+	"github.com/initializ/forge/forge-cli/templates"
 	"github.com/initializ/forge/forge-core/compiler"
 	"github.com/initializ/forge/forge-core/pipeline"
 	"github.com/initializ/forge/forge-core/security"
-	"github.com/initializ/forge/forge-cli/templates"
 )
 
 // K8sStage generates Kubernetes deployment and service manifests.

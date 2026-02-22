@@ -10,7 +10,7 @@ import (
 type HookPoint int
 
 const (
-	BeforeLLMCall  HookPoint = iota
+	BeforeLLMCall HookPoint = iota
 	AfterLLMCall
 	BeforeToolExec
 	AfterToolExec

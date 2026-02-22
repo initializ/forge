@@ -22,9 +22,9 @@ func NewMockRuntime(tools []agentspec.ToolSpec) *MockRuntime {
 }
 
 func (m *MockRuntime) Start(ctx context.Context) error   { return nil }
-func (m *MockRuntime) Stop() error                        { return nil }
-func (m *MockRuntime) Restart(ctx context.Context) error  { return nil }
-func (m *MockRuntime) Healthy(ctx context.Context) bool   { return true }
+func (m *MockRuntime) Stop() error                       { return nil }
+func (m *MockRuntime) Restart(ctx context.Context) error { return nil }
+func (m *MockRuntime) Healthy(ctx context.Context) bool  { return true }
 
 // Invoke returns a completed task with mock text content.
 func (m *MockRuntime) Invoke(ctx context.Context, taskID string, msg *a2a.Message) (*a2a.Task, error) {

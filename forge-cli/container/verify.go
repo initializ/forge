@@ -38,7 +38,7 @@ func Verify(ctx context.Context, imageTag string) error {
 
 	// Ensure cleanup
 	defer func() {
-		exec.Command("docker", "stop", containerName).Run()    //nolint:errcheck
+		exec.Command("docker", "stop", containerName).Run()     //nolint:errcheck
 		exec.Command("docker", "rm", "-f", containerName).Run() //nolint:errcheck
 	}()
 

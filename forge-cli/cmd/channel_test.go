@@ -12,7 +12,7 @@ import (
 func TestChannelAddSlack(t *testing.T) {
 	dir := t.TempDir()
 	origDir, _ := os.Getwd()
-	os.Chdir(dir) //nolint:errcheck
+	os.Chdir(dir)           //nolint:errcheck
 	defer os.Chdir(origDir) //nolint:errcheck
 
 	// Create a minimal forge.yaml
@@ -85,7 +85,7 @@ channels:
 func TestChannelAddTelegram(t *testing.T) {
 	dir := t.TempDir()
 	origDir, _ := os.Getwd()
-	os.Chdir(dir) //nolint:errcheck
+	os.Chdir(dir)           //nolint:errcheck
 	defer os.Chdir(origDir) //nolint:errcheck
 
 	writeTestForgeYAML(t, dir, `
@@ -137,7 +137,7 @@ func TestChannelAddUnsupported(t *testing.T) {
 func TestChannelAddIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	origDir, _ := os.Getwd()
-	os.Chdir(dir) //nolint:errcheck
+	os.Chdir(dir)           //nolint:errcheck
 	defer os.Chdir(origDir) //nolint:errcheck
 
 	writeTestForgeYAML(t, dir, `
@@ -177,7 +177,7 @@ channels:
 func TestChannelServeNoAgentURL(t *testing.T) {
 	dir := t.TempDir()
 	origDir, _ := os.Getwd()
-	os.Chdir(dir) //nolint:errcheck
+	os.Chdir(dir)           //nolint:errcheck
 	defer os.Chdir(origDir) //nolint:errcheck
 
 	// Write a valid channel config
@@ -228,7 +228,7 @@ entrypoint: run.py
 func TestChannelAddSlack_UpdatesEgress(t *testing.T) {
 	dir := t.TempDir()
 	origDir, _ := os.Getwd()
-	os.Chdir(dir) //nolint:errcheck
+	os.Chdir(dir)           //nolint:errcheck
 	defer os.Chdir(origDir) //nolint:errcheck
 
 	writeTestForgeYAML(t, dir, `
@@ -275,7 +275,7 @@ entrypoint: python agent.py
 func TestChannelAddTelegram_UpdatesEgress(t *testing.T) {
 	dir := t.TempDir()
 	origDir, _ := os.Getwd()
-	os.Chdir(dir) //nolint:errcheck
+	os.Chdir(dir)           //nolint:errcheck
 	defer os.Chdir(origDir) //nolint:errcheck
 
 	writeTestForgeYAML(t, dir, `

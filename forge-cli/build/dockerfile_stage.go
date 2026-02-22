@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"text/template"
 
+	"github.com/initializ/forge/forge-cli/templates"
 	"github.com/initializ/forge/forge-core/compiler"
 	"github.com/initializ/forge/forge-core/pipeline"
-	"github.com/initializ/forge/forge-cli/templates"
 )
 
 // DockerfileStage generates a Dockerfile from the embedded template.

@@ -16,8 +16,10 @@ type datetimeNowInput struct {
 	Timezone string `json:"timezone,omitempty"`
 }
 
-func (t *datetimeNowTool) Name() string            { return "datetime_now" }
-func (t *datetimeNowTool) Description() string     { return "Get current date and time in specified format and timezone" }
+func (t *datetimeNowTool) Name() string { return "datetime_now" }
+func (t *datetimeNowTool) Description() string {
+	return "Get current date and time in specified format and timezone"
+}
 func (t *datetimeNowTool) Category() tools.Category { return tools.CategoryBuiltin }
 
 func (t *datetimeNowTool) InputSchema() json.RawMessage {

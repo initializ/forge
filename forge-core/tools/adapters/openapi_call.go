@@ -16,8 +16,10 @@ type openapiCallInput struct {
 	Params      json.RawMessage `json:"params,omitempty"`
 }
 
-func (t *openapiCallTool) Name() string            { return "openapi_call" }
-func (t *openapiCallTool) Description() string     { return "Call an OpenAPI endpoint by operation ID (stub)" }
+func (t *openapiCallTool) Name() string { return "openapi_call" }
+func (t *openapiCallTool) Description() string {
+	return "Call an OpenAPI endpoint by operation ID (stub)"
+}
 func (t *openapiCallTool) Category() tools.Category { return tools.CategoryAdapter }
 
 func (t *openapiCallTool) InputSchema() json.RawMessage {

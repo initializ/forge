@@ -53,11 +53,11 @@ func (p *Plugin) DetectProject(dir string) (bool, error) {
 }
 
 var (
-	reAgentRole    = regexp.MustCompile(`Agent\(\s*role\s*=\s*"([^"]+)"`)
-	reAgentGoal    = regexp.MustCompile(`goal\s*=\s*"([^"]+)"`)
-	reToolClass    = regexp.MustCompile(`class\s+(\w+)\(BaseTool\)`)
-	reToolName     = regexp.MustCompile(`name:\s*str\s*=\s*"([^"]+)"`)
-	reToolDesc     = regexp.MustCompile(`description:\s*str\s*=\s*"([^"]+)"`)
+	reAgentRole      = regexp.MustCompile(`Agent\(\s*role\s*=\s*"([^"]+)"`)
+	reAgentGoal      = regexp.MustCompile(`goal\s*=\s*"([^"]+)"`)
+	reToolClass      = regexp.MustCompile(`class\s+(\w+)\(BaseTool\)`)
+	reToolName       = regexp.MustCompile(`name:\s*str\s*=\s*"([^"]+)"`)
+	reToolDesc       = regexp.MustCompile(`description:\s*str\s*=\s*"([^"]+)"`)
 	reAgentBackstory = regexp.MustCompile(`backstory\s*=\s*"([^"]+)"`)
 )
 

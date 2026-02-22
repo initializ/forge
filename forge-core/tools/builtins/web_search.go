@@ -14,8 +14,8 @@ import (
 
 type webSearchTool struct{}
 
-func (t *webSearchTool) Name() string            { return "web_search" }
-func (t *webSearchTool) Description() string     { return "Search the web using Perplexity AI" }
+func (t *webSearchTool) Name() string             { return "web_search" }
+func (t *webSearchTool) Description() string      { return "Search the web using Perplexity AI" }
 func (t *webSearchTool) Category() tools.Category { return tools.CategoryBuiltin }
 
 func (t *webSearchTool) InputSchema() json.RawMessage {

@@ -18,8 +18,8 @@ type csvParseInput struct {
 	Headers   bool   `json:"headers,omitempty"`
 }
 
-func (t *csvParseTool) Name() string            { return "csv_parse" }
-func (t *csvParseTool) Description() string     { return "Parse CSV data into JSON array" }
+func (t *csvParseTool) Name() string             { return "csv_parse" }
+func (t *csvParseTool) Description() string      { return "Parse CSV data into JSON array" }
 func (t *csvParseTool) Category() tools.Category { return tools.CategoryBuiltin }
 
 func (t *csvParseTool) InputSchema() json.RawMessage {

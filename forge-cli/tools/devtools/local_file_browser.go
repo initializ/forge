@@ -26,8 +26,10 @@ func NewLocalFileBrowserTool(workDir string) *LocalFileBrowserTool {
 	return &LocalFileBrowserTool{workDir: workDir}
 }
 
-func (t *LocalFileBrowserTool) Name() string             { return "local_file_browser" }
-func (t *LocalFileBrowserTool) Description() string      { return "Read and list files in the project directory" }
+func (t *LocalFileBrowserTool) Name() string { return "local_file_browser" }
+func (t *LocalFileBrowserTool) Description() string {
+	return "Read and list files in the project directory"
+}
 func (t *LocalFileBrowserTool) Category() tools.Category { return tools.CategoryDev }
 
 func (t *LocalFileBrowserTool) InputSchema() json.RawMessage {

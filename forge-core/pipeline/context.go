@@ -20,8 +20,8 @@ type BuildContext struct {
 	// Container packaging extensions
 	DevMode            bool
 	ProdMode           bool
-	EgressResolved     any              // *egress.EgressConfig (avoid import cycle)
-	SkillRequirements  any              // *skills.AggregatedRequirements (avoid import cycle)
+	EgressResolved     any // *egress.EgressConfig (avoid import cycle)
+	SkillRequirements  any // *skills.AggregatedRequirements (avoid import cycle)
 	SkillsCount        int
 	ToolCategoryCounts map[string]int
 }

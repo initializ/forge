@@ -1,0 +1,23 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{.AgentID}}-network
+  labels:
+    app: {{.AgentID}}
+spec:
+  podSelector:
+    matchLabels:
+      app: {{.AgentID}}
+  policyTypes:
+    - Egress
+  {{- if .NetworkPolicy.DenyAll}}
+  egress: []
+  {{- else}}
+  egress:
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
+  {{- end}}

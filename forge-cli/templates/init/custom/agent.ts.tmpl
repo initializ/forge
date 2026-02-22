@@ -1,0 +1,44 @@
+/**
+ * {{.Name}} - A custom A2A agent (TypeScript).
+ */
+
+const server = Bun.serve({
+  port: 8080,
+  async fetch(req: Request): Promise<Response> {
+    const url = new URL(req.url);
+
+    if (req.method === "GET" && url.pathname === "/") {
+      const card = {
+        name: "{{.Name}}",
+        description: "A custom A2A agent",
+        url: "http://localhost:8080",
+        skills: [
+          {
+            id: "default",
+            name: "Default Skill",
+            description: "Default agent capability",
+          },
+        ],
+      };
+      return Response.json(card);
+    }
+
+    if (req.method === "POST") {
+      const body = await req.json();
+      const response = {
+        id: body.id || "",
+        status: { state: "completed" },
+        artifacts: [
+          {
+            parts: [{ kind: "text", text: "Hello from {{.Name}}!" }],
+          },
+        ],
+      };
+      return Response.json(response);
+    }
+
+    return new Response("Not Found", { status: 404 });
+  },
+});
+
+console.log(`{{.Name}} listening on :${server.port}`);

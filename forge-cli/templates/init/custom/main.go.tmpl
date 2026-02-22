@@ -1,0 +1,89 @@
+// {{.Name}} - A custom A2A agent (Go).
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+)
+
+type part struct {
+	Kind string ` + "`" + `json:"kind"` + "`" + `
+	Text string ` + "`" + `json:"text,omitempty"` + "`" + `
+}
+
+type artifact struct {
+	Parts []part ` + "`" + `json:"parts"` + "`" + `
+}
+
+type taskStatus struct {
+	State string ` + "`" + `json:"state"` + "`" + `
+}
+
+type taskResponse struct {
+	ID        string     ` + "`" + `json:"id"` + "`" + `
+	Status    taskStatus ` + "`" + `json:"status"` + "`" + `
+	Artifacts []artifact ` + "`" + `json:"artifacts"` + "`" + `
+}
+
+type skill struct {
+	ID          string ` + "`" + `json:"id"` + "`" + `
+	Name        string ` + "`" + `json:"name"` + "`" + `
+	Description string ` + "`" + `json:"description"` + "`" + `
+}
+
+type agentCard struct {
+	Name        string  ` + "`" + `json:"name"` + "`" + `
+	Description string  ` + "`" + `json:"description"` + "`" + `
+	URL         string  ` + "`" + `json:"url"` + "`" + `
+	Skills      []skill ` + "`" + `json:"skills"` + "`" + `
+}
+
+func main() {
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		if r.Method == http.MethodGet {
+			card := agentCard{
+				Name:        "{{.Name}}",
+				Description: "A custom A2A agent",
+				URL:         "http://localhost:8080",
+				Skills: []skill{
+					{
+						ID:          "default",
+						Name:        "Default Skill",
+						Description: "Default agent capability",
+					},
+				},
+			}
+			json.NewEncoder(w).Encode(card)
+			return
+		}
+
+		var req map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&req)
+
+		id, _ := req["id"].(string)
+		resp := taskResponse{
+			ID: id,
+			Status: taskStatus{
+				State: "completed",
+			},
+			Artifacts: []artifact{
+				{
+					Parts: []part{
+						{
+							Kind: "text",
+							Text: "Hello from {{.Name}}!",
+						},
+					},
+				},
+			},
+		}
+		json.NewEncoder(w).Encode(resp)
+	})
+
+	fmt.Println("{{.Name}} listening on :8080")
+	log.Fatal(http.ListenAndServe(":8080", nil))
+}

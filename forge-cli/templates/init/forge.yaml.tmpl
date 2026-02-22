@@ -1,0 +1,45 @@
+agent_id: {{.AgentID}}
+version: 0.1.0
+framework: {{.Framework}}
+entrypoint: {{.Entrypoint}}
+
+model:
+  provider: {{.ModelProvider}}
+  name: {{.ModelName}}
+  version: "latest"
+{{- if .Tools}}
+
+tools:
+{{- range .Tools}}
+  - name: {{.Name}}
+    type: {{.Type}}
+{{- end}}
+{{- end}}
+{{- if .Channels}}
+
+channels:
+{{- range .Channels}}
+  - {{.}}
+{{- end}}
+{{- end}}
+{{- if .BuiltinTools}}
+
+builtin_tools:
+{{- range .BuiltinTools}}
+  - {{.}}
+{{- end}}
+{{- end}}
+{{- if .SkillEntries}}
+
+skills:
+  path: skills.md
+{{- end}}
+{{- if .EgressDomains}}
+
+egress:
+  mode: allowlist
+  allowed_domains:
+{{- range .EgressDomains}}
+    - {{.}}
+{{- end}}
+{{- end}}

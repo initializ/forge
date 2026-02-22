@@ -1,0 +1,12 @@
+"""Example tool for {{.Name}}."""
+
+from crewai.tools import BaseTool
+
+
+class ExampleTool(BaseTool):
+    name: str = "example_tool"
+    description: str = "An example tool that processes text input."
+
+    def _run(self, query: str) -> str:
+        """Execute the tool with the given query."""
+        return f"Processed: {query}"

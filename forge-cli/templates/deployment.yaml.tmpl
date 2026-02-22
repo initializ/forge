@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{.AgentID}}
+  labels:
+    app: {{.AgentID}}
+    forge.initializ.ai/version: "{{.Version}}"
+    {{- if .EgressProfile}}
+    forge.initializ.ai/egress-profile: "{{.EgressProfile}}"
+    {{- end}}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{.AgentID}}
+  template:
+    metadata:
+      labels:
+        app: {{.AgentID}}
+        {{- if .EgressProfile}}
+        forge.initializ.ai/egress-profile: "{{.EgressProfile}}"
+        {{- end}}
+    spec:
+      containers:
+        - name: {{.AgentID}}
+          image: {{.Runtime.Image}}
+          {{- if .Runtime.Port}}
+          ports:
+            - containerPort: {{.Runtime.Port}}
+          {{- end}}
+          {{- if .Runtime.Env}}
+          env:
+            {{- range $key, $val := .Runtime.Env}}
+            - name: {{$key}}
+              value: "{{$val}}"
+            {{- end}}
+            - name: FORGE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{.AgentID}}-secrets
+                  key: api-key
+                  optional: true
+            - name: FORGE_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{.AgentID}}-secrets
+                  key: base-url
+                  optional: true
+            - name: FORGE_TEMPERATURE
+              valueFrom:
+                secretKeyRef:
+                  name: {{.AgentID}}-secrets
+                  key: temperature
+                  optional: true
+            - name: FORGE_MAX_TOKENS
+              valueFrom:
+                secretKeyRef:
+                  name: {{.AgentID}}-secrets
+                  key: max-tokens
+                  optional: true
+          {{- end}}

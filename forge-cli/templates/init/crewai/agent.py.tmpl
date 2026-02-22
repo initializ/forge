@@ -1,0 +1,38 @@
+"""{{.Name}} - A CrewAI-based agent."""
+
+from crewai import Agent, Crew, Task
+from tools.example_tool import ExampleTool
+
+
+def create_agent():
+    """Create and return the CrewAI agent."""
+    agent = Agent(
+        role="{{.Name}}",
+        goal="Accomplish tasks using available tools",
+        backstory="You are a helpful AI assistant.",
+        tools=[ExampleTool()],
+        verbose=True,
+    )
+    return agent
+
+
+def create_crew(agent):
+    """Create a crew with the agent."""
+    task = Task(
+        description="Process the user request.",
+        expected_output="A helpful response.",
+        agent=agent,
+    )
+    crew = Crew(
+        agents=[agent],
+        tasks=[task],
+        verbose=True,
+    )
+    return crew
+
+
+if __name__ == "__main__":
+    agent = create_agent()
+    crew = create_crew(agent)
+    result = crew.kickoff()
+    print(result)

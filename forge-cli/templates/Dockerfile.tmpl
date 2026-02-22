@@ -1,0 +1,74 @@
+{{- if .Runtime.DepsFile}}
+FROM {{.Runtime.Image}} AS deps
+WORKDIR /app
+COPY {{.Runtime.DepsFile}} .
+{{- if eq .Runtime.DepsInstallCmd ""}}
+RUN pip install --no-cache-dir -r {{.Runtime.DepsFile}}
+{{- else}}
+RUN {{.Runtime.DepsInstallCmd}}
+{{- end}}
+{{- end}}
+
+FROM {{.Runtime.Image}}
+
+LABEL org.opencontainers.image.title="{{.AgentID}}" \
+      org.opencontainers.image.version="{{.Version}}"
+{{- if .EgressProfile}}
+LABEL ai.initializ.forge.egress-profile="{{.EgressProfile}}" \
+      ai.initializ.forge.egress-mode="{{.EgressMode}}"
+{{- end}}
+{{- if .ToolInterfaceVersion}}
+LABEL ai.initializ.forge.tool-interface-version="{{.ToolInterfaceVersion}}"
+{{- end}}
+{{- if gt .SkillsCount 0}}
+LABEL ai.initializ.forge.skills-count="{{.SkillsCount}}"
+{{- end}}
+{{- if .DevBuild}}
+LABEL ai.initializ.forge.dev-build="true"
+{{- end}}
+{{- if .ProdBuild}}
+LABEL ai.initializ.forge.prod-build="true"
+{{- end}}
+{{- if .RequiredBins}}
+# Required binaries (from skill requirements):
+{{- range .RequiredBins}}
+# - {{.}}
+{{- end}}
+{{- end}}
+
+{{- if .Runtime.ModelEnv}}
+{{range $key, $val := .Runtime.ModelEnv}}
+ENV {{$key}}="{{$val}}"
+{{- end}}
+{{- end}}
+
+ARG FORGE_DEV=false
+
+WORKDIR /app
+
+{{- if .Runtime.DepsFile}}
+COPY --from=deps /app/ .
+{{- end}}
+
+COPY . .
+
+{{- if .HasSkills}}
+COPY compiled/skills/ /app/skills/
+COPY compiled/prompt.txt /app/compiled/prompt.txt
+{{- end}}
+
+{{- if .Runtime.HealthCheck}}
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD {{.Runtime.HealthCheck}}
+{{- end}}
+
+{{- if .Runtime.Port}}
+EXPOSE {{.Runtime.Port}}
+{{- end}}
+
+{{- if .Runtime.User}}
+RUN useradd -r -s /bin/false agent && chown -R agent:agent /app
+USER agent
+{{- end}}
+
+ENTRYPOINT {{.Runtime.Entrypoint}}

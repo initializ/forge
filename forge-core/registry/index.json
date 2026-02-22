@@ -1,0 +1,30 @@
+[
+  {
+    "name": "summarize",
+    "display_name": "Summarize",
+    "description": "Summarize text or URLs using LLM",
+    "skill_file": "summarize.md",
+    "required_env": [],
+    "one_of_env": ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "XAI_API_KEY", "GEMINI_API_KEY"],
+    "optional_env": ["FIRECRAWL_API_KEY", "APIFY_API_TOKEN"],
+    "required_bins": ["summarize"],
+    "egress_domains": []
+  },
+  {
+    "name": "github",
+    "display_name": "GitHub",
+    "description": "Create issues, PRs, and query repositories",
+    "skill_file": "github.md",
+    "required_env": ["GH_TOKEN"],
+    "required_bins": ["gh"],
+    "egress_domains": ["api.github.com", "github.com"]
+  },
+  {
+    "name": "weather",
+    "display_name": "Weather",
+    "description": "Get current weather and forecasts",
+    "skill_file": "weather.md",
+    "required_bins": ["curl"],
+    "egress_domains": ["api.openweathermap.org", "api.weatherapi.com"]
+  }
+]

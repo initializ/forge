@@ -1,0 +1,56 @@
+"""{{.Name}} - A custom A2A agent."""
+
+import json
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+
+class AgentHandler(BaseHTTPRequestHandler):
+    """Simple A2A-compatible HTTP handler."""
+
+    def do_POST(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        request = json.loads(body) if body else {}
+
+        # Process the request
+        response = {
+            "id": request.get("id", ""),
+            "status": {"state": "completed"},
+            "artifacts": [
+                {
+                    "parts": [
+                        {"kind": "text", "text": "Hello from {{.Name}}!"}
+                    ]
+                }
+            ],
+        }
+
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(response).encode())
+
+    def do_GET(self):
+        """Return the agent card."""
+        card = {
+            "name": "{{.Name}}",
+            "description": "A custom A2A agent",
+            "url": "http://localhost:8080",
+            "skills": [
+                {
+                    "id": "default",
+                    "name": "Default Skill",
+                    "description": "Default agent capability",
+                }
+            ],
+        }
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(card).encode())
+
+
+if __name__ == "__main__":
+    server = HTTPServer(("0.0.0.0", 8080), AgentHandler)
+    print("{{.Name}} listening on :8080")
+    server.serve_forever()

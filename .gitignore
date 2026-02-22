@@ -33,7 +33,7 @@ profile.cov
 
 
 # Binary
-forge
+/forge
 
 # Build output
 .forge-output/

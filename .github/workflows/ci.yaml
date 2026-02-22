@@ -21,16 +21,19 @@ jobs:
           go-version: "1.25"
 
       - name: Verify dependencies
-        run: go mod verify
+        run: |
+          cd forge-core && go mod verify
+          cd ../forge-cli && go mod verify
+          cd ../forge-plugins && go mod verify
 
       - name: Vet
-        run: go vet ./...
+        run: go vet ./forge-core/... ./forge-cli/... ./forge-plugins/...
 
       - name: Check formatting
-        run: test -z "$(gofmt -l .)"
+        run: test -z "$(gofmt -l forge-core forge-cli forge-plugins)"
 
       - name: Test
-        run: go test -race -coverprofile=coverage.out ./...
+        run: go test -race -coverprofile=coverage.out ./forge-core/... ./forge-cli/... ./forge-plugins/...
 
       - name: Check coverage threshold
         run: |
@@ -72,7 +75,7 @@ jobs:
           go-version: "1.25"
 
       - name: Integration tests
-        run: go test -race -tags=integration ./...
+        run: go test -race -tags=integration ./forge-core/... ./forge-cli/... ./forge-plugins/...
 
   build:
     name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
@@ -105,4 +108,4 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
-        run: go build -ldflags "-s -w" -o forge-${{ matrix.goos }}-${{ matrix.goarch }} ./cmd/forge
+        run: go build -ldflags "-s -w" -o forge-${{ matrix.goos }}-${{ matrix.goarch }} ./forge-cli/cmd/forge

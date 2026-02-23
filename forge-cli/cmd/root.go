@@ -9,9 +9,10 @@ import (
 )
 
 var (
-	cfgFile   string
-	verbose   bool
-	outputDir string
+	cfgFile       string
+	verbose       bool
+	outputDir     string
+	themeOverride string
 
 	appVersion = "dev"
 )
@@ -26,6 +27,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "forge.yaml", "config file path")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable verbose output")
 	rootCmd.PersistentFlags().StringVarP(&outputDir, "output-dir", "o", ".", "output directory")
+	rootCmd.PersistentFlags().StringVar(&themeOverride, "theme", "", "TUI color theme: dark, light, or auto")
 
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(validateCmd)

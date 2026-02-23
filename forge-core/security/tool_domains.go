@@ -2,8 +2,8 @@ package security
 
 // DefaultToolDomains maps tool names to their known required domains.
 var DefaultToolDomains = map[string][]string{
-	"web_search":        {"api.perplexity.ai"},
-	"web-search":        {"api.perplexity.ai"},
+	"web_search":        {"api.tavily.com", "api.perplexity.ai"},
+	"web-search":        {"api.tavily.com", "api.perplexity.ai"},
 	"http_request":      {}, // dynamic — depends on user config
 	"slack_notify":      {"slack.com", "hooks.slack.com"},
 	"github_api":        {"api.github.com", "github.com"},

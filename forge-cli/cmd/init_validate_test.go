@@ -129,6 +129,46 @@ func TestValidateProviderKey_Timeout(t *testing.T) {
 	}
 }
 
+func TestValidateTavilyKey_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer valid-key" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"query":"test","results":[]}`))
+	}))
+	defer server.Close()
+
+	orig := tavilyValidationURL
+	tavilyValidationURL = server.URL
+	defer func() { tavilyValidationURL = orig }()
+
+	err := validateWebSearchKey("tavily", "valid-key")
+	if err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+}
+
+func TestValidateTavilyKey_Unauthorized(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	orig := tavilyValidationURL
+	tavilyValidationURL = server.URL
+	defer func() { tavilyValidationURL = orig }()
+
+	err := validateWebSearchKey("tavily", "bad-key")
+	if err == nil {
+		t.Fatal("expected error for unauthorized key")
+	}
+	if !strings.Contains(err.Error(), "invalid") {
+		t.Errorf("expected error containing 'invalid', got: %v", err)
+	}
+}
+
 func TestValidatePerplexityKey_Success(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer valid-key" {
@@ -144,7 +184,7 @@ func TestValidatePerplexityKey_Success(t *testing.T) {
 	perplexityValidationURL = server.URL
 	defer func() { perplexityValidationURL = orig }()
 
-	err := validatePerplexityKey("valid-key")
+	err := validateWebSearchKey("perplexity", "valid-key")
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
@@ -160,7 +200,7 @@ func TestValidatePerplexityKey_Unauthorized(t *testing.T) {
 	perplexityValidationURL = server.URL
 	defer func() { perplexityValidationURL = orig }()
 
-	err := validatePerplexityKey("bad-key")
+	err := validateWebSearchKey("perplexity", "bad-key")
 	if err == nil {
 		t.Fatal("expected error for unauthorized key")
 	}

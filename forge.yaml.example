@@ -31,7 +31,7 @@ tools:
 
 # Skills definition file
 skills:
-  path: skills.md
+  path: SKILL.md
 
 # Communication channels the agent supports
 channels:

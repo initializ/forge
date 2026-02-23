@@ -12,9 +12,10 @@ import (
 	"github.com/initializ/forge/forge-core/plugins"
 	"github.com/initializ/forge/forge-core/runtime"
 	"github.com/initializ/forge/forge-core/security"
-	"github.com/initializ/forge/forge-core/skills"
 	"github.com/initializ/forge/forge-core/types"
 	"github.com/initializ/forge/forge-core/validate"
+	skillcompiler "github.com/initializ/forge/forge-skills/compiler"
+	"github.com/initializ/forge/forge-skills/contract"
 )
 
 // ─── Compile API ──────────────────────────────────────────────────────
@@ -22,14 +23,14 @@ import (
 // CompileRequest contains the inputs for compiling a ForgeConfig into an AgentSpec.
 type CompileRequest struct {
 	Config       *types.ForgeConfig
-	PluginConfig *plugins.AgentConfig // optional framework plugin config
-	SkillEntries []skills.SkillEntry  // optional skill entries
+	PluginConfig *plugins.AgentConfig  // optional framework plugin config
+	SkillEntries []contract.SkillEntry // optional skill entries
 }
 
 // CompileResult contains the outputs of a successful compilation.
 type CompileResult struct {
 	Spec           *agentspec.AgentSpec
-	CompiledSkills *skills.CompiledSkills // nil if no skills
+	CompiledSkills *contract.CompiledSkills // nil if no skills
 	EgressConfig   *security.EgressConfig
 	Allowlist      []byte // JSON-encoded allowlist
 }
@@ -45,10 +46,10 @@ func Compile(req CompileRequest) (*CompileResult, error) {
 	}
 
 	// Compile skills if provided
-	var cs *skills.CompiledSkills
+	var cs *contract.CompiledSkills
 	if len(req.SkillEntries) > 0 {
 		var err error
-		cs, err = skills.Compile(req.SkillEntries)
+		cs, err = skillcompiler.Compile(req.SkillEntries)
 		if err != nil {
 			return nil, err
 		}

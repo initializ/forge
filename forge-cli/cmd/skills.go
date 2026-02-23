@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"bufio"
+	"crypto/ed25519"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,8 +12,11 @@ import (
 
 	"github.com/initializ/forge/forge-cli/config"
 	cliskills "github.com/initializ/forge/forge-cli/skills"
-	skillreg "github.com/initializ/forge/forge-core/registry"
-	coreskills "github.com/initializ/forge/forge-core/skills"
+	"github.com/initializ/forge/forge-skills/analyzer"
+	"github.com/initializ/forge/forge-skills/local"
+	"github.com/initializ/forge/forge-skills/requirements"
+	"github.com/initializ/forge/forge-skills/resolver"
+	"github.com/initializ/forge/forge-skills/trust"
 	"github.com/spf13/cobra"
 )
 
@@ -33,16 +38,56 @@ var skillsAddCmd = &cobra.Command{
 	RunE:  runSkillsAdd,
 }
 
+var skillsAuditCmd = &cobra.Command{
+	Use:   "audit",
+	Short: "Run security audit on skills file",
+	RunE:  runSkillsAudit,
+}
+
+var skillsSignCmd = &cobra.Command{
+	Use:   "sign <skill-file>",
+	Short: "Sign a skill file with an Ed25519 key",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runSkillsSign,
+}
+
+var skillsKeygenCmd = &cobra.Command{
+	Use:   "keygen <key-name>",
+	Short: "Generate an Ed25519 key pair for skill signing",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runSkillsKeygen,
+}
+
+var auditFormat string
+var auditEmbedded bool
+var auditDir string
+var signKeyPath string
+
 func init() {
 	skillsCmd.AddCommand(skillsValidateCmd)
 	skillsCmd.AddCommand(skillsAddCmd)
+	skillsCmd.AddCommand(skillsAuditCmd)
+	skillsCmd.AddCommand(skillsSignCmd)
+	skillsCmd.AddCommand(skillsKeygenCmd)
+
+	skillsAuditCmd.Flags().StringVar(&auditFormat, "format", "text", "Output format: text or json")
+	skillsAuditCmd.Flags().BoolVar(&auditEmbedded, "embedded", false, "Audit embedded skills from the binary")
+	skillsAuditCmd.Flags().StringVar(&auditDir, "dir", "", "Audit skills from a directory of SKILL.md subdirectories")
+	skillsSignCmd.Flags().StringVar(&signKeyPath, "key", "", "Path to Ed25519 private key")
+	_ = skillsSignCmd.MarkFlagRequired("key")
 }
 
 func runSkillsAdd(cmd *cobra.Command, args []string) error {
 	name := args[0]
 
+	// Create embedded registry
+	reg, err := local.NewEmbeddedRegistry()
+	if err != nil {
+		return fmt.Errorf("loading skill registry: %w", err)
+	}
+
 	// Look up skill in registry
-	info := skillreg.GetSkillByName(name)
+	info := reg.Get(name)
 	if info == nil {
 		return fmt.Errorf("skill %q not found in registry", name)
 	}
@@ -58,7 +103,7 @@ func runSkillsAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("creating skills directory: %w", err)
 	}
 
-	content, err := skillreg.LoadSkillFile(name)
+	content, err := reg.LoadContent(name)
 	if err != nil {
 		return fmt.Errorf("loading skill file: %w", err)
 	}
@@ -70,8 +115,8 @@ func runSkillsAdd(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  Added skill file: skills/%s.md\n", name)
 
 	// Write script if the skill has one
-	if skillreg.HasSkillScript(name) {
-		scriptContent, sErr := skillreg.LoadSkillScript(name)
+	if reg.HasScript(name) {
+		scriptContent, sErr := reg.LoadScript(name)
 		if sErr == nil {
 			scriptDir := filepath.Join(skillDir, "scripts")
 			if mkErr := os.MkdirAll(scriptDir, 0o755); mkErr != nil {
@@ -139,7 +184,7 @@ func runSkillsAdd(cmd *cobra.Command, args []string) error {
 
 func runSkillsValidate(cmd *cobra.Command, args []string) error {
 	// Determine skills file path
-	skillsPath := "skills.md"
+	skillsPath := "SKILL.md"
 
 	cfgPath := cfgFile
 	if !filepath.IsAbs(cfgPath) {
@@ -166,14 +211,14 @@ func runSkillsValidate(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Entries:     %d\n\n", len(entries))
 
 	// Aggregate requirements
-	reqs := coreskills.AggregateRequirements(entries)
+	reqs := requirements.AggregateRequirements(entries)
 
 	hasErrors := false
 
 	// Check binaries
 	if len(reqs.Bins) > 0 {
 		fmt.Println("Binaries:")
-		binDiags := coreskills.BinDiagnostics(reqs.Bins)
+		binDiags := resolver.BinDiagnostics(reqs.Bins)
 		diagMap := make(map[string]string)
 		for _, d := range binDiags {
 			diagMap[d.Var] = d.Level
@@ -198,8 +243,8 @@ func runSkillsValidate(cmd *cobra.Command, args []string) error {
 		// Use the runtime's LoadEnvFile indirectly — just check OS env for now
 	}
 
-	resolver := coreskills.NewEnvResolver(osEnv, dotEnv, nil)
-	envDiags := resolver.Resolve(reqs)
+	envResolver := resolver.NewEnvResolver(osEnv, dotEnv, nil)
+	envDiags := envResolver.Resolve(reqs)
 
 	if len(reqs.EnvRequired) > 0 || len(reqs.EnvOneOf) > 0 || len(reqs.EnvOptional) > 0 {
 		fmt.Println("Environment:")
@@ -238,4 +283,162 @@ func envFromOS() map[string]string {
 		}
 	}
 	return env
+}
+
+func runSkillsAudit(cmd *cobra.Command, args []string) error {
+	policy := analyzer.DefaultPolicy()
+	var report *analyzer.AuditReport
+
+	switch {
+	case auditEmbedded:
+		reg, err := local.NewEmbeddedRegistry()
+		if err != nil {
+			return fmt.Errorf("loading embedded registry: %w", err)
+		}
+		r, err := analyzer.GenerateReport(reg, policy)
+		if err != nil {
+			return fmt.Errorf("generating report: %w", err)
+		}
+		report = r
+
+	case auditDir != "":
+		reg, err := local.NewLocalRegistry(os.DirFS(auditDir))
+		if err != nil {
+			return fmt.Errorf("loading directory registry %q: %w", auditDir, err)
+		}
+		r, err := analyzer.GenerateReport(reg, policy)
+		if err != nil {
+			return fmt.Errorf("generating report: %w", err)
+		}
+		report = r
+
+	default:
+		// File-based audit (original behavior)
+		skillsPath := "SKILL.md"
+
+		cfgPath := cfgFile
+		if !filepath.IsAbs(cfgPath) {
+			wd, _ := os.Getwd()
+			cfgPath = filepath.Join(wd, cfgPath)
+		}
+		cfg, err := config.LoadForgeConfig(cfgPath)
+		if err == nil && cfg.Skills.Path != "" {
+			skillsPath = cfg.Skills.Path
+		}
+
+		if !filepath.IsAbs(skillsPath) {
+			wd, _ := os.Getwd()
+			skillsPath = filepath.Join(wd, skillsPath)
+		}
+
+		// Parse with metadata
+		entries, _, parseErr := cliskills.ParseFileWithMetadata(skillsPath)
+		if parseErr != nil {
+			return fmt.Errorf("parsing skills file: %w", parseErr)
+		}
+
+		// Build hasScript checker from filesystem
+		skillsDir := filepath.Dir(skillsPath)
+		hasScript := func(name string) bool {
+			scriptPath := filepath.Join(skillsDir, "scripts", name+".sh")
+			_, statErr := os.Stat(scriptPath)
+			return statErr == nil
+		}
+
+		report = analyzer.GenerateReportFromEntries(entries, hasScript, policy)
+	}
+
+	switch auditFormat {
+	case "json":
+		data, jsonErr := analyzer.FormatJSON(report)
+		if jsonErr != nil {
+			return fmt.Errorf("formatting JSON report: %w", jsonErr)
+		}
+		fmt.Println(string(data))
+	default:
+		fmt.Print(analyzer.FormatText(report))
+	}
+
+	if !report.PolicySummary.Passed {
+		return fmt.Errorf("security policy check failed: %d error(s)", report.PolicySummary.Errors)
+	}
+	return nil
+}
+
+func runSkillsSign(cmd *cobra.Command, args []string) error {
+	skillFile := args[0]
+
+	// Read skill content
+	content, err := os.ReadFile(skillFile)
+	if err != nil {
+		return fmt.Errorf("reading skill file: %w", err)
+	}
+
+	// Read private key
+	keyData, err := os.ReadFile(signKeyPath)
+	if err != nil {
+		return fmt.Errorf("reading private key: %w", err)
+	}
+
+	privBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(keyData)))
+	if err != nil {
+		return fmt.Errorf("decoding private key: %w", err)
+	}
+
+	if len(privBytes) != ed25519.PrivateKeySize {
+		return fmt.Errorf("invalid private key size: %d (expected %d)", len(privBytes), ed25519.PrivateKeySize)
+	}
+
+	privateKey := ed25519.PrivateKey(privBytes)
+	sig, err := trust.SignSkill(content, privateKey)
+	if err != nil {
+		return fmt.Errorf("signing skill: %w", err)
+	}
+
+	// Write detached signature
+	sigPath := skillFile + ".sig"
+	sigB64 := base64.StdEncoding.EncodeToString(sig)
+	if err := os.WriteFile(sigPath, []byte(sigB64+"\n"), 0644); err != nil {
+		return fmt.Errorf("writing signature: %w", err)
+	}
+
+	fmt.Printf("Signature written to %s\n", sigPath)
+	return nil
+}
+
+func runSkillsKeygen(cmd *cobra.Command, args []string) error {
+	keyName := args[0]
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("getting home directory: %w", err)
+	}
+
+	keysDir := filepath.Join(home, ".forge", "keys")
+	if err := os.MkdirAll(keysDir, 0700); err != nil {
+		return fmt.Errorf("creating keys directory: %w", err)
+	}
+
+	pub, priv, err := trust.GenerateKeyPair()
+	if err != nil {
+		return fmt.Errorf("generating key pair: %w", err)
+	}
+
+	// Write private key
+	privPath := filepath.Join(keysDir, keyName+".key")
+	privB64 := base64.StdEncoding.EncodeToString(priv)
+	if err := os.WriteFile(privPath, []byte(privB64+"\n"), 0600); err != nil {
+		return fmt.Errorf("writing private key: %w", err)
+	}
+
+	// Write public key
+	pubPath := filepath.Join(keysDir, keyName+".pub")
+	pubB64 := base64.StdEncoding.EncodeToString(pub)
+	if err := os.WriteFile(pubPath, []byte(pubB64+"\n"), 0644); err != nil {
+		return fmt.Errorf("writing public key: %w", err)
+	}
+
+	fmt.Printf("Key pair generated:\n  Private: %s\n  Public:  %s\n", privPath, pubPath)
+	fmt.Printf("\nTo trust this key for signature verification, copy %s to ~/.forge/trusted-keys/\n", filepath.Base(pubPath))
+	return nil
 }

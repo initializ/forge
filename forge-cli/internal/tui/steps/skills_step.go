@@ -120,6 +120,10 @@ func (s *SkillsStep) Icon() string  { return "📦" }
 
 func (s *SkillsStep) Init() tea.Cmd {
 	s.complete = false
+	s.phase = skillsSelectPhase
+	s.currentPrompt = 0
+	s.envPrompts = nil
+	s.envValues = make(map[string]string)
 	if s.empty {
 		s.complete = true
 		return func() tea.Msg { return tui.StepCompleteMsg{} }

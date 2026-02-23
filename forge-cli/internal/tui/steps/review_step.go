@@ -93,8 +93,6 @@ func (s *ReviewStep) Update(msg tea.Msg) (tui.Step, tea.Cmd) {
 			return s, func() tea.Msg { return tui.StepCompleteMsg{} }
 		case "backspace":
 			return s, func() tea.Msg { return tui.StepBackMsg{} }
-		case "esc":
-			return s, func() tea.Msg { return tui.StepBackMsg{} }
 		}
 	}
 	return s, nil

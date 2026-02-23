@@ -149,6 +149,7 @@ func inferSource(domain string, ctx *tui.WizardContext) string {
 
 	// Tool domains
 	toolDomains := map[string]string{
+		"api.tavily.com":    "web_search tool",
 		"api.perplexity.ai": "web_search tool",
 	}
 	if src, ok := toolDomains[domain]; ok {

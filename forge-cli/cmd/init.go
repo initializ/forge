@@ -541,6 +541,19 @@ func scaffold(opts *initOptions) error {
 		if err := os.WriteFile(skillPath, content, 0o644); err != nil {
 			return fmt.Errorf("writing skill file %s: %w", skillName, err)
 		}
+
+		// Vendor script if the skill has one
+		if skillreg.HasSkillScript(skillName) {
+			scriptContent, sErr := skillreg.LoadSkillScript(skillName)
+			if sErr == nil {
+				scriptDir := filepath.Join(dir, "skills", "scripts")
+				_ = os.MkdirAll(scriptDir, 0o755)
+				scriptPath := filepath.Join(scriptDir, skillName+".sh")
+				if wErr := os.WriteFile(scriptPath, scriptContent, 0o755); wErr != nil {
+					fmt.Printf("Warning: could not write script for %q: %s\n", skillName, wErr)
+				}
+			}
+		}
 	}
 
 	fmt.Printf("\nCreated agent project in ./%s\n", opts.AgentID)
@@ -754,13 +767,24 @@ func buildEnvVars(opts *initOptions) []envVarEntry {
 		vars = append(vars, envVarEntry{Key: "MODEL_API_KEY", Value: apiKeyVal, Comment: "Model provider API key"})
 	}
 
-	// Perplexity key if web_search selected
+	// Web search provider key if web_search selected
 	if containsStr(opts.BuiltinTools, "web_search") {
-		val := opts.EnvVars["PERPLEXITY_API_KEY"]
-		if val == "" {
-			val = "your-perplexity-key-here"
+		provider := opts.EnvVars["WEB_SEARCH_PROVIDER"]
+		if provider == "perplexity" {
+			val := opts.EnvVars["PERPLEXITY_API_KEY"]
+			if val == "" {
+				val = "your-perplexity-key-here"
+			}
+			vars = append(vars, envVarEntry{Key: "PERPLEXITY_API_KEY", Value: val, Comment: "Perplexity API key for web_search"})
+			vars = append(vars, envVarEntry{Key: "WEB_SEARCH_PROVIDER", Value: "perplexity", Comment: "Web search provider"})
+		} else {
+			// Default to Tavily
+			val := opts.EnvVars["TAVILY_API_KEY"]
+			if val == "" {
+				val = "your-tavily-key-here"
+			}
+			vars = append(vars, envVarEntry{Key: "TAVILY_API_KEY", Value: val, Comment: "Tavily API key for web_search"})
 		}
-		vars = append(vars, envVarEntry{Key: "PERPLEXITY_API_KEY", Value: val, Comment: "Perplexity API key for web_search"})
 	}
 
 	// Channel env vars

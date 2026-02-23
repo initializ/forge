@@ -20,7 +20,8 @@ type toolsPhase int
 
 const (
 	toolsSelectPhase toolsPhase = iota
-	toolsPerplexityKeyPhase
+	toolsWebSearchProviderPhase
+	toolsWebSearchKeyPhase
 	toolsDonePhase
 )
 
@@ -29,14 +30,17 @@ type ValidatePerplexityFunc func(key string) error
 
 // ToolsStep handles builtin tool selection.
 type ToolsStep struct {
-	styles        *tui.StyleSet
-	phase         toolsPhase
-	multiSelect   components.MultiSelect
-	keyInput      components.SecretInput
-	complete      bool
-	selected      []string
-	perplexityKey string
-	validatePerp  ValidatePerplexityFunc
+	styles           *tui.StyleSet
+	phase            toolsPhase
+	multiSelect      components.MultiSelect
+	providerSelect   components.SingleSelect
+	keyInput         components.SecretInput
+	complete         bool
+	selected         []string
+	webSearchKey     string
+	webSearchKeyName string // "TAVILY_API_KEY" or "PERPLEXITY_API_KEY"
+	webSearchProvider string // "tavily" or "perplexity"
+	validatePerp     ValidatePerplexityFunc
 }
 
 // NewToolsStep creates a new tools selection step.
@@ -92,25 +96,37 @@ func (s *ToolsStep) Update(msg tea.Msg) (tui.Step, tea.Cmd) {
 		if s.multiSelect.Done() {
 			s.selected = s.multiSelect.SelectedValues()
 
-			// Check if web_search selected and no perplexity key
-			if containsStr(s.selected, "web_search") && os.Getenv("PERPLEXITY_API_KEY") == "" {
-				s.phase = toolsPerplexityKeyPhase
-				s.keyInput = components.NewSecretInput(
-					"Perplexity API key for web_search",
-					true,
+			// Check if web_search selected and no key is already set
+			if containsStr(s.selected, "web_search") &&
+				os.Getenv("TAVILY_API_KEY") == "" &&
+				os.Getenv("PERPLEXITY_API_KEY") == "" {
+				// Show provider selection
+				s.phase = toolsWebSearchProviderPhase
+				s.providerSelect = components.NewSingleSelect(
+					[]components.SingleSelectItem{
+						{Label: "Tavily (Recommended)", Value: "tavily", Description: "LLM-optimized search with structured results", Icon: "🔍"},
+						{Label: "Perplexity", Value: "perplexity", Description: "AI-powered search with citations", Icon: "🌐"},
+					},
 					s.styles.Theme.Accent,
-					s.styles.Theme.Success,
-					s.styles.Theme.Error,
+					s.styles.Theme.Primary,
+					s.styles.Theme.Secondary,
+					s.styles.Theme.Dim,
 					s.styles.Theme.Border,
-					s.styles.AccentTxt,
-					s.styles.InactiveBorder,
-					s.styles.SuccessTxt,
-					s.styles.ErrorTxt,
-					s.styles.DimTxt,
+					s.styles.Theme.Accent,
+					s.styles.Theme.AccentDim,
 					s.styles.KbdKey,
 					s.styles.KbdDesc,
 				)
-				return s, s.keyInput.Init()
+				return s, s.providerSelect.Init()
+			}
+
+			// If a key is already set in env, detect the provider
+			if containsStr(s.selected, "web_search") {
+				if os.Getenv("TAVILY_API_KEY") != "" {
+					s.webSearchProvider = "tavily"
+				} else if os.Getenv("PERPLEXITY_API_KEY") != "" {
+					s.webSearchProvider = "perplexity"
+				}
 			}
 
 			s.complete = true
@@ -119,12 +135,47 @@ func (s *ToolsStep) Update(msg tea.Msg) (tui.Step, tea.Cmd) {
 
 		return s, cmd
 
-	case toolsPerplexityKeyPhase:
+	case toolsWebSearchProviderPhase:
+		updated, cmd := s.providerSelect.Update(msg)
+		s.providerSelect = updated
+
+		if s.providerSelect.Done() {
+			_, s.webSearchProvider = s.providerSelect.Selected()
+
+			keyLabel := "Tavily API key for web_search"
+			s.webSearchKeyName = "TAVILY_API_KEY"
+			if s.webSearchProvider == "perplexity" {
+				keyLabel = "Perplexity API key for web_search"
+				s.webSearchKeyName = "PERPLEXITY_API_KEY"
+			}
+
+			s.phase = toolsWebSearchKeyPhase
+			s.keyInput = components.NewSecretInput(
+				keyLabel,
+				true,
+				s.styles.Theme.Accent,
+				s.styles.Theme.Success,
+				s.styles.Theme.Error,
+				s.styles.Theme.Border,
+				s.styles.AccentTxt,
+				s.styles.InactiveBorder,
+				s.styles.SuccessTxt,
+				s.styles.ErrorTxt,
+				s.styles.DimTxt,
+				s.styles.KbdKey,
+				s.styles.KbdDesc,
+			)
+			return s, s.keyInput.Init()
+		}
+
+		return s, cmd
+
+	case toolsWebSearchKeyPhase:
 		updated, cmd := s.keyInput.Update(msg)
 		s.keyInput = updated
 
 		if s.keyInput.Done() {
-			s.perplexityKey = s.keyInput.Value()
+			s.webSearchKey = s.keyInput.Value()
 			s.complete = true
 			return s, func() tea.Msg { return tui.StepCompleteMsg{} }
 		}
@@ -139,7 +190,9 @@ func (s *ToolsStep) View(width int) string {
 	switch s.phase {
 	case toolsSelectPhase:
 		return s.multiSelect.View(width)
-	case toolsPerplexityKeyPhase:
+	case toolsWebSearchProviderPhase:
+		return s.providerSelect.View(width)
+	case toolsWebSearchKeyPhase:
 		return s.keyInput.View(width)
 	}
 	return ""
@@ -158,8 +211,11 @@ func (s *ToolsStep) Summary() string {
 
 func (s *ToolsStep) Apply(ctx *tui.WizardContext) {
 	ctx.BuiltinTools = s.selected
-	if s.perplexityKey != "" {
-		ctx.EnvVars["PERPLEXITY_API_KEY"] = s.perplexityKey
+	if s.webSearchKey != "" && s.webSearchKeyName != "" {
+		ctx.EnvVars[s.webSearchKeyName] = s.webSearchKey
+	}
+	if s.webSearchProvider != "" {
+		ctx.EnvVars["WEB_SEARCH_PROVIDER"] = s.webSearchProvider
 	}
 }
 

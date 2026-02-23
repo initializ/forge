@@ -18,6 +18,7 @@ var (
 	geminiValidationURL     = "https://generativelanguage.googleapis.com/v1beta/models"
 	ollamaValidationURL     = "http://localhost:11434/api/tags"
 	perplexityValidationURL = "https://api.perplexity.ai/chat/completions"
+	tavilyValidationURL     = "https://api.tavily.com/search"
 )
 
 // validateProviderKey validates an API key against the specified provider.
@@ -136,6 +137,40 @@ func validateOllamaConnection(ctx context.Context) error {
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("ollama returned status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// validateTavilyKey validates a Tavily API key with a minimal search request.
+func validateTavilyKey(apiKey string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	body := map[string]any{
+		"query":       "test",
+		"max_results": 1,
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tavilyValidationURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("connecting to Tavily: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return fmt.Errorf("invalid Tavily API key (%d)", resp.StatusCode)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("tavily API returned status %d", resp.StatusCode)
 	}
 	return nil
 }

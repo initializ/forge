@@ -209,6 +209,9 @@ func collectInteractive(opts *initOptions) error {
 	validateKeyFn := func(provider, key string) error {
 		return validateProviderKey(provider, key)
 	}
+	validateTavilyFn := func(key string) error {
+		return validateTavilyKey(key)
+	}
 	validatePerpFn := func(key string) error {
 		return validatePerplexityKey(key)
 	}
@@ -218,7 +221,7 @@ func collectInteractive(opts *initOptions) error {
 		steps.NewNameStep(styles, opts.Name),
 		steps.NewProviderStep(styles, validateKeyFn),
 		steps.NewChannelStep(styles),
-		steps.NewToolsStep(styles, toolInfos, validatePerpFn),
+		steps.NewToolsStep(styles, toolInfos, validateTavilyFn, validatePerpFn),
 		steps.NewSkillsStep(styles, skillInfos),
 		steps.NewEgressStep(styles, deriveEgressFn),
 		steps.NewReviewStep(styles), // scaffold is handled by the caller after collectInteractive returns

@@ -59,8 +59,9 @@ func NewSingleSelect(items []SingleSelectItem, accentColor, primaryColor, second
 	}
 }
 
-// Init returns no initial command.
-func (s SingleSelect) Init() tea.Cmd {
+// Init resets done state so the component can be re-used after back-navigation.
+func (s *SingleSelect) Init() tea.Cmd {
+	s.done = false
 	return nil
 }
 

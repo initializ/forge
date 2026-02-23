@@ -259,7 +259,15 @@ func (s *ToolsStep) Summary() string {
 	if len(s.selected) == 0 {
 		return "none"
 	}
-	return strings.Join(s.selected, ", ")
+	var parts []string
+	for _, name := range s.selected {
+		if name == "web_search" && s.webSearchProvider != "" {
+			parts = append(parts, fmt.Sprintf("web_search [%s]", s.webSearchProvider))
+		} else {
+			parts = append(parts, name)
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (s *ToolsStep) Apply(ctx *tui.WizardContext) {

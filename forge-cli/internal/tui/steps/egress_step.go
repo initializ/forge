@@ -10,7 +10,7 @@ import (
 )
 
 // DeriveEgressFunc computes egress domains from wizard context.
-type DeriveEgressFunc func(provider string, channels, tools, skills []string) []string
+type DeriveEgressFunc func(provider string, channels, tools, skills []string, envVars map[string]string) []string
 
 // EgressStep handles egress domain review.
 type EgressStep struct {
@@ -40,7 +40,7 @@ func (s *EgressStep) Prepare(ctx *tui.WizardContext) {
 
 	s.domains = nil
 	if s.deriveFn != nil {
-		s.domains = s.deriveFn(ctx.Provider, channels, ctx.BuiltinTools, ctx.Skills)
+		s.domains = s.deriveFn(ctx.Provider, channels, ctx.BuiltinTools, ctx.Skills, ctx.EnvVars)
 	}
 
 	s.empty = len(s.domains) == 0
@@ -149,6 +149,7 @@ func inferSource(domain string, ctx *tui.WizardContext) string {
 
 	// Tool domains
 	toolDomains := map[string]string{
+		"api.tavily.com":    "web_search tool",
 		"api.perplexity.ai": "web_search tool",
 	}
 	if src, ok := toolDomains[domain]; ok {

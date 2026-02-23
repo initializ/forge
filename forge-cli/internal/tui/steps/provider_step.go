@@ -351,6 +351,19 @@ func (s *ProviderStep) Apply(ctx *tui.WizardContext) {
 	ctx.CustomBaseURL = s.customURL
 	ctx.CustomModel = s.customModel
 	ctx.CustomAPIKey = s.customAuth
+
+	// Store the provider API key in EnvVars so later steps (e.g. skills)
+	// can detect it's already collected and skip re-prompting.
+	if s.apiKey != "" {
+		switch s.provider {
+		case "openai":
+			ctx.EnvVars["OPENAI_API_KEY"] = s.apiKey
+		case "anthropic":
+			ctx.EnvVars["ANTHROPIC_API_KEY"] = s.apiKey
+		case "gemini":
+			ctx.EnvVars["GEMINI_API_KEY"] = s.apiKey
+		}
+	}
 }
 
 func providerDisplayName(provider string) string {

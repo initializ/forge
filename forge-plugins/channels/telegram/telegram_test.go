@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/initializ/forge/forge-core/a2a"
 	"github.com/initializ/forge/forge-core/channels"
@@ -270,6 +271,66 @@ func TestInit_MissingToken(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing bot_token")
 	}
+}
+
+func TestSendChatAction(t *testing.T) {
+	var receivedAction string
+	var receivedChatID string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var payload map[string]string
+		json.Unmarshal(body, &payload) //nolint:errcheck
+		receivedChatID = payload["chat_id"]
+		receivedAction = payload["action"]
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"ok":true}`)) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	p := New()
+	p.botToken = "test-token"
+	p.apiBase = srv.URL
+
+	err := p.sendChatAction("12345", "typing")
+	if err != nil {
+		t.Fatalf("sendChatAction() error: %v", err)
+	}
+	if receivedChatID != "12345" {
+		t.Errorf("chat_id = %q, want 12345", receivedChatID)
+	}
+	if receivedAction != "typing" {
+		t.Errorf("action = %q, want typing", receivedAction)
+	}
+}
+
+func TestStartTypingIndicator(t *testing.T) {
+	var actionCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Count sendChatAction calls (path contains sendChatAction)
+		if strings.Contains(r.URL.Path, "sendChatAction") {
+			actionCount++
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"ok":true}`)) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	p := New()
+	p.botToken = "test-token"
+	p.apiBase = srv.URL
+
+	ctx := context.Background()
+	stop := p.startTypingIndicator(ctx, "67890")
+
+	// The first typing action is sent immediately
+	// Give it a moment to process
+	time.Sleep(100 * time.Millisecond)
+
+	if actionCount < 1 {
+		t.Errorf("expected at least 1 typing action, got %d", actionCount)
+	}
+
+	stop()
 }
 
 func TestInit_InvalidMode(t *testing.T) {

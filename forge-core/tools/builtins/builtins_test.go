@@ -181,11 +181,21 @@ func TestMathCalculateTool_DivisionByZero(t *testing.T) {
 }
 
 func TestWebSearchTool_NoKey(t *testing.T) {
-	orig := os.Getenv("PERPLEXITY_API_KEY")
+	origTavily := os.Getenv("TAVILY_API_KEY")
+	origPerp := os.Getenv("PERPLEXITY_API_KEY")
+	origProvider := os.Getenv("WEB_SEARCH_PROVIDER")
+	_ = os.Unsetenv("TAVILY_API_KEY")
 	_ = os.Unsetenv("PERPLEXITY_API_KEY")
+	_ = os.Unsetenv("WEB_SEARCH_PROVIDER")
 	defer func() {
-		if orig != "" {
-			_ = os.Setenv("PERPLEXITY_API_KEY", orig)
+		if origTavily != "" {
+			_ = os.Setenv("TAVILY_API_KEY", origTavily)
+		}
+		if origPerp != "" {
+			_ = os.Setenv("PERPLEXITY_API_KEY", origPerp)
+		}
+		if origProvider != "" {
+			_ = os.Setenv("WEB_SEARCH_PROVIDER", origProvider)
 		}
 	}()
 
@@ -195,8 +205,172 @@ func TestWebSearchTool_NoKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute error: %v", err)
 	}
-	if !strings.Contains(result, "PERPLEXITY_API_KEY") {
-		t.Errorf("expected missing key message, got: %q", result)
+	if !strings.Contains(result, "TAVILY_API_KEY") || !strings.Contains(result, "PERPLEXITY_API_KEY") {
+		t.Errorf("expected error mentioning both API keys, got: %q", result)
+	}
+}
+
+func TestWebSearchTool_TavilyProvider(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify authorization header
+		if auth := r.Header.Get("Authorization"); auth != "Bearer test-tavily-key" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+			"query":         "test query",
+			"response_time": 0.5,
+			"answer":        "Tavily answer",
+			"results": []map[string]any{
+				{
+					"title":   "Result 1",
+					"url":     "https://example.com",
+					"content": "Example content",
+					"score":   0.95,
+				},
+			},
+		})
+	}))
+	defer ts.Close()
+
+	// Create a Tavily provider with test server URL
+	p := &tavilyProvider{apiKey: "test-tavily-key", baseURL: ts.URL}
+	result, err := p.search(context.Background(), "test query", webSearchOpts{MaxResults: 5})
+	if err != nil {
+		t.Fatalf("search error: %v", err)
+	}
+	if !strings.Contains(result, "Tavily answer") {
+		t.Errorf("expected Tavily answer in result, got: %q", result)
+	}
+	if !strings.Contains(result, "Result 1") {
+		t.Errorf("expected result title in result, got: %q", result)
+	}
+}
+
+func TestWebSearchTool_PerplexityProvider(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if auth := r.Header.Get("Authorization"); auth != "Bearer test-perplexity-key" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+			"choices": []map[string]any{
+				{
+					"message": map[string]string{
+						"content": "Perplexity answer",
+					},
+				},
+			},
+			"citations": []string{"https://source.com"},
+		})
+	}))
+	defer ts.Close()
+
+	p := &perplexityProvider{apiKey: "test-perplexity-key", baseURL: ts.URL}
+	result, err := p.search(context.Background(), "test query", webSearchOpts{})
+	if err != nil {
+		t.Fatalf("search error: %v", err)
+	}
+	if !strings.Contains(result, "Perplexity answer") {
+		t.Errorf("expected Perplexity answer in result, got: %q", result)
+	}
+	if !strings.Contains(result, "source.com") {
+		t.Errorf("expected citation in result, got: %q", result)
+	}
+}
+
+func TestWebSearchTool_ProviderOverride(t *testing.T) {
+	origTavily := os.Getenv("TAVILY_API_KEY")
+	origPerp := os.Getenv("PERPLEXITY_API_KEY")
+	origProvider := os.Getenv("WEB_SEARCH_PROVIDER")
+	_ = os.Unsetenv("TAVILY_API_KEY")
+	_ = os.Unsetenv("PERPLEXITY_API_KEY")
+	_ = os.Setenv("WEB_SEARCH_PROVIDER", "tavily")
+	defer func() {
+		if origTavily != "" {
+			_ = os.Setenv("TAVILY_API_KEY", origTavily)
+		} else {
+			_ = os.Unsetenv("TAVILY_API_KEY")
+		}
+		if origPerp != "" {
+			_ = os.Setenv("PERPLEXITY_API_KEY", origPerp)
+		} else {
+			_ = os.Unsetenv("PERPLEXITY_API_KEY")
+		}
+		if origProvider != "" {
+			_ = os.Setenv("WEB_SEARCH_PROVIDER", origProvider)
+		} else {
+			_ = os.Unsetenv("WEB_SEARCH_PROVIDER")
+		}
+	}()
+
+	tool := GetByName("web_search")
+	args, _ := json.Marshal(map[string]string{"query": "test"})
+	result, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	// Should error because TAVILY_API_KEY is not set
+	if !strings.Contains(result, "TAVILY_API_KEY") {
+		t.Errorf("expected missing TAVILY_API_KEY message, got: %q", result)
+	}
+}
+
+func TestWebSearchTool_ExplicitPerplexity(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+			"choices": []map[string]any{
+				{"message": map[string]string{"content": "Perplexity explicit"}},
+			},
+		})
+	}))
+	defer ts.Close()
+
+	// Both keys set, but WEB_SEARCH_PROVIDER=perplexity -> should use Perplexity
+	origTavily := os.Getenv("TAVILY_API_KEY")
+	origPerp := os.Getenv("PERPLEXITY_API_KEY")
+	origProvider := os.Getenv("WEB_SEARCH_PROVIDER")
+	_ = os.Setenv("TAVILY_API_KEY", "some-tavily-key")
+	_ = os.Setenv("PERPLEXITY_API_KEY", "test-perp-key")
+	_ = os.Setenv("WEB_SEARCH_PROVIDER", "perplexity")
+	defer func() {
+		if origTavily != "" {
+			_ = os.Setenv("TAVILY_API_KEY", origTavily)
+		} else {
+			_ = os.Unsetenv("TAVILY_API_KEY")
+		}
+		if origPerp != "" {
+			_ = os.Setenv("PERPLEXITY_API_KEY", origPerp)
+		} else {
+			_ = os.Unsetenv("PERPLEXITY_API_KEY")
+		}
+		if origProvider != "" {
+			_ = os.Setenv("WEB_SEARCH_PROVIDER", origProvider)
+		} else {
+			_ = os.Unsetenv("WEB_SEARCH_PROVIDER")
+		}
+	}()
+
+	// Use the provider directly with test server
+	p := &perplexityProvider{apiKey: "test-perp-key", baseURL: ts.URL}
+	result, err := p.search(context.Background(), "test", webSearchOpts{})
+	if err != nil {
+		t.Fatalf("search error: %v", err)
+	}
+	if !strings.Contains(result, "Perplexity explicit") {
+		t.Errorf("expected Perplexity response, got: %q", result)
+	}
+
+	// Also verify resolveWebSearchProvider picks Perplexity
+	provider, resolveErr := resolveWebSearchProvider()
+	if resolveErr != nil {
+		t.Fatalf("resolveWebSearchProvider error: %v", resolveErr)
+	}
+	if provider.name() != "perplexity" {
+		t.Errorf("expected perplexity provider, got %q", provider.name())
 	}
 }
 

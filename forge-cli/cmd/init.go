@@ -187,6 +187,8 @@ func collectInteractive(opts *initOptions) error {
 				DisplayName:   s.DisplayName,
 				Description:   s.Description,
 				RequiredEnv:   s.RequiredEnv,
+				OneOfEnv:      s.OneOfEnv,
+				OptionalEnv:   s.OptionalEnv,
 				RequiredBins:  s.RequiredBins,
 				EgressDomains: s.EgressDomains,
 			})
@@ -194,23 +196,25 @@ func collectInteractive(opts *initOptions) error {
 	}
 
 	// Build the egress derivation callback (avoids circular import)
-	deriveEgressFn := func(provider string, channels, tools, skills []string) []string {
+	deriveEgressFn := func(provider string, channels, tools, skills []string, envVars map[string]string) []string {
 		tmpOpts := &initOptions{
 			ModelProvider: provider,
 			Channels:      channels,
 			BuiltinTools:  tools,
-			EnvVars:       make(map[string]string),
+			EnvVars:       envVars,
 		}
 		selectedInfos := lookupSelectedSkills(skills)
 		return deriveEgressDomains(tmpOpts, selectedInfos)
 	}
 
-	// Build validation callbacks
+	// Build validation callback
 	validateKeyFn := func(provider, key string) error {
 		return validateProviderKey(provider, key)
 	}
-	validatePerpFn := func(key string) error {
-		return validatePerplexityKey(key)
+
+	// Build web search key validation callback
+	validateWebSearchKeyFn := func(provider, key string) error {
+		return validateWebSearchKey(provider, key)
 	}
 
 	// Build step list
@@ -218,7 +222,7 @@ func collectInteractive(opts *initOptions) error {
 		steps.NewNameStep(styles, opts.Name),
 		steps.NewProviderStep(styles, validateKeyFn),
 		steps.NewChannelStep(styles),
-		steps.NewToolsStep(styles, toolInfos, validatePerpFn),
+		steps.NewToolsStep(styles, toolInfos, validateWebSearchKeyFn),
 		steps.NewSkillsStep(styles, skillInfos),
 		steps.NewEgressStep(styles, deriveEgressFn),
 		steps.NewReviewStep(styles), // scaffold is handled by the caller after collectInteractive returns
@@ -541,6 +545,19 @@ func scaffold(opts *initOptions) error {
 		if err := os.WriteFile(skillPath, content, 0o644); err != nil {
 			return fmt.Errorf("writing skill file %s: %w", skillName, err)
 		}
+
+		// Vendor script if the skill has one
+		if skillreg.HasSkillScript(skillName) {
+			scriptContent, sErr := skillreg.LoadSkillScript(skillName)
+			if sErr == nil {
+				scriptDir := filepath.Join(dir, "skills", "scripts")
+				_ = os.MkdirAll(scriptDir, 0o755)
+				scriptPath := filepath.Join(scriptDir, skillName+".sh")
+				if wErr := os.WriteFile(scriptPath, scriptContent, 0o755); wErr != nil {
+					fmt.Printf("Warning: could not write script for %q: %s\n", skillName, wErr)
+				}
+			}
+		}
 	}
 
 	fmt.Printf("\nCreated agent project in ./%s\n", opts.AgentID)
@@ -754,13 +771,24 @@ func buildEnvVars(opts *initOptions) []envVarEntry {
 		vars = append(vars, envVarEntry{Key: "MODEL_API_KEY", Value: apiKeyVal, Comment: "Model provider API key"})
 	}
 
-	// Perplexity key if web_search selected
+	// Web search provider key if web_search selected
 	if containsStr(opts.BuiltinTools, "web_search") {
-		val := opts.EnvVars["PERPLEXITY_API_KEY"]
-		if val == "" {
-			val = "your-perplexity-key-here"
+		provider := opts.EnvVars["WEB_SEARCH_PROVIDER"]
+		if provider == "perplexity" {
+			val := opts.EnvVars["PERPLEXITY_API_KEY"]
+			if val == "" {
+				val = "your-perplexity-key-here"
+			}
+			vars = append(vars, envVarEntry{Key: "PERPLEXITY_API_KEY", Value: val, Comment: "Perplexity API key for web_search"})
+			vars = append(vars, envVarEntry{Key: "WEB_SEARCH_PROVIDER", Value: "perplexity", Comment: "Web search provider"})
+		} else {
+			// Default to Tavily
+			val := opts.EnvVars["TAVILY_API_KEY"]
+			if val == "" {
+				val = "your-tavily-key-here"
+			}
+			vars = append(vars, envVarEntry{Key: "TAVILY_API_KEY", Value: val, Comment: "Tavily API key for web_search"})
 		}
-		vars = append(vars, envVarEntry{Key: "PERPLEXITY_API_KEY", Value: val, Comment: "Perplexity API key for web_search"})
 	}
 
 	// Channel env vars
@@ -777,21 +805,30 @@ func buildEnvVars(opts *initOptions) []envVarEntry {
 		}
 	}
 
-	// Skill env vars
+	// Skill env vars (skip keys already added above)
+	written := make(map[string]bool)
+	for _, v := range vars {
+		written[v.Key] = true
+	}
 	for _, skillName := range opts.Skills {
 		info := skillreg.GetSkillByName(skillName)
 		if info == nil {
 			continue
 		}
 		for _, env := range info.RequiredEnv {
-			val := opts.EnvVars[env]
-			if val == "" {
-				val = ""
+			if written[env] {
+				continue
 			}
+			written[env] = true
+			val := opts.EnvVars[env]
 			vars = append(vars, envVarEntry{Key: env, Value: val, Comment: fmt.Sprintf("Required by %s skill", skillName)})
 		}
 		if len(info.OneOfEnv) > 0 {
 			for _, env := range info.OneOfEnv {
+				if written[env] {
+					continue
+				}
+				written[env] = true
 				val := opts.EnvVars[env]
 				vars = append(vars, envVarEntry{
 					Key:     env,

@@ -45,7 +45,17 @@ func (s *ReviewStep) Prepare(ctx *tui.WizardContext) {
 	}
 
 	if len(ctx.BuiltinTools) > 0 {
-		rows = append(rows, components.SummaryRow{Key: "Tools", Value: strings.Join(ctx.BuiltinTools, ", ")})
+		var toolNames []string
+		for _, name := range ctx.BuiltinTools {
+			if name == "web_search" {
+				if p := ctx.EnvVars["WEB_SEARCH_PROVIDER"]; p != "" {
+					toolNames = append(toolNames, fmt.Sprintf("web_search [%s]", p))
+					continue
+				}
+			}
+			toolNames = append(toolNames, name)
+		}
+		rows = append(rows, components.SummaryRow{Key: "Tools", Value: strings.Join(toolNames, ", ")})
 	}
 
 	if len(ctx.Skills) > 0 {
@@ -82,8 +92,6 @@ func (s *ReviewStep) Update(msg tea.Msg) (tui.Step, tea.Cmd) {
 			s.complete = true
 			return s, func() tea.Msg { return tui.StepCompleteMsg{} }
 		case "backspace":
-			return s, func() tea.Msg { return tui.StepBackMsg{} }
-		case "esc":
 			return s, func() tea.Msg { return tui.StepBackMsg{} }
 		}
 	}

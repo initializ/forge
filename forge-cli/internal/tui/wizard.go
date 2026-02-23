@@ -93,12 +93,10 @@ func (w WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return w, nil
 
 	case tea.KeyMsg:
-		if msg.String() == "ctrl+c" {
+		if msg.String() == "ctrl+c" || msg.String() == "esc" {
 			w.err = fmt.Errorf("wizard cancelled")
 			return w, tea.Quit
 		}
-		// Don't intercept esc globally — let steps handle it first.
-		// Only quit on esc if we're at the first step in its initial phase.
 
 	case StepBackMsg:
 		if w.current > 0 {

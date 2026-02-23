@@ -47,8 +47,9 @@ func NewEgressDisplay(domains []EgressDomain, primaryStyle, dimStyle, borderStyl
 	}
 }
 
-// Init returns no initial command.
-func (e EgressDisplay) Init() tea.Cmd {
+// Init resets done state so the component can be re-used after back-navigation.
+func (e *EgressDisplay) Init() tea.Cmd {
+	e.done = false
 	return nil
 }
 

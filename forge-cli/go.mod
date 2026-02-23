@@ -8,6 +8,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/initializ/forge/forge-core v0.0.0
 	github.com/initializ/forge/forge-plugins v0.0.0
+	github.com/initializ/forge/forge-skills v0.0.0
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/term v0.40.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -45,4 +46,5 @@ require (
 replace (
 	github.com/initializ/forge/forge-core => ../forge-core
 	github.com/initializ/forge/forge-plugins => ../forge-plugins
+	github.com/initializ/forge/forge-skills => ../forge-skills
 )

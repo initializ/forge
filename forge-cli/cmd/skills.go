@@ -59,6 +59,8 @@ var skillsKeygenCmd = &cobra.Command{
 }
 
 var auditFormat string
+var auditEmbedded bool
+var auditDir string
 var signKeyPath string
 
 func init() {
@@ -69,6 +71,8 @@ func init() {
 	skillsCmd.AddCommand(skillsKeygenCmd)
 
 	skillsAuditCmd.Flags().StringVar(&auditFormat, "format", "text", "Output format: text or json")
+	skillsAuditCmd.Flags().BoolVar(&auditEmbedded, "embedded", false, "Audit embedded skills from the binary")
+	skillsAuditCmd.Flags().StringVar(&auditDir, "dir", "", "Audit skills from a directory of SKILL.md subdirectories")
 	skillsSignCmd.Flags().StringVar(&signKeyPath, "key", "", "Path to Ed25519 private key")
 	_ = skillsSignCmd.MarkFlagRequired("key")
 }
@@ -180,7 +184,7 @@ func runSkillsAdd(cmd *cobra.Command, args []string) error {
 
 func runSkillsValidate(cmd *cobra.Command, args []string) error {
 	// Determine skills file path
-	skillsPath := "skills.md"
+	skillsPath := "SKILL.md"
 
 	cfgPath := cfgFile
 	if !filepath.IsAbs(cfgPath) {
@@ -282,40 +286,67 @@ func envFromOS() map[string]string {
 }
 
 func runSkillsAudit(cmd *cobra.Command, args []string) error {
-	// Determine skills file path
-	skillsPath := "skills.md"
-
-	cfgPath := cfgFile
-	if !filepath.IsAbs(cfgPath) {
-		wd, _ := os.Getwd()
-		cfgPath = filepath.Join(wd, cfgPath)
-	}
-	cfg, err := config.LoadForgeConfig(cfgPath)
-	if err == nil && cfg.Skills.Path != "" {
-		skillsPath = cfg.Skills.Path
-	}
-
-	if !filepath.IsAbs(skillsPath) {
-		wd, _ := os.Getwd()
-		skillsPath = filepath.Join(wd, skillsPath)
-	}
-
-	// Parse with metadata
-	entries, _, err := cliskills.ParseFileWithMetadata(skillsPath)
-	if err != nil {
-		return fmt.Errorf("parsing skills file: %w", err)
-	}
-
-	// Build hasScript checker from filesystem
-	skillsDir := filepath.Dir(skillsPath)
-	hasScript := func(name string) bool {
-		scriptPath := filepath.Join(skillsDir, "scripts", name+".sh")
-		_, statErr := os.Stat(scriptPath)
-		return statErr == nil
-	}
-
 	policy := analyzer.DefaultPolicy()
-	report := analyzer.GenerateReportFromEntries(entries, hasScript, policy)
+	var report *analyzer.AuditReport
+
+	switch {
+	case auditEmbedded:
+		reg, err := local.NewEmbeddedRegistry()
+		if err != nil {
+			return fmt.Errorf("loading embedded registry: %w", err)
+		}
+		r, err := analyzer.GenerateReport(reg, policy)
+		if err != nil {
+			return fmt.Errorf("generating report: %w", err)
+		}
+		report = r
+
+	case auditDir != "":
+		reg, err := local.NewLocalRegistry(os.DirFS(auditDir))
+		if err != nil {
+			return fmt.Errorf("loading directory registry %q: %w", auditDir, err)
+		}
+		r, err := analyzer.GenerateReport(reg, policy)
+		if err != nil {
+			return fmt.Errorf("generating report: %w", err)
+		}
+		report = r
+
+	default:
+		// File-based audit (original behavior)
+		skillsPath := "SKILL.md"
+
+		cfgPath := cfgFile
+		if !filepath.IsAbs(cfgPath) {
+			wd, _ := os.Getwd()
+			cfgPath = filepath.Join(wd, cfgPath)
+		}
+		cfg, err := config.LoadForgeConfig(cfgPath)
+		if err == nil && cfg.Skills.Path != "" {
+			skillsPath = cfg.Skills.Path
+		}
+
+		if !filepath.IsAbs(skillsPath) {
+			wd, _ := os.Getwd()
+			skillsPath = filepath.Join(wd, skillsPath)
+		}
+
+		// Parse with metadata
+		entries, _, parseErr := cliskills.ParseFileWithMetadata(skillsPath)
+		if parseErr != nil {
+			return fmt.Errorf("parsing skills file: %w", parseErr)
+		}
+
+		// Build hasScript checker from filesystem
+		skillsDir := filepath.Dir(skillsPath)
+		hasScript := func(name string) bool {
+			scriptPath := filepath.Join(skillsDir, "scripts", name+".sh")
+			_, statErr := os.Stat(scriptPath)
+			return statErr == nil
+		}
+
+		report = analyzer.GenerateReportFromEntries(entries, hasScript, policy)
+	}
 
 	switch auditFormat {
 	case "json":

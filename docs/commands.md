@@ -30,7 +30,7 @@ forge init [name] [flags]
 | `--tools` | | | Builtin tools to enable (e.g., `web_search,http_request`) |
 | `--skills` | | | Registry skills to include (e.g., `github,weather`) |
 | `--api-key` | | | LLM provider API key |
-| `--from-skills` | | | Path to a skills.md file for auto-configuration |
+| `--from-skills` | | | Path to a SKILL.md file for auto-configuration |
 | `--non-interactive` | | `false` | Skip interactive prompts |
 
 ### Examples
@@ -48,7 +48,7 @@ forge init my-agent \
   --non-interactive
 
 # From a skills file
-forge init my-agent --from-skills skills.md
+forge init my-agent --from-skills SKILL.md
 
 # With builtin tools and registry skills
 forge init my-agent \

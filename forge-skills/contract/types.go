@@ -13,7 +13,7 @@ type SkillDescriptor struct {
 	Provenance    *Provenance `json:"provenance,omitempty"`
 }
 
-// SkillEntry represents a single tool/skill parsed from a skills.md file.
+// SkillEntry represents a single tool/skill parsed from a SKILL.md file.
 type SkillEntry struct {
 	Name        string
 	Description string

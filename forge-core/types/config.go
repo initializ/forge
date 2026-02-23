@@ -31,7 +31,7 @@ type EgressRef struct {
 
 // SkillsRef references a skills definition file.
 type SkillsRef struct {
-	Path string `yaml:"path,omitempty"` // default: "skills.md"
+	Path string `yaml:"path,omitempty"` // default: "SKILL.md"
 }
 
 // ModelRef identifies the model an agent uses.

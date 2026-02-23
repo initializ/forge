@@ -54,6 +54,7 @@ type SkillsStep struct {
 	currentPrompt int
 	keyInput      components.SecretInput
 	envValues     map[string]string
+	knownEnvVars  map[string]string // env vars already collected by earlier steps
 }
 
 // NewSkillsStep creates a new skills selection step.
@@ -112,6 +113,14 @@ func NewSkillsStep(styles *tui.StyleSet, skills []SkillInfo) *SkillsStep {
 		allSkills:   skills,
 		multiSelect: ms,
 		envValues:   make(map[string]string),
+	}
+}
+
+// Prepare captures env vars already collected by earlier wizard steps.
+func (s *SkillsStep) Prepare(ctx *tui.WizardContext) {
+	s.knownEnvVars = make(map[string]string)
+	for k, v := range ctx.EnvVars {
+		s.knownEnvVars[k] = v
 	}
 }
 
@@ -194,6 +203,18 @@ func (s *SkillsStep) Update(msg tea.Msg) (tui.Step, tea.Cmd) {
 	return s, nil
 }
 
+// envAlreadyKnown returns true if the env var is already set in OS env or
+// was collected by an earlier wizard step (provider key, web search key, etc.).
+func (s *SkillsStep) envAlreadyKnown(env string) bool {
+	if os.Getenv(env) != "" {
+		return true
+	}
+	if v, ok := s.knownEnvVars[env]; ok && v != "" {
+		return true
+	}
+	return false
+}
+
 // buildEnvPrompts creates the list of env prompts for selected skills.
 func (s *SkillsStep) buildEnvPrompts() {
 	s.envPrompts = nil
@@ -207,7 +228,7 @@ func (s *SkillsStep) buildEnvPrompts() {
 
 		// Required env vars
 		for _, env := range sk.RequiredEnv {
-			if seen[env] || os.Getenv(env) != "" {
+			if seen[env] || s.envAlreadyKnown(env) {
 				continue
 			}
 			seen[env] = true
@@ -222,10 +243,10 @@ func (s *SkillsStep) buildEnvPrompts() {
 
 		// One-of env vars
 		if len(sk.OneOfEnv) > 0 {
-			// Check if any one-of is already set in environment
+			// Check if any one-of is already available
 			anySet := false
 			for _, env := range sk.OneOfEnv {
-				if os.Getenv(env) != "" {
+				if s.envAlreadyKnown(env) {
 					anySet = true
 					break
 				}
@@ -249,7 +270,7 @@ func (s *SkillsStep) buildEnvPrompts() {
 
 		// Optional env vars
 		for _, env := range sk.OptionalEnv {
-			if seen[env] || os.Getenv(env) != "" {
+			if seen[env] || s.envAlreadyKnown(env) {
 				continue
 			}
 			seen[env] = true

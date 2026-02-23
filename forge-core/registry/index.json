@@ -26,5 +26,14 @@
     "skill_file": "weather.md",
     "required_bins": ["curl"],
     "egress_domains": ["api.openweathermap.org", "api.weatherapi.com"]
+  },
+  {
+    "name": "tavily-search",
+    "display_name": "Tavily Search",
+    "description": "Search the web using Tavily AI search API",
+    "skill_file": "tavily-search.md",
+    "required_env": ["TAVILY_API_KEY"],
+    "required_bins": ["curl", "jq"],
+    "egress_domains": ["api.tavily.com"]
   }
 ]

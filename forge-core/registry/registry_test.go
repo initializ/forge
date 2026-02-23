@@ -29,7 +29,7 @@ func TestLoadIndex(t *testing.T) {
 		}
 	}
 
-	for _, expected := range []string{"summarize", "github", "weather"} {
+	for _, expected := range []string{"summarize", "github", "weather", "tavily-search"} {
 		if !names[expected] {
 			t.Errorf("expected skill %q not found in index", expected)
 		}
@@ -105,5 +105,68 @@ func TestWeatherSkillRequiredBins(t *testing.T) {
 	}
 	if !found {
 		t.Error("weather skill should require curl binary")
+	}
+}
+
+func TestTavilySearchSkillRequirements(t *testing.T) {
+	s := GetSkillByName("tavily-search")
+	if s == nil {
+		t.Fatal("tavily-search skill not found")
+	}
+	if s.DisplayName != "Tavily Search" {
+		t.Errorf("expected display_name \"Tavily Search\", got %q", s.DisplayName)
+	}
+	if len(s.RequiredEnv) == 0 {
+		t.Error("tavily-search skill should have required_env")
+	}
+	foundKey := false
+	for _, env := range s.RequiredEnv {
+		if env == "TAVILY_API_KEY" {
+			foundKey = true
+		}
+	}
+	if !foundKey {
+		t.Error("tavily-search skill should require TAVILY_API_KEY")
+	}
+	if len(s.RequiredBins) < 2 {
+		t.Error("tavily-search skill should require curl and jq")
+	}
+	if len(s.EgressDomains) == 0 {
+		t.Error("tavily-search skill should have egress_domains")
+	}
+	foundDomain := false
+	for _, d := range s.EgressDomains {
+		if d == "api.tavily.com" {
+			foundDomain = true
+		}
+	}
+	if !foundDomain {
+		t.Error("tavily-search skill should have api.tavily.com egress domain")
+	}
+}
+
+func TestLoadSkillScript(t *testing.T) {
+	// tavily-search should have a script
+	if !HasSkillScript("tavily-search") {
+		t.Fatal("HasSkillScript(\"tavily-search\") returned false")
+	}
+
+	data, err := LoadSkillScript("tavily-search")
+	if err != nil {
+		t.Fatalf("LoadSkillScript(\"tavily-search\") error: %v", err)
+	}
+	if len(data) == 0 {
+		t.Error("LoadSkillScript(\"tavily-search\") returned empty content")
+	}
+	if !strings.Contains(string(data), "TAVILY_API_KEY") {
+		t.Error("tavily-search script should reference TAVILY_API_KEY")
+	}
+
+	// Skills without scripts should return false
+	if HasSkillScript("github") {
+		t.Error("HasSkillScript(\"github\") should return false")
+	}
+	if HasSkillScript("nonexistent") {
+		t.Error("HasSkillScript(\"nonexistent\") should return false")
 	}
 }

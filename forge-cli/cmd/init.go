@@ -8,8 +8,12 @@ import (
 	"strings"
 	"text/template"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
+	"github.com/initializ/forge/forge-cli/internal/tui"
+	"github.com/initializ/forge/forge-cli/internal/tui/steps"
 	"github.com/initializ/forge/forge-cli/skills"
 	"github.com/initializ/forge/forge-cli/templates"
 	skillreg "github.com/initializ/forge/forge-core/registry"
@@ -128,6 +132,11 @@ func runInit(cmd *cobra.Command, args []string) error {
 	opts.NonInteractive = nonInteractive
 	opts.Force, _ = cmd.Flags().GetBool("force")
 
+	// TTY detection: require a terminal for interactive mode
+	if !nonInteractive && !term.IsTerminal(int(os.Stdout.Fd())) {
+		return fmt.Errorf("interactive mode requires a terminal; use --non-interactive")
+	}
+
 	var err error
 	if nonInteractive {
 		err = collectNonInteractive(opts)
@@ -154,17 +163,94 @@ func runInit(cmd *cobra.Command, args []string) error {
 }
 
 func collectInteractive(opts *initOptions) error {
-	var err error
+	// Detect theme
+	theme := tui.DetectTheme(themeOverride)
+	styles := tui.NewStyleSet(theme)
 
-	// ── Step 1: Name ──
-	if opts.Name == "" {
-		opts.Name, err = askText("Agent name", "my-agent")
-		if err != nil {
-			return err
+	// Load tool info for the tools step
+	allTools := builtins.All()
+	var toolInfos []steps.ToolInfo
+	for _, t := range allTools {
+		toolInfos = append(toolInfos, steps.ToolInfo{
+			Name:        t.Name(),
+			Description: t.Description(),
+		})
+	}
+
+	// Load skill info for the skills step
+	var skillInfos []steps.SkillInfo
+	regSkills, err := skillreg.LoadIndex()
+	if err == nil {
+		for _, s := range regSkills {
+			skillInfos = append(skillInfos, steps.SkillInfo{
+				Name:          s.Name,
+				DisplayName:   s.DisplayName,
+				Description:   s.Description,
+				RequiredEnv:   s.RequiredEnv,
+				OneOfEnv:      s.OneOfEnv,
+				OptionalEnv:   s.OptionalEnv,
+				RequiredBins:  s.RequiredBins,
+				EgressDomains: s.EgressDomains,
+			})
 		}
 	}
 
-	// Default framework and language (no interactive prompt per rework spec)
+	// Build the egress derivation callback (avoids circular import)
+	deriveEgressFn := func(provider string, channels, tools, skills []string, envVars map[string]string) []string {
+		tmpOpts := &initOptions{
+			ModelProvider: provider,
+			Channels:      channels,
+			BuiltinTools:  tools,
+			EnvVars:       envVars,
+		}
+		selectedInfos := lookupSelectedSkills(skills)
+		return deriveEgressDomains(tmpOpts, selectedInfos)
+	}
+
+	// Build validation callback
+	validateKeyFn := func(provider, key string) error {
+		return validateProviderKey(provider, key)
+	}
+
+	// Build web search key validation callback
+	validateWebSearchKeyFn := func(provider, key string) error {
+		return validateWebSearchKey(provider, key)
+	}
+
+	// Build step list
+	wizardSteps := []tui.Step{
+		steps.NewNameStep(styles, opts.Name),
+		steps.NewProviderStep(styles, validateKeyFn),
+		steps.NewChannelStep(styles),
+		steps.NewToolsStep(styles, toolInfos, validateWebSearchKeyFn),
+		steps.NewSkillsStep(styles, skillInfos),
+		steps.NewEgressStep(styles, deriveEgressFn),
+		steps.NewReviewStep(styles), // scaffold is handled by the caller after collectInteractive returns
+	}
+
+	// Create and run the Bubble Tea program
+	model := tui.NewWizardModel(theme, wizardSteps, appVersion)
+	p := tea.NewProgram(model, tea.WithAltScreen())
+
+	finalModel, err := p.Run()
+	if err != nil {
+		return fmt.Errorf("TUI wizard error: %w", err)
+	}
+
+	wiz, ok := finalModel.(tui.WizardModel)
+	if !ok {
+		return fmt.Errorf("unexpected model type from wizard")
+	}
+
+	if wiz.Err() != nil {
+		return wiz.Err()
+	}
+
+	// Convert WizardContext → initOptions
+	ctx := wiz.Context()
+	opts.Name = ctx.Name
+
+	// Default framework and language
 	if opts.Framework == "" {
 		opts.Framework = "custom"
 	}
@@ -172,250 +258,45 @@ func collectInteractive(opts *initOptions) error {
 		opts.Language = "python"
 	}
 
-	// ── Step 2: Provider + API Key Validation ──
-	if opts.ModelProvider == "" {
-		_, opts.ModelProvider, err = askSelect("Model provider", []string{"openai", "anthropic", "gemini", "ollama", "custom"})
-		if err != nil {
-			return err
-		}
+	opts.ModelProvider = ctx.Provider
+	opts.APIKey = ctx.APIKey
+	opts.CustomModel = ctx.CustomModel
+
+	if ctx.Channel != "" && ctx.Channel != "none" {
+		opts.Channels = []string{ctx.Channel}
 	}
 
-	if opts.APIKey == "" && (opts.ModelProvider == "openai" || opts.ModelProvider == "anthropic" || opts.ModelProvider == "gemini") {
-		for {
-			opts.APIKey, err = askPassword(fmt.Sprintf("%s API key", titleCase(opts.ModelProvider)))
-			if err != nil {
-				return err
-			}
-			if opts.APIKey == "" {
-				fmt.Println("  Skipping API key validation.")
-				break
-			}
+	opts.BuiltinTools = ctx.BuiltinTools
+	opts.Skills = ctx.Skills
 
-			fmt.Print("  Validating API key... ")
-			if valErr := validateProviderKey(opts.ModelProvider, opts.APIKey); valErr != nil {
-				fmt.Printf("FAILED: %s\n", valErr)
-				retry, _ := askConfirm("Retry with a different key?")
-				if !retry {
-					fmt.Println("  Continuing without validation.")
-					break
-				}
-				continue
-			}
-			fmt.Println("OK")
-			break
-		}
-	}
-
-	if opts.ModelProvider == "ollama" {
-		fmt.Print("  Checking Ollama connectivity... ")
-		if valErr := validateProviderKey("ollama", ""); valErr != nil {
-			fmt.Printf("WARNING: %s\n", valErr)
-		} else {
-			fmt.Println("OK")
-		}
-	}
-
-	if opts.ModelProvider == "custom" {
-		baseURL, urlErr := askText("Base URL (e.g. http://localhost:11434/v1)", "")
-		if urlErr != nil {
-			return urlErr
-		}
-		if baseURL != "" {
-			opts.EnvVars["MODEL_BASE_URL"] = baseURL
-		}
-		modelName, modErr := askText("Model name", "default")
-		if modErr != nil {
-			return modErr
-		}
-		opts.CustomModel = modelName
-
-		needsAuth, _ := askConfirm("Does this endpoint require an auth header?")
-		if needsAuth {
-			key, keyErr := askPassword("API key or auth token")
-			if keyErr != nil {
-				return keyErr
-			}
-			if key != "" {
-				opts.EnvVars["MODEL_API_KEY"] = key
-			}
-		}
-	}
-
-	// Store provider API key
+	// Store provider env var
 	storeProviderEnvVar(opts)
 
-	// ── Step 3: Channel Connector (optional) ──
-	if len(opts.Channels) == 0 {
-		_, channel, chErr := askSelect("Channel connector", []string{
-			"none — CLI / API only",
-			"telegram — easy setup, no public URL needed",
-			"slack — Socket Mode, no public URL needed",
-		})
-		if chErr != nil {
-			return chErr
-		}
-		channelName := strings.SplitN(channel, " — ", 2)[0]
-		if channelName != "none" {
-			opts.Channels = []string{channelName}
-		}
-
-		// Collect channel tokens
-		if channelName == "telegram" {
-			fmt.Println("\n  Telegram Bot Setup:")
-			fmt.Println("  1. Open Telegram, message @BotFather")
-			fmt.Println("  2. Send /newbot and follow prompts")
-			fmt.Println("  3. Copy the bot token")
-			token, tokErr := askPassword("Telegram Bot Token")
-			if tokErr != nil {
-				return tokErr
-			}
-			if token != "" {
-				opts.EnvVars["TELEGRAM_BOT_TOKEN"] = token
-			}
-		}
-		if channelName == "slack" {
-			fmt.Println("\n  Slack Socket Mode Setup:")
-			fmt.Println("  1. Create a Slack App at https://api.slack.com/apps")
-			fmt.Println("  2. Enable Socket Mode, generate app-level token")
-			fmt.Println("  3. Add bot scopes: chat:write, app_mentions:read")
-			appToken, appErr := askPassword("Slack App Token (xapp-...)")
-			if appErr != nil {
-				return appErr
-			}
-			botToken, botErr := askPassword("Slack Bot Token (xoxb-...)")
-			if botErr != nil {
-				return botErr
-			}
-			if appToken != "" {
-				opts.EnvVars["SLACK_APP_TOKEN"] = appToken
-			}
-			if botToken != "" {
-				opts.EnvVars["SLACK_BOT_TOKEN"] = botToken
-			}
-		}
+	// Copy channel tokens
+	for k, v := range ctx.ChannelTokens {
+		opts.EnvVars[k] = v
 	}
 
-	// ── Step 4: Builtin Tools ──
-	if len(opts.BuiltinTools) == 0 {
-		allTools := builtins.All()
-		var toolDescriptions []string
-		for _, t := range allTools {
-			toolDescriptions = append(toolDescriptions, fmt.Sprintf("%s — %s", t.Name(), t.Description()))
-		}
-		fmt.Println("\nBuiltin tools:")
-		selectedDescs, err := askMultiSelect("Builtin tools", toolDescriptions)
-		if err != nil {
-			return err
-		}
-		// Extract tool names from "name — description" format
-		for _, desc := range selectedDescs {
-			name := strings.SplitN(desc, " — ", 2)[0]
-			opts.BuiltinTools = append(opts.BuiltinTools, name)
-		}
+	// Copy other env vars from wizard
+	for k, v := range ctx.EnvVars {
+		opts.EnvVars[k] = v
 	}
 
-	// If web_search selected, check for Perplexity key
-	if containsStr(opts.BuiltinTools, "web_search") && os.Getenv("PERPLEXITY_API_KEY") == "" {
-		if _, exists := opts.EnvVars["PERPLEXITY_API_KEY"]; !exists {
-			key, err := askPassword("Perplexity API key for web_search")
-			if err != nil {
-				return err
-			}
-			if key != "" {
-				fmt.Print("  Validating Perplexity key... ")
-				if valErr := validatePerplexityKey(key); valErr != nil {
-					fmt.Printf("FAILED: %s\n", valErr)
-					fmt.Println("  Key saved anyway — you can fix it later in .env")
-				} else {
-					fmt.Println("OK")
-				}
-				opts.EnvVars["PERPLEXITY_API_KEY"] = key
-			}
-		}
+	// Custom provider env vars
+	if ctx.CustomBaseURL != "" {
+		opts.EnvVars["MODEL_BASE_URL"] = ctx.CustomBaseURL
+	}
+	if ctx.CustomAPIKey != "" {
+		opts.EnvVars["MODEL_API_KEY"] = ctx.CustomAPIKey
 	}
 
-	// ── Step 6: External Skills ──
-	if len(opts.Skills) == 0 {
-		regSkills, err := skillreg.LoadIndex()
-		if err != nil {
-			fmt.Printf("  Warning: could not load skill registry: %s\n", err)
-		} else if len(regSkills) > 0 {
-			var skillDescriptions []string
-			for _, s := range regSkills {
-				desc := fmt.Sprintf("%s — %s", s.Name, s.Description)
-				if len(s.RequiredEnv) > 0 {
-					desc += fmt.Sprintf(" (requires: %s)", strings.Join(s.RequiredEnv, ", "))
-				}
-				if len(s.RequiredBins) > 0 {
-					desc += fmt.Sprintf(" (bins: %s)", strings.Join(s.RequiredBins, ", "))
-				}
-				skillDescriptions = append(skillDescriptions, desc)
-			}
-			fmt.Println("\nExternal skills (from registry):")
-			selectedDescs, err := askMultiSelect("External skills", skillDescriptions)
-			if err != nil {
-				return err
-			}
-			for _, desc := range selectedDescs {
-				name := strings.SplitN(desc, " — ", 2)[0]
-				opts.Skills = append(opts.Skills, name)
-			}
-		}
+	// Store egress domains
+	if len(ctx.EgressDomains) > 0 {
+		opts.EnvVars["__egress_domains"] = strings.Join(ctx.EgressDomains, ",")
 	}
 
-	// Check requirements for selected skills
+	// Check skill requirements
 	checkSkillRequirements(opts)
-
-	// ── Step 7: Egress Review ──
-	selectedSkillInfos := lookupSelectedSkills(opts.Skills)
-	egressDomains := deriveEgressDomains(opts, selectedSkillInfos)
-
-	if len(egressDomains) > 0 {
-		fmt.Println("\nComputed egress domains:")
-		for _, d := range egressDomains {
-			fmt.Printf("  - %s\n", d)
-		}
-		accepted, _ := askConfirm("Accept egress domains?")
-		if !accepted {
-			customDomains, err := askText("Additional domains (comma-separated, or empty)", "")
-			if err != nil {
-				return err
-			}
-			if customDomains != "" {
-				for _, d := range strings.Split(customDomains, ",") {
-					d = strings.TrimSpace(d)
-					if d != "" {
-						egressDomains = append(egressDomains, d)
-					}
-				}
-			}
-		}
-	}
-
-	// Store computed egress domains for scaffold
-	opts.EnvVars["__egress_domains"] = strings.Join(egressDomains, ",")
-
-	// ── Step 8: Review + Generate ──
-	fmt.Println("\n=== Project Summary ===")
-	fmt.Printf("  Name:          %s\n", opts.Name)
-	fmt.Printf("  Provider:      %s\n", opts.ModelProvider)
-	if len(opts.Channels) > 0 {
-		fmt.Printf("  Channels:      %s\n", strings.Join(opts.Channels, ", "))
-	}
-	if len(opts.BuiltinTools) > 0 {
-		fmt.Printf("  Builtin tools: %s\n", strings.Join(opts.BuiltinTools, ", "))
-	}
-	if len(opts.Skills) > 0 {
-		fmt.Printf("  Skills:        %s\n", strings.Join(opts.Skills, ", "))
-	}
-	if len(egressDomains) > 0 {
-		fmt.Printf("  Egress:        %d domains\n", len(egressDomains))
-	}
-
-	confirmed, _ := askConfirm("Create Agent?")
-	if !confirmed {
-		return fmt.Errorf("agent creation cancelled")
-	}
 
 	return nil
 }
@@ -664,6 +545,19 @@ func scaffold(opts *initOptions) error {
 		if err := os.WriteFile(skillPath, content, 0o644); err != nil {
 			return fmt.Errorf("writing skill file %s: %w", skillName, err)
 		}
+
+		// Vendor script if the skill has one
+		if skillreg.HasSkillScript(skillName) {
+			scriptContent, sErr := skillreg.LoadSkillScript(skillName)
+			if sErr == nil {
+				scriptDir := filepath.Join(dir, "skills", "scripts")
+				_ = os.MkdirAll(scriptDir, 0o755)
+				scriptPath := filepath.Join(scriptDir, skillName+".sh")
+				if wErr := os.WriteFile(scriptPath, scriptContent, 0o755); wErr != nil {
+					fmt.Printf("Warning: could not write script for %q: %s\n", skillName, wErr)
+				}
+			}
+		}
 	}
 
 	fmt.Printf("\nCreated agent project in ./%s\n", opts.AgentID)
@@ -877,13 +771,24 @@ func buildEnvVars(opts *initOptions) []envVarEntry {
 		vars = append(vars, envVarEntry{Key: "MODEL_API_KEY", Value: apiKeyVal, Comment: "Model provider API key"})
 	}
 
-	// Perplexity key if web_search selected
+	// Web search provider key if web_search selected
 	if containsStr(opts.BuiltinTools, "web_search") {
-		val := opts.EnvVars["PERPLEXITY_API_KEY"]
-		if val == "" {
-			val = "your-perplexity-key-here"
+		provider := opts.EnvVars["WEB_SEARCH_PROVIDER"]
+		if provider == "perplexity" {
+			val := opts.EnvVars["PERPLEXITY_API_KEY"]
+			if val == "" {
+				val = "your-perplexity-key-here"
+			}
+			vars = append(vars, envVarEntry{Key: "PERPLEXITY_API_KEY", Value: val, Comment: "Perplexity API key for web_search"})
+			vars = append(vars, envVarEntry{Key: "WEB_SEARCH_PROVIDER", Value: "perplexity", Comment: "Web search provider"})
+		} else {
+			// Default to Tavily
+			val := opts.EnvVars["TAVILY_API_KEY"]
+			if val == "" {
+				val = "your-tavily-key-here"
+			}
+			vars = append(vars, envVarEntry{Key: "TAVILY_API_KEY", Value: val, Comment: "Tavily API key for web_search"})
 		}
-		vars = append(vars, envVarEntry{Key: "PERPLEXITY_API_KEY", Value: val, Comment: "Perplexity API key for web_search"})
 	}
 
 	// Channel env vars
@@ -900,21 +805,30 @@ func buildEnvVars(opts *initOptions) []envVarEntry {
 		}
 	}
 
-	// Skill env vars
+	// Skill env vars (skip keys already added above)
+	written := make(map[string]bool)
+	for _, v := range vars {
+		written[v.Key] = true
+	}
 	for _, skillName := range opts.Skills {
 		info := skillreg.GetSkillByName(skillName)
 		if info == nil {
 			continue
 		}
 		for _, env := range info.RequiredEnv {
-			val := opts.EnvVars[env]
-			if val == "" {
-				val = ""
+			if written[env] {
+				continue
 			}
+			written[env] = true
+			val := opts.EnvVars[env]
 			vars = append(vars, envVarEntry{Key: env, Value: val, Comment: fmt.Sprintf("Required by %s skill", skillName)})
 		}
 		if len(info.OneOfEnv) > 0 {
 			for _, env := range info.OneOfEnv {
+				if written[env] {
+					continue
+				}
+				written[env] = true
 				val := opts.EnvVars[env]
 				vars = append(vars, envVarEntry{
 					Key:     env,

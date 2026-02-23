@@ -1,12 +1,9 @@
 package builtins
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 
 	"github.com/initializ/forge/forge-core/tools"
@@ -15,7 +12,7 @@ import (
 type webSearchTool struct{}
 
 func (t *webSearchTool) Name() string             { return "web_search" }
-func (t *webSearchTool) Description() string      { return "Search the web using Perplexity AI" }
+func (t *webSearchTool) Description() string      { return "Search the web using Tavily or Perplexity AI" }
 func (t *webSearchTool) Category() tools.Category { return tools.CategoryBuiltin }
 
 func (t *webSearchTool) InputSchema() json.RawMessage {
@@ -23,23 +20,26 @@ func (t *webSearchTool) InputSchema() json.RawMessage {
 		"type": "object",
 		"properties": {
 			"query": {"type": "string", "description": "Search query"},
-			"max_results": {"type": "integer", "description": "Maximum number of results (default 5)"}
+			"max_results": {"type": "integer", "description": "Maximum number of results (default 5)"},
+			"search_depth": {"type": "string", "description": "Search depth: basic or advanced (Tavily only)", "enum": ["basic", "advanced"]},
+			"time_range": {"type": "string", "description": "Time range filter: day, week, month, year (Tavily only)"},
+			"include_domains": {"type": "array", "items": {"type": "string"}, "description": "Only include results from these domains (Tavily only)"},
+			"exclude_domains": {"type": "array", "items": {"type": "string"}, "description": "Exclude results from these domains (Tavily only)"}
 		},
 		"required": ["query"]
 	}`)
 }
 
 type webSearchInput struct {
-	Query      string `json:"query"`
-	MaxResults int    `json:"max_results,omitempty"`
+	Query          string   `json:"query"`
+	MaxResults     int      `json:"max_results,omitempty"`
+	SearchDepth    string   `json:"search_depth,omitempty"`
+	TimeRange      string   `json:"time_range,omitempty"`
+	IncludeDomains []string `json:"include_domains,omitempty"`
+	ExcludeDomains []string `json:"exclude_domains,omitempty"`
 }
 
 func (t *webSearchTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
-	apiKey := os.Getenv("PERPLEXITY_API_KEY")
-	if apiKey == "" {
-		return `{"error": "PERPLEXITY_API_KEY is not set. Add it to your .env file to enable web search."}`, nil
-	}
-
 	var input webSearchInput
 	if err := json.Unmarshal(args, &input); err != nil {
 		return "", fmt.Errorf("parsing web_search input: %w", err)
@@ -48,65 +48,53 @@ func (t *webSearchTool) Execute(ctx context.Context, args json.RawMessage) (stri
 		return `{"error": "query is required"}`, nil
 	}
 
-	// Build Perplexity chat completion request
-	reqBody := map[string]any{
-		"model": "sonar",
-		"messages": []map[string]string{
-			{"role": "user", "content": input.Query},
-		},
-	}
-	bodyBytes, err := json.Marshal(reqBody)
+	provider, err := resolveWebSearchProvider()
 	if err != nil {
-		return "", fmt.Errorf("marshalling request: %w", err)
+		return fmt.Sprintf(`{"error": %q}`, err.Error()), nil
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.perplexity.ai/chat/completions", bytes.NewReader(bodyBytes))
-	if err != nil {
-		return "", fmt.Errorf("creating request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
-
-	resp, err := http.DefaultClient.Do(httpReq)
-	if err != nil {
-		return "", fmt.Errorf("calling Perplexity API: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("reading response: %w", err)
+	opts := webSearchOpts{
+		MaxResults:     input.MaxResults,
+		SearchDepth:    input.SearchDepth,
+		TimeRange:      input.TimeRange,
+		IncludeDomains: input.IncludeDomains,
+		ExcludeDomains: input.ExcludeDomains,
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Sprintf(`{"error": "Perplexity API returned status %d: %s"}`, resp.StatusCode, string(respBody)), nil
-	}
+	return provider.search(ctx, input.Query, opts)
+}
 
-	// Extract the answer from the response
-	var pResp struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-		Citations []string `json:"citations,omitempty"`
-	}
-	if err := json.Unmarshal(respBody, &pResp); err != nil {
-		return "", fmt.Errorf("parsing Perplexity response: %w", err)
-	}
+// resolveWebSearchProvider selects the web search provider based on environment.
+// Priority: WEB_SEARCH_PROVIDER env > auto-detect (Tavily first, then Perplexity).
+func resolveWebSearchProvider() (webSearchProvider, error) {
+	override := os.Getenv("WEB_SEARCH_PROVIDER")
 
-	if len(pResp.Choices) == 0 {
-		return `{"error": "no results from Perplexity"}`, nil
-	}
+	switch override {
+	case "tavily":
+		key := os.Getenv("TAVILY_API_KEY")
+		if key == "" {
+			return nil, fmt.Errorf("WEB_SEARCH_PROVIDER is set to tavily but TAVILY_API_KEY is not set")
+		}
+		return newTavilyProvider(key), nil
 
-	result := map[string]any{
-		"query":  input.Query,
-		"answer": pResp.Choices[0].Message.Content,
-	}
-	if len(pResp.Citations) > 0 {
-		result["citations"] = pResp.Citations
-	}
+	case "perplexity":
+		key := os.Getenv("PERPLEXITY_API_KEY")
+		if key == "" {
+			return nil, fmt.Errorf("WEB_SEARCH_PROVIDER is set to perplexity but PERPLEXITY_API_KEY is not set")
+		}
+		return newPerplexityProvider(key), nil
 
-	out, _ := json.Marshal(result)
-	return string(out), nil
+	case "":
+		// Auto-detect: try Tavily first, then Perplexity
+		if key := os.Getenv("TAVILY_API_KEY"); key != "" {
+			return newTavilyProvider(key), nil
+		}
+		if key := os.Getenv("PERPLEXITY_API_KEY"); key != "" {
+			return newPerplexityProvider(key), nil
+		}
+		return nil, fmt.Errorf("no web search API key set. Set TAVILY_API_KEY or PERPLEXITY_API_KEY in your .env file to enable web search")
+
+	default:
+		return nil, fmt.Errorf("unknown WEB_SEARCH_PROVIDER %q: must be tavily or perplexity", override)
+	}
 }

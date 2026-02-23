@@ -10,6 +10,9 @@ import (
 //go:embed skills
 var skillFS embed.FS
 
+//go:embed scripts
+var scriptFS embed.FS
+
 //go:embed index.json
 var indexJSON []byte
 
@@ -52,4 +55,15 @@ func GetSkillByName(name string) *SkillInfo {
 		}
 	}
 	return nil
+}
+
+// LoadSkillScript reads an embedded script for a skill.
+func LoadSkillScript(name string) ([]byte, error) {
+	return scriptFS.ReadFile("scripts/" + name + ".sh")
+}
+
+// HasSkillScript checks if a skill has an embedded script.
+func HasSkillScript(name string) bool {
+	_, err := scriptFS.ReadFile("scripts/" + name + ".sh")
+	return err == nil
 }

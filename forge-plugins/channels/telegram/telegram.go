@@ -136,7 +136,9 @@ func (p *Plugin) makeWebhookHandler(handler channels.EventHandler) http.HandlerF
 
 		go func() {
 			ctx := context.Background()
+			stopTyping := p.startTypingIndicator(ctx, event.WorkspaceID)
 			resp, err := handler(ctx, event)
+			stopTyping()
 			if err != nil {
 				fmt.Printf("telegram: handler error: %v\n", err)
 				return
@@ -189,7 +191,9 @@ func (p *Plugin) startPolling(ctx context.Context, handler channels.EventHandler
 			}
 
 			go func() {
+				stopTyping := p.startTypingIndicator(ctx, event.WorkspaceID)
 				resp, err := handler(ctx, event)
+				stopTyping()
 				if err != nil {
 					fmt.Printf("telegram: handler error: %v\n", err)
 					return
@@ -278,6 +282,67 @@ func (p *Plugin) SendResponse(event *channels.ChannelEvent, response *a2a.Messag
 		}
 	}
 	return nil
+}
+
+// sendChatAction sends a chat action (e.g. "typing") to indicate activity.
+func (p *Plugin) sendChatAction(chatID, action string) error {
+	payload := map[string]string{
+		"chat_id": chatID,
+		"action":  action,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshalling chat action: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/bot%s/sendChatAction", p.apiBase, p.botToken)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("creating chat action request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.ReadAll(resp.Body)
+	return nil
+}
+
+// startTypingIndicator sends "typing" chat action repeatedly until the
+// returned stop function is called. Telegram's typing indicator expires
+// after ~5 seconds, so we resend every 4 seconds.
+func (p *Plugin) startTypingIndicator(ctx context.Context, chatID string) (stop func()) {
+	done := make(chan struct{})
+	stop = func() {
+		select {
+		case <-done:
+		default:
+			close(done)
+		}
+	}
+
+	// Send the first typing indicator immediately.
+	_ = p.sendChatAction(chatID, "typing")
+
+	go func() {
+		ticker := time.NewTicker(4 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				_ = p.sendChatAction(chatID, "typing")
+			}
+		}
+	}()
+
+	return stop
 }
 
 // sendMessage posts a JSON payload to the Telegram sendMessage API.

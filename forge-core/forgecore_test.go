@@ -9,8 +9,8 @@ import (
 	"github.com/initializ/forge/forge-core/agentspec"
 	"github.com/initializ/forge/forge-core/llm"
 	"github.com/initializ/forge/forge-core/runtime"
-	"github.com/initializ/forge/forge-core/skills"
 	"github.com/initializ/forge/forge-core/types"
+	"github.com/initializ/forge/forge-skills/contract"
 )
 
 // ─── Mock LLM Client ─────────────────────────────────────────────────
@@ -175,7 +175,7 @@ func TestCompile_WithSkills(t *testing.T) {
 		},
 	}
 
-	entries := []skills.SkillEntry{
+	entries := []contract.SkillEntry{
 		{
 			Name:        "summarize",
 			Description: "Summarize text content",
@@ -1170,7 +1170,7 @@ func TestIntegration_CompileValidateRuntime(t *testing.T) {
 	// 3. Compile
 	compileResult, err := Compile(CompileRequest{
 		Config: cfg,
-		SkillEntries: []skills.SkillEntry{
+		SkillEntries: []contract.SkillEntry{
 			{Name: "summarize", Description: "Summarize content"},
 		},
 	})

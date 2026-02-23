@@ -4,11 +4,11 @@ Skills are a progressive disclosure mechanism for defining agent capabilities in
 
 ## Overview
 
-Skills bridge the gap between high-level capability descriptions and the tool-calling system. A `skills.md` file in your project root defines what the agent can do, and Forge compiles these into JSON artifacts and prompt text for the container.
+Skills bridge the gap between high-level capability descriptions and the tool-calling system. A `SKILL.md` file in your project root defines what the agent can do, and Forge compiles these into JSON artifacts and prompt text for the container.
 
 ## SKILL.md Format
 
-Skills are defined in a Markdown file (default: `skills.md`). The file supports optional YAML frontmatter and two body formats.
+Skills are defined in a Markdown file (default: `SKILL.md`). The file supports optional YAML frontmatter and two body formats.
 
 ### YAML Frontmatter
 
@@ -89,7 +89,7 @@ The skill compilation pipeline has three stages:
 
 The `SkillsStage` (`internal/build/skills_stage.go`) runs as part of the build pipeline:
 
-1. Resolves the skills file path (default: `skills.md` in work directory)
+1. Resolves the skills file path (default: `SKILL.md` in work directory)
 2. Skips silently if the file doesn't exist
 3. Parses, compiles, and writes artifacts
 4. Updates the `AgentSpec` with `skills_spec_version` and `forge_skills_ext_version`
@@ -106,7 +106,7 @@ In `forge.yaml`:
 
 ```yaml
 skills:
-  path: skills.md  # default, can be customized
+  path: SKILL.md  # default, can be customized
 ```
 
 ## CLI Workflow

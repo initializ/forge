@@ -74,6 +74,7 @@ func runBuild(cmd *cobra.Command, args []string) error {
 		&build.ToolsStage{},
 		&build.ToolFilterStage{},
 		&build.SkillsStage{},
+		&build.SecurityAnalysisStage{},
 		&build.RequirementsStage{},
 		&build.PolicyStage{},
 		&build.EgressStage{},

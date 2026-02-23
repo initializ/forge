@@ -16,9 +16,10 @@ import (
 	"github.com/initializ/forge/forge-cli/internal/tui/steps"
 	"github.com/initializ/forge/forge-cli/skills"
 	"github.com/initializ/forge/forge-cli/templates"
-	skillreg "github.com/initializ/forge/forge-core/registry"
 	"github.com/initializ/forge/forge-core/tools/builtins"
 	"github.com/initializ/forge/forge-core/util"
+	"github.com/initializ/forge/forge-skills/contract"
+	"github.com/initializ/forge/forge-skills/local"
 )
 
 // initOptions holds all the collected options for project scaffolding.
@@ -97,7 +98,7 @@ func init() {
 	initCmd.Flags().StringP("language", "l", "", "language: python, typescript, or go (custom only)")
 	initCmd.Flags().StringP("model-provider", "m", "", "model provider: openai, anthropic, gemini, ollama, or custom")
 	initCmd.Flags().StringSlice("channels", nil, "communication channels (e.g., slack,telegram)")
-	initCmd.Flags().String("from-skills", "", "path to skills.md file to parse for tools")
+	initCmd.Flags().String("from-skills", "", "path to SKILL.md file to parse for tools")
 	initCmd.Flags().Bool("non-interactive", false, "run without interactive prompts (requires all flags)")
 	initCmd.Flags().StringSlice("tools", nil, "builtin tools to enable (e.g., web_search,http_request)")
 	initCmd.Flags().StringSlice("skills", nil, "registry skills to include (e.g., github,weather)")
@@ -179,31 +180,34 @@ func collectInteractive(opts *initOptions) error {
 
 	// Load skill info for the skills step
 	var skillInfos []steps.SkillInfo
-	regSkills, err := skillreg.LoadIndex()
-	if err == nil {
-		for _, s := range regSkills {
-			skillInfos = append(skillInfos, steps.SkillInfo{
-				Name:          s.Name,
-				DisplayName:   s.DisplayName,
-				Description:   s.Description,
-				RequiredEnv:   s.RequiredEnv,
-				OneOfEnv:      s.OneOfEnv,
-				OptionalEnv:   s.OptionalEnv,
-				RequiredBins:  s.RequiredBins,
-				EgressDomains: s.EgressDomains,
-			})
+	reg, regErr := local.NewEmbeddedRegistry()
+	if regErr == nil {
+		regSkills, listErr := reg.List()
+		if listErr == nil {
+			for _, s := range regSkills {
+				skillInfos = append(skillInfos, steps.SkillInfo{
+					Name:          s.Name,
+					DisplayName:   s.DisplayName,
+					Description:   s.Description,
+					RequiredEnv:   s.RequiredEnv,
+					OneOfEnv:      s.OneOfEnv,
+					OptionalEnv:   s.OptionalEnv,
+					RequiredBins:  s.RequiredBins,
+					EgressDomains: s.EgressDomains,
+				})
+			}
 		}
 	}
 
 	// Build the egress derivation callback (avoids circular import)
-	deriveEgressFn := func(provider string, channels, tools, skills []string, envVars map[string]string) []string {
+	deriveEgressFn := func(provider string, channels, tools, selectedSkills []string, envVars map[string]string) []string {
 		tmpOpts := &initOptions{
 			ModelProvider: provider,
 			Channels:      channels,
 			BuiltinTools:  tools,
 			EnvVars:       envVars,
 		}
-		selectedInfos := lookupSelectedSkills(skills)
+		selectedInfos := lookupSelectedSkills(selectedSkills)
 		return deriveEgressDomains(tmpOpts, selectedInfos)
 	}
 
@@ -371,17 +375,20 @@ func collectNonInteractive(opts *initOptions) error {
 
 	// Validate skill names and check requirements
 	if len(opts.Skills) > 0 {
-		regSkills, err := skillreg.LoadIndex()
-		if err != nil {
-			fmt.Printf("Warning: could not load skill registry: %s\n", err)
+		niReg, niErr := local.NewEmbeddedRegistry()
+		if niErr != nil {
+			fmt.Printf("Warning: could not load skill registry: %s\n", niErr)
 		} else {
-			validNames := make(map[string]bool)
-			for _, s := range regSkills {
-				validNames[s.Name] = true
-			}
-			for _, name := range opts.Skills {
-				if !validNames[name] {
-					fmt.Printf("Warning: unknown skill %q\n", name)
+			regSkills, listErr := niReg.List()
+			if listErr == nil {
+				validNames := make(map[string]bool)
+				for _, s := range regSkills {
+					validNames[s.Name] = true
+				}
+				for _, name := range opts.Skills {
+					if !validNames[name] {
+						fmt.Printf("Warning: unknown skill %q\n", name)
+					}
 				}
 			}
 		}
@@ -408,8 +415,13 @@ func storeProviderEnvVar(opts *initOptions) {
 
 // checkSkillRequirements checks binary and env requirements for selected skills.
 func checkSkillRequirements(opts *initOptions) {
+	chkReg, chkErr := local.NewEmbeddedRegistry()
+	if chkErr != nil {
+		return
+	}
+
 	for _, skillName := range opts.Skills {
-		info := skillreg.GetSkillByName(skillName)
+		info := chkReg.Get(skillName)
 		if info == nil {
 			continue
 		}
@@ -453,11 +465,15 @@ func checkSkillRequirements(opts *initOptions) {
 	}
 }
 
-// lookupSelectedSkills returns SkillInfo entries for the selected skill names.
-func lookupSelectedSkills(skillNames []string) []skillreg.SkillInfo {
-	var result []skillreg.SkillInfo
+// lookupSelectedSkills returns SkillDescriptor entries for the selected skill names.
+func lookupSelectedSkills(skillNames []string) []contract.SkillDescriptor {
+	reg, err := local.NewEmbeddedRegistry()
+	if err != nil {
+		return nil
+	}
+	var result []contract.SkillDescriptor
 	for _, name := range skillNames {
-		info := skillreg.GetSkillByName(name)
+		info := reg.Get(name)
 		if info != nil {
 			result = append(result, *info)
 		}
@@ -535,8 +551,15 @@ func scaffold(opts *initOptions) error {
 	}
 
 	// Vendor selected registry skills
+	scfReg, scfErr := local.NewEmbeddedRegistry()
+	if scfErr != nil {
+		fmt.Printf("Warning: could not load skill registry: %s\n", scfErr)
+	}
 	for _, skillName := range opts.Skills {
-		content, err := skillreg.LoadSkillFile(skillName)
+		if scfReg == nil {
+			continue
+		}
+		content, err := scfReg.LoadContent(skillName)
 		if err != nil {
 			fmt.Printf("Warning: could not load skill file for %q: %s\n", skillName, err)
 			continue
@@ -547,8 +570,8 @@ func scaffold(opts *initOptions) error {
 		}
 
 		// Vendor script if the skill has one
-		if skillreg.HasSkillScript(skillName) {
-			scriptContent, sErr := skillreg.LoadSkillScript(skillName)
+		if scfReg.HasScript(skillName) {
+			scriptContent, sErr := scfReg.LoadScript(skillName)
 			if sErr == nil {
 				scriptDir := filepath.Join(dir, "skills", "scripts")
 				_ = os.MkdirAll(scriptDir, 0o755)
@@ -614,7 +637,7 @@ func writeEnvFile(dir string, vars []envVarEntry) error {
 func getFileManifest(opts *initOptions) []fileToRender {
 	files := []fileToRender{
 		{TemplatePath: "forge.yaml.tmpl", OutputPath: "forge.yaml"},
-		{TemplatePath: "skills.md.tmpl", OutputPath: "skills.md"},
+		{TemplatePath: "SKILL.md.tmpl", OutputPath: "SKILL.md"},
 		{TemplatePath: "env.example.tmpl", OutputPath: ".env.example"},
 		{TemplatePath: "gitignore.tmpl", OutputPath: ".gitignore"},
 	}
@@ -707,14 +730,17 @@ func buildTemplateData(opts *initOptions) templateData {
 	}
 
 	// Build skill entries for templates
-	for _, skillName := range opts.Skills {
-		info := skillreg.GetSkillByName(skillName)
-		if info != nil {
-			data.SkillEntries = append(data.SkillEntries, skillTmplData{
-				Name:        info.Name,
-				DisplayName: info.DisplayName,
-				Description: info.Description,
-			})
+	tmplReg, tmplRegErr := local.NewEmbeddedRegistry()
+	if tmplRegErr == nil {
+		for _, skillName := range opts.Skills {
+			info := tmplReg.Get(skillName)
+			if info != nil {
+				data.SkillEntries = append(data.SkillEntries, skillTmplData{
+					Name:        info.Name,
+					DisplayName: info.DisplayName,
+					Description: info.Description,
+				})
+			}
 		}
 	}
 
@@ -810,8 +836,12 @@ func buildEnvVars(opts *initOptions) []envVarEntry {
 	for _, v := range vars {
 		written[v.Key] = true
 	}
+	envReg, envRegErr := local.NewEmbeddedRegistry()
 	for _, skillName := range opts.Skills {
-		info := skillreg.GetSkillByName(skillName)
+		if envRegErr != nil {
+			continue
+		}
+		info := envReg.Get(skillName)
 		if info == nil {
 			continue
 		}

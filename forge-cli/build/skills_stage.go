@@ -8,10 +8,11 @@ import (
 
 	cliskills "github.com/initializ/forge/forge-cli/skills"
 	"github.com/initializ/forge/forge-core/pipeline"
-	coreskills "github.com/initializ/forge/forge-core/skills"
+	skillcompiler "github.com/initializ/forge/forge-skills/compiler"
+	"github.com/initializ/forge/forge-skills/requirements"
 )
 
-// SkillsStage compiles skills.md into container artifacts.
+// SkillsStage compiles SKILL.md into container artifacts.
 type SkillsStage struct{}
 
 func (s *SkillsStage) Name() string { return "compile-skills" }
@@ -20,7 +21,7 @@ func (s *SkillsStage) Execute(ctx context.Context, bc *pipeline.BuildContext) er
 	// Determine skills file path
 	skillsPath := bc.Config.Skills.Path
 	if skillsPath == "" {
-		skillsPath = "skills.md"
+		skillsPath = "SKILL.md"
 	}
 	if !filepath.IsAbs(skillsPath) {
 		skillsPath = filepath.Join(bc.Opts.WorkDir, skillsPath)
@@ -40,13 +41,16 @@ func (s *SkillsStage) Execute(ctx context.Context, bc *pipeline.BuildContext) er
 		return nil
 	}
 
+	// Store entries for downstream stages (e.g. security analysis)
+	bc.SkillEntries = entries
+
 	// Aggregate skill requirements and store in build context
-	reqs := coreskills.AggregateRequirements(entries)
+	reqs := requirements.AggregateRequirements(entries)
 	if len(reqs.Bins) > 0 || len(reqs.EnvRequired) > 0 || len(reqs.EnvOneOf) > 0 || len(reqs.EnvOptional) > 0 {
 		bc.SkillRequirements = reqs
 	}
 
-	compiled, err := coreskills.Compile(entries)
+	compiled, err := skillcompiler.Compile(entries)
 	if err != nil {
 		return fmt.Errorf("compiling skills: %w", err)
 	}

@@ -6,11 +6,11 @@ import (
 	"os"
 	"path/filepath"
 
-	coreskills "github.com/initializ/forge/forge-core/skills"
+	"github.com/initializ/forge/forge-skills/contract"
 )
 
 // WriteArtifacts creates compiled/skills/skills.json and compiled/prompt.txt in outputDir.
-func WriteArtifacts(outputDir string, cs *coreskills.CompiledSkills) error {
+func WriteArtifacts(outputDir string, cs *contract.CompiledSkills) error {
 	skillsDir := filepath.Join(outputDir, "compiled", "skills")
 	if err := os.MkdirAll(skillsDir, 0755); err != nil {
 		return fmt.Errorf("creating skills directory: %w", err)

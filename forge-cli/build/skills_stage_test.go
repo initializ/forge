@@ -29,7 +29,7 @@ func TestSkillsStage_NoFile(t *testing.T) {
 func TestSkillsStage_WithSkills(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create a skills.md
+	// Create a SKILL.md
 	skillsContent := `## Tool: web_search
 Search the web for information.
 **Input:** query: string
@@ -38,7 +38,7 @@ Search the web for information.
 ## Tool: summarize
 Summarize text content.
 `
-	skillsPath := filepath.Join(tmpDir, "skills.md")
+	skillsPath := filepath.Join(tmpDir, "SKILL.md")
 	if err := os.WriteFile(skillsPath, []byte(skillsContent), 0644); err != nil {
 		t.Fatalf("writing skills.md: %v", err)
 	}

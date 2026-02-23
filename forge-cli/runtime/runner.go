@@ -16,10 +16,11 @@ import (
 	"github.com/initializ/forge/forge-core/agentspec"
 	"github.com/initializ/forge/forge-core/llm/providers"
 	coreruntime "github.com/initializ/forge/forge-core/runtime"
-	coreskills "github.com/initializ/forge/forge-core/skills"
 	"github.com/initializ/forge/forge-core/tools"
 	"github.com/initializ/forge/forge-core/tools/builtins"
 	"github.com/initializ/forge/forge-core/types"
+	"github.com/initializ/forge/forge-skills/requirements"
+	"github.com/initializ/forge/forge-skills/resolver"
 )
 
 // RunnerConfig holds configuration for the Runner.
@@ -560,7 +561,7 @@ func (r *Runner) printBanner() {
 // It also auto-derives cli_execute config from skill requirements.
 func (r *Runner) validateSkillRequirements(envVars map[string]string) error {
 	// Resolve skills file path
-	skillsPath := "skills.md"
+	skillsPath := "SKILL.md"
 	if r.cfg.Config.Skills.Path != "" {
 		skillsPath = r.cfg.Config.Skills.Path
 	}
@@ -579,23 +580,23 @@ func (r *Runner) validateSkillRequirements(envVars map[string]string) error {
 		return nil
 	}
 
-	reqs := coreskills.AggregateRequirements(entries)
+	reqs := requirements.AggregateRequirements(entries)
 	if len(reqs.Bins) == 0 && len(reqs.EnvRequired) == 0 && len(reqs.EnvOneOf) == 0 && len(reqs.EnvOptional) == 0 {
 		return nil
 	}
 
 	// Build env resolver
 	osEnv := envFromOS()
-	resolver := coreskills.NewEnvResolver(osEnv, envVars, nil)
+	envResolver := resolver.NewEnvResolver(osEnv, envVars, nil)
 
 	// Check binaries
-	binDiags := coreskills.BinDiagnostics(reqs.Bins)
+	binDiags := resolver.BinDiagnostics(reqs.Bins)
 	for _, d := range binDiags {
 		r.logger.Warn(d.Message, nil)
 	}
 
 	// Check env vars
-	envDiags := resolver.Resolve(reqs)
+	envDiags := envResolver.Resolve(reqs)
 	for _, d := range envDiags {
 		switch d.Level {
 		case "error":
@@ -606,7 +607,7 @@ func (r *Runner) validateSkillRequirements(envVars map[string]string) error {
 	}
 
 	// Auto-derive cli_execute config from skill requirements
-	derived := coreskills.DeriveCLIConfig(reqs)
+	derived := requirements.DeriveCLIConfig(reqs)
 	if derived != nil && len(derived.AllowedBinaries) > 0 {
 		// Check if cli_execute is already explicitly configured
 		hasExplicit := false

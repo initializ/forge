@@ -6,7 +6,7 @@ import (
 
 	"github.com/initializ/forge/forge-core/agentspec"
 	"github.com/initializ/forge/forge-core/pipeline"
-	coreskills "github.com/initializ/forge/forge-core/skills"
+	"github.com/initializ/forge/forge-skills/contract"
 )
 
 func TestRequirementsStage_NoSkills(t *testing.T) {
@@ -28,7 +28,7 @@ func TestRequirementsStage_NoSkills(t *testing.T) {
 func TestRequirementsStage_PopulatesSpec(t *testing.T) {
 	bc := pipeline.NewBuildContext(pipeline.PipelineOptions{})
 	bc.Spec = &agentspec.AgentSpec{}
-	bc.SkillRequirements = &coreskills.AggregatedRequirements{
+	bc.SkillRequirements = &contract.AggregatedRequirements{
 		Bins:        []string{"curl", "jq"},
 		EnvRequired: []string{"API_KEY"},
 		EnvOptional: []string{"DEBUG"},

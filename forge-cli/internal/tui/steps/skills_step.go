@@ -402,7 +402,6 @@ func (s *SkillsStep) Apply(ctx *tui.WizardContext) {
 
 func skillIcon(name string) string {
 	icons := map[string]string{
-		"summarize":     "🧾",
 		"github":        "🐙",
 		"weather":       "🌤️",
 		"tavily-search": "🔍",

@@ -22,6 +22,8 @@ type BuildContext struct {
 	ProdMode           bool
 	EgressResolved     any // *egress.EgressConfig (avoid import cycle)
 	SkillRequirements  any // *skills.AggregatedRequirements (avoid import cycle)
+	SkillEntries       any // []contract.SkillEntry (avoid import cycle)
+	SecurityAudit      any // *analyzer.AuditReport (avoid import cycle)
 	SkillsCount        int
 	ToolCategoryCounts map[string]int
 }

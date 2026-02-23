@@ -3,8 +3,8 @@ package cmd
 import (
 	"sort"
 
-	skillreg "github.com/initializ/forge/forge-core/registry"
 	"github.com/initializ/forge/forge-core/security"
+	"github.com/initializ/forge/forge-skills/contract"
 )
 
 // providerDomains maps model provider names to their API domains.
@@ -17,7 +17,7 @@ var providerDomains = map[string]string{
 
 // deriveEgressDomains computes the full set of egress domains needed based on
 // the provider, channels, builtin tools, and selected registry skills.
-func deriveEgressDomains(opts *initOptions, skills []skillreg.SkillInfo) []string {
+func deriveEgressDomains(opts *initOptions, skills []contract.SkillDescriptor) []string {
 	seen := make(map[string]bool)
 	var domains []string
 

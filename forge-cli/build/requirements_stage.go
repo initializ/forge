@@ -5,7 +5,9 @@ import (
 
 	"github.com/initializ/forge/forge-core/agentspec"
 	"github.com/initializ/forge/forge-core/pipeline"
-	coreskills "github.com/initializ/forge/forge-core/skills"
+	"github.com/initializ/forge/forge-skills/contract"
+	"github.com/initializ/forge/forge-skills/requirements"
+	"github.com/initializ/forge/forge-skills/resolver"
 )
 
 // RequirementsStage validates skill requirements and populates the agent spec.
@@ -18,13 +20,13 @@ func (s *RequirementsStage) Execute(ctx context.Context, bc *pipeline.BuildConte
 		return nil
 	}
 
-	reqs, ok := bc.SkillRequirements.(*coreskills.AggregatedRequirements)
+	reqs, ok := bc.SkillRequirements.(*contract.AggregatedRequirements)
 	if !ok {
 		return nil
 	}
 
 	// Check binaries — warnings only (may be installed in container)
-	binDiags := coreskills.BinDiagnostics(reqs.Bins)
+	binDiags := resolver.BinDiagnostics(reqs.Bins)
 	for _, d := range binDiags {
 		bc.AddWarning(d.Message)
 	}
@@ -38,7 +40,7 @@ func (s *RequirementsStage) Execute(ctx context.Context, bc *pipeline.BuildConte
 		}
 
 		// Auto-derive cli_execute config
-		derived := coreskills.DeriveCLIConfig(reqs)
+		derived := requirements.DeriveCLIConfig(reqs)
 		if derived != nil && len(derived.AllowedBinaries) > 0 {
 			// Find existing cli_execute tool in spec and merge
 			found := false

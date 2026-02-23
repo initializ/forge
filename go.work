@@ -4,4 +4,5 @@ use (
 	./forge-core
 	./forge-cli
 	./forge-plugins
+	./forge-skills
 )

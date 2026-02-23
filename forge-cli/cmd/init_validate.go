@@ -17,8 +17,8 @@ var (
 	anthropicValidationURL  = "https://api.anthropic.com/v1/messages"
 	geminiValidationURL     = "https://generativelanguage.googleapis.com/v1beta/models"
 	ollamaValidationURL     = "http://localhost:11434/api/tags"
-	perplexityValidationURL = "https://api.perplexity.ai/chat/completions"
 	tavilyValidationURL     = "https://api.tavily.com/search"
+	perplexityValidationURL = "https://api.perplexity.ai/chat/completions"
 )
 
 // validateProviderKey validates an API key against the specified provider.
@@ -139,6 +139,18 @@ func validateOllamaConnection(ctx context.Context) error {
 		return fmt.Errorf("ollama returned status %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// validateWebSearchKey validates a web search API key based on the provider.
+func validateWebSearchKey(provider, apiKey string) error {
+	switch provider {
+	case "tavily":
+		return validateTavilyKey(apiKey)
+	case "perplexity":
+		return validatePerplexityKey(apiKey)
+	default:
+		return fmt.Errorf("unknown web search provider %q", provider)
+	}
 }
 
 // validateTavilyKey validates a Tavily API key with a minimal search request.

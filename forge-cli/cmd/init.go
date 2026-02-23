@@ -187,6 +187,8 @@ func collectInteractive(opts *initOptions) error {
 				DisplayName:   s.DisplayName,
 				Description:   s.Description,
 				RequiredEnv:   s.RequiredEnv,
+				OneOfEnv:      s.OneOfEnv,
+				OptionalEnv:   s.OptionalEnv,
 				RequiredBins:  s.RequiredBins,
 				EgressDomains: s.EgressDomains,
 			})
@@ -194,26 +196,25 @@ func collectInteractive(opts *initOptions) error {
 	}
 
 	// Build the egress derivation callback (avoids circular import)
-	deriveEgressFn := func(provider string, channels, tools, skills []string) []string {
+	deriveEgressFn := func(provider string, channels, tools, skills []string, envVars map[string]string) []string {
 		tmpOpts := &initOptions{
 			ModelProvider: provider,
 			Channels:      channels,
 			BuiltinTools:  tools,
-			EnvVars:       make(map[string]string),
+			EnvVars:       envVars,
 		}
 		selectedInfos := lookupSelectedSkills(skills)
 		return deriveEgressDomains(tmpOpts, selectedInfos)
 	}
 
-	// Build validation callbacks
+	// Build validation callback
 	validateKeyFn := func(provider, key string) error {
 		return validateProviderKey(provider, key)
 	}
-	validateTavilyFn := func(key string) error {
-		return validateTavilyKey(key)
-	}
-	validatePerpFn := func(key string) error {
-		return validatePerplexityKey(key)
+
+	// Build web search key validation callback
+	validateWebSearchKeyFn := func(provider, key string) error {
+		return validateWebSearchKey(provider, key)
 	}
 
 	// Build step list
@@ -221,7 +222,7 @@ func collectInteractive(opts *initOptions) error {
 		steps.NewNameStep(styles, opts.Name),
 		steps.NewProviderStep(styles, validateKeyFn),
 		steps.NewChannelStep(styles),
-		steps.NewToolsStep(styles, toolInfos, validateTavilyFn, validatePerpFn),
+		steps.NewToolsStep(styles, toolInfos, validateWebSearchKeyFn),
 		steps.NewSkillsStep(styles, skillInfos),
 		steps.NewEgressStep(styles, deriveEgressFn),
 		steps.NewReviewStep(styles), // scaffold is handled by the caller after collectInteractive returns

@@ -25,26 +25,27 @@ const (
 	toolsDonePhase
 )
 
-// ValidatePerplexityFunc validates a Perplexity API key.
-type ValidatePerplexityFunc func(key string) error
+// ValidateWebSearchKeyFunc validates a web search provider API key.
+type ValidateWebSearchKeyFunc func(key string) error
 
 // ToolsStep handles builtin tool selection.
 type ToolsStep struct {
-	styles           *tui.StyleSet
-	phase            toolsPhase
-	multiSelect      components.MultiSelect
-	providerSelect   components.SingleSelect
-	keyInput         components.SecretInput
-	complete         bool
-	selected         []string
-	webSearchKey     string
-	webSearchKeyName string // "TAVILY_API_KEY" or "PERPLEXITY_API_KEY"
+	styles            *tui.StyleSet
+	phase             toolsPhase
+	multiSelect       components.MultiSelect
+	providerSelect    components.SingleSelect
+	keyInput          components.SecretInput
+	complete          bool
+	selected          []string
+	webSearchKey      string
+	webSearchKeyName  string // "TAVILY_API_KEY" or "PERPLEXITY_API_KEY"
 	webSearchProvider string // "tavily" or "perplexity"
-	validatePerp     ValidatePerplexityFunc
+	validateTavily    ValidateWebSearchKeyFunc
+	validatePerp      ValidateWebSearchKeyFunc
 }
 
 // NewToolsStep creates a new tools selection step.
-func NewToolsStep(styles *tui.StyleSet, tools []ToolInfo, validatePerp ValidatePerplexityFunc) *ToolsStep {
+func NewToolsStep(styles *tui.StyleSet, tools []ToolInfo, validateTavily, validatePerp ValidateWebSearchKeyFunc) *ToolsStep {
 	var items []components.MultiSelectItem
 	for _, t := range tools {
 		icon := toolIcon(t.Name)
@@ -70,9 +71,10 @@ func NewToolsStep(styles *tui.StyleSet, tools []ToolInfo, validatePerp ValidateP
 	)
 
 	return &ToolsStep{
-		styles:       styles,
-		multiSelect:  ms,
-		validatePerp: validatePerp,
+		styles:         styles,
+		multiSelect:    ms,
+		validateTavily: validateTavily,
+		validatePerp:   validatePerp,
 	}
 }
 

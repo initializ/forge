@@ -10,8 +10,8 @@ import (
 
 	"github.com/initializ/forge/forge-cli/config"
 	cliskills "github.com/initializ/forge/forge-cli/skills"
-	coreskills "github.com/initializ/forge/forge-core/skills"
 	skillreg "github.com/initializ/forge/forge-core/registry"
+	coreskills "github.com/initializ/forge/forge-core/skills"
 	"github.com/spf13/cobra"
 )
 

@@ -805,21 +805,30 @@ func buildEnvVars(opts *initOptions) []envVarEntry {
 		}
 	}
 
-	// Skill env vars
+	// Skill env vars (skip keys already added above)
+	written := make(map[string]bool)
+	for _, v := range vars {
+		written[v.Key] = true
+	}
 	for _, skillName := range opts.Skills {
 		info := skillreg.GetSkillByName(skillName)
 		if info == nil {
 			continue
 		}
 		for _, env := range info.RequiredEnv {
-			val := opts.EnvVars[env]
-			if val == "" {
-				val = ""
+			if written[env] {
+				continue
 			}
+			written[env] = true
+			val := opts.EnvVars[env]
 			vars = append(vars, envVarEntry{Key: env, Value: val, Comment: fmt.Sprintf("Required by %s skill", skillName)})
 		}
 		if len(info.OneOfEnv) > 0 {
 			for _, env := range info.OneOfEnv {
+				if written[env] {
+					continue
+				}
+				written[env] = true
 				val := opts.EnvVars[env]
 				vars = append(vars, envVarEntry{
 					Key:     env,

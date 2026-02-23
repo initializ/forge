@@ -53,8 +53,9 @@ func NewMultiSelect(items []MultiSelectItem, accentColor, accentDimColor, primar
 	}
 }
 
-// Init returns no initial command.
-func (m MultiSelect) Init() tea.Cmd {
+// Init resets done state so the component can be re-used after back-navigation.
+func (m *MultiSelect) Init() tea.Cmd {
+	m.done = false
 	return nil
 }
 

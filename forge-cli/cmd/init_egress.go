@@ -38,9 +38,21 @@ func deriveEgressDomains(opts *initOptions, skills []skillreg.SkillInfo) []strin
 		add(d)
 	}
 
-	// 3. Tool domains
-	for _, d := range security.InferToolDomains(opts.BuiltinTools) {
-		add(d)
+	// 3. Tool domains (web_search filtered by provider)
+	for _, toolName := range opts.BuiltinTools {
+		if toolName == "web_search" || toolName == "web-search" {
+			provider := opts.EnvVars["WEB_SEARCH_PROVIDER"]
+			switch provider {
+			case "perplexity":
+				add("api.perplexity.ai")
+			default:
+				add("api.tavily.com")
+			}
+			continue
+		}
+		for _, d := range security.DefaultToolDomains[toolName] {
+			add(d)
+		}
 	}
 
 	// 4. Skill domains

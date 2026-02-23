@@ -455,8 +455,8 @@ func TestScaffold_EgressInForgeYAML(t *testing.T) {
 	if !strings.Contains(yamlStr, "api.openai.com") {
 		t.Error("forge.yaml missing api.openai.com in egress domains")
 	}
-	if !strings.Contains(yamlStr, "api.perplexity.ai") {
-		t.Error("forge.yaml missing api.perplexity.ai in egress domains")
+	if !strings.Contains(yamlStr, "api.tavily.com") {
+		t.Error("forge.yaml missing api.tavily.com in egress domains")
 	}
 }
 
@@ -504,13 +504,13 @@ func TestDeriveEgressDomains(t *testing.T) {
 	domains := deriveEgressDomains(opts, skillInfos)
 
 	expected := map[string]bool{
-		"api.openai.com":    true,
-		"slack.com":         true,
-		"hooks.slack.com":   true,
-		"api.slack.com":     true,
-		"api.perplexity.ai": true,
-		"api.github.com":    true,
-		"github.com":        true,
+		"api.openai.com":  true,
+		"slack.com":       true,
+		"hooks.slack.com": true,
+		"api.slack.com":   true,
+		"api.tavily.com":  true,
+		"api.github.com":  true,
+		"github.com":      true,
 	}
 	for _, d := range domains {
 		if !expected[d] {
@@ -550,8 +550,8 @@ func TestBuildEnvVars(t *testing.T) {
 	if !found["OPENAI_API_KEY"] {
 		t.Error("missing OPENAI_API_KEY")
 	}
-	if !found["PERPLEXITY_API_KEY"] {
-		t.Error("missing PERPLEXITY_API_KEY")
+	if !found["TAVILY_API_KEY"] {
+		t.Error("missing TAVILY_API_KEY")
 	}
 	if !found["GH_TOKEN"] {
 		t.Error("missing GH_TOKEN")

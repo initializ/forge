@@ -39,10 +39,10 @@ func TestIntegration_BuildWithSkillsAndEgress(t *testing.T) {
 	outDir := t.TempDir()
 	workDir := root
 
-	// Create a skills.md in a temp work dir
+	// Create a SKILL.md in a temp work dir
 	skillsDir := t.TempDir()
 	skillsContent := []byte("## Tool: web_search\nSearch the web for information.\n\n**Input:** query: string\n**Output:** results: []string\n")
-	if err := os.WriteFile(filepath.Join(skillsDir, "skills.md"), skillsContent, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(skillsDir, "SKILL.md"), skillsContent, 0644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -51,7 +51,7 @@ func TestIntegration_BuildWithSkillsAndEgress(t *testing.T) {
 		Version:    "1.0.0",
 		Framework:  "custom",
 		Entrypoint: "python main.py",
-		Skills:     types.SkillsRef{Path: filepath.Join(skillsDir, "skills.md")},
+		Skills:     types.SkillsRef{Path: filepath.Join(skillsDir, "SKILL.md")},
 		Egress: types.EgressRef{
 			Profile:        "standard",
 			Mode:           "allowlist",

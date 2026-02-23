@@ -98,7 +98,7 @@ func init() {
 	initCmd.Flags().StringP("language", "l", "", "language: python, typescript, or go (custom only)")
 	initCmd.Flags().StringP("model-provider", "m", "", "model provider: openai, anthropic, gemini, ollama, or custom")
 	initCmd.Flags().StringSlice("channels", nil, "communication channels (e.g., slack,telegram)")
-	initCmd.Flags().String("from-skills", "", "path to skills.md file to parse for tools")
+	initCmd.Flags().String("from-skills", "", "path to SKILL.md file to parse for tools")
 	initCmd.Flags().Bool("non-interactive", false, "run without interactive prompts (requires all flags)")
 	initCmd.Flags().StringSlice("tools", nil, "builtin tools to enable (e.g., web_search,http_request)")
 	initCmd.Flags().StringSlice("skills", nil, "registry skills to include (e.g., github,weather)")
@@ -637,7 +637,7 @@ func writeEnvFile(dir string, vars []envVarEntry) error {
 func getFileManifest(opts *initOptions) []fileToRender {
 	files := []fileToRender{
 		{TemplatePath: "forge.yaml.tmpl", OutputPath: "forge.yaml"},
-		{TemplatePath: "skills.md.tmpl", OutputPath: "skills.md"},
+		{TemplatePath: "SKILL.md.tmpl", OutputPath: "SKILL.md"},
 		{TemplatePath: "env.example.tmpl", OutputPath: ".env.example"},
 		{TemplatePath: "gitignore.tmpl", OutputPath: ".gitignore"},
 	}

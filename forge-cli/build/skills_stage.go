@@ -12,7 +12,7 @@ import (
 	"github.com/initializ/forge/forge-skills/requirements"
 )
 
-// SkillsStage compiles skills.md into container artifacts.
+// SkillsStage compiles SKILL.md into container artifacts.
 type SkillsStage struct{}
 
 func (s *SkillsStage) Name() string { return "compile-skills" }
@@ -21,7 +21,7 @@ func (s *SkillsStage) Execute(ctx context.Context, bc *pipeline.BuildContext) er
 	// Determine skills file path
 	skillsPath := bc.Config.Skills.Path
 	if skillsPath == "" {
-		skillsPath = "skills.md"
+		skillsPath = "SKILL.md"
 	}
 	if !filepath.IsAbs(skillsPath) {
 		skillsPath = filepath.Join(bc.Opts.WorkDir, skillsPath)

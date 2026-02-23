@@ -1,4 +1,4 @@
-// Package parser provides a reusable parser for skills.md files.
+// Package parser provides a reusable parser for SKILL.md files.
 package parser
 
 import (

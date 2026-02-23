@@ -239,7 +239,7 @@ func TestGetFileManifestCommonFiles(t *testing.T) {
 	opts := &initOptions{Framework: "custom", Language: "python"}
 	files := getFileManifest(opts)
 	assertContainsTemplate(t, files, "forge.yaml.tmpl")
-	assertContainsTemplate(t, files, "skills.md.tmpl")
+	assertContainsTemplate(t, files, "SKILL.md.tmpl")
 	assertContainsTemplate(t, files, "env.example.tmpl")
 	assertContainsTemplate(t, files, "gitignore.tmpl")
 }
@@ -276,7 +276,7 @@ func TestScaffoldIntegration(t *testing.T) {
 		"forge.yaml",
 		"main.go",
 		"tools/example_tool.go",
-		"skills.md",
+		"SKILL.md",
 		".env.example",
 		".gitignore",
 	}

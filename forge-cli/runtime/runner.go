@@ -558,7 +558,7 @@ func (r *Runner) printBanner() {
 // It also auto-derives cli_execute config from skill requirements.
 func (r *Runner) validateSkillRequirements(envVars map[string]string) error {
 	// Resolve skills file path
-	skillsPath := "skills.md"
+	skillsPath := "SKILL.md"
 	if r.cfg.Config.Skills.Path != "" {
 		skillsPath = r.cfg.Config.Skills.Path
 	}

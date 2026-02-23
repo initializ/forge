@@ -7,7 +7,7 @@ import (
 	"github.com/initializ/forge/forge-skills/parser"
 )
 
-// ParseFile reads a skills.md file and extracts structured SkillEntry values.
+// ParseFile reads a SKILL.md file and extracts structured SkillEntry values.
 func ParseFile(path string) ([]contract.SkillEntry, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -17,7 +17,7 @@ func ParseFile(path string) ([]contract.SkillEntry, error) {
 	return parser.Parse(f)
 }
 
-// ParseFileWithMetadata reads a skills.md file and extracts entries with frontmatter metadata.
+// ParseFileWithMetadata reads a SKILL.md file and extracts entries with frontmatter metadata.
 func ParseFileWithMetadata(path string) ([]contract.SkillEntry, *contract.SkillMetadata, error) {
 	f, err := os.Open(path)
 	if err != nil {

@@ -36,9 +36,16 @@ type SkillsRef struct {
 
 // ModelRef identifies the model an agent uses.
 type ModelRef struct {
+	Provider  string          `yaml:"provider"`
+	Name      string          `yaml:"name"`
+	Version   string          `yaml:"version,omitempty"`
+	Fallbacks []ModelFallback `yaml:"fallbacks,omitempty"`
+}
+
+// ModelFallback identifies an alternative LLM provider for fallback.
+type ModelFallback struct {
 	Provider string `yaml:"provider"`
-	Name     string `yaml:"name"`
-	Version  string `yaml:"version,omitempty"`
+	Name     string `yaml:"name,omitempty"`
 }
 
 // ToolRef is a lightweight reference to a tool in forge.yaml.

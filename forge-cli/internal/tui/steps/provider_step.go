@@ -45,6 +45,7 @@ type ProviderStep struct {
 // NewProviderStep creates a new provider selection step.
 func NewProviderStep(styles *tui.StyleSet, validateFn ValidateKeyFunc) *ProviderStep {
 	items := []components.SingleSelectItem{
+		{Label: "Brain (local)", Value: "brain", Description: "No API key needed — runs locally", Icon: "🧠"},
 		{Label: "OpenAI", Value: "openai", Description: "GPT-4o, GPT-4o-mini", Icon: "🔷"},
 		{Label: "Anthropic", Value: "anthropic", Description: "Claude Sonnet, Haiku, Opus", Icon: "🟠"},
 		{Label: "Google Gemini", Value: "gemini", Description: "Gemini 2.5 Flash, Pro", Icon: "🔵"},
@@ -111,6 +112,10 @@ func (s *ProviderStep) updateSelectPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
 		s.provider = val
 
 		switch val {
+		case "brain":
+			// Brain is local — skip API key and validation entirely
+			s.complete = true
+			return s, func() tea.Msg { return tui.StepCompleteMsg{} }
 		case "ollama":
 			// Skip key, go to validation
 			s.phase = providerValidatingPhase
@@ -328,6 +333,8 @@ func (s *ProviderStep) Complete() bool {
 func (s *ProviderStep) Summary() string {
 	name := providerDisplayName(s.provider)
 	switch s.provider {
+	case "brain":
+		return name + " · qwen3-0.6b-q4km"
 	case "openai":
 		return name + " · gpt-4o-mini"
 	case "anthropic":
@@ -368,6 +375,8 @@ func (s *ProviderStep) Apply(ctx *tui.WizardContext) {
 
 func providerDisplayName(provider string) string {
 	switch provider {
+	case "brain":
+		return "Brain"
 	case "openai":
 		return "OpenAI"
 	case "anthropic":

@@ -7,6 +7,11 @@ model:
   provider: {{.ModelProvider}}
   name: {{.ModelName}}
   version: "latest"
+{{- if eq .ModelProvider "brain"}}
+  brain:
+    threshold: 0.7
+    cache_dir: ~/.forge/models
+{{- end}}
 {{- if .Tools}}
 
 tools:

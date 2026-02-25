@@ -20,6 +20,8 @@ type WizardContext struct {
 	CustomModel   string
 	CustomAPIKey  string
 	EnvVars       map[string]string
+	BrainModel    string // selected brain model ID
+	BrainFallback string // fallback provider name (optional)
 }
 
 // NewWizardContext creates an initialized WizardContext.

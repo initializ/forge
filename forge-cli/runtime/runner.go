@@ -14,6 +14,7 @@ import (
 	clitools "github.com/initializ/forge/forge-cli/tools"
 	"github.com/initializ/forge/forge-core/a2a"
 	"github.com/initializ/forge/forge-core/agentspec"
+	"github.com/initializ/forge/forge-core/llm"
 	"github.com/initializ/forge/forge-core/llm/providers"
 	coreruntime "github.com/initializ/forge/forge-core/runtime"
 	"github.com/initializ/forge/forge-core/tools"
@@ -154,15 +155,43 @@ func (r *Runner) Run(ctx context.Context) error {
 			if mc != nil {
 				llmClient, llmErr := providers.NewClient(mc.Provider, mc.Client)
 				if llmErr != nil {
-					r.logger.Warn("failed to create LLM client, using stub", map[string]any{"error": llmErr.Error()})
-					executor = NewStubExecutor(r.cfg.Config.Framework)
+					r.logger.Error("failed to create LLM client", map[string]any{
+						"provider": mc.Provider,
+						"error":    llmErr.Error(),
+					})
+					executor = NewStubExecutorWithReason(r.cfg.Config.Framework, llmErr.Error())
 				} else {
+					// Build fallback-aware client
+					var client llm.Client
+					if len(mc.Fallbacks) > 0 {
+						candidates := []llm.FallbackCandidate{
+							{Provider: mc.Provider, Model: mc.Client.Model, Client: llmClient},
+						}
+						for _, fb := range mc.Fallbacks {
+							fbClient, fbErr := providers.NewClient(fb.Provider, fb.Client)
+							if fbErr != nil {
+								r.logger.Warn("skipping fallback provider",
+									map[string]any{"provider": fb.Provider, "error": fbErr.Error()})
+								continue
+							}
+							candidates = append(candidates, llm.FallbackCandidate{
+								Provider: fb.Provider, Model: fb.Client.Model, Client: fbClient,
+							})
+						}
+						client = llm.NewFallbackChain(candidates)
+						r.logger.Info("fallback chain configured", map[string]any{
+							"candidates": len(candidates),
+						})
+					} else {
+						client = llmClient
+					}
+
 					// Build logging hooks for agent loop observability
 					hooks := coreruntime.NewHookRegistry()
 					r.registerLoggingHooks(hooks)
 
 					executor = coreruntime.NewLLMExecutor(coreruntime.LLMExecutorConfig{
-						Client:       llmClient,
+						Client:       client,
 						Tools:        reg,
 						Hooks:        hooks,
 						SystemPrompt: fmt.Sprintf("You are %s, an AI agent.", r.cfg.Config.AgentID),
@@ -174,7 +203,8 @@ func (r *Runner) Run(ctx context.Context) error {
 					})
 				}
 			} else {
-				executor = NewStubExecutor(r.cfg.Config.Framework)
+				executor = NewStubExecutorWithReason(r.cfg.Config.Framework,
+					"no provider found — check forge.yaml model.provider or set an API key in .env")
 				r.logger.Warn("no LLM provider configured, using stub executor", map[string]any{
 					"framework": r.cfg.Config.Framework,
 				})

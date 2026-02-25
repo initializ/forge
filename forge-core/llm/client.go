@@ -20,4 +20,5 @@ type ClientConfig struct {
 	OrgID       string
 	MaxRetries  int
 	TimeoutSecs int
+	ModelPath   string // local model file path (brain provider)
 }

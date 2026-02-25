@@ -16,6 +16,7 @@ import (
 	"github.com/initializ/forge/forge-cli/internal/tui/steps"
 	"github.com/initializ/forge/forge-cli/skills"
 	"github.com/initializ/forge/forge-cli/templates"
+	"github.com/initializ/forge/forge-core/brain"
 	"github.com/initializ/forge/forge-core/tools/builtins"
 	"github.com/initializ/forge/forge-core/util"
 	"github.com/initializ/forge/forge-skills/contract"
@@ -344,9 +345,9 @@ func collectNonInteractive(opts *initOptions) error {
 
 	// Validate model provider
 	switch opts.ModelProvider {
-	case "openai", "anthropic", "gemini", "ollama", "custom":
+	case "brain", "openai", "anthropic", "gemini", "ollama", "custom":
 	default:
-		return fmt.Errorf("invalid model-provider %q: must be openai, anthropic, gemini, ollama, or custom", opts.ModelProvider)
+		return fmt.Errorf("invalid model-provider %q: must be brain, openai, anthropic, gemini, ollama, or custom", opts.ModelProvider)
 	}
 
 	// Validate API key if provided
@@ -493,6 +494,34 @@ func parseSkillsFile(path string) ([]toolEntry, error) {
 	return tools, nil
 }
 
+// ensureBrainModel checks if the default brain model is already downloaded.
+// If not, it downloads it with a progress indicator. Returns the model path.
+func ensureBrainModel() (string, error) {
+	model := brain.DefaultModel()
+	modelPath := brain.ModelPath(model.Filename)
+
+	if brain.IsModelDownloaded(model.Filename) {
+		fmt.Printf("Brain model %q already available at %s\n", model.Name, modelPath)
+		return modelPath, nil
+	}
+
+	fmt.Printf("Downloading brain model %s (%s)...\n", model.Name, humanSize(model.Size))
+
+	err := brain.DownloadModel(model, func(p brain.DownloadProgress) {
+		pct := float64(0)
+		if p.TotalBytes > 0 {
+			pct = float64(p.DownloadedBytes) / float64(p.TotalBytes) * 100
+		}
+		fmt.Printf("\r  %.1f%% (%s / %s)", pct, humanSize(p.DownloadedBytes), humanSize(p.TotalBytes))
+	})
+	if err != nil {
+		return "", fmt.Errorf("brain model download failed: %w", err)
+	}
+
+	fmt.Printf("\nBrain model saved to %s\n", modelPath)
+	return modelPath, nil
+}
+
 func scaffold(opts *initOptions) error {
 	dir := filepath.Join(".", opts.AgentID)
 
@@ -548,6 +577,13 @@ func scaffold(opts *initOptions) error {
 	// Write .env file with collected env vars
 	if err := writeEnvFile(dir, data.EnvVars); err != nil {
 		return fmt.Errorf("writing .env file: %w", err)
+	}
+
+	// Download brain model if brain provider is selected
+	if opts.ModelProvider == "brain" {
+		if _, err := ensureBrainModel(); err != nil {
+			return err
+		}
 	}
 
 	// Vendor selected registry skills
@@ -713,6 +749,8 @@ func buildTemplateData(opts *initOptions) templateData {
 
 	// Set default model name based on provider
 	switch opts.ModelProvider {
+	case "brain":
+		data.ModelName = "qwen3-0.6b-q4km"
 	case "openai":
 		data.ModelName = "gpt-4o-mini"
 	case "anthropic":
@@ -765,6 +803,10 @@ func buildEnvVars(opts *initOptions) []envVarEntry {
 
 	// Provider key
 	switch opts.ModelProvider {
+	case "brain":
+		vars = append(vars, envVarEntry{Key: "FORGE_MODEL_PROVIDER", Value: "brain", Comment: "Brain local inference"})
+		model := brain.DefaultModel()
+		vars = append(vars, envVarEntry{Key: "FORGE_BRAIN_MODEL", Value: brain.ModelPath(model.Filename), Comment: "Path to brain model weights"})
 	case "openai":
 		val := opts.EnvVars["OPENAI_API_KEY"]
 		if val == "" {

@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/initializ/forge/forge-skills v0.0.0
+	github.com/tcpipuk/llama-go v0.0.0-20260129181358-7fbd22088492
 	github.com/xeipuuv/gojsonschema v1.2.0
 	gopkg.in/yaml.v3 v3.0.1
 )

@@ -23,8 +23,8 @@ func TestStubExecutor_Execute(t *testing.T) {
 	if !strings.Contains(err.Error(), "custom") {
 		t.Errorf("error should contain framework name, got: %q", err.Error())
 	}
-	if !strings.Contains(err.Error(), "not configured") {
-		t.Errorf("error should mention not configured, got: %q", err.Error())
+	if !strings.Contains(err.Error(), "no LLM provider available") {
+		t.Errorf("error should mention no LLM provider available, got: %q", err.Error())
 	}
 }
 
@@ -42,6 +42,23 @@ func TestStubExecutor_ExecuteStream(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "langchain") {
 		t.Errorf("error should contain framework name, got: %q", err.Error())
+	}
+}
+
+func TestStubExecutorWithReason_Execute(t *testing.T) {
+	exec := NewStubExecutorWithReason("custom", "brain: not compiled (build with -tags brain)")
+	task := &a2a.Task{ID: "t-1"}
+	msg := &a2a.Message{
+		Role:  a2a.MessageRoleUser,
+		Parts: []a2a.Part{a2a.NewTextPart("test")},
+	}
+
+	_, err := exec.Execute(context.Background(), task, msg)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "brain: not compiled") {
+		t.Errorf("error should contain the reason, got: %q", err.Error())
 	}
 }
 

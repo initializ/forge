@@ -2,8 +2,9 @@ package security
 
 // DefaultCapabilityBundles maps capability names to their required domain sets.
 var DefaultCapabilityBundles = map[string][]string{
-	"slack":    {"slack.com", "hooks.slack.com", "api.slack.com"},
-	"telegram": {"api.telegram.org"},
+	"slack":          {"slack.com", "hooks.slack.com", "api.slack.com"},
+	"telegram":       {"api.telegram.org"},
+	"brain-download": {"huggingface.co", "cdn-lfs.huggingface.co"},
 }
 
 // ResolveCapabilities returns a deduplicated list of domains for the given capability names.

@@ -1,12 +1,21 @@
 package runtime
 
 import (
+	"strings"
+
 	"github.com/initializ/forge/forge-core/llm"
 	"github.com/initializ/forge/forge-core/types"
 )
 
 // ModelConfig holds the resolved model provider and configuration.
 type ModelConfig struct {
+	Provider  string
+	Client    llm.ClientConfig
+	Fallbacks []FallbackModelConfig
+}
+
+// FallbackModelConfig holds a resolved fallback provider's configuration.
+type FallbackModelConfig struct {
 	Provider string
 	Client   llm.ClientConfig
 }
@@ -77,19 +86,126 @@ func ResolveModelConfig(cfg *types.ForgeConfig, envVars map[string]string, provi
 
 	// Set default models per provider if not specified
 	if mc.Client.Model == "" {
-		switch mc.Provider {
-		case "openai":
-			mc.Client.Model = "gpt-4o"
-		case "anthropic":
-			mc.Client.Model = "claude-sonnet-4-20250514"
-		case "gemini":
-			mc.Client.Model = "gemini-2.5-flash"
-		case "ollama":
-			mc.Client.Model = "llama3"
+		mc.Client.Model = defaultModelForProvider(mc.Provider)
+	}
+
+	// Resolve fallback providers
+	mc.Fallbacks = resolveFallbacks(cfg, envVars, mc.Provider)
+
+	return mc
+}
+
+// defaultModelForProvider returns the default model name for a given provider.
+func defaultModelForProvider(provider string) string {
+	switch provider {
+	case "openai":
+		return "gpt-5.2-2025-12-11"
+	case "anthropic":
+		return "claude-sonnet-4-20250514"
+	case "gemini":
+		return "gemini-2.5-flash"
+	case "ollama":
+		return "llama3"
+	default:
+		return ""
+	}
+}
+
+// resolveFallbacks resolves fallback provider configurations from multiple sources:
+// 1. forge.yaml model.fallbacks
+// 2. FORGE_MODEL_FALLBACKS env var (format: "openai:gpt-4o,gemini:gemini-2.5-flash")
+// 3. Auto-detection from available API keys
+func resolveFallbacks(cfg *types.ForgeConfig, envVars map[string]string, primaryProvider string) []FallbackModelConfig {
+	seen := map[string]bool{primaryProvider: true}
+	var fallbacks []FallbackModelConfig
+
+	addFallback := func(provider, model string) {
+		if seen[provider] {
+			return
+		}
+		apiKey := resolveFallbackAPIKey(provider, envVars)
+		if apiKey == "" && provider != "ollama" {
+			return // skip providers without API keys
+		}
+		seen[provider] = true
+		if model == "" {
+			model = defaultModelForProvider(provider)
+		}
+		fc := FallbackModelConfig{
+			Provider: provider,
+			Client: llm.ClientConfig{
+				APIKey: apiKey,
+				Model:  model,
+			},
+		}
+		if provider == "ollama" && apiKey == "" {
+			fc.Client.APIKey = "ollama"
+		}
+		// Apply base URL overrides
+		fc.Client.BaseURL = resolveFallbackBaseURL(provider, envVars)
+		fallbacks = append(fallbacks, fc)
+	}
+
+	// Source 1: forge.yaml model.fallbacks
+	for _, fb := range cfg.Model.Fallbacks {
+		addFallback(fb.Provider, fb.Name)
+	}
+
+	// Source 2: FORGE_MODEL_FALLBACKS env var
+	if envFallbacks := envVars["FORGE_MODEL_FALLBACKS"]; envFallbacks != "" {
+		for _, entry := range strings.Split(envFallbacks, ",") {
+			entry = strings.TrimSpace(entry)
+			if entry == "" {
+				continue
+			}
+			provider, model, _ := strings.Cut(entry, ":")
+			addFallback(provider, model)
 		}
 	}
 
-	return mc
+	// Source 3: Auto-detect from available API keys
+	providerKeys := map[string]string{
+		"openai":    "OPENAI_API_KEY",
+		"anthropic": "ANTHROPIC_API_KEY",
+		"gemini":    "GEMINI_API_KEY",
+	}
+	for provider, keyName := range providerKeys {
+		if envVars[keyName] != "" {
+			addFallback(provider, "")
+		}
+	}
+
+	return fallbacks
+}
+
+// resolveFallbackAPIKey resolves the API key for a fallback provider.
+func resolveFallbackAPIKey(provider string, envVars map[string]string) string {
+	switch provider {
+	case "openai":
+		return envVars["OPENAI_API_KEY"]
+	case "anthropic":
+		return envVars["ANTHROPIC_API_KEY"]
+	case "gemini":
+		return envVars["GEMINI_API_KEY"]
+	case "ollama":
+		return "ollama"
+	default:
+		return envVars["LLM_API_KEY"]
+	}
+}
+
+// resolveFallbackBaseURL resolves the base URL for a fallback provider.
+func resolveFallbackBaseURL(provider string, envVars map[string]string) string {
+	switch provider {
+	case "openai":
+		return envVars["OPENAI_BASE_URL"]
+	case "anthropic":
+		return envVars["ANTHROPIC_BASE_URL"]
+	case "ollama":
+		return envVars["OLLAMA_BASE_URL"]
+	default:
+		return ""
+	}
 }
 
 func resolveAPIKey(mc *ModelConfig, envVars map[string]string) {

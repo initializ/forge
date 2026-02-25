@@ -598,7 +598,7 @@ func TestBuildTemplateData_DefaultModels(t *testing.T) {
 		provider      string
 		expectedModel string
 	}{
-		{"openai", "gpt-4o-mini"},
+		{"openai", "gpt-5.2-2025-12-11"},
 		{"anthropic", "claude-sonnet-4-20250514"},
 		{"gemini", "gemini-2.5-flash"},
 		{"ollama", "llama3"},

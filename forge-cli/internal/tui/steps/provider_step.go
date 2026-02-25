@@ -13,39 +13,73 @@ type providerPhase int
 
 const (
 	providerSelectPhase providerPhase = iota
+	providerAuthMethodPhase
 	providerKeyPhase
 	providerValidatingPhase
+	providerOAuthPhase
+	providerModelPhase
 	providerCustomURLPhase
 	providerCustomModelPhase
 	providerCustomAuthPhase
 	providerDonePhase
 )
 
+// OAuthFlowFunc is a function that runs the OAuth flow and returns the access token.
+type OAuthFlowFunc func(provider string) (accessToken string, err error)
+
 // ValidateKeyFunc validates an API key for a provider.
 type ValidateKeyFunc func(provider, key string) error
 
+// modelOption maps a user-friendly display name to the actual model ID.
+type modelOption struct {
+	DisplayName string
+	ModelID     string
+}
+
+// openAIOAuthModels are available when using browser-based OAuth login.
+var openAIOAuthModels = []modelOption{
+	{DisplayName: "GPT 5.3 Codex", ModelID: "gpt-5.3-codex"},
+	{DisplayName: "GPT 5.2", ModelID: "gpt-5.2-2025-12-11"},
+	{DisplayName: "GPT 5.2 Codex", ModelID: "gpt-5.2-codex"},
+}
+
+// openAIAPIKeyModels are available when using an API key.
+var openAIAPIKeyModels = []modelOption{
+	{DisplayName: "GPT 5.2", ModelID: "gpt-5.2-2025-12-11"},
+	{DisplayName: "GPT 5 Mini", ModelID: "gpt-5-mini-2025-08-07"},
+	{DisplayName: "GPT 5 Nano", ModelID: "gpt-5-nano-2025-08-07"},
+	{DisplayName: "GPT 4.1 Mini", ModelID: "gpt-4.1-mini-2025-04-14"},
+}
+
 // ProviderStep handles model provider selection and API key entry.
 type ProviderStep struct {
-	styles      *tui.StyleSet
-	phase       providerPhase
-	selector    components.SingleSelect
-	keyInput    components.SecretInput
-	textInput   components.TextInput
-	complete    bool
-	provider    string
-	apiKey      string
-	customURL   string
-	customModel string
-	customAuth  string
-	validateFn  ValidateKeyFunc
-	validating  bool
-	valErr      error
+	styles             *tui.StyleSet
+	phase              providerPhase
+	selector           components.SingleSelect
+	authMethodSelector components.SingleSelect
+	modelSelector      components.SingleSelect
+	keyInput           components.SecretInput
+	textInput          components.TextInput
+	complete           bool
+	provider           string
+	apiKey             string
+	authMethod         string // "apikey" or "oauth"
+	modelID            string // selected model ID
+	customURL          string
+	customModel        string
+	customAuth         string
+	validateFn         ValidateKeyFunc
+	oauthFn            OAuthFlowFunc
+	validating         bool
+	valErr             error
+	oauthRunning       bool
 }
 
 // NewProviderStep creates a new provider selection step.
-func NewProviderStep(styles *tui.StyleSet, validateFn ValidateKeyFunc) *ProviderStep {
+// oauthFn is optional — pass nil to disable OAuth login.
+func NewProviderStep(styles *tui.StyleSet, validateFn ValidateKeyFunc, oauthFn ...OAuthFlowFunc) *ProviderStep {
 	items := []components.SingleSelectItem{
-		{Label: "OpenAI", Value: "openai", Description: "GPT-4o, GPT-4o-mini", Icon: "🔷"},
+		{Label: "OpenAI", Value: "openai", Description: "GPT 5.3 Codex, GPT 5.2, GPT 5 Mini", Icon: "🔷"},
 		{Label: "Anthropic", Value: "anthropic", Description: "Claude Sonnet, Haiku, Opus", Icon: "🟠"},
 		{Label: "Google Gemini", Value: "gemini", Description: "Gemini 2.5 Flash, Pro", Icon: "🔵"},
 		{Label: "Ollama (local)", Value: "ollama", Description: "Run models locally, no API key needed", Icon: "🦙"},
@@ -65,10 +99,16 @@ func NewProviderStep(styles *tui.StyleSet, validateFn ValidateKeyFunc) *Provider
 		styles.KbdDesc,
 	)
 
+	var oFn OAuthFlowFunc
+	if len(oauthFn) > 0 {
+		oFn = oauthFn[0]
+	}
+
 	return &ProviderStep{
 		styles:     styles,
 		selector:   selector,
 		validateFn: validateFn,
+		oauthFn:    oFn,
 	}
 }
 
@@ -87,10 +127,16 @@ func (s *ProviderStep) Update(msg tea.Msg) (tui.Step, tea.Cmd) {
 	switch s.phase {
 	case providerSelectPhase:
 		return s.updateSelectPhase(msg)
+	case providerAuthMethodPhase:
+		return s.updateAuthMethodPhase(msg)
 	case providerKeyPhase:
 		return s.updateKeyPhase(msg)
 	case providerValidatingPhase:
 		return s.updateValidatingPhase(msg)
+	case providerOAuthPhase:
+		return s.updateOAuthPhase(msg)
+	case providerModelPhase:
+		return s.updateModelPhase(msg)
 	case providerCustomURLPhase:
 		return s.updateCustomURLPhase(msg)
 	case providerCustomModelPhase:
@@ -131,6 +177,31 @@ func (s *ProviderStep) updateSelectPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
 				s.styles.KbdDesc,
 			)
 			return s, s.textInput.Init()
+		case "openai":
+			// If OAuth is available, show auth method choice
+			if s.oauthFn != nil {
+				s.phase = providerAuthMethodPhase
+				items := []components.SingleSelectItem{
+					{Label: "Enter API Key", Value: "apikey", Description: "Paste your OpenAI API key", Icon: "🔑"},
+					{Label: "Login with OpenAI", Value: "oauth", Description: "Browser-based login (OAuth)", Icon: "🌐"},
+				}
+				s.authMethodSelector = components.NewSingleSelect(
+					items,
+					s.styles.Theme.Accent,
+					s.styles.Theme.Primary,
+					s.styles.Theme.Secondary,
+					s.styles.Theme.Dim,
+					s.styles.Theme.Border,
+					s.styles.Theme.ActiveBorder,
+					s.styles.Theme.ActiveBg,
+					s.styles.KbdKey,
+					s.styles.KbdDesc,
+				)
+				return s, s.authMethodSelector.Init()
+			}
+			// No OAuth — fall through to API key
+			s.authMethod = "apikey"
+			fallthrough
 		default:
 			// openai, anthropic, gemini → ask for key
 			s.phase = providerKeyPhase
@@ -154,6 +225,85 @@ func (s *ProviderStep) updateSelectPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
 	}
 
 	return s, cmd
+}
+
+func (s *ProviderStep) updateAuthMethodPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
+	// Handle backspace to go back to provider selector
+	if msg, ok := msg.(tea.KeyMsg); ok && msg.String() == "backspace" {
+		s.phase = providerSelectPhase
+		s.provider = ""
+		s.selector.Reset()
+		return s, s.selector.Init()
+	}
+
+	updated, cmd := s.authMethodSelector.Update(msg)
+	s.authMethodSelector = updated
+
+	if s.authMethodSelector.Done() {
+		_, val := s.authMethodSelector.Selected()
+		s.authMethod = val
+		if val == "oauth" {
+			// Run OAuth flow
+			s.phase = providerOAuthPhase
+			s.oauthRunning = true
+			oauthFn := s.oauthFn
+			return s, func() tea.Msg {
+				_, err := oauthFn("openai")
+				return tui.ValidationResultMsg{Err: err}
+			}
+		}
+		// API key method
+		s.phase = providerKeyPhase
+		label := fmt.Sprintf("%s API Key", providerDisplayName(s.provider))
+		s.keyInput = components.NewSecretInput(
+			label, true,
+			s.styles.Theme.Accent,
+			s.styles.Theme.Success,
+			s.styles.Theme.Error,
+			s.styles.Theme.Border,
+			s.styles.AccentTxt,
+			s.styles.InactiveBorder,
+			s.styles.SuccessTxt,
+			s.styles.ErrorTxt,
+			s.styles.DimTxt,
+			s.styles.KbdKey,
+			s.styles.KbdDesc,
+		)
+		return s, s.keyInput.Init()
+	}
+
+	return s, cmd
+}
+
+func (s *ProviderStep) updateOAuthPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
+	if msg, ok := msg.(tui.ValidationResultMsg); ok {
+		s.oauthRunning = false
+		if msg.Err != nil {
+			// OAuth failed — fall back to API key entry
+			s.phase = providerKeyPhase
+			label := fmt.Sprintf("%s API Key (OAuth failed — %s)", providerDisplayName(s.provider), msg.Err)
+			s.keyInput = components.NewSecretInput(
+				label, true,
+				s.styles.Theme.Accent,
+				s.styles.Theme.Success,
+				s.styles.Theme.Error,
+				s.styles.Theme.Border,
+				s.styles.AccentTxt,
+				s.styles.InactiveBorder,
+				s.styles.SuccessTxt,
+				s.styles.ErrorTxt,
+				s.styles.DimTxt,
+				s.styles.KbdKey,
+				s.styles.KbdDesc,
+			)
+			return s, s.keyInput.Init()
+		}
+		// OAuth succeeded — show model selection
+		s.apiKey = "__oauth__"
+		return s, s.showModelSelector()
+	}
+
+	return s, nil
 }
 
 func (s *ProviderStep) updateKeyPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
@@ -216,11 +366,62 @@ func (s *ProviderStep) updateValidatingPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
 			s.complete = true
 			return s, func() tea.Msg { return tui.StepCompleteMsg{} }
 		}
+		// Validation passed — show model selection for OpenAI
+		if s.provider == "openai" {
+			return s, s.showModelSelector()
+		}
 		s.complete = true
 		return s, func() tea.Msg { return tui.StepCompleteMsg{} }
 	}
 
 	return s, nil
+}
+
+// showModelSelector sets up the model selection phase for OpenAI.
+func (s *ProviderStep) showModelSelector() tea.Cmd {
+	var models []modelOption
+	if s.authMethod == "oauth" {
+		models = openAIOAuthModels
+	} else {
+		models = openAIAPIKeyModels
+	}
+
+	items := make([]components.SingleSelectItem, len(models))
+	for i, m := range models {
+		items[i] = components.SingleSelectItem{
+			Label: m.DisplayName,
+			Value: m.ModelID,
+		}
+	}
+
+	s.modelSelector = components.NewSingleSelect(
+		items,
+		s.styles.Theme.Accent,
+		s.styles.Theme.Primary,
+		s.styles.Theme.Secondary,
+		s.styles.Theme.Dim,
+		s.styles.Theme.Border,
+		s.styles.Theme.ActiveBorder,
+		s.styles.Theme.ActiveBg,
+		s.styles.KbdKey,
+		s.styles.KbdDesc,
+	)
+	s.phase = providerModelPhase
+	return s.modelSelector.Init()
+}
+
+func (s *ProviderStep) updateModelPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
+	updated, cmd := s.modelSelector.Update(msg)
+	s.modelSelector = updated
+
+	if s.modelSelector.Done() {
+		_, val := s.modelSelector.Selected()
+		s.modelID = val
+		s.complete = true
+		return s, func() tea.Msg { return tui.StepCompleteMsg{} }
+	}
+
+	return s, cmd
 }
 
 func (s *ProviderStep) updateCustomURLPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
@@ -306,6 +507,8 @@ func (s *ProviderStep) View(width int) string {
 	switch s.phase {
 	case providerSelectPhase:
 		return s.selector.View(width)
+	case providerAuthMethodPhase:
+		return s.authMethodSelector.View(width)
 	case providerKeyPhase:
 		return s.keyInput.View(width)
 	case providerValidatingPhase:
@@ -313,6 +516,13 @@ func (s *ProviderStep) View(width int) string {
 			return "  " + s.styles.AccentTxt.Render("⣾ Validating...") + "\n"
 		}
 		return s.keyInput.View(width)
+	case providerOAuthPhase:
+		if s.oauthRunning {
+			return "  " + s.styles.AccentTxt.Render("⣾ Waiting for browser authorization...") + "\n"
+		}
+		return ""
+	case providerModelPhase:
+		return s.modelSelector.View(width)
 	case providerCustomURLPhase, providerCustomModelPhase:
 		return s.textInput.View(width)
 	case providerCustomAuthPhase:
@@ -327,13 +537,16 @@ func (s *ProviderStep) Complete() bool {
 
 func (s *ProviderStep) Summary() string {
 	name := providerDisplayName(s.provider)
+	if s.modelID != "" {
+		return name + " · " + modelDisplayName(s.modelID)
+	}
 	switch s.provider {
 	case "openai":
-		return name + " · gpt-4o-mini"
+		return name + " · GPT 5.2"
 	case "anthropic":
-		return name + " · claude-sonnet-4-20250514"
+		return name + " · Claude Sonnet 4"
 	case "gemini":
-		return name + " · gemini-2.5-flash"
+		return name + " · Gemini 2.5 Flash"
 	case "ollama":
 		return name + " · llama3"
 	case "custom":
@@ -348,6 +561,8 @@ func (s *ProviderStep) Summary() string {
 func (s *ProviderStep) Apply(ctx *tui.WizardContext) {
 	ctx.Provider = s.provider
 	ctx.APIKey = s.apiKey
+	ctx.AuthMethod = s.authMethod
+	ctx.ModelName = s.modelID
 	ctx.CustomBaseURL = s.customURL
 	ctx.CustomModel = s.customModel
 	ctx.CustomAPIKey = s.customAuth
@@ -364,6 +579,22 @@ func (s *ProviderStep) Apply(ctx *tui.WizardContext) {
 			ctx.EnvVars["GEMINI_API_KEY"] = s.apiKey
 		}
 	}
+}
+
+// modelDisplayName returns the user-friendly name for a model ID.
+func modelDisplayName(modelID string) string {
+	// Check all model lists
+	for _, m := range openAIOAuthModels {
+		if m.ModelID == modelID {
+			return m.DisplayName
+		}
+	}
+	for _, m := range openAIAPIKeyModels {
+		if m.ModelID == modelID {
+			return m.DisplayName
+		}
+	}
+	return modelID
 }
 
 func providerDisplayName(provider string) string {

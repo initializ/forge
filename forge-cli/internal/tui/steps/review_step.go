@@ -40,6 +40,14 @@ func (s *ReviewStep) Prepare(ctx *tui.WizardContext) {
 	rows = append(rows, components.SummaryRow{Key: "Name", Value: ctx.Name})
 	rows = append(rows, components.SummaryRow{Key: "Provider", Value: providerDisplayName(ctx.Provider)})
 
+	if len(ctx.Fallbacks) > 0 {
+		var fbNames []string
+		for _, fb := range ctx.Fallbacks {
+			fbNames = append(fbNames, providerDisplayName(fb.Provider))
+		}
+		rows = append(rows, components.SummaryRow{Key: "Fallbacks", Value: strings.Join(fbNames, ", ")})
+	}
+
 	if ctx.Channel != "" && ctx.Channel != "none" {
 		rows = append(rows, components.SummaryRow{Key: "Channel", Value: ctx.Channel})
 	}

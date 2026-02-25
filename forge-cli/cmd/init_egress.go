@@ -28,9 +28,14 @@ func deriveEgressDomains(opts *initOptions, skills []contract.SkillDescriptor) [
 		}
 	}
 
-	// 1. Provider domain
+	// 1. Provider domains (primary + fallbacks)
 	if d, ok := providerDomains[opts.ModelProvider]; ok {
 		add(d)
+	}
+	for _, fb := range opts.Fallbacks {
+		if d, ok := providerDomains[fb.Provider]; ok {
+			add(d)
+		}
 	}
 
 	// 2. Channel domains

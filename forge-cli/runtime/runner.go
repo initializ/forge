@@ -14,6 +14,8 @@ import (
 	clitools "github.com/initializ/forge/forge-cli/tools"
 	"github.com/initializ/forge/forge-core/a2a"
 	"github.com/initializ/forge/forge-core/agentspec"
+	"github.com/initializ/forge/forge-core/llm"
+	"github.com/initializ/forge/forge-core/llm/oauth"
 	"github.com/initializ/forge/forge-core/llm/providers"
 	coreruntime "github.com/initializ/forge/forge-core/runtime"
 	"github.com/initializ/forge/forge-core/tools"
@@ -42,6 +44,7 @@ type Runner struct {
 	cfg         RunnerConfig
 	logger      coreruntime.Logger
 	cliExecTool *clitools.CLIExecuteTool
+	modelConfig *coreruntime.ModelConfig // resolved model config (for banner)
 }
 
 // NewRunner creates a Runner from the given config.
@@ -152,7 +155,8 @@ func (r *Runner) Run(ctx context.Context) error {
 			// Try LLM executor, fall back to stub
 			mc := coreruntime.ResolveModelConfig(r.cfg.Config, envVars, r.cfg.ProviderOverride)
 			if mc != nil {
-				llmClient, llmErr := providers.NewClient(mc.Provider, mc.Client)
+				r.modelConfig = mc
+				llmClient, llmErr := r.buildLLMClient(mc)
 				if llmErr != nil {
 					r.logger.Warn("failed to create LLM client, using stub", map[string]any{"error": llmErr.Error()})
 					executor = NewStubExecutor(r.cfg.Config.Framework)
@@ -167,10 +171,12 @@ func (r *Runner) Run(ctx context.Context) error {
 						Hooks:        hooks,
 						SystemPrompt: fmt.Sprintf("You are %s, an AI agent.", r.cfg.Config.AgentID),
 					})
+
 					r.logger.Info("using LLM executor", map[string]any{
-						"provider": mc.Provider,
-						"model":    mc.Client.Model,
-						"tools":    len(toolNames),
+						"provider":  mc.Provider,
+						"model":     mc.Client.Model,
+						"tools":     len(toolNames),
+						"fallbacks": len(mc.Fallbacks),
 					})
 				}
 			} else {
@@ -506,6 +512,70 @@ func (r *Runner) registerLoggingHooks(hooks *coreruntime.HookRegistry) {
 	})
 }
 
+// buildLLMClient creates the LLM client from the resolved model config.
+// If fallback providers are configured, wraps them in a FallbackChain.
+func (r *Runner) buildLLMClient(mc *coreruntime.ModelConfig) (llm.Client, error) {
+	primaryClient, err := r.createProviderClient(mc.Provider, mc.Client)
+	if err != nil {
+		return nil, err
+	}
+
+	// No fallbacks — return primary client directly
+	if len(mc.Fallbacks) == 0 {
+		return primaryClient, nil
+	}
+
+	// Build fallback chain
+	candidates := []llm.FallbackCandidate{
+		{Provider: mc.Provider, Model: mc.Client.Model, Client: primaryClient},
+	}
+	for _, fb := range mc.Fallbacks {
+		fbClient, fbErr := r.createProviderClient(fb.Provider, fb.Client)
+		if fbErr != nil {
+			r.logger.Warn("skipping fallback provider", map[string]any{
+				"provider": fb.Provider, "error": fbErr.Error(),
+			})
+			continue
+		}
+		candidates = append(candidates, llm.FallbackCandidate{
+			Provider: fb.Provider,
+			Model:    fb.Client.Model,
+			Client:   fbClient,
+		})
+	}
+
+	return llm.NewFallbackChain(candidates), nil
+}
+
+// createProviderClient creates an LLM client for a provider, using OAuth
+// credentials if available for supported providers.
+func (r *Runner) createProviderClient(provider string, cfg llm.ClientConfig) (llm.Client, error) {
+	// Check for stored OAuth credentials — but only if no API key is already
+	// configured. A real API key means the user chose API-key auth and we
+	// should use the standard OpenAI Chat Completions endpoint, not the
+	// Codex Responses endpoint that OAuth tokens require.
+	if provider == "openai" && cfg.APIKey == "" {
+		token, err := oauth.LoadCredentials(provider)
+		if err == nil && token != nil && token.RefreshToken != "" {
+			oauthCfg := oauth.OpenAIConfig()
+			// Use token's base URL, or fall back to the OAuth config default
+			baseURL := token.BaseURL
+			if baseURL == "" {
+				baseURL = oauthCfg.BaseURL
+			}
+			r.logger.Info("using OAuth credentials for provider", map[string]any{
+				"provider": provider,
+				"base_url": baseURL,
+			})
+			cfg.APIKey = token.AccessToken
+			cfg.BaseURL = baseURL
+			return providers.NewOAuthClient(cfg, provider, oauthCfg), nil
+		}
+	}
+
+	return providers.NewClient(provider, cfg)
+}
+
 func (r *Runner) printBanner() {
 	fmt.Fprintf(os.Stderr, "\n")
 	fmt.Fprintf(os.Stderr, "  Forge Dev Server\n")
@@ -517,6 +587,17 @@ func (r *Runner) printBanner() {
 		fmt.Fprintf(os.Stderr, "  Mode:       mock (no subprocess)\n")
 	} else {
 		fmt.Fprintf(os.Stderr, "  Entrypoint: %s\n", r.cfg.Config.Entrypoint)
+	}
+	// Model info
+	if r.modelConfig != nil {
+		fmt.Fprintf(os.Stderr, "  Model:      %s/%s\n", r.modelConfig.Provider, r.modelConfig.Client.Model)
+		if len(r.modelConfig.Fallbacks) > 0 {
+			var fbNames []string
+			for _, fb := range r.modelConfig.Fallbacks {
+				fbNames = append(fbNames, fb.Provider+"/"+fb.Client.Model)
+			}
+			fmt.Fprintf(os.Stderr, "  Fallbacks:  %s\n", strings.Join(fbNames, ", "))
+		}
 	}
 	// Tools
 	if len(r.cfg.Config.Tools) > 0 {

@@ -78,6 +78,18 @@ func (m MultiSelect) Update(msg tea.Msg) (MultiSelect, tea.Cmd) {
 		case " ":
 			m.Items[m.cursor].Checked = !m.Items[m.cursor].Checked
 		case "enter":
+			// If nothing is checked, auto-check the cursor item so the user
+			// doesn't have to remember Space+Enter for a single selection.
+			anyChecked := false
+			for _, item := range m.Items {
+				if item.Checked {
+					anyChecked = true
+					break
+				}
+			}
+			if !anyChecked && len(m.Items) > 0 {
+				m.Items[m.cursor].Checked = true
+			}
 			m.done = true
 		}
 	}

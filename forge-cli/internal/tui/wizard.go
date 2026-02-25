@@ -6,11 +6,20 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// FallbackProvider holds a fallback provider selection from the wizard.
+type FallbackProvider struct {
+	Provider string
+	APIKey   string
+}
+
 // WizardContext accumulates all data across wizard steps.
 type WizardContext struct {
 	Name          string
 	Provider      string
 	APIKey        string
+	AuthMethod    string // "apikey" or "oauth" — how the user authenticated
+	ModelName     string // selected model ID (e.g. "gpt-5.3-codex")
+	Fallbacks     []FallbackProvider
 	Channel       string
 	ChannelTokens map[string]string
 	BuiltinTools  []string

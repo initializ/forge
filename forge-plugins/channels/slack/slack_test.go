@@ -100,9 +100,13 @@ func TestNormalizeEvent_NoThread(t *testing.T) {
 		t.Fatalf("NormalizeEvent() error: %v", err)
 	}
 
-	// Should fall back to ts when thread_ts is empty
-	if event.ThreadID != "1234567890.123456" {
-		t.Errorf("ThreadID = %q, want 1234567890.123456", event.ThreadID)
+	// ThreadID should be empty for non-threaded messages.
+	if event.ThreadID != "" {
+		t.Errorf("ThreadID = %q, want empty (no thread_ts)", event.ThreadID)
+	}
+	// MessageID should hold the message timestamp for reply targeting.
+	if event.MessageID != "1234567890.123456" {
+		t.Errorf("MessageID = %q, want 1234567890.123456", event.MessageID)
 	}
 }
 

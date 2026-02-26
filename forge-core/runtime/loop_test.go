@@ -41,7 +41,8 @@ func (m *mockToolExecutor) ToolDefinitions() []llm.ToolDefinition {
 }
 
 func TestToolResultTruncation(t *testing.T) {
-	// Generate a tool result that exceeds maxToolResultChars (50,000)
+	// Generate a tool result that exceeds the proportional limit.
+	// With CharBudget=100_000, the tool limit = 25K, so a 60K result gets truncated.
 	largeResult := strings.Repeat("x", 60_000)
 
 	callCount := 0
@@ -93,8 +94,9 @@ func TestToolResultTruncation(t *testing.T) {
 	}
 
 	executor := NewLLMExecutor(LLMExecutorConfig{
-		Client: client,
-		Tools:  tools,
+		Client:     client,
+		Tools:      tools,
+		CharBudget: 100_000, // proportional limit = 25K, so 60K gets truncated
 	})
 
 	task := &a2a.Task{ID: "test-1"}
@@ -213,6 +215,105 @@ func TestToolResultUnderLimitNotTruncated(t *testing.T) {
 
 	if toolMsg.Content != smallResult {
 		t.Errorf("expected exact small result, got content of length %d", len(toolMsg.Content))
+	}
+}
+
+func TestProportionalToolTruncation(t *testing.T) {
+	tests := []struct {
+		name       string
+		modelName  string
+		charBudget int
+		wantLimit  int
+	}{
+		{"llama3 small context", "llama3", 0, ContextBudgetForModel("llama3") / 4},
+		{"gpt-4o large context", "gpt-4o", 0, ContextBudgetForModel("gpt-4o") / 4},
+		{"explicit budget", "", 8000, 2000},
+		{"floor enforced", "", 4000, 2000}, // 4000/4 = 1000 < 2000 floor
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			executor := NewLLMExecutor(LLMExecutorConfig{
+				Client:     &mockLLMClient{chatFunc: func(ctx context.Context, req *llm.ChatRequest) (*llm.ChatResponse, error) { return nil, nil }},
+				ModelName:  tt.modelName,
+				CharBudget: tt.charBudget,
+			})
+			if executor.maxToolResultChars != tt.wantLimit {
+				t.Errorf("maxToolResultChars = %d, want %d", executor.maxToolResultChars, tt.wantLimit)
+			}
+		})
+	}
+}
+
+func TestToolTruncationUsesProportionalLimit(t *testing.T) {
+	// Use a small budget so the tool limit is small (floor of 2K).
+	callCount := 0
+	var capturedMessages []llm.ChatMessage
+
+	client := &mockLLMClient{
+		chatFunc: func(ctx context.Context, req *llm.ChatRequest) (*llm.ChatResponse, error) {
+			callCount++
+			capturedMessages = req.Messages
+			if callCount == 1 {
+				return &llm.ChatResponse{
+					Message: llm.ChatMessage{
+						Role: llm.RoleAssistant,
+						ToolCalls: []llm.ToolCall{
+							{ID: "call_1", Type: "function", Function: llm.FunctionCall{Name: "big_tool", Arguments: `{}`}},
+						},
+					},
+					FinishReason: "tool_calls",
+				}, nil
+			}
+			return &llm.ChatResponse{
+				Message:      llm.ChatMessage{Role: llm.RoleAssistant, Content: "Done"},
+				FinishReason: "stop",
+			}, nil
+		},
+	}
+
+	tools := &mockToolExecutor{
+		executeFunc: func(ctx context.Context, name string, arguments json.RawMessage) (string, error) {
+			return strings.Repeat("x", 5000), nil // 5K chars
+		},
+		toolDefs: []llm.ToolDefinition{
+			{Type: "function", Function: llm.FunctionSchema{Name: "big_tool"}},
+		},
+	}
+
+	executor := NewLLMExecutor(LLMExecutorConfig{
+		Client:     client,
+		Tools:      tools,
+		CharBudget: 4000, // floor enforced → 2K limit
+	})
+
+	task := &a2a.Task{ID: "test-proportional"}
+	msg := &a2a.Message{
+		Role:  a2a.MessageRoleUser,
+		Parts: []a2a.Part{a2a.NewTextPart("do it")},
+	}
+
+	_, err := executor.Execute(context.Background(), task, msg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Find the tool message — it should be truncated to ~2K
+	var toolMsg *llm.ChatMessage
+	for i := range capturedMessages {
+		if capturedMessages[i].Role == llm.RoleTool {
+			toolMsg = &capturedMessages[i]
+		}
+	}
+	if toolMsg == nil {
+		t.Fatal("expected a tool message")
+	}
+	if !strings.Contains(toolMsg.Content, "[OUTPUT TRUNCATED") {
+		t.Error("tool result should be truncated with proportional limit")
+	}
+	// Content should be roughly 2K + truncation suffix
+	if len(toolMsg.Content) > 2500 {
+		t.Errorf("tool result too large after truncation: %d chars", len(toolMsg.Content))
 	}
 }
 

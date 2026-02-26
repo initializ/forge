@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/initializ/forge/forge-cli/server"
 	cliskills "github.com/initializ/forge/forge-cli/skills"
@@ -17,6 +18,7 @@ import (
 	"github.com/initializ/forge/forge-core/llm"
 	"github.com/initializ/forge/forge-core/llm/oauth"
 	"github.com/initializ/forge/forge-core/llm/providers"
+	"github.com/initializ/forge/forge-core/memory"
 	coreruntime "github.com/initializ/forge/forge-core/runtime"
 	"github.com/initializ/forge/forge-core/tools"
 	"github.com/initializ/forge/forge-core/tools/builtins"
@@ -165,12 +167,71 @@ func (r *Runner) Run(ctx context.Context) error {
 					hooks := coreruntime.NewHookRegistry()
 					r.registerLoggingHooks(hooks)
 
-					executor = coreruntime.NewLLMExecutor(coreruntime.LLMExecutorConfig{
+					// Compute model-aware character budget.
+					charBudget := r.cfg.Config.Memory.CharBudget
+					if charBudget == 0 {
+						charBudget = coreruntime.ContextBudgetForModel(mc.Client.Model)
+					}
+
+					execCfg := coreruntime.LLMExecutorConfig{
 						Client:       llmClient,
 						Tools:        reg,
 						Hooks:        hooks,
 						SystemPrompt: fmt.Sprintf("You are %s, an AI agent.", r.cfg.Config.AgentID),
-					})
+						Logger:       r.logger,
+						ModelName:    mc.Client.Model,
+						CharBudget:   charBudget,
+					}
+
+					// Initialize memory persistence (enabled by default).
+					// Disable via FORGE_MEMORY_PERSISTENCE=false or memory.persistence: false in forge.yaml.
+					memPersistence := true
+					if r.cfg.Config.Memory.Persistence != nil {
+						memPersistence = *r.cfg.Config.Memory.Persistence
+					}
+					if os.Getenv("FORGE_MEMORY_PERSISTENCE") == "false" {
+						memPersistence = false
+					}
+					if memPersistence {
+						sessDir := r.cfg.Config.Memory.SessionsDir
+						if sessDir == "" {
+							sessDir = filepath.Join(r.cfg.WorkDir, ".forge", "sessions")
+						}
+						memStore, storeErr := coreruntime.NewMemoryStore(sessDir)
+						if storeErr != nil {
+							r.logger.Warn("failed to create memory store, persistence disabled", map[string]any{
+								"error": storeErr.Error(),
+							})
+						} else {
+							// Clean up old sessions on startup (7-day TTL).
+							deleted, _ := memStore.Cleanup(7 * 24 * time.Hour)
+							if deleted > 0 {
+								r.logger.Info("cleaned up old sessions", map[string]any{"deleted": deleted})
+							}
+
+							compactor := coreruntime.NewCompactor(coreruntime.CompactorConfig{
+								Client:       llmClient,
+								Store:        memStore,
+								Logger:       r.logger,
+								CharBudget:   charBudget,
+								TriggerRatio: r.cfg.Config.Memory.TriggerRatio,
+							})
+
+							execCfg.Store = memStore
+							execCfg.Compactor = compactor
+							r.logger.Info("memory persistence enabled", map[string]any{
+								"sessions_dir": sessDir,
+							})
+						}
+					}
+
+					// Initialize long-term memory if enabled.
+					memMgr := r.initLongTermMemory(ctx, mc, reg, execCfg.Compactor)
+					if memMgr != nil {
+						defer memMgr.Close() //nolint:errcheck
+					}
+
+					executor = coreruntime.NewLLMExecutor(execCfg)
 
 					r.logger.Info("using LLM executor", map[string]any{
 						"provider":  mc.Provider,
@@ -248,11 +309,12 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 
 		r.logger.Info("tasks/send", map[string]any{"task_id": params.ID})
 
-		// Create task in submitted state
-		task := &a2a.Task{
-			ID:     params.ID,
-			Status: a2a.TaskStatus{State: a2a.TaskStateSubmitted},
+		// Load existing task to preserve conversation history, or create new.
+		task := store.Get(params.ID)
+		if task == nil {
+			task = &a2a.Task{ID: params.ID}
 		}
+		task.Status = a2a.TaskStatus{State: a2a.TaskStateSubmitted}
 		store.Put(task)
 
 		// Guardrail check inbound
@@ -268,9 +330,12 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 			return a2a.NewResponse(id, task)
 		}
 
+		// Append inbound user message to task history.
+		task.History = append(task.History, params.Message)
+
 		// Update to working
-		store.UpdateStatus(params.ID, a2a.TaskStatus{State: a2a.TaskStateWorking})
 		task.Status = a2a.TaskStatus{State: a2a.TaskStateWorking}
+		store.Put(task)
 
 		// Execute via executor
 		respMsg, err := executor.Execute(ctx, task, &params.Message)
@@ -302,6 +367,11 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 			}
 		}
 
+		// Append agent response to task history.
+		if respMsg != nil {
+			task.History = append(task.History, *respMsg)
+		}
+
 		// Build completed task
 		task.Status = a2a.TaskStatus{
 			State:   a2a.TaskStateCompleted,
@@ -330,11 +400,12 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 
 		r.logger.Info("tasks/sendSubscribe", map[string]any{"task_id": params.ID})
 
-		// Create task
-		task := &a2a.Task{
-			ID:     params.ID,
-			Status: a2a.TaskStatus{State: a2a.TaskStateSubmitted},
+		// Load existing task to preserve conversation history, or create new.
+		task := store.Get(params.ID)
+		if task == nil {
+			task = &a2a.Task{ID: params.ID}
 		}
+		task.Status = a2a.TaskStatus{State: a2a.TaskStateSubmitted}
 		store.Put(task)
 		server.WriteSSEEvent(w, flusher, "status", task) //nolint:errcheck
 
@@ -351,6 +422,9 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 			server.WriteSSEEvent(w, flusher, "status", task) //nolint:errcheck
 			return
 		}
+
+		// Append inbound user message to task history.
+		task.History = append(task.History, params.Message)
 
 		// Update to working
 		task.Status = a2a.TaskStatus{State: a2a.TaskStateWorking}
@@ -386,6 +460,9 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 				server.WriteSSEEvent(w, flusher, "result", task) //nolint:errcheck
 				return
 			}
+
+			// Append agent response to task history.
+			task.History = append(task.History, *respMsg)
 
 			// Build completed result
 			task.Status = a2a.TaskStatus{
@@ -719,6 +796,143 @@ func envFromOS() map[string]string {
 		}
 	}
 	return env
+}
+
+// initLongTermMemory sets up the long-term memory system if enabled.
+// It resolves the embedder, creates a memory.Manager, registers memory tools,
+// and starts background indexing. Returns the Manager (caller must Close) or nil.
+func (r *Runner) initLongTermMemory(ctx context.Context, mc *coreruntime.ModelConfig, reg *tools.Registry, compactor *coreruntime.Compactor) *memory.Manager {
+	// Check if long-term memory is enabled.
+	enabled := false
+	if r.cfg.Config.Memory.LongTerm != nil {
+		enabled = *r.cfg.Config.Memory.LongTerm
+	}
+	if os.Getenv("FORGE_MEMORY_LONG_TERM") == "true" {
+		enabled = true
+	}
+	if !enabled {
+		return nil
+	}
+
+	memDir := r.cfg.Config.Memory.MemoryDir
+	if memDir == "" {
+		memDir = filepath.Join(r.cfg.WorkDir, ".forge", "memory")
+	}
+
+	// Resolve embedder.
+	embedder := r.resolveEmbedder(mc)
+
+	// Build search config from forge.yaml.
+	searchCfg := memory.DefaultSearchConfig()
+	if r.cfg.Config.Memory.VectorWeight > 0 {
+		searchCfg.VectorWeight = r.cfg.Config.Memory.VectorWeight
+	}
+	if r.cfg.Config.Memory.KeywordWeight > 0 {
+		searchCfg.KeywordWeight = r.cfg.Config.Memory.KeywordWeight
+	}
+	if r.cfg.Config.Memory.DecayHalfLifeDays > 0 {
+		searchCfg.DecayHalfLife = time.Duration(r.cfg.Config.Memory.DecayHalfLifeDays) * 24 * time.Hour
+	}
+
+	mgr, err := memory.NewManager(memory.ManagerConfig{
+		MemoryDir:    memDir,
+		Embedder:     embedder,
+		Logger:       r.logger,
+		SearchConfig: searchCfg,
+	})
+	if err != nil {
+		r.logger.Warn("failed to create memory manager, long-term memory disabled", map[string]any{
+			"error": err.Error(),
+		})
+		return nil
+	}
+
+	// Register memory tools.
+	if regErr := reg.Register(builtins.NewMemorySearchTool(mgr)); regErr != nil {
+		r.logger.Warn("failed to register memory_search tool", map[string]any{"error": regErr.Error()})
+	}
+	if regErr := reg.Register(builtins.NewMemoryGetTool(mgr)); regErr != nil {
+		r.logger.Warn("failed to register memory_get tool", map[string]any{"error": regErr.Error()})
+	}
+
+	// Wire memory flusher into compactor (if compactor exists).
+	if compactor != nil {
+		compactor.SetMemoryFlusher(mgr)
+	}
+
+	// Index memory files at startup in background.
+	go func() {
+		if idxErr := mgr.IndexAll(ctx); idxErr != nil {
+			r.logger.Warn("background memory indexing failed", map[string]any{"error": idxErr.Error()})
+		}
+	}()
+
+	mode := "keyword-only"
+	if embedder != nil {
+		mode = "vector+keyword"
+	}
+	r.logger.Info("long-term memory enabled", map[string]any{
+		"memory_dir": memDir,
+		"mode":       mode,
+	})
+
+	return mgr
+}
+
+// resolveEmbedder creates an embedder from config or auto-detection.
+// Returns nil if no embedder can be created (keyword-only mode).
+func (r *Runner) resolveEmbedder(mc *coreruntime.ModelConfig) llm.Embedder {
+	// Resolution order: config override → env → primary LLM provider.
+	embProvider := r.cfg.Config.Memory.EmbeddingProvider
+	if embProvider == "" {
+		embProvider = os.Getenv("FORGE_EMBEDDING_PROVIDER")
+	}
+	if embProvider == "" {
+		embProvider = mc.Provider
+	}
+
+	// Anthropic has no embedding API — skip.
+	if embProvider == "anthropic" {
+		r.logger.Info("primary provider is anthropic (no embedding API), trying fallbacks for embeddings", nil)
+		// Try fallback providers.
+		for _, fb := range mc.Fallbacks {
+			if fb.Provider != "anthropic" {
+				embProvider = fb.Provider
+				break
+			}
+		}
+		if embProvider == "anthropic" {
+			r.logger.Info("no embedding-capable provider found, using keyword-only search", nil)
+			return nil
+		}
+	}
+
+	cfg := providers.OpenAIEmbedderConfig{
+		APIKey: mc.Client.APIKey,
+		Model:  r.cfg.Config.Memory.EmbeddingModel,
+	}
+
+	// Use the correct API key for the embedding provider if it differs from primary.
+	if embProvider != mc.Provider {
+		for _, fb := range mc.Fallbacks {
+			if fb.Provider == embProvider {
+				cfg.APIKey = fb.Client.APIKey
+				cfg.BaseURL = fb.Client.BaseURL
+				break
+			}
+		}
+	}
+
+	embedder, err := providers.NewEmbedder(embProvider, cfg)
+	if err != nil {
+		r.logger.Warn("failed to create embedder, using keyword-only search", map[string]any{
+			"provider": embProvider,
+			"error":    err.Error(),
+		})
+		return nil
+	}
+
+	return embedder
 }
 
 func defaultStr(s, def string) string {

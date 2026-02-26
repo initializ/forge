@@ -247,11 +247,20 @@ func (p *Plugin) NormalizeEvent(raw []byte) (*channels.ChannelEvent, error) {
 		return nil, fmt.Errorf("telegram update has no message")
 	}
 
+	// ThreadID is only set for actual Telegram reply threads (reply_to_message).
+	// For regular messages, ThreadID is empty so the router groups all messages
+	// in the same chat by user ID for session continuity.
+	var threadID string
+	if update.Message.ReplyToMessage != nil {
+		threadID = strconv.FormatInt(update.Message.ReplyToMessage.MessageID, 10)
+	}
+
 	return &channels.ChannelEvent{
 		Channel:     "telegram",
 		WorkspaceID: strconv.FormatInt(update.Message.Chat.ID, 10),
 		UserID:      strconv.FormatInt(update.Message.From.ID, 10),
-		ThreadID:    strconv.FormatInt(update.Message.MessageID, 10),
+		ThreadID:    threadID,
+		MessageID:   strconv.FormatInt(update.Message.MessageID, 10),
 		Message:     update.Message.Text,
 		Raw:         raw,
 	}, nil
@@ -269,8 +278,8 @@ func (p *Plugin) SendResponse(event *channels.ChannelEvent, response *a2a.Messag
 			"text":       chunk,
 			"parse_mode": "HTML",
 		}
-		if i == 0 {
-			payload["reply_to_message_id"] = event.ThreadID
+		if i == 0 && event.MessageID != "" {
+			payload["reply_to_message_id"] = event.MessageID
 		}
 		if err := p.sendMessage(payload); err != nil {
 			// Fallback: retry without parse_mode (plain text)
@@ -401,10 +410,11 @@ type telegramUpdate struct {
 }
 
 type telegramMessage struct {
-	MessageID int64        `json:"message_id"`
-	From      telegramUser `json:"from"`
-	Chat      telegramChat `json:"chat"`
-	Text      string       `json:"text"`
+	MessageID      int64            `json:"message_id"`
+	From           telegramUser     `json:"from"`
+	Chat           telegramChat     `json:"chat"`
+	Text           string           `json:"text"`
+	ReplyToMessage *telegramMessage `json:"reply_to_message,omitempty"`
 }
 
 type telegramUser struct {

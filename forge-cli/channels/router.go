@@ -37,7 +37,15 @@ func (r *Router) Handler() channels.EventHandler {
 // forwardToA2A sends a tasks/send JSON-RPC request to the A2A server and
 // extracts the agent's response message from the returned task.
 func (r *Router) forwardToA2A(ctx context.Context, event *channels.ChannelEvent) (*a2a.Message, error) {
-	taskID := fmt.Sprintf("%s-%s-%d", event.Channel, event.WorkspaceID, time.Now().UnixMilli())
+	// Build a stable task ID so all messages in the same conversation share
+	// one session. Use thread ID when available (threaded replies), otherwise
+	// fall back to channel + workspace + user for DM-style conversations.
+	var taskID string
+	if event.ThreadID != "" {
+		taskID = fmt.Sprintf("%s-%s-%s", event.Channel, event.WorkspaceID, event.ThreadID)
+	} else {
+		taskID = fmt.Sprintf("%s-%s-%s", event.Channel, event.WorkspaceID, event.UserID)
+	}
 
 	params := a2a.SendTaskParams{
 		ID: taskID,

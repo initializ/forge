@@ -189,9 +189,15 @@ func (p *Plugin) NormalizeEvent(raw []byte) (*channels.ChannelEvent, error) {
 		return nil, fmt.Errorf("parsing slack event: %w", err)
 	}
 
+	// ThreadID is only set for actual Slack threads (thread_ts present).
+	// For top-level messages, ThreadID is empty so the router groups by user.
+	// MessageID holds the message timestamp for reply targeting.
 	threadID := payload.Event.ThreadTS
+	messageID := payload.Event.TS
 	if threadID == "" {
-		threadID = payload.Event.TS
+		// Not a threaded reply — use TS as MessageID for reply targeting
+		// but leave ThreadID empty for session grouping by user.
+		messageID = payload.Event.TS
 	}
 
 	return &channels.ChannelEvent{
@@ -199,6 +205,7 @@ func (p *Plugin) NormalizeEvent(raw []byte) (*channels.ChannelEvent, error) {
 		WorkspaceID: payload.Event.Channel,
 		UserID:      payload.Event.User,
 		ThreadID:    threadID,
+		MessageID:   messageID,
 		Message:     payload.Event.Text,
 		Raw:         raw,
 	}, nil
@@ -217,7 +224,12 @@ func (p *Plugin) SendResponse(event *channels.ChannelEvent, response *a2a.Messag
 			"mrkdwn":  true,
 		}
 		if i == 0 {
-			payload["thread_ts"] = event.ThreadID
+			// Reply in the existing thread, or start a new thread from the message.
+			if event.ThreadID != "" {
+				payload["thread_ts"] = event.ThreadID
+			} else if event.MessageID != "" {
+				payload["thread_ts"] = event.MessageID
+			}
 		}
 		if err := p.postMessage(payload); err != nil {
 			return err

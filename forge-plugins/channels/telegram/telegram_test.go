@@ -40,8 +40,11 @@ func TestNormalizeEvent(t *testing.T) {
 	if event.UserID != "12345" {
 		t.Errorf("UserID = %q, want 12345", event.UserID)
 	}
-	if event.ThreadID != "42" {
-		t.Errorf("ThreadID = %q, want 42", event.ThreadID)
+	if event.ThreadID != "" {
+		t.Errorf("ThreadID = %q, want empty (no reply_to_message)", event.ThreadID)
+	}
+	if event.MessageID != "42" {
+		t.Errorf("MessageID = %q, want 42", event.MessageID)
 	}
 	if event.Message != "hello bot" {
 		t.Errorf("Message = %q, want 'hello bot'", event.Message)
@@ -93,7 +96,7 @@ func TestSendResponse(t *testing.T) {
 
 	event := &channels.ChannelEvent{
 		WorkspaceID: "67890",
-		ThreadID:    "42",
+		MessageID:   "42",
 	}
 
 	msg := &a2a.Message{
@@ -129,7 +132,7 @@ func TestSendResponse_MarkdownConversion(t *testing.T) {
 
 	event := &channels.ChannelEvent{
 		WorkspaceID: "67890",
-		ThreadID:    "42",
+		MessageID:   "42",
 	}
 
 	msg := &a2a.Message{

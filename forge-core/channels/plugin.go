@@ -46,6 +46,7 @@ type ChannelEvent struct {
 	WorkspaceID string          `json:"workspace_id"`
 	UserID      string          `json:"user_id"`
 	ThreadID    string          `json:"thread_id,omitempty"`
+	MessageID   string          `json:"message_id,omitempty"` // per-message ID for reply targeting
 	Message     string          `json:"message"`
 	Attachments []Attachment    `json:"attachments,omitempty"`
 	Raw         json.RawMessage `json:"raw,omitempty"`

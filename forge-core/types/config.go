@@ -9,16 +9,34 @@ import (
 
 // ForgeConfig represents the top-level forge.yaml configuration.
 type ForgeConfig struct {
-	AgentID    string    `yaml:"agent_id"`
-	Version    string    `yaml:"version"`
-	Framework  string    `yaml:"framework"`
-	Entrypoint string    `yaml:"entrypoint"`
-	Model      ModelRef  `yaml:"model,omitempty"`
-	Tools      []ToolRef `yaml:"tools,omitempty"`
-	Channels   []string  `yaml:"channels,omitempty"`
-	Registry   string    `yaml:"registry,omitempty"`
-	Egress     EgressRef `yaml:"egress,omitempty"`
-	Skills     SkillsRef `yaml:"skills,omitempty"`
+	AgentID    string       `yaml:"agent_id"`
+	Version    string       `yaml:"version"`
+	Framework  string       `yaml:"framework"`
+	Entrypoint string       `yaml:"entrypoint"`
+	Model      ModelRef     `yaml:"model,omitempty"`
+	Tools      []ToolRef    `yaml:"tools,omitempty"`
+	Channels   []string     `yaml:"channels,omitempty"`
+	Registry   string       `yaml:"registry,omitempty"`
+	Egress     EgressRef    `yaml:"egress,omitempty"`
+	Skills     SkillsRef    `yaml:"skills,omitempty"`
+	Memory     MemoryConfig `yaml:"memory,omitempty"`
+}
+
+// MemoryConfig configures agent memory persistence and compaction.
+type MemoryConfig struct {
+	Persistence  *bool   `yaml:"persistence,omitempty"` // default: true
+	SessionsDir  string  `yaml:"sessions_dir,omitempty"`
+	TriggerRatio float64 `yaml:"trigger_ratio,omitempty"`
+	CharBudget   int     `yaml:"char_budget,omitempty"`
+
+	// Long-term memory (persistent cross-session knowledge).
+	LongTerm          *bool   `yaml:"long_term,omitempty"`            // default: false
+	MemoryDir         string  `yaml:"memory_dir,omitempty"`           // default: .forge/memory
+	EmbeddingProvider string  `yaml:"embedding_provider,omitempty"`   // auto-detect from LLM
+	EmbeddingModel    string  `yaml:"embedding_model,omitempty"`      // provider default
+	VectorWeight      float64 `yaml:"vector_weight,omitempty"`        // default: 0.7
+	KeywordWeight     float64 `yaml:"keyword_weight,omitempty"`       // default: 0.3
+	DecayHalfLifeDays int     `yaml:"decay_half_life_days,omitempty"` // default: 7
 }
 
 // EgressRef configures egress security controls.

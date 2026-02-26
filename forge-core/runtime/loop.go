@@ -20,11 +20,17 @@ type ToolExecutor interface {
 
 // LLMExecutor implements AgentExecutor using an LLM client with tool calling.
 type LLMExecutor struct {
-	client       llm.Client
-	tools        ToolExecutor
-	hooks        *HookRegistry
-	systemPrompt string
-	maxIter      int
+	client             llm.Client
+	tools              ToolExecutor
+	hooks              *HookRegistry
+	systemPrompt       string
+	maxIter            int
+	compactor          *Compactor
+	store              *MemoryStore
+	logger             Logger
+	modelName          string // resolved model name for context budget
+	charBudget         int    // resolved character budget
+	maxToolResultChars int    // computed from char budget
 }
 
 // LLMExecutorConfig configures the LLM executor.
@@ -34,6 +40,11 @@ type LLMExecutorConfig struct {
 	Hooks         *HookRegistry
 	SystemPrompt  string
 	MaxIterations int
+	Compactor     *Compactor
+	Store         *MemoryStore
+	Logger        Logger
+	ModelName     string // model name for context-aware budgeting
+	CharBudget    int    // explicit char budget override (0 = auto from model)
 }
 
 // NewLLMExecutor creates a new LLMExecutor with the given configuration.
@@ -46,22 +57,73 @@ func NewLLMExecutor(cfg LLMExecutorConfig) *LLMExecutor {
 	if hooks == nil {
 		hooks = NewHookRegistry()
 	}
+	logger := cfg.Logger
+	if logger == nil {
+		logger = &nopLogger{}
+	}
+
+	// Resolve character budget from model name if not explicitly set.
+	budget := cfg.CharBudget
+	if budget == 0 {
+		if cfg.ModelName != "" {
+			budget = ContextBudgetForModel(cfg.ModelName)
+		} else {
+			budget = defaultContextTokens * charsPerToken
+		}
+	}
+
+	// Tool result limit: 25% of char budget, floor 2K, cap 400K.
+	toolLimit := budget / 4
+	if toolLimit < 2_000 {
+		toolLimit = 2_000
+	}
+	if toolLimit > 400_000 {
+		toolLimit = 400_000
+	}
+
 	return &LLMExecutor{
-		client:       cfg.Client,
-		tools:        cfg.Tools,
-		hooks:        hooks,
-		systemPrompt: cfg.SystemPrompt,
-		maxIter:      maxIter,
+		client:             cfg.Client,
+		tools:              cfg.Tools,
+		hooks:              hooks,
+		systemPrompt:       cfg.SystemPrompt,
+		maxIter:            maxIter,
+		compactor:          cfg.Compactor,
+		store:              cfg.Store,
+		logger:             logger,
+		modelName:          cfg.ModelName,
+		charBudget:         budget,
+		maxToolResultChars: toolLimit,
 	}
 }
 
 // Execute processes a message through the LLM agent loop.
 func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Message) (*a2a.Message, error) {
-	mem := NewMemory(e.systemPrompt, 0)
+	mem := NewMemory(e.systemPrompt, e.charBudget, e.modelName)
 
-	// Load task history into memory
-	for _, histMsg := range task.History {
-		mem.Append(a2aMessageToLLM(histMsg))
+	// Try to recover session from disk. If found, the disk snapshot
+	// supersedes task.History to avoid duplicating messages.
+	recovered := false
+	if e.store != nil {
+		saved, err := e.store.Load(task.ID)
+		if err != nil {
+			e.logger.Warn("failed to load session from disk", map[string]any{
+				"task_id": task.ID, "error": err.Error(),
+			})
+		} else if saved != nil {
+			mem.LoadFromStore(saved)
+			recovered = true
+			e.logger.Info("session recovered from disk", map[string]any{
+				"task_id":  task.ID,
+				"messages": len(saved.Messages),
+			})
+		}
+	}
+
+	// Load task history only if not recovered from disk.
+	if !recovered {
+		for _, histMsg := range task.History {
+			mem.Append(a2aMessageToLLM(histMsg))
+		}
 	}
 
 	// Append the new user message
@@ -75,6 +137,15 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 
 	// Agent loop
 	for i := 0; i < e.maxIter; i++ {
+		// Run compaction before LLM call (best-effort).
+		if e.compactor != nil {
+			if _, err := e.compactor.MaybeCompact(task.ID, mem); err != nil {
+				e.logger.Warn("compaction error", map[string]any{
+					"task_id": task.ID, "error": err.Error(),
+				})
+			}
+		}
+
 		messages := mem.Messages()
 
 		// Fire BeforeLLMCall hook
@@ -108,11 +179,13 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 
 		// Check if we're done (no tool calls)
 		if resp.FinishReason == "stop" || len(resp.Message.ToolCalls) == 0 {
+			e.persistSession(task.ID, mem)
 			return llmMessageToA2A(resp.Message), nil
 		}
 
 		// Execute tool calls
 		if e.tools == nil {
+			e.persistSession(task.ID, mem)
 			return llmMessageToA2A(resp.Message), nil
 		}
 
@@ -132,10 +205,9 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 			}
 
 			// Truncate oversized tool results to avoid LLM API errors.
-			// Use a limit below maxMessageChars so the suffix fits within the memory cap.
-			const maxToolResultChars = 49_000 // ~12K tokens, leaves room for truncation suffix
-			if len(result) > maxToolResultChars {
-				result = result[:maxToolResultChars] + "\n\n[OUTPUT TRUNCATED — original length: " + strconv.Itoa(len(result)) + " chars]"
+			// Limit is proportional to model context budget (25%, floor 2K, cap 400K).
+			if len(result) > e.maxToolResultChars {
+				result = result[:e.maxToolResultChars] + "\n\n[OUTPUT TRUNCATED — original length: " + strconv.Itoa(len(result)) + " chars]"
 			}
 
 			// Fire AfterToolExec hook
@@ -158,7 +230,28 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 		}
 	}
 
+	e.persistSession(task.ID, mem)
 	return nil, fmt.Errorf("agent loop exceeded maximum iterations (%d)", e.maxIter)
+}
+
+// persistSession saves the current memory state to disk (best-effort).
+func (e *LLMExecutor) persistSession(taskID string, mem *Memory) {
+	if e.store == nil {
+		return
+	}
+	mem.mu.Lock()
+	data := &SessionData{
+		TaskID:   taskID,
+		Messages: mem.messages,
+		Summary:  mem.existingSummary,
+	}
+	mem.mu.Unlock()
+
+	if err := e.store.Save(data); err != nil {
+		e.logger.Warn("failed to persist session", map[string]any{
+			"task_id": taskID, "error": err.Error(),
+		})
+	}
 }
 
 // ExecuteStream runs the tool-calling loop non-streaming, then emits the final

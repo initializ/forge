@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/initializ/forge/forge-core/security"
 	"github.com/initializ/forge/forge-core/tools"
 )
 
@@ -53,7 +54,10 @@ func (t *webhookCallTool) Execute(ctx context.Context, args json.RawMessage) (st
 		req.Header.Set(k, v)
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{
+		Transport: security.EgressTransportFromContext(ctx),
+		Timeout:   30 * time.Second,
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("webhook call: %w", err)

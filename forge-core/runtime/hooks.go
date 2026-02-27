@@ -19,12 +19,14 @@ const (
 
 // HookContext carries data available to hooks at each hook point.
 type HookContext struct {
-	Messages   []llm.ChatMessage
-	Response   *llm.ChatResponse
-	ToolName   string
-	ToolInput  string
-	ToolOutput string
-	Error      error
+	Messages      []llm.ChatMessage
+	Response      *llm.ChatResponse
+	ToolName      string
+	ToolInput     string
+	ToolOutput    string
+	Error         error
+	TaskID        string
+	CorrelationID string
 }
 
 // Hook is a function invoked at a specific point in the agent loop.

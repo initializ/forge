@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	"github.com/initializ/forge/forge-core/security"
 )
 
 // tavilyProvider implements webSearchProvider using the Tavily API.
@@ -57,7 +59,8 @@ func (p *tavilyProvider) search(ctx context.Context, query string, opts webSearc
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
 
-	resp, err := http.DefaultClient.Do(httpReq)
+	client := security.EgressClientFromContext(ctx)
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return "", fmt.Errorf("calling Tavily API: %w", err)
 	}

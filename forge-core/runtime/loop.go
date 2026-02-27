@@ -149,7 +149,11 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 		messages := mem.Messages()
 
 		// Fire BeforeLLMCall hook
-		if err := e.hooks.Fire(ctx, BeforeLLMCall, &HookContext{Messages: messages}); err != nil {
+		if err := e.hooks.Fire(ctx, BeforeLLMCall, &HookContext{
+			Messages:      messages,
+			TaskID:        TaskIDFromContext(ctx),
+			CorrelationID: CorrelationIDFromContext(ctx),
+		}); err != nil {
 			return nil, fmt.Errorf("before LLM call hook: %w", err)
 		}
 
@@ -161,15 +165,21 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 
 		resp, err := e.client.Chat(ctx, req)
 		if err != nil {
-			_ = e.hooks.Fire(ctx, OnError, &HookContext{Error: err})
+			_ = e.hooks.Fire(ctx, OnError, &HookContext{
+				Error:         err,
+				TaskID:        TaskIDFromContext(ctx),
+				CorrelationID: CorrelationIDFromContext(ctx),
+			})
 			// Return user-friendly error (raw error is already logged via OnError hook)
 			return nil, fmt.Errorf("something went wrong while processing your request, please try again")
 		}
 
 		// Fire AfterLLMCall hook
 		if err := e.hooks.Fire(ctx, AfterLLMCall, &HookContext{
-			Messages: messages,
-			Response: resp,
+			Messages:      messages,
+			Response:      resp,
+			TaskID:        TaskIDFromContext(ctx),
+			CorrelationID: CorrelationIDFromContext(ctx),
 		}); err != nil {
 			return nil, fmt.Errorf("after LLM call hook: %w", err)
 		}
@@ -192,8 +202,10 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 		for _, tc := range resp.Message.ToolCalls {
 			// Fire BeforeToolExec hook
 			if err := e.hooks.Fire(ctx, BeforeToolExec, &HookContext{
-				ToolName:  tc.Function.Name,
-				ToolInput: tc.Function.Arguments,
+				ToolName:      tc.Function.Name,
+				ToolInput:     tc.Function.Arguments,
+				TaskID:        TaskIDFromContext(ctx),
+				CorrelationID: CorrelationIDFromContext(ctx),
 			}); err != nil {
 				return nil, fmt.Errorf("before tool exec hook: %w", err)
 			}
@@ -212,10 +224,12 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 
 			// Fire AfterToolExec hook
 			if err := e.hooks.Fire(ctx, AfterToolExec, &HookContext{
-				ToolName:   tc.Function.Name,
-				ToolInput:  tc.Function.Arguments,
-				ToolOutput: result,
-				Error:      execErr,
+				ToolName:      tc.Function.Name,
+				ToolInput:     tc.Function.Arguments,
+				ToolOutput:    result,
+				Error:         execErr,
+				TaskID:        TaskIDFromContext(ctx),
+				CorrelationID: CorrelationIDFromContext(ctx),
 			}); err != nil {
 				return nil, fmt.Errorf("after tool exec hook: %w", err)
 			}

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/initializ/forge/forge-core/security"
 	"github.com/initializ/forge/forge-core/tools"
 )
 
@@ -60,7 +61,10 @@ func (t *mcpCallTool) Execute(ctx context.Context, args json.RawMessage) (string
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{
+		Transport: security.EgressTransportFromContext(ctx),
+		Timeout:   30 * time.Second,
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("mcp call: %w", err)

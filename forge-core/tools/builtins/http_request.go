@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/initializ/forge/forge-core/security"
 	"github.com/initializ/forge/forge-core/tools"
 )
 
@@ -66,7 +67,10 @@ func (t *httpRequestTool) Execute(ctx context.Context, args json.RawMessage) (st
 		req.Header.Set(k, v)
 	}
 
-	client := &http.Client{Timeout: timeout}
+	client := &http.Client{
+		Transport: security.EgressTransportFromContext(ctx),
+		Timeout:   timeout,
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("executing request: %w", err)

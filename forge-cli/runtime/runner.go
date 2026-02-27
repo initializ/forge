@@ -20,6 +20,7 @@ import (
 	"github.com/initializ/forge/forge-core/llm/providers"
 	"github.com/initializ/forge/forge-core/memory"
 	coreruntime "github.com/initializ/forge/forge-core/runtime"
+	"github.com/initializ/forge/forge-core/security"
 	"github.com/initializ/forge/forge-core/tools"
 	"github.com/initializ/forge/forge-core/tools/builtins"
 	"github.com/initializ/forge/forge-core/types"
@@ -92,7 +93,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		return fmt.Errorf("building agent card: %w", err)
 	}
 
-	// 4. Choose executor and optional lifecycle runtime
+	// 4. Create audit logger (used by hooks and handlers)
+	auditLogger := coreruntime.NewAuditLogger(os.Stderr)
+
+	// 5. Choose executor and optional lifecycle runtime
 	var executor coreruntime.AgentExecutor
 	var lifecycle coreruntime.AgentRuntime // optional, for subprocess lifecycle management
 	if r.cfg.MockTools {
@@ -163,9 +167,10 @@ func (r *Runner) Run(ctx context.Context) error {
 					r.logger.Warn("failed to create LLM client, using stub", map[string]any{"error": llmErr.Error()})
 					executor = NewStubExecutor(r.cfg.Config.Framework)
 				} else {
-					// Build logging hooks for agent loop observability
+					// Build logging and audit hooks for agent loop observability
 					hooks := coreruntime.NewHookRegistry()
 					r.registerLoggingHooks(hooks)
+					r.registerAuditHooks(hooks, auditLogger)
 
 					// Compute model-aware character budget.
 					charBudget := r.cfg.Config.Memory.CharBudget
@@ -258,16 +263,49 @@ func (r *Runner) Run(ctx context.Context) error {
 		defer lifecycle.Stop() //nolint:errcheck
 	}
 
-	// 5. Create A2A server
+	// 6. Create A2A server
 	srv := server.NewServer(server.ServerConfig{
 		Port:      r.cfg.Port,
 		AgentCard: card,
 	})
 
-	// 6. Register JSON-RPC handlers
-	r.registerHandlers(srv, executor, guardrails)
+	// 7. Resolve egress config and build enforcer
+	var egressClient *http.Client
+	toolNames := make([]string, len(r.cfg.Config.Tools))
+	for i, t := range r.cfg.Config.Tools {
+		toolNames[i] = t.Name
+	}
+	egressCfg, egressErr := security.Resolve(
+		r.cfg.Config.Egress.Profile,
+		r.cfg.Config.Egress.Mode,
+		r.cfg.Config.Egress.AllowedDomains,
+		toolNames,
+		r.cfg.Config.Egress.Capabilities,
+	)
+	if egressErr != nil {
+		r.logger.Warn("failed to resolve egress config, using default", map[string]any{"error": egressErr.Error()})
+		egressClient = http.DefaultClient
+	} else {
+		enforcer := security.NewEgressEnforcer(nil, egressCfg.Mode, egressCfg.AllDomains)
+		enforcer.OnAttempt = func(ctx context.Context, domain string, allowed bool) {
+			event := coreruntime.AuditEgressAllowed
+			if !allowed {
+				event = coreruntime.AuditEgressBlocked
+			}
+			auditLogger.Emit(coreruntime.AuditEvent{
+				Event:         event,
+				CorrelationID: coreruntime.CorrelationIDFromContext(ctx),
+				TaskID:        coreruntime.TaskIDFromContext(ctx),
+				Fields:        map[string]any{"domain": domain, "mode": string(egressCfg.Mode)},
+			})
+		}
+		egressClient = &http.Client{Transport: enforcer}
+	}
 
-	// 7. Start file watcher
+	// 8. Register JSON-RPC handlers
+	r.registerHandlers(srv, executor, guardrails, egressClient, auditLogger)
+
+	// 9. Start file watcher
 	watchCtx, watchCancel := context.WithCancel(ctx)
 	defer watchCancel()
 
@@ -290,14 +328,14 @@ func (r *Runner) Run(ctx context.Context) error {
 	}, r.logger)
 	go watcher.Watch(watchCtx)
 
-	// 8. Print startup banner
+	// 10. Print startup banner
 	r.printBanner()
 
-	// 9. Start server (blocks)
+	// 11. Start server (blocks)
 	return srv.Start(ctx)
 }
 
-func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.AgentExecutor, guardrails *coreruntime.GuardrailEngine) {
+func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.AgentExecutor, guardrails *coreruntime.GuardrailEngine, egressClient *http.Client, auditLogger *coreruntime.AuditLogger) {
 	store := srv.TaskStore()
 
 	// tasks/send — synchronous request
@@ -308,6 +346,18 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 		}
 
 		r.logger.Info("tasks/send", map[string]any{"task_id": params.ID})
+
+		// Inject egress client and correlation/task IDs into context
+		correlationID := coreruntime.GenerateID()
+		ctx = security.WithEgressClient(ctx, egressClient)
+		ctx = coreruntime.WithCorrelationID(ctx, correlationID)
+		ctx = coreruntime.WithTaskID(ctx, params.ID)
+
+		auditLogger.Emit(coreruntime.AuditEvent{
+			Event:         coreruntime.AuditSessionStart,
+			CorrelationID: correlationID,
+			TaskID:        params.ID,
+		})
 
 		// Load existing task to preserve conversation history, or create new.
 		task := store.Get(params.ID)
@@ -327,6 +377,12 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 				},
 			}
 			store.Put(task)
+			auditLogger.Emit(coreruntime.AuditEvent{
+				Event:         coreruntime.AuditSessionEnd,
+				CorrelationID: correlationID,
+				TaskID:        params.ID,
+				Fields:        map[string]any{"state": string(a2a.TaskStateFailed)},
+			})
 			return a2a.NewResponse(id, task)
 		}
 
@@ -349,6 +405,12 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 				},
 			}
 			store.Put(task)
+			auditLogger.Emit(coreruntime.AuditEvent{
+				Event:         coreruntime.AuditSessionEnd,
+				CorrelationID: correlationID,
+				TaskID:        params.ID,
+				Fields:        map[string]any{"state": string(a2a.TaskStateFailed)},
+			})
 			return a2a.NewResponse(id, task)
 		}
 
@@ -363,6 +425,12 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 					},
 				}
 				store.Put(task)
+				auditLogger.Emit(coreruntime.AuditEvent{
+					Event:         coreruntime.AuditSessionEnd,
+					CorrelationID: correlationID,
+					TaskID:        params.ID,
+					Fields:        map[string]any{"state": string(a2a.TaskStateFailed)},
+				})
 				return a2a.NewResponse(id, task)
 			}
 		}
@@ -386,6 +454,12 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 			}
 		}
 		store.Put(task)
+		auditLogger.Emit(coreruntime.AuditEvent{
+			Event:         coreruntime.AuditSessionEnd,
+			CorrelationID: correlationID,
+			TaskID:        params.ID,
+			Fields:        map[string]any{"state": string(task.Status.State)},
+		})
 		r.logger.Info("task completed", map[string]any{"task_id": params.ID, "state": string(task.Status.State)})
 		return a2a.NewResponse(id, task)
 	})
@@ -399,6 +473,18 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 		}
 
 		r.logger.Info("tasks/sendSubscribe", map[string]any{"task_id": params.ID})
+
+		// Inject egress client and correlation/task IDs into context
+		correlationID := coreruntime.GenerateID()
+		ctx = security.WithEgressClient(ctx, egressClient)
+		ctx = coreruntime.WithCorrelationID(ctx, correlationID)
+		ctx = coreruntime.WithTaskID(ctx, params.ID)
+
+		auditLogger.Emit(coreruntime.AuditEvent{
+			Event:         coreruntime.AuditSessionStart,
+			CorrelationID: correlationID,
+			TaskID:        params.ID,
+		})
 
 		// Load existing task to preserve conversation history, or create new.
 		task := store.Get(params.ID)
@@ -420,6 +506,12 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 			}
 			store.Put(task)
 			server.WriteSSEEvent(w, flusher, "status", task) //nolint:errcheck
+			auditLogger.Emit(coreruntime.AuditEvent{
+				Event:         coreruntime.AuditSessionEnd,
+				CorrelationID: correlationID,
+				TaskID:        params.ID,
+				Fields:        map[string]any{"state": string(a2a.TaskStateFailed)},
+			})
 			return
 		}
 
@@ -443,9 +535,16 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 			}
 			store.Put(task)
 			server.WriteSSEEvent(w, flusher, "status", task) //nolint:errcheck
+			auditLogger.Emit(coreruntime.AuditEvent{
+				Event:         coreruntime.AuditSessionEnd,
+				CorrelationID: correlationID,
+				TaskID:        params.ID,
+				Fields:        map[string]any{"state": string(a2a.TaskStateFailed)},
+			})
 			return
 		}
 
+		var finalState a2a.TaskState
 		for respMsg := range ch {
 			// Guardrail check outbound
 			if grErr := guardrails.CheckOutbound(respMsg); grErr != nil {
@@ -458,7 +557,8 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 				}
 				store.Put(task)
 				server.WriteSSEEvent(w, flusher, "result", task) //nolint:errcheck
-				return
+				finalState = a2a.TaskStateFailed
+				break
 			}
 
 			// Append agent response to task history.
@@ -477,7 +577,15 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 			}
 			store.Put(task)
 			server.WriteSSEEvent(w, flusher, "result", task) //nolint:errcheck
+			finalState = a2a.TaskStateCompleted
 		}
+
+		auditLogger.Emit(coreruntime.AuditEvent{
+			Event:         coreruntime.AuditSessionEnd,
+			CorrelationID: correlationID,
+			TaskID:        params.ID,
+			Fields:        map[string]any{"state": string(finalState)},
+		})
 	})
 
 	// tasks/get — lookup task by ID
@@ -585,6 +693,47 @@ func (r *Runner) registerLoggingHooks(hooks *coreruntime.HookRegistry) {
 		if hctx.Error != nil {
 			r.logger.Error("agent loop error", map[string]any{"error": hctx.Error.Error()})
 		}
+		return nil
+	})
+}
+
+// registerAuditHooks adds structured audit event hooks to the LLM executor's agent loop.
+func (r *Runner) registerAuditHooks(hooks *coreruntime.HookRegistry, auditLogger *coreruntime.AuditLogger) {
+	hooks.Register(coreruntime.BeforeToolExec, func(_ context.Context, hctx *coreruntime.HookContext) error {
+		auditLogger.Emit(coreruntime.AuditEvent{
+			Event:         coreruntime.AuditToolExec,
+			CorrelationID: hctx.CorrelationID,
+			TaskID:        hctx.TaskID,
+			Fields:        map[string]any{"tool": hctx.ToolName, "phase": "start"},
+		})
+		return nil
+	})
+
+	hooks.Register(coreruntime.AfterToolExec, func(_ context.Context, hctx *coreruntime.HookContext) error {
+		fields := map[string]any{"tool": hctx.ToolName, "phase": "end"}
+		if hctx.Error != nil {
+			fields["error"] = hctx.Error.Error()
+		}
+		auditLogger.Emit(coreruntime.AuditEvent{
+			Event:         coreruntime.AuditToolExec,
+			CorrelationID: hctx.CorrelationID,
+			TaskID:        hctx.TaskID,
+			Fields:        fields,
+		})
+		return nil
+	})
+
+	hooks.Register(coreruntime.AfterLLMCall, func(_ context.Context, hctx *coreruntime.HookContext) error {
+		fields := map[string]any{}
+		if hctx.Response != nil && hctx.Response.Usage.TotalTokens > 0 {
+			fields["tokens"] = hctx.Response.Usage.TotalTokens
+		}
+		auditLogger.Emit(coreruntime.AuditEvent{
+			Event:         coreruntime.AuditLLMCall,
+			CorrelationID: hctx.CorrelationID,
+			TaskID:        hctx.TaskID,
+			Fields:        fields,
+		})
 		return nil
 	})
 }

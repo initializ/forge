@@ -18,6 +18,7 @@ import (
 	"github.com/initializ/forge/forge-cli/skills"
 	"github.com/initializ/forge/forge-cli/templates"
 	"github.com/initializ/forge/forge-core/llm/oauth"
+	"github.com/initializ/forge/forge-core/secrets"
 	"github.com/initializ/forge/forge-core/tools/builtins"
 	"github.com/initializ/forge/forge-core/util"
 	"github.com/initializ/forge/forge-skills/contract"
@@ -42,6 +43,7 @@ type initOptions struct {
 	NonInteractive bool   // skip auto-run in non-interactive mode
 	Force          bool   // overwrite existing directory
 	CustomModel    string // custom provider model name
+	AuthMethod     string // "apikey" or "oauth"
 }
 
 // toolEntry represents a tool parsed from a skills file.
@@ -66,6 +68,7 @@ type templateData struct {
 	SkillEntries  []skillTmplData
 	EgressDomains []string
 	EnvVars       []envVarEntry
+	HasSecrets    bool
 }
 
 // fallbackTmplData holds template data for a fallback provider.
@@ -104,8 +107,8 @@ var initCmd = &cobra.Command{
 
 func init() {
 	initCmd.Flags().StringP("name", "n", "", "agent name")
-	initCmd.Flags().StringP("framework", "f", "", "framework: crewai, langchain, or custom")
-	initCmd.Flags().StringP("language", "l", "", "language: python, typescript, or go (custom only)")
+	initCmd.Flags().StringP("framework", "f", "", "framework: forge (default), crewai, or langchain")
+	initCmd.Flags().StringP("language", "l", "", "language for crewai/langchain entrypoint (python only)")
 	initCmd.Flags().StringP("model-provider", "m", "", "model provider: openai, anthropic, gemini, ollama, or custom")
 	initCmd.Flags().StringSlice("channels", nil, "communication channels (e.g., slack,telegram)")
 	initCmd.Flags().String("from-skills", "", "path to SKILL.md file to parse for tools")
@@ -275,16 +278,14 @@ func collectInteractive(opts *initOptions) error {
 	ctx := wiz.Context()
 	opts.Name = ctx.Name
 
-	// Default framework and language
+	// Default framework
 	if opts.Framework == "" {
-		opts.Framework = "custom"
-	}
-	if opts.Language == "" {
-		opts.Language = "python"
+		opts.Framework = "forge"
 	}
 
 	opts.ModelProvider = ctx.Provider
 	opts.APIKey = ctx.APIKey
+	opts.AuthMethod = ctx.AuthMethod
 	opts.Fallbacks = ctx.Fallbacks
 	opts.CustomModel = ctx.CustomModel
 	// Use wizard-selected model name if available
@@ -339,32 +340,25 @@ func collectNonInteractive(opts *initOptions) error {
 		return fmt.Errorf("--model-provider is required in non-interactive mode")
 	}
 
-	// Default framework and language if not provided
+	// Default framework if not provided
 	if opts.Framework == "" {
-		opts.Framework = "custom"
-	}
-	if opts.Language == "" {
-		opts.Language = "python"
+		opts.Framework = "forge"
 	}
 
 	// Validate framework
 	switch opts.Framework {
-	case "crewai", "langchain", "custom":
+	case "forge", "crewai", "langchain":
 	default:
-		return fmt.Errorf("invalid framework %q: must be crewai, langchain, or custom", opts.Framework)
+		return fmt.Errorf("invalid framework %q: must be forge, crewai, or langchain", opts.Framework)
 	}
 
-	// Validate language
-	switch opts.Framework {
-	case "crewai", "langchain":
+	// Validate language (only relevant for crewai/langchain)
+	if opts.Framework == "crewai" || opts.Framework == "langchain" {
+		if opts.Language == "" {
+			opts.Language = "python"
+		}
 		if opts.Language != "python" {
 			return fmt.Errorf("framework %q only supports python", opts.Framework)
-		}
-	case "custom":
-		switch opts.Language {
-		case "python", "typescript", "go":
-		default:
-			return fmt.Errorf("invalid language %q: must be python, typescript, or go", opts.Language)
 		}
 	}
 
@@ -571,9 +565,34 @@ func scaffold(opts *initOptions) error {
 		_ = out.Close()
 	}
 
-	// Write .env file with collected env vars
-	if err := writeEnvFile(dir, data.EnvVars); err != nil {
+	// Split env vars into secrets and config
+	secretVars, configVars := splitEnvVars(data.EnvVars)
+
+	// Write .env file with non-secret config only
+	if err := writeEnvFile(dir, configVars); err != nil {
 		return fmt.Errorf("writing .env file: %w", err)
+	}
+
+	// Write secrets to encrypted file
+	if len(secretVars) > 0 {
+		storedKeys, sErr := writeSecrets(dir, secretVars, opts.NonInteractive)
+		if sErr != nil {
+			fmt.Printf("  Warning: could not encrypt secrets: %s\n", sErr)
+			fmt.Println("  Secrets will be stored in plaintext .env file instead.")
+			if aErr := appendEnvFile(dir, secretVars); aErr != nil {
+				return fmt.Errorf("writing secrets to .env fallback: %w", aErr)
+			}
+		} else {
+			appendSecretComments(dir, storedKeys)
+			fmt.Printf("  Encrypted %d secret(s) in %s\n", len(storedKeys), filepath.Join(dir, ".forge", "secrets.enc"))
+		}
+	}
+
+	// Migrate OAuth credentials to encrypted store when passphrase is available
+	if opts.AuthMethod == "oauth" && os.Getenv("FORGE_PASSPHRASE") != "" {
+		if err := oauth.MigrateToEncrypted(opts.ModelProvider); err != nil {
+			fmt.Printf("  Warning: could not migrate OAuth credentials: %s\n", err)
+		}
 	}
 
 	// Vendor selected registry skills
@@ -638,6 +657,184 @@ func scaffold(opts *initOptions) error {
 	return runCmd.Run()
 }
 
+// isSecretKey returns true if the env var key looks like a secret (API key, token, etc.).
+func isSecretKey(key string) bool {
+	return strings.HasSuffix(key, "_API_KEY") ||
+		strings.HasSuffix(key, "_TOKEN") ||
+		strings.HasSuffix(key, "_SECRET")
+}
+
+// splitEnvVars separates env vars into secrets and config based on key naming
+// conventions. Only entries with real values (not placeholders) are classified
+// as secrets — placeholders stay in .env as reminders.
+func splitEnvVars(vars []envVarEntry) (secretVars, configVars []envVarEntry) {
+	placeholders := map[string]bool{
+		"your-api-key-here":        true,
+		"your-tavily-key-here":     true,
+		"your-perplexity-key-here": true,
+		"__oauth__":                true, // sentinel, not a real secret
+		"":                         true,
+	}
+
+	for _, v := range vars {
+		if isSecretKey(v.Key) && !placeholders[v.Value] {
+			secretVars = append(secretVars, v)
+		} else {
+			configVars = append(configVars, v)
+		}
+	}
+	return
+}
+
+// resolvePassphraseForInit obtains a passphrase for secret encryption.
+// It checks FORGE_PASSPHRASE env, then detects whether ~/.forge/secrets.enc
+// already exists. If it does, it prompts once and validates by attempting
+// decryption. If not, it prompts twice (enter + confirm) for first-time setup.
+func resolvePassphraseForInit(nonInteractive bool) (string, error) {
+	if p := os.Getenv("FORGE_PASSPHRASE"); p != "" {
+		return p, nil
+	}
+	if nonInteractive {
+		return "", fmt.Errorf("FORGE_PASSPHRASE not set; cannot encrypt secrets in non-interactive mode")
+	}
+
+	// Check if a global secrets file already exists.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolving home directory: %w", err)
+	}
+	globalPath := filepath.Join(home, ".forge", "secrets.enc")
+
+	if _, statErr := os.Stat(globalPath); statErr == nil {
+		// Existing file — prompt once and validate by decryption.
+		for {
+			fmt.Print("\n  Enter passphrase: ")
+			pass, readErr := term.ReadPassword(int(os.Stdin.Fd()))
+			if readErr != nil {
+				return "", fmt.Errorf("reading passphrase: %w", readErr)
+			}
+			fmt.Println()
+
+			if len(pass) == 0 {
+				fmt.Println("  Passphrase cannot be empty. Try again.")
+				continue
+			}
+
+			// Validate by attempting to decrypt the existing file.
+			testProvider := secrets.NewEncryptedFileProvider(globalPath, func() (string, error) {
+				return string(pass), nil
+			})
+			if _, listErr := testProvider.List(); listErr != nil {
+				fmt.Println("  Incorrect passphrase. Try again.")
+				continue
+			}
+
+			return string(pass), nil
+		}
+	}
+
+	// No existing file — first-time setup, prompt with confirmation.
+	fmt.Print("\n  Enter passphrase for secret encryption: ")
+	pass1, err := term.ReadPassword(int(os.Stdin.Fd()))
+	if err != nil {
+		return "", fmt.Errorf("reading passphrase: %w", err)
+	}
+	fmt.Println()
+
+	fmt.Print("  Confirm passphrase: ")
+	pass2, err := term.ReadPassword(int(os.Stdin.Fd()))
+	if err != nil {
+		return "", fmt.Errorf("reading passphrase confirmation: %w", err)
+	}
+	fmt.Println()
+
+	if string(pass1) != string(pass2) {
+		return "", fmt.Errorf("passphrases do not match")
+	}
+	if len(pass1) == 0 {
+		return "", fmt.Errorf("passphrase cannot be empty")
+	}
+
+	return string(pass1), nil
+}
+
+// writeSecrets encrypts the given secret env vars into <dir>/.forge/secrets.enc
+// (agent-local) and ensures the global ~/.forge/secrets.enc exists as a marker
+// for passphrase validation on subsequent inits.
+// Returns the list of stored key names on success.
+func writeSecrets(dir string, secretVars []envVarEntry, nonInteractive bool) ([]string, error) {
+	passphrase, err := resolvePassphraseForInit(nonInteractive)
+	if err != nil {
+		return nil, err
+	}
+
+	passCb := func() (string, error) { return passphrase, nil }
+
+	// Write secrets to agent-local file.
+	encPath := filepath.Join(dir, ".forge", "secrets.enc")
+	provider := secrets.NewEncryptedFileProvider(encPath, passCb)
+
+	pairs := make(map[string]string, len(secretVars))
+	keys := make([]string, 0, len(secretVars))
+	for _, v := range secretVars {
+		pairs[v.Key] = v.Value
+		keys = append(keys, v.Key)
+	}
+
+	if err := provider.SetBatch(pairs); err != nil {
+		return nil, fmt.Errorf("writing encrypted secrets: %w", err)
+	}
+
+	// Ensure global secrets file exists as a marker for passphrase validation.
+	home, homeErr := os.UserHomeDir()
+	if homeErr == nil {
+		globalPath := filepath.Join(home, ".forge", "secrets.enc")
+		if _, statErr := os.Stat(globalPath); os.IsNotExist(statErr) {
+			globalProvider := secrets.NewEncryptedFileProvider(globalPath, passCb)
+			_ = globalProvider.SetBatch(map[string]string{})
+		}
+	}
+
+	// Export passphrase so the auto-run subprocess can decrypt secrets.
+	_ = os.Setenv("FORGE_PASSPHRASE", passphrase)
+
+	return keys, nil
+}
+
+// appendEnvFile appends additional entries to an existing .env file (fallback path).
+func appendEnvFile(dir string, vars []envVarEntry) error {
+	envPath := filepath.Join(dir, ".env")
+	f, err := os.OpenFile(envPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+
+	for _, v := range vars {
+		if v.Comment != "" {
+			_, _ = fmt.Fprintf(f, "# %s\n", v.Comment)
+		}
+		_, _ = fmt.Fprintf(f, "%s=%s\n", v.Key, v.Value)
+	}
+	return nil
+}
+
+// appendSecretComments appends comments to .env indicating which keys are
+// stored in the encrypted secrets file.
+func appendSecretComments(dir string, keys []string) {
+	envPath := filepath.Join(dir, ".env")
+	f, err := os.OpenFile(envPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer func() { _ = f.Close() }()
+
+	_, _ = fmt.Fprintln(f, "\n# Secrets stored in .forge/secrets.enc (managed by `forge secret --local`)")
+	for _, k := range keys {
+		_, _ = fmt.Fprintf(f, "# %s=<encrypted>\n", k)
+	}
+}
+
 // writeEnvFile creates a .env file with the collected environment variables.
 func writeEnvFile(dir string, vars []envVarEntry) error {
 	if len(vars) == 0 {
@@ -679,7 +876,11 @@ func getFileManifest(opts *initOptions) []fileToRender {
 			fileToRender{TemplatePath: "langchain/agent.py.tmpl", OutputPath: "agent.py"},
 			fileToRender{TemplatePath: "langchain/example_tool.py.tmpl", OutputPath: "tools/example_tool.py"},
 		)
+	case "forge":
+		// No entrypoint scaffolding — forge uses the built-in LLM executor.
+		// The tools/ directory is still created for custom tool scripts.
 	case "custom":
+		// Backward compat alias for "forge"
 		switch opts.Language {
 		case "python":
 			files = append(files,
@@ -722,11 +923,12 @@ func buildTemplateData(opts *initOptions) templateData {
 		BuiltinTools:  opts.BuiltinTools,
 	}
 
-	// Set entrypoint based on framework/language
+	// Set entrypoint based on framework (only for subprocess-based frameworks)
 	switch opts.Framework {
 	case "crewai", "langchain":
 		data.Entrypoint = "python agent.py"
 	case "custom":
+		// Backward compat: custom still sets entrypoint
 		switch opts.Language {
 		case "python":
 			data.Entrypoint = "python agent.py"
@@ -736,6 +938,7 @@ func buildTemplateData(opts *initOptions) templateData {
 			data.Entrypoint = "go run main.go"
 		}
 	}
+	// "forge" framework: no entrypoint (built-in LLM executor)
 
 	// Set model name: use wizard-selected model, or fall back to provider default
 	if opts.CustomModel != "" {
@@ -779,6 +982,10 @@ func buildTemplateData(opts *initOptions) templateData {
 
 	// Build env vars
 	data.EnvVars = buildEnvVars(opts)
+
+	// Check if any env vars are secrets with real values
+	secretVars, _ := splitEnvVars(data.EnvVars)
+	data.HasSecrets = len(secretVars) > 0
 
 	return data
 }

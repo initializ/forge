@@ -17,10 +17,16 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var signingKey string
+
 var buildCmd = &cobra.Command{
 	Use:   "build",
 	Short: "Build the agent container artifact",
 	RunE:  runBuild,
+}
+
+func init() {
+	buildCmd.Flags().StringVar(&signingKey, "signing-key", "", "path to Ed25519 private key for signing build output")
 }
 
 func runBuild(cmd *cobra.Command, args []string) error {
@@ -56,9 +62,10 @@ func runBuild(cmd *cobra.Command, args []string) error {
 	}
 
 	bc := pipeline.NewBuildContext(pipeline.PipelineOptions{
-		WorkDir:    filepath.Dir(cfgPath),
-		OutputDir:  outDir,
-		ConfigPath: cfgPath,
+		WorkDir:        filepath.Dir(cfgPath),
+		OutputDir:      outDir,
+		ConfigPath:     cfgPath,
+		SigningKeyPath: signingKey,
 	})
 	bc.Config = cfg
 	bc.Verbose = verbose
@@ -79,9 +86,11 @@ func runBuild(cmd *cobra.Command, args []string) error {
 		&build.PolicyStage{},
 		&build.EgressStage{},
 		&build.DockerfileStage{},
+		&build.SecretSafetyStage{},
 		&build.K8sStage{},
 		&build.ValidateStage{},
 		&build.ManifestStage{},
+		&build.SigningStage{},
 	)
 
 	if err := p.Run(context.Background(), bc); err != nil {

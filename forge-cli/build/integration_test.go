@@ -49,7 +49,7 @@ func TestIntegration_BuildWithSkillsAndEgress(t *testing.T) {
 	cfg := &types.ForgeConfig{
 		AgentID:    "test-agent",
 		Version:    "1.0.0",
-		Framework:  "custom",
+		Framework:  "forge",
 		Entrypoint: "python main.py",
 		Skills:     types.SkillsRef{Path: filepath.Join(skillsDir, "SKILL.md")},
 		Egress: types.EgressRef{
@@ -145,7 +145,7 @@ func TestIntegration_BuildExportRoundTrip(t *testing.T) {
 	cfg := &types.ForgeConfig{
 		AgentID:    "roundtrip-agent",
 		Version:    "2.0.0",
-		Framework:  "custom",
+		Framework:  "forge",
 		Entrypoint: "python main.py",
 		Egress: types.EgressRef{
 			Profile: "strict",

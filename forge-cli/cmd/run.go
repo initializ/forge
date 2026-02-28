@@ -14,6 +14,7 @@ import (
 	"github.com/initializ/forge/forge-cli/runtime"
 	"github.com/initializ/forge/forge-core/validate"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var (
@@ -83,6 +84,24 @@ func runRun(cmd *cobra.Command, args []string) error {
 			_ = os.Setenv(k, v)
 		}
 	}
+
+	// Prompt for passphrase if encrypted secrets are configured but passphrase is missing.
+	if containsStr(cfg.Secrets.Providers, "encrypted-file") && os.Getenv("FORGE_PASSPHRASE") == "" {
+		if term.IsTerminal(int(os.Stdin.Fd())) {
+			fmt.Fprint(os.Stderr, "Enter passphrase for encrypted secrets: ")
+			raw, pErr := term.ReadPassword(int(os.Stdin.Fd()))
+			fmt.Fprintln(os.Stderr)
+			if pErr == nil && len(raw) > 0 {
+				_ = os.Setenv("FORGE_PASSPHRASE", string(raw))
+			}
+		} else {
+			fmt.Fprintln(os.Stderr, "Warning: secrets.providers includes encrypted-file but FORGE_PASSPHRASE is not set; encrypted secrets will not be loaded")
+		}
+	}
+
+	// Overlay encrypted secrets into OS environment so channel adapters
+	// (which use os.Getenv via ResolveEnvVars) can access them.
+	runtime.OverlaySecretsToEnv(cfg, workDir)
 
 	// Parse channel names from --with flag for banner display
 	var activeChannels []string

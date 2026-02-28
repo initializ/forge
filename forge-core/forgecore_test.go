@@ -101,7 +101,7 @@ func TestCompile_BasicConfig(t *testing.T) {
 	cfg := &types.ForgeConfig{
 		AgentID:    "test-agent",
 		Version:    "1.0.0",
-		Framework:  "custom",
+		Framework:  "forge",
 		Entrypoint: "python main.py",
 		Model: types.ModelRef{
 			Provider: "openai",
@@ -167,7 +167,7 @@ func TestCompile_WithSkills(t *testing.T) {
 	cfg := &types.ForgeConfig{
 		AgentID:    "skill-agent",
 		Version:    "1.0.0",
-		Framework:  "custom",
+		Framework:  "forge",
 		Entrypoint: "python main.py",
 		Egress: types.EgressRef{
 			Profile: "strict",
@@ -233,7 +233,7 @@ func TestCompile_NoEgress(t *testing.T) {
 	cfg := &types.ForgeConfig{
 		AgentID:    "no-egress",
 		Version:    "1.0.0",
-		Framework:  "custom",
+		Framework:  "forge",
 		Entrypoint: "python main.py",
 	}
 
@@ -267,7 +267,7 @@ func TestCompile_NoSkills(t *testing.T) {
 	cfg := &types.ForgeConfig{
 		AgentID:    "no-skills",
 		Version:    "1.0.0",
-		Framework:  "custom",
+		Framework:  "forge",
 		Entrypoint: "python main.py",
 	}
 
@@ -286,7 +286,7 @@ func TestCompile_RuntimeInferred(t *testing.T) {
 	cfg := &types.ForgeConfig{
 		AgentID:    "runtime-test",
 		Version:    "1.0.0",
-		Framework:  "custom",
+		Framework:  "forge",
 		Entrypoint: "python main.py",
 	}
 
@@ -310,7 +310,7 @@ func TestCompile_NodeEntrypoint(t *testing.T) {
 	cfg := &types.ForgeConfig{
 		AgentID:    "node-agent",
 		Version:    "1.0.0",
-		Framework:  "custom",
+		Framework:  "forge",
 		Entrypoint: "node index.js",
 	}
 
@@ -328,7 +328,7 @@ func TestCompile_InvalidEgressProfile(t *testing.T) {
 	cfg := &types.ForgeConfig{
 		AgentID:    "bad-egress",
 		Version:    "1.0.0",
-		Framework:  "custom",
+		Framework:  "forge",
 		Entrypoint: "python main.py",
 		Egress: types.EgressRef{
 			Profile: "invalid-profile",
@@ -347,7 +347,7 @@ func TestValidateConfig_Valid(t *testing.T) {
 	cfg := &types.ForgeConfig{
 		AgentID:    "valid-agent",
 		Version:    "1.0.0",
-		Framework:  "custom",
+		Framework:  "forge",
 		Entrypoint: "python main.py",
 	}
 
@@ -373,7 +373,7 @@ func TestValidateConfig_InvalidAgentID(t *testing.T) {
 	cfg := &types.ForgeConfig{
 		AgentID:    "Invalid_Agent_ID!",
 		Version:    "1.0.0",
-		Framework:  "custom",
+		Framework:  "forge",
 		Entrypoint: "python main.py",
 	}
 
@@ -387,7 +387,7 @@ func TestValidateConfig_InvalidSemver(t *testing.T) {
 	cfg := &types.ForgeConfig{
 		AgentID:    "test-agent",
 		Version:    "not-a-version",
-		Framework:  "custom",
+		Framework:  "forge",
 		Entrypoint: "python main.py",
 	}
 
@@ -419,7 +419,7 @@ func TestValidateConfig_InvalidEgressProfile(t *testing.T) {
 	cfg := &types.ForgeConfig{
 		AgentID:    "test-agent",
 		Version:    "1.0.0",
-		Framework:  "custom",
+		Framework:  "forge",
 		Entrypoint: "python main.py",
 		Egress: types.EgressRef{
 			Profile: "bad-profile",
@@ -436,7 +436,7 @@ func TestValidateConfig_DevOpenWarning(t *testing.T) {
 	cfg := &types.ForgeConfig{
 		AgentID:    "test-agent",
 		Version:    "1.0.0",
-		Framework:  "custom",
+		Framework:  "forge",
 		Entrypoint: "python main.py",
 		Egress: types.EgressRef{
 			Mode: "dev-open",
@@ -1145,7 +1145,7 @@ func TestIntegration_CompileValidateRuntime(t *testing.T) {
 	cfg := &types.ForgeConfig{
 		AgentID:    "integration-agent",
 		Version:    "1.0.0",
-		Framework:  "custom",
+		Framework:  "forge",
 		Entrypoint: "python main.py",
 		Model: types.ModelRef{
 			Provider: "openai",
@@ -1255,7 +1255,7 @@ func TestIntegration_CompileWithToolCallLoop(t *testing.T) {
 	cfg := &types.ForgeConfig{
 		AgentID:    "tool-loop-agent",
 		Version:    "1.0.0",
-		Framework:  "custom",
+		Framework:  "forge",
 		Entrypoint: "python main.py",
 		Tools: []types.ToolRef{
 			{Name: "web_search", Type: "builtin"},
@@ -1363,7 +1363,7 @@ func TestIntegration_EgressAllowlistJSON(t *testing.T) {
 	cfg := &types.ForgeConfig{
 		AgentID:    "egress-test",
 		Version:    "1.0.0",
-		Framework:  "custom",
+		Framework:  "forge",
 		Entrypoint: "python main.py",
 		Egress: types.EgressRef{
 			Profile:        "strict",

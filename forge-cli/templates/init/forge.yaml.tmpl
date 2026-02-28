@@ -1,7 +1,9 @@
 agent_id: {{.AgentID}}
 version: 0.1.0
 framework: {{.Framework}}
+{{- if .Entrypoint}}
 entrypoint: {{.Entrypoint}}
+{{- end}}
 
 model:
   provider: {{.ModelProvider}}
@@ -49,4 +51,11 @@ egress:
 {{- range .EgressDomains}}
     - {{.}}
 {{- end}}
+{{- end}}
+{{- if .HasSecrets}}
+
+secrets:
+  providers:
+    - encrypted-file
+    - env
 {{- end}}

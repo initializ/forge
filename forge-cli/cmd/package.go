@@ -215,6 +215,21 @@ func validateProdConfig(cfg *types.ForgeConfig) error {
 	if len(v.Errors) > 0 {
 		return fmt.Errorf("%s", v.Errors[0])
 	}
+
+	// Validate secret providers for container compatibility
+	if len(cfg.Secrets.Providers) > 0 {
+		hasContainerSafe := false
+		for _, p := range cfg.Secrets.Providers {
+			if p == "env" {
+				hasContainerSafe = true
+				break
+			}
+		}
+		if !hasContainerSafe {
+			return fmt.Errorf("production builds require a container-compatible secret provider (env); encrypted-file alone cannot inject secrets into containers")
+		}
+	}
+
 	return nil
 }
 

@@ -9,11 +9,9 @@ agent_id: my-support-agent
 # Semantic version of the agent
 version: 0.1.0
 
-# Framework the agent is built with (crewai, langchain, or custom)
-framework: custom
-
-# Entrypoint script or module for the agent
-entrypoint: python agent.py
+# Framework the agent is built with (forge, crewai, or langchain)
+# "forge" uses the built-in LLM executor; crewai/langchain run as subprocesses
+framework: forge
 
 # Model configuration
 model:
@@ -37,6 +35,13 @@ skills:
 channels:
   - slack
   - telegram
+
+# Secret management (optional — defaults to env vars only)
+# secrets:
+#   providers:
+#     - encrypted-file
+#     - env
+#   path: ~/.forge/secrets.enc  # encrypted file path (default)
 
 # Egress security controls
 egress:

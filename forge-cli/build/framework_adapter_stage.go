@@ -26,7 +26,11 @@ func (s *FrameworkAdapterStage) Execute(ctx context.Context, bc *pipeline.BuildC
 	// Resolve plugin: explicit framework config or auto-detect
 	var plugin plugins.FrameworkPlugin
 	if bc.Config.Framework != "" {
-		plugin = s.Registry.Get(bc.Config.Framework)
+		framework := bc.Config.Framework
+		if framework == "custom" {
+			framework = "forge" // backward compat alias
+		}
+		plugin = s.Registry.Get(framework)
 	}
 	if plugin == nil {
 		var err error

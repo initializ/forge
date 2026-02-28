@@ -62,8 +62,7 @@ func setupExportTest(t *testing.T) (dir string, cleanup func()) {
 	writeTestForgeYAML(t, dir, `
 agent_id: test-agent
 version: 0.1.0
-framework: custom
-entrypoint: python agent.py
+framework: forge
 model:
   provider: openai
   name: gpt-4
@@ -387,8 +386,7 @@ func setupExportTestWithAgent(t *testing.T, agentJSON string) (dir string, clean
 	writeTestForgeYAML(t, dir, `
 agent_id: test-agent
 version: 0.1.0
-framework: custom
-entrypoint: python agent.py
+framework: forge
 model:
   provider: openai
   name: gpt-4

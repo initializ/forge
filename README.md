@@ -32,6 +32,8 @@ Forge is designed for safe execution:
 * Does NOT expose webhooks automatically
 * Uses outbound-only connections (Slack Socket Mode, Telegram polling)
 * Enforces outbound domain allowlists at both build-time and runtime
+* Encrypts secrets at rest (AES-256-GCM) with per-agent isolation
+* Signs build artifacts (Ed25519) for supply chain integrity
 * Supports restricted network profiles with audit logging
 
 No accidental exposure. No hidden listeners.
@@ -100,7 +102,8 @@ SKILL.md --> Parse --> Discover tools/requirements --> Compile AgentSpec
 2. Forge parses the skill definitions and optional YAML frontmatter (binary deps, env vars)
 3. The build pipeline discovers tools, resolves egress domains, and compiles an `AgentSpec`
 4. Security policies (egress allowlists, capability bundles) are applied
-5. The runtime executes an LLM-powered tool-calling loop with session persistence and memory
+5. Build artifacts are checksummed and optionally signed (Ed25519)
+6. At runtime, encrypted secrets are decrypted and the LLM-powered tool-calling loop executes with session persistence and memory
 
 ---
 
@@ -390,6 +393,131 @@ Guardrails run in `enforce` mode (blocking) or `warn` mode (logging only), confi
 
 ---
 
+## Secrets
+
+Forge provides encrypted secret management with per-agent isolation and interactive passphrase prompting.
+
+### Encrypted Storage
+
+Secrets are stored in AES-256-GCM encrypted files with Argon2id key derivation. The file format is `salt(16) || nonce(12) || ciphertext`, with the plaintext being a JSON key-value map.
+
+```bash
+# Store a secret (prompts for value securely)
+forge secret set OPENAI_API_KEY
+
+# Store with inline value
+forge secret set SLACK_BOT_TOKEN xoxb-...
+
+# Retrieve a secret (shows source: encrypted-file or env)
+forge secret get OPENAI_API_KEY
+
+# List all secret keys
+forge secret list
+
+# Delete a secret
+forge secret delete OLD_KEY
+```
+
+### Per-Agent Secrets
+
+Each agent can have its own encrypted secrets file at `<agent-dir>/.forge/secrets.enc`, separate from the global `~/.forge/secrets.enc`. Use the `--local` flag to operate on agent-local secrets:
+
+```bash
+cd my-agent
+
+# Store a secret in the agent-local file
+forge secret set OPENAI_API_KEY sk-agent1-key --local
+
+# Different agent, different key
+cd ../other-agent
+forge secret set OPENAI_API_KEY sk-agent2-key --local
+```
+
+At runtime, secrets are resolved in order: **agent-local** → **global** → **environment variables**. This lets you override global defaults per agent.
+
+### Runtime Passphrase Prompting
+
+When `forge run` encounters encrypted secrets and no `FORGE_PASSPHRASE` environment variable is set, it prompts interactively:
+
+```
+$ forge run
+Enter passphrase for encrypted secrets: ****
+```
+
+In non-interactive environments (CI/CD), set the passphrase via environment variable:
+
+```bash
+export FORGE_PASSPHRASE="my-passphrase"
+forge run
+```
+
+### Smart Init Passphrase
+
+`forge init` detects whether `~/.forge/secrets.enc` already exists:
+
+- **First time**: prompts for passphrase + confirmation (new setup)
+- **Subsequent**: prompts once and validates by attempting to decrypt the existing file
+
+### Configuration
+
+```yaml
+secrets:
+  providers:
+    - encrypted-file          # AES-256-GCM encrypted file
+    - env                     # Environment variables (fallback)
+```
+
+Secret files are automatically excluded from git (`.forge/` in `.gitignore`) and Docker builds (`*.enc` in `.dockerignore`).
+
+---
+
+## Build Signing & Verification
+
+Forge supports Ed25519 signing of build artifacts for supply chain integrity.
+
+### Key Management
+
+```bash
+# Generate an Ed25519 signing keypair
+forge key generate
+# Output: ~/.forge/signing-key.pem (private) + ~/.forge/signing-key.pub (public)
+
+# Generate with a custom name
+forge key generate --name ci-key
+
+# Add a public key to the trusted keyring
+forge key trust ~/.forge/signing-key.pub
+
+# List signing and trusted keys
+forge key list
+```
+
+### Build Signing
+
+When a signing key exists at `~/.forge/signing-key.pem` (or specified via `--signing-key`), `forge build` automatically:
+
+1. Computes SHA-256 checksums of all generated artifacts
+2. Signs the checksums with the Ed25519 private key
+3. Writes `checksums.json` with checksums, signature, and key ID
+
+### Runtime Verification
+
+At runtime, `forge run` can verify build artifacts against `checksums.json`:
+
+- Validates SHA-256 checksums of all files
+- Verifies the Ed25519 signature against trusted keys in `~/.forge/trusted-keys/`
+- Verification is optional — if `checksums.json` doesn't exist, it's skipped
+
+### Secret Safety Stage
+
+The build pipeline includes a `secret-safety` stage that:
+
+- Blocks production builds (`--prod`) that only use `encrypted-file` without `env` provider (containers can't use encrypted files at runtime)
+- Warns if `.dockerignore` is missing alongside a generated Dockerfile
+- Ensures secrets never leak into container images
+
+---
+
 ## Memory
 
 Forge provides two layers of memory management:
@@ -535,9 +663,9 @@ Complete `forge.yaml` schema:
 ```yaml
 agent_id: "my-agent"                # Required
 version: "1.0.0"                    # Required
-entrypoint: "agent.py"              # Required
-framework: "custom"                 # custom, crewai, langchain
+framework: "forge"                  # forge (default), crewai, langchain
 registry: "ghcr.io/org"             # Container registry
+entrypoint: "agent.py"              # Required for crewai/langchain, omit for forge
 
 model:
   provider: "openai"                # openai, anthropic, gemini, ollama, custom
@@ -568,6 +696,11 @@ egress:
 
 skills:
   path: "SKILL.md"
+
+secrets:
+  providers:                        # Secret providers (order matters)
+    - "encrypted-file"              # AES-256-GCM encrypted file
+    - "env"                         # Environment variables
 
 memory:
   persistence: true                 # Session persistence (default: true)
@@ -601,6 +734,7 @@ memory:
 | `OPENAI_BASE_URL` | Override OpenAI base URL |
 | `ANTHROPIC_BASE_URL` | Override Anthropic base URL |
 | `OLLAMA_BASE_URL` | Override Ollama base URL (default: `http://localhost:11434`) |
+| `FORGE_PASSPHRASE` | Passphrase for encrypted secrets file |
 
 ---
 
@@ -617,6 +751,8 @@ memory:
 | `forge export [--pretty] [--include-schemas] [--simulate-import]` | Export for Command platform |
 | `forge tool list\|describe` | List or inspect registered tools |
 | `forge channel add\|serve\|list\|status` | Manage channel adapters |
+| `forge secret set\|get\|list\|delete [--local]` | Manage encrypted secrets |
+| `forge key generate\|trust\|list` | Manage Ed25519 signing keys |
 
 See [docs/commands.md](docs/commands.md) for full flags and examples.
 
@@ -631,6 +767,7 @@ forge/
     llm/               LLM client, fallback chains, OAuth
     memory/            Long-term memory (vector + keyword search)
     runtime/           Agent loop, hooks, compactor, audit logger
+    secrets/           Encrypted secret storage (AES-256-GCM + Argon2id)
     security/          Egress resolver, enforcer, K8s NetworkPolicy
     tools/             Tool registry, builtins, adapters
     types/             Config types

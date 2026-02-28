@@ -86,7 +86,7 @@ Calls APIs.
 }
 
 func TestCollectNonInteractiveMissingName(t *testing.T) {
-	opts := &initOptions{Framework: "custom", ModelProvider: "openai", EnvVars: map[string]string{}}
+	opts := &initOptions{Framework: "forge", ModelProvider: "openai", EnvVars: map[string]string{}}
 	err := collectNonInteractive(opts)
 	if err == nil {
 		t.Fatal("expected error for missing name")
@@ -99,11 +99,8 @@ func TestCollectNonInteractiveFrameworkDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if opts.Framework != "custom" {
-		t.Errorf("expected framework custom, got %q", opts.Framework)
-	}
-	if opts.Language != "python" {
-		t.Errorf("expected language python, got %q", opts.Language)
+	if opts.Framework != "forge" {
+		t.Errorf("expected framework forge, got %q", opts.Framework)
 	}
 }
 
@@ -139,17 +136,14 @@ func TestCollectNonInteractiveLangchainTypeScript(t *testing.T) {
 	}
 }
 
-func TestCollectNonInteractiveCustomDefaults(t *testing.T) {
+func TestCollectNonInteractiveForgeDefaults(t *testing.T) {
 	opts := &initOptions{Name: "test", ModelProvider: "openai", EnvVars: map[string]string{}}
 	err := collectNonInteractive(opts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if opts.Framework != "custom" {
-		t.Errorf("expected default framework custom, got %q", opts.Framework)
-	}
-	if opts.Language != "python" {
-		t.Errorf("expected default language python, got %q", opts.Language)
+	if opts.Framework != "forge" {
+		t.Errorf("expected default framework forge, got %q", opts.Framework)
 	}
 }
 
@@ -187,7 +181,7 @@ func TestCollectNonInteractive_WithSkills(t *testing.T) {
 
 func TestCollectNonInteractive_RequiresName(t *testing.T) {
 	opts := &initOptions{
-		Framework:     "custom",
+		Framework:     "forge",
 		ModelProvider: "openai",
 		EnvVars:       map[string]string{},
 	}
@@ -214,29 +208,23 @@ func TestGetFileManifestLangchain(t *testing.T) {
 	assertContainsTemplate(t, files, "langchain/example_tool.py.tmpl")
 }
 
-func TestGetFileManifestCustomPython(t *testing.T) {
-	opts := &initOptions{Framework: "custom", Language: "python"}
+func TestGetFileManifestForge(t *testing.T) {
+	opts := &initOptions{Framework: "forge"}
 	files := getFileManifest(opts)
-	assertContainsTemplate(t, files, "custom/agent.py.tmpl")
-	assertContainsTemplate(t, files, "custom/example_tool.py.tmpl")
-}
-
-func TestGetFileManifestCustomTypeScript(t *testing.T) {
-	opts := &initOptions{Framework: "custom", Language: "typescript"}
-	files := getFileManifest(opts)
-	assertContainsTemplate(t, files, "custom/agent.ts.tmpl")
-	assertContainsTemplate(t, files, "custom/example_tool.ts.tmpl")
-}
-
-func TestGetFileManifestCustomGo(t *testing.T) {
-	opts := &initOptions{Framework: "custom", Language: "go"}
-	files := getFileManifest(opts)
-	assertContainsTemplate(t, files, "custom/main.go.tmpl")
-	assertContainsTemplate(t, files, "custom/example_tool.go.tmpl")
+	// Forge framework should have common files but no entrypoint scaffolding
+	assertContainsTemplate(t, files, "forge.yaml.tmpl")
+	assertContainsTemplate(t, files, "SKILL.md.tmpl")
+	assertContainsTemplate(t, files, "gitignore.tmpl")
+	// Should NOT have agent.py or similar
+	for _, f := range files {
+		if f.OutputPath == "agent.py" || f.OutputPath == "agent.ts" || f.OutputPath == "main.go" {
+			t.Errorf("forge framework should not scaffold %s", f.OutputPath)
+		}
+	}
 }
 
 func TestGetFileManifestCommonFiles(t *testing.T) {
-	opts := &initOptions{Framework: "custom", Language: "python"}
+	opts := &initOptions{Framework: "forge"}
 	files := getFileManifest(opts)
 	assertContainsTemplate(t, files, "forge.yaml.tmpl")
 	assertContainsTemplate(t, files, "SKILL.md.tmpl")
@@ -255,8 +243,7 @@ func TestScaffoldIntegration(t *testing.T) {
 	opts := &initOptions{
 		Name:          "Test Agent",
 		AgentID:       "test-agent",
-		Framework:     "custom",
-		Language:      "go",
+		Framework:     "forge",
 		ModelProvider: "openai",
 		Channels:      []string{"slack"},
 		Tools: []toolEntry{
@@ -271,11 +258,9 @@ func TestScaffoldIntegration(t *testing.T) {
 		t.Fatalf("scaffold error: %v", err)
 	}
 
-	// Verify all expected files exist
+	// Verify all expected files exist (forge framework has no entrypoint files)
 	expectedFiles := []string{
 		"forge.yaml",
-		"main.go",
-		"tools/example_tool.go",
 		"SKILL.md",
 		".env.example",
 		".gitignore",
@@ -296,11 +281,11 @@ func TestScaffoldIntegration(t *testing.T) {
 	if cfg.AgentID != "test-agent" {
 		t.Errorf("expected agent_id = test-agent, got %q", cfg.AgentID)
 	}
-	if cfg.Framework != "custom" {
-		t.Errorf("expected framework = custom, got %q", cfg.Framework)
+	if cfg.Framework != "forge" {
+		t.Errorf("expected framework = forge, got %q", cfg.Framework)
 	}
-	if cfg.Entrypoint != "go run main.go" {
-		t.Errorf("expected entrypoint = 'go run main.go', got %q", cfg.Entrypoint)
+	if cfg.Entrypoint != "" {
+		t.Errorf("expected empty entrypoint for forge framework, got %q", cfg.Entrypoint)
 	}
 	if cfg.Model.Provider != "openai" {
 		t.Errorf("expected model.provider = openai, got %q", cfg.Model.Provider)
@@ -362,8 +347,7 @@ func TestScaffold_GeneratesEnvFile(t *testing.T) {
 	opts := &initOptions{
 		Name:           "env-test",
 		AgentID:        "env-test",
-		Framework:      "custom",
-		Language:       "python",
+		Framework:      "forge",
 		ModelProvider:  "openai",
 		APIKey:         "sk-test123",
 		EnvVars:        map[string]string{"OPENAI_API_KEY": "sk-test123"},
@@ -396,8 +380,7 @@ func TestScaffold_VendorsSkills(t *testing.T) {
 	opts := &initOptions{
 		Name:           "skill-test",
 		AgentID:        "skill-test",
-		Framework:      "custom",
-		Language:       "python",
+		Framework:      "forge",
 		ModelProvider:  "openai",
 		Skills:         []string{"github"},
 		EnvVars:        map[string]string{},
@@ -430,8 +413,7 @@ func TestScaffold_EgressInForgeYAML(t *testing.T) {
 	opts := &initOptions{
 		Name:           "egress-test",
 		AgentID:        "egress-test",
-		Framework:      "custom",
-		Language:       "python",
+		Framework:      "forge",
 		ModelProvider:  "openai",
 		Channels:       []string{"slack"},
 		BuiltinTools:   []string{"web_search"},
@@ -471,8 +453,7 @@ func TestScaffold_GitignoreIncludesEnv(t *testing.T) {
 	opts := &initOptions{
 		Name:           "gi-test",
 		AgentID:        "gi-test",
-		Framework:      "custom",
-		Language:       "python",
+		Framework:      "forge",
 		ModelProvider:  "openai",
 		EnvVars:        map[string]string{},
 		NonInteractive: true,
@@ -609,8 +590,7 @@ func TestBuildTemplateData_DefaultModels(t *testing.T) {
 			opts := &initOptions{
 				Name:          "test",
 				AgentID:       "test",
-				Framework:     "custom",
-				Language:      "python",
+				Framework:     "forge",
 				ModelProvider: tt.provider,
 				EnvVars:       map[string]string{},
 			}
@@ -670,8 +650,7 @@ func TestScaffold_ForceOverwrite(t *testing.T) {
 	opts := &initOptions{
 		Name:           "force-test",
 		AgentID:        "force-test",
-		Framework:      "custom",
-		Language:       "python",
+		Framework:      "forge",
 		ModelProvider:  "openai",
 		EnvVars:        map[string]string{},
 		NonInteractive: true,
@@ -698,8 +677,7 @@ func TestScaffold_ExistingDirBlocked(t *testing.T) {
 	opts := &initOptions{
 		Name:           "blocked-test",
 		AgentID:        "blocked-test",
-		Framework:      "custom",
-		Language:       "python",
+		Framework:      "forge",
 		ModelProvider:  "openai",
 		EnvVars:        map[string]string{},
 		NonInteractive: true,
@@ -712,6 +690,98 @@ func TestScaffold_ExistingDirBlocked(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "already exists") {
 		t.Errorf("expected 'already exists' error, got: %v", err)
+	}
+}
+
+func TestIsSecretKey(t *testing.T) {
+	tests := []struct {
+		key    string
+		secret bool
+	}{
+		{"OPENAI_API_KEY", true},
+		{"ANTHROPIC_API_KEY", true},
+		{"GEMINI_API_KEY", true},
+		{"MODEL_API_KEY", true},
+		{"TAVILY_API_KEY", true},
+		{"PERPLEXITY_API_KEY", true},
+		{"TELEGRAM_BOT_TOKEN", true},
+		{"SLACK_APP_TOKEN", true},
+		{"SLACK_BOT_TOKEN", true},
+		{"GITHUB_TOKEN", true},
+		{"MY_SECRET", true},
+		{"OLLAMA_HOST", false},
+		{"MODEL_BASE_URL", false},
+		{"WEB_SEARCH_PROVIDER", false},
+		{"SOME_CONFIG", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			got := isSecretKey(tt.key)
+			if got != tt.secret {
+				t.Errorf("isSecretKey(%q) = %v, want %v", tt.key, got, tt.secret)
+			}
+		})
+	}
+}
+
+func TestSplitEnvVars(t *testing.T) {
+	vars := []envVarEntry{
+		{Key: "OPENAI_API_KEY", Value: "sk-real-key", Comment: "OpenAI API key"},
+		{Key: "OLLAMA_HOST", Value: "http://localhost:11434", Comment: "Ollama host"},
+		{Key: "TELEGRAM_BOT_TOKEN", Value: "123:ABC", Comment: "Telegram bot token"},
+		{Key: "GEMINI_API_KEY", Value: "your-api-key-here", Comment: "Gemini API key"},
+		{Key: "MODEL_BASE_URL", Value: "http://example.com", Comment: "Custom model endpoint URL"},
+		{Key: "TAVILY_API_KEY", Value: "", Comment: "Tavily API key"},
+	}
+
+	secrets, config := splitEnvVars(vars)
+
+	if len(secrets) != 2 {
+		t.Fatalf("expected 2 secrets, got %d: %+v", len(secrets), secrets)
+	}
+	if secrets[0].Key != "OPENAI_API_KEY" {
+		t.Errorf("expected first secret key OPENAI_API_KEY, got %s", secrets[0].Key)
+	}
+	if secrets[1].Key != "TELEGRAM_BOT_TOKEN" {
+		t.Errorf("expected second secret key TELEGRAM_BOT_TOKEN, got %s", secrets[1].Key)
+	}
+
+	if len(config) != 4 {
+		t.Fatalf("expected 4 config vars, got %d: %+v", len(config), config)
+	}
+}
+
+func TestSplitEnvVars_NoSecrets(t *testing.T) {
+	vars := []envVarEntry{
+		{Key: "OLLAMA_HOST", Value: "http://localhost:11434"},
+		{Key: "WEB_SEARCH_PROVIDER", Value: "tavily"},
+	}
+
+	secrets, config := splitEnvVars(vars)
+
+	if len(secrets) != 0 {
+		t.Fatalf("expected 0 secrets, got %d", len(secrets))
+	}
+	if len(config) != 2 {
+		t.Fatalf("expected 2 config vars, got %d", len(config))
+	}
+}
+
+func TestSplitEnvVars_AllPlaceholders(t *testing.T) {
+	vars := []envVarEntry{
+		{Key: "OPENAI_API_KEY", Value: "your-api-key-here"},
+		{Key: "TAVILY_API_KEY", Value: "your-tavily-key-here"},
+		{Key: "PERPLEXITY_API_KEY", Value: "your-perplexity-key-here"},
+	}
+
+	secrets, config := splitEnvVars(vars)
+
+	if len(secrets) != 0 {
+		t.Fatalf("expected 0 secrets (all placeholders), got %d", len(secrets))
+	}
+	if len(config) != 3 {
+		t.Fatalf("expected 3 config vars, got %d", len(config))
 	}
 }
 

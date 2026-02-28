@@ -4,8 +4,8 @@ import "testing"
 
 func TestPlugin_Name(t *testing.T) {
 	p := &Plugin{}
-	if p.Name() != "custom" {
-		t.Errorf("Name() = %q, want custom", p.Name())
+	if p.Name() != "forge" {
+		t.Errorf("Name() = %q, want forge", p.Name())
 	}
 }
 
@@ -41,7 +41,7 @@ func TestPlugin_GenerateWrapper_Nil(t *testing.T) {
 		t.Fatalf("GenerateWrapper error: %v", err)
 	}
 	if data != nil {
-		t.Error("expected nil wrapper for custom plugin")
+		t.Error("expected nil wrapper for forge plugin")
 	}
 }
 

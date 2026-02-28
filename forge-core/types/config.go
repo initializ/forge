@@ -9,17 +9,24 @@ import (
 
 // ForgeConfig represents the top-level forge.yaml configuration.
 type ForgeConfig struct {
-	AgentID    string       `yaml:"agent_id"`
-	Version    string       `yaml:"version"`
-	Framework  string       `yaml:"framework"`
-	Entrypoint string       `yaml:"entrypoint"`
-	Model      ModelRef     `yaml:"model,omitempty"`
-	Tools      []ToolRef    `yaml:"tools,omitempty"`
-	Channels   []string     `yaml:"channels,omitempty"`
-	Registry   string       `yaml:"registry,omitempty"`
-	Egress     EgressRef    `yaml:"egress,omitempty"`
-	Skills     SkillsRef    `yaml:"skills,omitempty"`
-	Memory     MemoryConfig `yaml:"memory,omitempty"`
+	AgentID    string        `yaml:"agent_id"`
+	Version    string        `yaml:"version"`
+	Framework  string        `yaml:"framework"`
+	Entrypoint string        `yaml:"entrypoint"`
+	Model      ModelRef      `yaml:"model,omitempty"`
+	Tools      []ToolRef     `yaml:"tools,omitempty"`
+	Channels   []string      `yaml:"channels,omitempty"`
+	Registry   string        `yaml:"registry,omitempty"`
+	Egress     EgressRef     `yaml:"egress,omitempty"`
+	Skills     SkillsRef     `yaml:"skills,omitempty"`
+	Memory     MemoryConfig  `yaml:"memory,omitempty"`
+	Secrets    SecretsConfig `yaml:"secrets,omitempty"`
+}
+
+// SecretsConfig configures secret management providers.
+type SecretsConfig struct {
+	Providers []string `yaml:"providers,omitempty"` // e.g. ["env"], ["encrypted-file","env"]
+	Path      string   `yaml:"path,omitempty"`      // encrypted file path, default ~/.forge/secrets.enc
 }
 
 // MemoryConfig configures agent memory persistence and compaction.
@@ -86,7 +93,7 @@ func ParseForgeConfig(data []byte) (*ForgeConfig, error) {
 	if cfg.Version == "" {
 		return nil, fmt.Errorf("forge config: version is required")
 	}
-	if cfg.Entrypoint == "" {
+	if cfg.Entrypoint == "" && cfg.Framework != "forge" {
 		return nil, fmt.Errorf("forge config: entrypoint is required")
 	}
 

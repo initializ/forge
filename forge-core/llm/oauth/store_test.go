@@ -10,9 +10,8 @@ import (
 func TestSaveAndLoadCredentials(t *testing.T) {
 	// Use a temp directory
 	tmpDir := t.TempDir()
-	origHome := os.Getenv("HOME")
 	t.Setenv("HOME", tmpDir)
-	defer func() { _ = os.Setenv("HOME", origHome) }()
+	t.Setenv("FORGE_PASSPHRASE", "") // ensure plaintext path
 
 	token := &Token{
 		AccessToken:  "test-access-token",
@@ -56,6 +55,7 @@ func TestSaveAndLoadCredentials(t *testing.T) {
 func TestLoadCredentials_NotFound(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
+	t.Setenv("FORGE_PASSPHRASE", "")
 
 	token, err := LoadCredentials("nonexistent")
 	if err != nil {
@@ -69,6 +69,7 @@ func TestLoadCredentials_NotFound(t *testing.T) {
 func TestDeleteCredentials(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
+	t.Setenv("FORGE_PASSPHRASE", "")
 
 	token := &Token{AccessToken: "delete-me"}
 	_ = SaveCredentials("deletable", token)
@@ -81,5 +82,177 @@ func TestDeleteCredentials(t *testing.T) {
 	loaded, _ := LoadCredentials("deletable")
 	if loaded != nil {
 		t.Error("expected nil after deletion")
+	}
+}
+
+func TestSaveCredentials_Encrypted(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("FORGE_PASSPHRASE", "test-passphrase")
+
+	token := &Token{
+		AccessToken:  "enc-access",
+		RefreshToken: "enc-refresh",
+		TokenType:    "Bearer",
+		ExpiresAt:    time.Now().Add(1 * time.Hour),
+	}
+
+	// Save with encryption
+	if err := SaveCredentials("openai", token); err != nil {
+		t.Fatalf("SaveCredentials(encrypted) error: %v", err)
+	}
+
+	// Plaintext file should NOT exist
+	credPath := filepath.Join(tmpDir, ".forge", "credentials", "openai.json")
+	if _, err := os.Stat(credPath); !os.IsNotExist(err) {
+		t.Error("expected no plaintext file when encrypted store is used")
+	}
+
+	// Encrypted file should exist
+	encPath := filepath.Join(tmpDir, ".forge", "secrets.enc")
+	if _, err := os.Stat(encPath); err != nil {
+		t.Fatalf("encrypted file not found: %v", err)
+	}
+
+	// Load back
+	loaded, err := LoadCredentials("openai")
+	if err != nil {
+		t.Fatalf("LoadCredentials(encrypted) error: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("expected non-nil token")
+	}
+	if loaded.AccessToken != "enc-access" {
+		t.Errorf("expected 'enc-access', got %q", loaded.AccessToken)
+	}
+	if loaded.RefreshToken != "enc-refresh" {
+		t.Errorf("expected 'enc-refresh', got %q", loaded.RefreshToken)
+	}
+}
+
+func TestLoadCredentials_FallbackToPlaintext(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	token := &Token{
+		AccessToken:  "plaintext-token",
+		RefreshToken: "plaintext-refresh",
+		TokenType:    "Bearer",
+	}
+
+	// Save as plaintext (no passphrase)
+	t.Setenv("FORGE_PASSPHRASE", "")
+	if err := SaveCredentials("openai", token); err != nil {
+		t.Fatalf("SaveCredentials(plaintext) error: %v", err)
+	}
+
+	// Now set passphrase — Load should fall back to plaintext since the key
+	// is not in the encrypted store.
+	t.Setenv("FORGE_PASSPHRASE", "test-passphrase")
+
+	loaded, err := LoadCredentials("openai")
+	if err != nil {
+		t.Fatalf("LoadCredentials(fallback) error: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("expected non-nil token from plaintext fallback")
+	}
+	if loaded.AccessToken != "plaintext-token" {
+		t.Errorf("expected 'plaintext-token', got %q", loaded.AccessToken)
+	}
+}
+
+func TestMigrateToEncrypted(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	token := &Token{
+		AccessToken:  "migrate-me",
+		RefreshToken: "migrate-refresh",
+		TokenType:    "Bearer",
+	}
+
+	// Save as plaintext
+	t.Setenv("FORGE_PASSPHRASE", "")
+	if err := SaveCredentials("openai", token); err != nil {
+		t.Fatalf("SaveCredentials(plaintext) error: %v", err)
+	}
+
+	// Plaintext file should exist
+	credPath := filepath.Join(tmpDir, ".forge", "credentials", "openai.json")
+	if _, err := os.Stat(credPath); err != nil {
+		t.Fatalf("plaintext file not found before migration: %v", err)
+	}
+
+	// Migrate with passphrase
+	t.Setenv("FORGE_PASSPHRASE", "test-passphrase")
+	if err := MigrateToEncrypted("openai"); err != nil {
+		t.Fatalf("MigrateToEncrypted() error: %v", err)
+	}
+
+	// Plaintext file should be deleted
+	if _, err := os.Stat(credPath); !os.IsNotExist(err) {
+		t.Error("expected plaintext file to be deleted after migration")
+	}
+
+	// Load from encrypted store
+	loaded, err := LoadCredentials("openai")
+	if err != nil {
+		t.Fatalf("LoadCredentials(post-migration) error: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("expected non-nil token after migration")
+	}
+	if loaded.AccessToken != "migrate-me" {
+		t.Errorf("expected 'migrate-me', got %q", loaded.AccessToken)
+	}
+	if loaded.RefreshToken != "migrate-refresh" {
+		t.Errorf("expected 'migrate-refresh', got %q", loaded.RefreshToken)
+	}
+}
+
+func TestDeleteCredentials_Both(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	token := &Token{
+		AccessToken: "both-token",
+		TokenType:   "Bearer",
+	}
+
+	// Save plaintext first
+	t.Setenv("FORGE_PASSPHRASE", "")
+	if err := SaveCredentials("openai", token); err != nil {
+		t.Fatalf("SaveCredentials(plaintext) error: %v", err)
+	}
+
+	// Save encrypted (this also removes plaintext, so re-create it)
+	t.Setenv("FORGE_PASSPHRASE", "test-passphrase")
+	if err := SaveCredentials("openai", token); err != nil {
+		t.Fatalf("SaveCredentials(encrypted) error: %v", err)
+	}
+
+	// Manually recreate the plaintext file to simulate both existing
+	credPath := filepath.Join(tmpDir, ".forge", "credentials", "openai.json")
+	_ = os.MkdirAll(filepath.Dir(credPath), 0o700)
+	_ = os.WriteFile(credPath, []byte(`{"access_token":"both-token"}`), 0o600)
+
+	// Delete should remove both
+	if err := DeleteCredentials("openai"); err != nil {
+		t.Fatalf("DeleteCredentials() error: %v", err)
+	}
+
+	// Plaintext should be gone
+	if _, err := os.Stat(credPath); !os.IsNotExist(err) {
+		t.Error("expected plaintext file to be deleted")
+	}
+
+	// Encrypted should be gone — Load should return nil
+	loaded, err := LoadCredentials("openai")
+	if err != nil {
+		t.Fatalf("LoadCredentials(after delete) error: %v", err)
+	}
+	if loaded != nil {
+		t.Error("expected nil token after deleting both stores")
 	}
 }

@@ -47,7 +47,7 @@ func TestRunCmd_InvalidConfigContent(t *testing.T) {
 	dir := t.TempDir()
 
 	// Write an invalid forge.yaml (missing required fields)
-	cfgContent := "framework: custom\n"
+	cfgContent := "framework: forge\n"
 	os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(cfgContent), 0644) //nolint:errcheck
 
 	origDir, _ := os.Getwd()

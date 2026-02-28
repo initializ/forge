@@ -19,8 +19,7 @@ func TestChannelAddSlack(t *testing.T) {
 	writeTestForgeYAML(t, dir, `
 agent_id: test-agent
 version: 0.1.0
-framework: custom
-entrypoint: python agent.py
+framework: forge
 channels:
   - a2a
 `)
@@ -91,8 +90,7 @@ func TestChannelAddTelegram(t *testing.T) {
 	writeTestForgeYAML(t, dir, `
 agent_id: test-agent
 version: 0.1.0
-framework: custom
-entrypoint: python agent.py
+framework: forge
 `)
 
 	err := runChannelAdd(nil, []string{"telegram"})
@@ -143,8 +141,7 @@ func TestChannelAddIdempotent(t *testing.T) {
 	writeTestForgeYAML(t, dir, `
 agent_id: test-agent
 version: 0.1.0
-framework: custom
-entrypoint: python agent.py
+framework: forge
 channels:
   - slack
 `)
@@ -234,8 +231,7 @@ func TestChannelAddSlack_UpdatesEgress(t *testing.T) {
 	writeTestForgeYAML(t, dir, `
 agent_id: test-agent
 version: 0.1.0
-framework: custom
-entrypoint: python agent.py
+framework: forge
 `)
 
 	err := runChannelAdd(nil, []string{"slack"})
@@ -281,8 +277,7 @@ func TestChannelAddTelegram_UpdatesEgress(t *testing.T) {
 	writeTestForgeYAML(t, dir, `
 agent_id: test-agent
 version: 0.1.0
-framework: custom
-entrypoint: python agent.py
+framework: forge
 `)
 
 	err := runChannelAdd(nil, []string{"telegram"})

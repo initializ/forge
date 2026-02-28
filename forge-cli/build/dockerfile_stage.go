@@ -42,5 +42,20 @@ func (s *DockerfileStage) Execute(ctx context.Context, bc *pipeline.BuildContext
 	}
 
 	bc.AddFile("Dockerfile", outPath)
+
+	// Generate .dockerignore to prevent secrets from leaking into container images.
+	dockerignoreContent := `.env
+.env.*
+*.enc
+secrets.enc
+*.key
+*.pem
+`
+	ignorePath := filepath.Join(bc.Opts.OutputDir, ".dockerignore")
+	if err := os.WriteFile(ignorePath, []byte(dockerignoreContent), 0644); err != nil {
+		return fmt.Errorf("writing .dockerignore: %w", err)
+	}
+	bc.AddFile(".dockerignore", ignorePath)
+
 	return nil
 }

@@ -212,8 +212,41 @@ func (p *Plugin) NormalizeEvent(raw []byte) (*channels.ChannelEvent, error) {
 }
 
 // SendResponse posts a message back to Slack via chat.postMessage.
+// For large responses (>8000 chars), splits into a summary message and a
+// file upload with the full report.
 func (p *Plugin) SendResponse(event *channels.ChannelEvent, response *a2a.Message) error {
 	text := extractText(response)
+
+	// For large responses, split into summary + file upload
+	if len(text) > 4096 {
+		summary, report := markdown.SplitSummaryAndReport(text)
+		summaryMrkdwn := markdown.ToSlackMrkdwn(summary)
+
+		// Post summary message
+		threadTS := event.ThreadID
+		if threadTS == "" {
+			threadTS = event.MessageID
+		}
+		payload := map[string]any{
+			"channel": event.WorkspaceID,
+			"text":    summaryMrkdwn,
+			"mrkdwn":  true,
+		}
+		if threadTS != "" {
+			payload["thread_ts"] = threadTS
+		}
+		if err := p.postMessage(payload); err != nil {
+			return err
+		}
+
+		// Upload full report as file
+		if err := p.uploadFile(event, "research-report.md", report); err != nil {
+			// Fallback: send as chunked messages
+			return p.sendChunked(event, text)
+		}
+		return nil
+	}
+
 	mrkdwn := markdown.ToSlackMrkdwn(text)
 	chunks := markdown.SplitMessage(mrkdwn, 4000)
 
@@ -235,6 +268,74 @@ func (p *Plugin) SendResponse(event *channels.ChannelEvent, response *a2a.Messag
 			return err
 		}
 	}
+	return nil
+}
+
+// sendChunked sends text as chunked messages (fallback for failed file upload).
+func (p *Plugin) sendChunked(event *channels.ChannelEvent, text string) error {
+	mrkdwn := markdown.ToSlackMrkdwn(text)
+	chunks := markdown.SplitMessage(mrkdwn, 4000)
+	for i, chunk := range chunks {
+		payload := map[string]any{
+			"channel": event.WorkspaceID,
+			"text":    chunk,
+			"mrkdwn":  true,
+		}
+		if i == 0 {
+			if event.ThreadID != "" {
+				payload["thread_ts"] = event.ThreadID
+			} else if event.MessageID != "" {
+				payload["thread_ts"] = event.MessageID
+			}
+		}
+		if err := p.postMessage(payload); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// uploadFile uploads content as a file to a Slack channel using files.upload.
+func (p *Plugin) uploadFile(event *channels.ChannelEvent, filename, content string) error {
+	threadTS := event.ThreadID
+	if threadTS == "" {
+		threadTS = event.MessageID
+	}
+
+	payload := map[string]any{
+		"channels": event.WorkspaceID,
+		"filename": filename,
+		"content":  content,
+		"filetype": "markdown",
+	}
+	if threadTS != "" {
+		payload["thread_ts"] = threadTS
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshalling file upload: %w", err)
+	}
+
+	url := p.apiBase + "/files.upload"
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("creating file upload request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+p.botToken)
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("uploading file to slack: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("slack files.upload error %d: %s", resp.StatusCode, string(respBody))
+	}
+
 	return nil
 }
 

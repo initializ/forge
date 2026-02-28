@@ -38,6 +38,7 @@ func DeriveCLIConfig(reqs *contract.AggregatedRequirements) *contract.DerivedCLI
 	return &contract.DerivedCLIConfig{
 		AllowedBinaries: reqs.Bins, // already sorted from AggregateRequirements
 		EnvPassthrough:  envPass,
+		TimeoutHint:     reqs.MaxTimeoutHint,
 	}
 }
 
@@ -64,6 +65,13 @@ func MergeCLIConfig(explicit, derived *contract.DerivedCLIConfig) *contract.Deri
 		merged.EnvPassthrough = explicit.EnvPassthrough
 	} else {
 		merged.EnvPassthrough = derived.EnvPassthrough
+	}
+
+	// Use the larger timeout hint
+	if explicit.TimeoutHint > derived.TimeoutHint {
+		merged.TimeoutHint = explicit.TimeoutHint
+	} else {
+		merged.TimeoutHint = derived.TimeoutHint
 	}
 
 	return merged

@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
+	"mime/multipart"
 	"net/http"
 	"strconv"
 	"time"
@@ -267,8 +269,47 @@ func (p *Plugin) NormalizeEvent(raw []byte) (*channels.ChannelEvent, error) {
 }
 
 // SendResponse sends a text message back to the Telegram chat.
+// For large responses (>8000 chars), sends a summary message and uploads
+// the full report as a document.
 func (p *Plugin) SendResponse(event *channels.ChannelEvent, response *a2a.Message) error {
 	text := extractText(response)
+	log.Printf("[telegram] SendResponse: text length=%d chars", len(text))
+
+	// For large responses, split into summary + document upload
+	if len(text) > 4096 {
+		summary, report := markdown.SplitSummaryAndReport(text)
+		summaryHTML := markdown.ToTelegramHTML(summary)
+
+		// Send summary message
+		payload := map[string]any{
+			"chat_id":    event.WorkspaceID,
+			"text":       summaryHTML,
+			"parse_mode": "HTML",
+		}
+		if event.MessageID != "" {
+			payload["reply_to_message_id"] = event.MessageID
+		}
+		if err := p.sendMessage(payload); err != nil {
+			// Fallback plain text
+			delete(payload, "parse_mode")
+			payload["text"] = summary
+			_ = p.sendMessage(payload)
+		}
+
+		// Upload full report as document
+		if err := p.sendDocument(event, "research-report.md", report); err != nil {
+			log.Printf("[telegram] sendDocument failed (len=%d): %v", len(report), err)
+			// Retry without reply context (common Telegram API failure cause)
+			noReplyEvent := *event
+			noReplyEvent.MessageID = ""
+			if err2 := p.sendDocument(&noReplyEvent, "research-report.md", report); err2 != nil {
+				log.Printf("[telegram] sendDocument retry failed: %v — falling back to chunked messages", err2)
+				return p.sendChunked(event, text)
+			}
+		}
+		return nil
+	}
+
 	html := markdown.ToTelegramHTML(text)
 	chunks := markdown.SplitMessage(html, 4096)
 
@@ -290,6 +331,81 @@ func (p *Plugin) SendResponse(event *channels.ChannelEvent, response *a2a.Messag
 			}
 		}
 	}
+	return nil
+}
+
+// sendChunked sends text as chunked messages (fallback for failed document upload).
+func (p *Plugin) sendChunked(event *channels.ChannelEvent, text string) error {
+	html := markdown.ToTelegramHTML(text)
+	chunks := markdown.SplitMessage(html, 4096)
+	for i, chunk := range chunks {
+		payload := map[string]any{
+			"chat_id":    event.WorkspaceID,
+			"text":       chunk,
+			"parse_mode": "HTML",
+		}
+		if i == 0 && event.MessageID != "" {
+			payload["reply_to_message_id"] = event.MessageID
+		}
+		if err := p.sendMessage(payload); err != nil {
+			delete(payload, "parse_mode")
+			payload["text"] = chunk
+			if fbErr := p.sendMessage(payload); fbErr != nil {
+				return fbErr
+			}
+		}
+	}
+	return nil
+}
+
+// sendDocument uploads content as a document to a Telegram chat.
+func (p *Plugin) sendDocument(event *channels.ChannelEvent, filename, content string) error {
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+
+	// chat_id field
+	if err := writer.WriteField("chat_id", event.WorkspaceID); err != nil {
+		return fmt.Errorf("writing chat_id field: %w", err)
+	}
+
+	// reply_to_message_id field
+	if event.MessageID != "" {
+		if err := writer.WriteField("reply_to_message_id", event.MessageID); err != nil {
+			return fmt.Errorf("writing reply_to_message_id field: %w", err)
+		}
+	}
+
+	// document file field
+	part, err := writer.CreateFormFile("document", filename)
+	if err != nil {
+		return fmt.Errorf("creating form file: %w", err)
+	}
+	if _, err := part.Write([]byte(content)); err != nil {
+		return fmt.Errorf("writing document content: %w", err)
+	}
+
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("closing multipart writer: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/bot%s/sendDocument", p.apiBase, p.botToken)
+	req, err := http.NewRequest(http.MethodPost, url, &buf)
+	if err != nil {
+		return fmt.Errorf("creating sendDocument request: %w", err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("sending document to telegram: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("telegram sendDocument error %d: %s", resp.StatusCode, string(respBody))
+	}
+
 	return nil
 }
 

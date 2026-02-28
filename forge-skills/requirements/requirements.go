@@ -55,6 +55,17 @@ func AggregateRequirements(entries []contract.SkillEntry) *contract.AggregatedRe
 	return agg
 }
 
+// AggregateDescriptorRequirements computes the maximum TimeoutHint across descriptors.
+func AggregateDescriptorRequirements(descs []contract.SkillDescriptor) int {
+	maxTimeout := 0
+	for _, d := range descs {
+		if d.TimeoutHint > maxTimeout {
+			maxTimeout = d.TimeoutHint
+		}
+	}
+	return maxTimeout
+}
+
 func sortedKeys(m map[string]bool) []string {
 	if len(m) == 0 {
 		return nil

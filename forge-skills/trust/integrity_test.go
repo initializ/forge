@@ -79,6 +79,10 @@ func (m *mockRegistry) LoadScript(name string) ([]byte, error) {
 	return nil, nil
 }
 
+func (m *mockRegistry) ListScripts(name string) []string {
+	return nil
+}
+
 func TestGenerateManifest(t *testing.T) {
 	reg := &mockRegistry{
 		skills: []contract.SkillDescriptor{

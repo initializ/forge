@@ -25,6 +25,7 @@ import (
 	"github.com/initializ/forge/forge-core/tools"
 	"github.com/initializ/forge/forge-core/tools/builtins"
 	"github.com/initializ/forge/forge-core/types"
+	"github.com/initializ/forge/forge-skills/contract"
 	"github.com/initializ/forge/forge-skills/requirements"
 	"github.com/initializ/forge/forge-skills/resolver"
 )
@@ -45,10 +46,11 @@ type RunnerConfig struct {
 
 // Runner orchestrates the local A2A development server.
 type Runner struct {
-	cfg         RunnerConfig
-	logger      coreruntime.Logger
-	cliExecTool *clitools.CLIExecuteTool
-	modelConfig *coreruntime.ModelConfig // resolved model config (for banner)
+	cfg              RunnerConfig
+	logger           coreruntime.Logger
+	cliExecTool      *clitools.CLIExecuteTool
+	modelConfig      *coreruntime.ModelConfig   // resolved model config (for banner)
+	derivedCLIConfig *contract.DerivedCLIConfig // auto-derived from skill requirements
 }
 
 // NewRunner creates a Runner from the given config.
@@ -126,10 +128,20 @@ func (r *Runner) Run(ctx context.Context) error {
 				r.logger.Warn("failed to register builtin tools", map[string]any{"error": err.Error()})
 			}
 
+			// Register read_skill tool for lazy-loading skill instructions
+			readSkill := builtins.NewReadSkillTool(r.cfg.WorkDir)
+			if regErr := reg.Register(readSkill); regErr != nil {
+				r.logger.Warn("failed to register read_skill", map[string]any{"error": regErr.Error()})
+			}
+
 			// Register cli_execute if configured
 			for _, toolRef := range r.cfg.Config.Tools {
 				if toolRef.Name == "cli_execute" && toolRef.Config != nil {
 					cliCfg := clitools.ParseCLIExecuteConfig(toolRef.Config)
+					// Apply timeout hint from skill requirements if larger than explicit config
+					if r.derivedCLIConfig != nil && r.derivedCLIConfig.TimeoutHint > cliCfg.TimeoutSeconds {
+						cliCfg.TimeoutSeconds = r.derivedCLIConfig.TimeoutHint
+					}
 					if len(cliCfg.AllowedBinaries) > 0 {
 						r.cliExecTool = clitools.NewCLIExecuteTool(cliCfg)
 						if regErr := reg.Register(r.cliExecTool); regErr != nil {
@@ -164,6 +176,9 @@ func (r *Runner) Run(ctx context.Context) error {
 				r.logger.Info("discovered custom tools", map[string]any{"count": len(discovered)})
 			}
 
+			// Register skill tools from skills/*.md files
+			r.registerSkillTools(reg)
+
 			// Log registered tool names
 			toolNames := reg.List()
 			r.logger.Info("registered tools", map[string]any{"tools": toolNames})
@@ -181,6 +196,7 @@ func (r *Runner) Run(ctx context.Context) error {
 					hooks := coreruntime.NewHookRegistry()
 					r.registerLoggingHooks(hooks)
 					r.registerAuditHooks(hooks, auditLogger)
+					r.registerProgressHooks(hooks)
 
 					// Compute model-aware character budget.
 					charBudget := r.cfg.Config.Memory.CharBudget
@@ -192,7 +208,7 @@ func (r *Runner) Run(ctx context.Context) error {
 						Client:       llmClient,
 						Tools:        reg,
 						Hooks:        hooks,
-						SystemPrompt: fmt.Sprintf("You are %s, an AI agent.", r.cfg.Config.AgentID),
+						SystemPrompt: r.buildSystemPrompt(),
 						Logger:       r.logger,
 						ModelName:    mc.Client.Model,
 						CharBudget:   charBudget,
@@ -533,6 +549,25 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 		store.Put(task)
 		server.WriteSSEEvent(w, flusher, "status", task) //nolint:errcheck
 
+		// Inject progress emitter for SSE clients
+		ctx = coreruntime.WithProgressEmitter(ctx, func(event coreruntime.ProgressEvent) {
+			progressTask := &a2a.Task{
+				ID: params.ID,
+				Status: a2a.TaskStatus{
+					State: a2a.TaskStateWorking,
+					Message: &a2a.Message{
+						Role:  a2a.MessageRoleAgent,
+						Parts: []a2a.Part{a2a.NewTextPart(event.Message)},
+					},
+				},
+				Metadata: map[string]any{
+					"progress_phase": event.Phase,
+					"progress_tool":  event.Tool,
+				},
+			}
+			server.WriteSSEEvent(w, flusher, "progress", progressTask) //nolint:errcheck
+		})
+
 		// Stream from executor
 		ch, err := executor.ExecuteStream(ctx, task, &params.Message)
 		if err != nil {
@@ -748,6 +783,37 @@ func (r *Runner) registerAuditHooks(hooks *coreruntime.HookRegistry, auditLogger
 	})
 }
 
+// registerProgressHooks adds hooks that emit progress events via ProgressEmitter.
+// The emitter is injected into context by SSE handlers so clients receive real-time
+// progress during long-running tool executions.
+func (r *Runner) registerProgressHooks(hooks *coreruntime.HookRegistry) {
+	hooks.Register(coreruntime.BeforeToolExec, func(ctx context.Context, hctx *coreruntime.HookContext) error {
+		if emitter := coreruntime.ProgressEmitterFromContext(ctx); emitter != nil {
+			emitter(coreruntime.ProgressEvent{
+				Phase:   "tool_start",
+				Tool:    hctx.ToolName,
+				Message: fmt.Sprintf("Executing %s...", hctx.ToolName),
+			})
+		}
+		return nil
+	})
+
+	hooks.Register(coreruntime.AfterToolExec, func(ctx context.Context, hctx *coreruntime.HookContext) error {
+		if emitter := coreruntime.ProgressEmitterFromContext(ctx); emitter != nil {
+			msg := fmt.Sprintf("Completed %s", hctx.ToolName)
+			if hctx.Error != nil {
+				msg = fmt.Sprintf("Failed %s: %s", hctx.ToolName, hctx.Error.Error())
+			}
+			emitter(coreruntime.ProgressEvent{
+				Phase:   "tool_end",
+				Tool:    hctx.ToolName,
+				Message: msg,
+			})
+		}
+		return nil
+	})
+}
+
 // buildLLMClient creates the LLM client from the resolved model config.
 // If fallback providers are configured, wraps them in a FallbackChain.
 func (r *Runner) buildLLMClient(mc *coreruntime.ModelConfig) (llm.Client, error) {
@@ -873,6 +939,153 @@ func (r *Runner) printBanner() {
 	fmt.Fprintf(os.Stderr, "  Press Ctrl+C to stop\n\n")
 }
 
+// registerSkillTools scans skills/*.md and the main SKILL.md for skill entries
+// that have associated scripts. Each script-backed skill is registered as a
+// first-class tool in the registry.
+func (r *Runner) registerSkillTools(reg *tools.Registry) {
+	skillsDir := filepath.Join(r.cfg.WorkDir, "skills")
+	matches, _ := filepath.Glob(filepath.Join(skillsDir, "*.md"))
+
+	// Also check main SKILL.md
+	mainSkill := "SKILL.md"
+	if r.cfg.Config.Skills.Path != "" {
+		mainSkill = r.cfg.Config.Skills.Path
+	}
+	if !filepath.IsAbs(mainSkill) {
+		mainSkill = filepath.Join(r.cfg.WorkDir, mainSkill)
+	}
+	if info, err := os.Stat(mainSkill); err == nil && !info.IsDir() {
+		matches = append(matches, mainSkill)
+	}
+
+	var registered int
+	for _, match := range matches {
+		entries, meta, err := cliskills.ParseFileWithMetadata(match)
+		if err != nil {
+			continue
+		}
+
+		for _, entry := range entries {
+			// Map tool name (underscores) to script name (hyphens)
+			scriptName := strings.ReplaceAll(entry.Name, "_", "-")
+			scriptPath := filepath.Join("skills", "scripts", scriptName+".sh")
+			absScript := filepath.Join(r.cfg.WorkDir, scriptPath)
+
+			if _, err := os.Stat(absScript); err != nil {
+				continue // No script file, skip
+			}
+
+			// Extract timeout_hint from metadata
+			timeout := 120 * time.Second
+			if meta != nil && meta.Metadata != nil {
+				if forgeMap, ok := meta.Metadata["forge"]; ok {
+					if raw, ok := forgeMap["timeout_hint"]; ok {
+						switch v := raw.(type) {
+						case int:
+							timeout = time.Duration(v) * time.Second
+						case float64:
+							timeout = time.Duration(int(v)) * time.Second
+						}
+					}
+				}
+			}
+
+			// Collect env vars for passthrough
+			var envVars []string
+			if entry.ForgeReqs != nil && entry.ForgeReqs.Env != nil {
+				envVars = append(envVars, entry.ForgeReqs.Env.Required...)
+				envVars = append(envVars, entry.ForgeReqs.Env.Optional...)
+			}
+
+			skillExec := &clitools.SkillCommandExecutor{
+				Timeout: timeout,
+				EnvVars: envVars,
+			}
+
+			st := tools.NewSkillTool(entry.Name, entry.Description, entry.InputSpec, scriptPath, skillExec)
+			if err := reg.Register(st); err != nil {
+				r.logger.Warn("failed to register skill tool", map[string]any{
+					"skill": entry.Name, "error": err.Error(),
+				})
+			} else {
+				registered++
+			}
+		}
+	}
+	if registered > 0 {
+		r.logger.Info("registered skill tools", map[string]any{"count": registered})
+	}
+}
+
+// buildSystemPrompt constructs the system prompt with an optional skill catalog.
+func (r *Runner) buildSystemPrompt() string {
+	base := fmt.Sprintf("You are %s, an AI agent.", r.cfg.Config.AgentID)
+	catalog := r.buildSkillCatalog()
+	if catalog == "" {
+		return base
+	}
+	return base + "\n\n" + catalog
+}
+
+// buildSkillCatalog generates a lightweight catalog of binary-backed skills
+// (those without scripts) for the system prompt. Script-backed skills are
+// already registered as first-class tools and don't need catalog entries.
+func (r *Runner) buildSkillCatalog() string {
+	skillsDir := filepath.Join(r.cfg.WorkDir, "skills")
+	matches, _ := filepath.Glob(filepath.Join(skillsDir, "*.md"))
+
+	// Also check main SKILL.md
+	mainSkill := "SKILL.md"
+	if r.cfg.Config.Skills.Path != "" {
+		mainSkill = r.cfg.Config.Skills.Path
+	}
+	if !filepath.IsAbs(mainSkill) {
+		mainSkill = filepath.Join(r.cfg.WorkDir, mainSkill)
+	}
+	if info, err := os.Stat(mainSkill); err == nil && !info.IsDir() {
+		matches = append(matches, mainSkill)
+	}
+
+	if len(matches) == 0 {
+		return ""
+	}
+
+	var catalogEntries []string
+	for _, match := range matches {
+		entries, _, err := cliskills.ParseFileWithMetadata(match)
+		if err != nil {
+			continue
+		}
+
+		for _, entry := range entries {
+			// Skip skills that have scripts (already registered as tools)
+			scriptName := strings.ReplaceAll(entry.Name, "_", "-")
+			scriptPath := filepath.Join(r.cfg.WorkDir, "skills", "scripts", scriptName+".sh")
+			if _, err := os.Stat(scriptPath); err == nil {
+				continue
+			}
+
+			if entry.Name != "" && entry.Description != "" {
+				catalogEntries = append(catalogEntries, fmt.Sprintf("- %s: %s", entry.Name, entry.Description))
+			}
+		}
+	}
+
+	if len(catalogEntries) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("## Available Skills\n")
+	b.WriteString("The following skills are available. Use read_skill to read full\n")
+	b.WriteString("instructions before invoking a skill via cli_execute.\n\n")
+	for _, entry := range catalogEntries {
+		b.WriteString(entry)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
 // validateSkillRequirements loads skill requirements and validates them.
 // It also auto-derives cli_execute config from skill requirements.
 func (r *Runner) validateSkillRequirements(envVars map[string]string) error {
@@ -935,12 +1148,19 @@ func (r *Runner) validateSkillRequirements(envVars map[string]string) error {
 		}
 
 		if !hasExplicit {
-			r.logger.Info("auto-derived cli_execute from skill requirements", map[string]any{
+			fields := map[string]any{
 				"binaries": len(derived.AllowedBinaries),
 				"env_vars": len(derived.EnvPassthrough),
-			})
+			}
+			if derived.TimeoutHint > 0 {
+				fields["timeout_hint"] = derived.TimeoutHint
+			}
+			r.logger.Info("auto-derived cli_execute from skill requirements", fields)
 		}
 	}
+
+	// Store the derived config for use during executor setup
+	r.derivedCLIConfig = derived
 
 	return nil
 }

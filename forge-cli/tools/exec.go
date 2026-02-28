@@ -36,8 +36,9 @@ func (e *OSCommandExecutor) Run(ctx context.Context, command string, args []stri
 // SkillCommandExecutor implements tools.CommandExecutor with a configurable
 // timeout and environment variable passthrough for skill scripts.
 type SkillCommandExecutor struct {
-	Timeout time.Duration
-	EnvVars []string // extra env var names to pass through (e.g., "TAVILY_API_KEY")
+	Timeout  time.Duration
+	EnvVars  []string // extra env var names to pass through (e.g., "TAVILY_API_KEY")
+	ProxyURL string   // egress proxy URL (e.g., "http://127.0.0.1:54321")
 }
 
 func (e *SkillCommandExecutor) Run(ctx context.Context, command string, args []string, stdin []byte) (string, error) {
@@ -60,6 +61,14 @@ func (e *SkillCommandExecutor) Run(ctx context.Context, command string, args []s
 		if val := os.Getenv(name); val != "" {
 			env = append(env, name+"="+val)
 		}
+	}
+	if e.ProxyURL != "" {
+		env = append(env,
+			"HTTP_PROXY="+e.ProxyURL,
+			"HTTPS_PROXY="+e.ProxyURL,
+			"http_proxy="+e.ProxyURL,
+			"https_proxy="+e.ProxyURL,
+		)
 	}
 	cmd.Env = env
 

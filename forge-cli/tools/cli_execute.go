@@ -30,6 +30,7 @@ type CLIExecuteTool struct {
 	binaryPaths map[string]string // resolved absolute paths from exec.LookPath
 	available   []string
 	missing     []string
+	proxyURL    string // egress proxy URL (e.g., "http://127.0.0.1:54321")
 }
 
 // cliExecuteArgs is the JSON input schema for Execute.
@@ -208,6 +209,9 @@ func (t *CLIExecuteTool) Availability() (available, missing []string) {
 	return t.available, t.missing
 }
 
+// SetProxyURL sets the egress proxy URL for subprocess env injection.
+func (t *CLIExecuteTool) SetProxyURL(url string) { t.proxyURL = url }
+
 // buildEnv constructs an isolated environment with only PATH, HOME, LANG
 // and explicitly configured passthrough variables.
 func (t *CLIExecuteTool) buildEnv() []string {
@@ -220,6 +224,14 @@ func (t *CLIExecuteTool) buildEnv() []string {
 		if val, ok := os.LookupEnv(key); ok {
 			env = append(env, key+"="+val)
 		}
+	}
+	if t.proxyURL != "" {
+		env = append(env,
+			"HTTP_PROXY="+t.proxyURL,
+			"HTTPS_PROXY="+t.proxyURL,
+			"http_proxy="+t.proxyURL,
+			"https_proxy="+t.proxyURL,
+		)
 	}
 	return env
 }

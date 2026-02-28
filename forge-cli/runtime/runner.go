@@ -108,6 +108,68 @@ func (r *Runner) Run(ctx context.Context) error {
 	// 4. Create audit logger (used by hooks and handlers)
 	auditLogger := coreruntime.NewAuditLogger(os.Stderr)
 
+	// 4b. Resolve egress config and start proxy (if not in container)
+	var egressClient *http.Client
+	var egressProxy *security.EgressProxy
+	var proxyURL string
+	egressToolNames := make([]string, len(r.cfg.Config.Tools))
+	for i, t := range r.cfg.Config.Tools {
+		egressToolNames[i] = t.Name
+	}
+	egressCfg, egressErr := security.Resolve(
+		r.cfg.Config.Egress.Profile,
+		r.cfg.Config.Egress.Mode,
+		r.cfg.Config.Egress.AllowedDomains,
+		egressToolNames,
+		r.cfg.Config.Egress.Capabilities,
+	)
+	if egressErr != nil {
+		r.logger.Warn("failed to resolve egress config, using default", map[string]any{"error": egressErr.Error()})
+		egressClient = http.DefaultClient
+	} else {
+		enforcer := security.NewEgressEnforcer(nil, egressCfg.Mode, egressCfg.AllDomains)
+		enforcer.OnAttempt = func(ctx context.Context, domain string, allowed bool) {
+			event := coreruntime.AuditEgressAllowed
+			if !allowed {
+				event = coreruntime.AuditEgressBlocked
+			}
+			auditLogger.Emit(coreruntime.AuditEvent{
+				Event:         event,
+				CorrelationID: coreruntime.CorrelationIDFromContext(ctx),
+				TaskID:        coreruntime.TaskIDFromContext(ctx),
+				Fields:        map[string]any{"domain": domain, "mode": string(egressCfg.Mode)},
+			})
+		}
+		egressClient = &http.Client{Transport: enforcer}
+
+		// Start local proxy for subprocess egress enforcement
+		if !security.InContainer() && egressCfg.Mode != security.ModeDevOpen {
+			matcher := security.NewDomainMatcher(egressCfg.Mode, egressCfg.AllDomains)
+			egressProxy = security.NewEgressProxy(matcher)
+			egressProxy.OnAttempt = func(domain string, allowed bool) {
+				event := coreruntime.AuditEgressAllowed
+				if !allowed {
+					event = coreruntime.AuditEgressBlocked
+				}
+				auditLogger.Emit(coreruntime.AuditEvent{
+					Event:  event,
+					Fields: map[string]any{"domain": domain, "mode": string(egressCfg.Mode), "source": "proxy"},
+				})
+			}
+			var pErr error
+			proxyURL, pErr = egressProxy.Start(ctx)
+			if pErr != nil {
+				r.logger.Warn("failed to start egress proxy", map[string]any{"error": pErr.Error()})
+				egressProxy = nil
+			} else {
+				r.logger.Info("egress proxy started", map[string]any{"url": proxyURL})
+			}
+		}
+	}
+	if egressProxy != nil {
+		defer egressProxy.Stop() //nolint:errcheck
+	}
+
 	// 5. Choose executor and optional lifecycle runtime
 	var executor coreruntime.AgentExecutor
 	var lifecycle coreruntime.AgentRuntime // optional, for subprocess lifecycle management
@@ -176,8 +238,13 @@ func (r *Runner) Run(ctx context.Context) error {
 				r.logger.Info("discovered custom tools", map[string]any{"count": len(discovered)})
 			}
 
+			// Set proxy URL on cli_execute tool
+			if r.cliExecTool != nil && proxyURL != "" {
+				r.cliExecTool.SetProxyURL(proxyURL)
+			}
+
 			// Register skill tools from skills/*.md files
-			r.registerSkillTools(reg)
+			r.registerSkillTools(reg, proxyURL)
 
 			// Log registered tool names
 			toolNames := reg.List()
@@ -295,40 +362,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		AgentCard: card,
 	})
 
-	// 7. Resolve egress config and build enforcer
-	var egressClient *http.Client
-	toolNames := make([]string, len(r.cfg.Config.Tools))
-	for i, t := range r.cfg.Config.Tools {
-		toolNames[i] = t.Name
-	}
-	egressCfg, egressErr := security.Resolve(
-		r.cfg.Config.Egress.Profile,
-		r.cfg.Config.Egress.Mode,
-		r.cfg.Config.Egress.AllowedDomains,
-		toolNames,
-		r.cfg.Config.Egress.Capabilities,
-	)
-	if egressErr != nil {
-		r.logger.Warn("failed to resolve egress config, using default", map[string]any{"error": egressErr.Error()})
-		egressClient = http.DefaultClient
-	} else {
-		enforcer := security.NewEgressEnforcer(nil, egressCfg.Mode, egressCfg.AllDomains)
-		enforcer.OnAttempt = func(ctx context.Context, domain string, allowed bool) {
-			event := coreruntime.AuditEgressAllowed
-			if !allowed {
-				event = coreruntime.AuditEgressBlocked
-			}
-			auditLogger.Emit(coreruntime.AuditEvent{
-				Event:         event,
-				CorrelationID: coreruntime.CorrelationIDFromContext(ctx),
-				TaskID:        coreruntime.TaskIDFromContext(ctx),
-				Fields:        map[string]any{"domain": domain, "mode": string(egressCfg.Mode)},
-			})
-		}
-		egressClient = &http.Client{Transport: enforcer}
-	}
-
-	// 8. Register JSON-RPC handlers
+	// 7. Register JSON-RPC handlers
 	r.registerHandlers(srv, executor, guardrails, egressClient, auditLogger)
 
 	// 9. Start file watcher
@@ -355,7 +389,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	go watcher.Watch(watchCtx)
 
 	// 10. Print startup banner
-	r.printBanner()
+	r.printBanner(proxyURL)
 
 	// 11. Start server (blocks)
 	return srv.Start(ctx)
@@ -877,7 +911,7 @@ func (r *Runner) createProviderClient(provider string, cfg llm.ClientConfig) (ll
 	return providers.NewClient(provider, cfg)
 }
 
-func (r *Runner) printBanner() {
+func (r *Runner) printBanner(proxyURL string) {
 	fmt.Fprintf(os.Stderr, "\n")
 	fmt.Fprintf(os.Stderr, "  Forge Dev Server\n")
 	fmt.Fprintf(os.Stderr, "  ────────────────────────────────────────\n")
@@ -931,6 +965,10 @@ func (r *Runner) printBanner() {
 			defaultStr(r.cfg.Config.Egress.Profile, "strict"),
 			defaultStr(r.cfg.Config.Egress.Mode, "deny-all"))
 	}
+	// Egress proxy
+	if proxyURL != "" {
+		fmt.Fprintf(os.Stderr, "  Proxy:      %s\n", proxyURL)
+	}
 	fmt.Fprintf(os.Stderr, "  ────────────────────────────────────────\n")
 	fmt.Fprintf(os.Stderr, "  Agent Card: http://localhost:%d/.well-known/agent.json\n", r.cfg.Port)
 	fmt.Fprintf(os.Stderr, "  Health:     http://localhost:%d/healthz\n", r.cfg.Port)
@@ -942,7 +980,7 @@ func (r *Runner) printBanner() {
 // registerSkillTools scans skills/*.md and the main SKILL.md for skill entries
 // that have associated scripts. Each script-backed skill is registered as a
 // first-class tool in the registry.
-func (r *Runner) registerSkillTools(reg *tools.Registry) {
+func (r *Runner) registerSkillTools(reg *tools.Registry, proxyURL string) {
 	skillsDir := filepath.Join(r.cfg.WorkDir, "skills")
 	matches, _ := filepath.Glob(filepath.Join(skillsDir, "*.md"))
 
@@ -998,8 +1036,9 @@ func (r *Runner) registerSkillTools(reg *tools.Registry) {
 			}
 
 			skillExec := &clitools.SkillCommandExecutor{
-				Timeout: timeout,
-				EnvVars: envVars,
+				Timeout:  timeout,
+				EnvVars:  envVars,
+				ProxyURL: proxyURL,
 			}
 
 			st := tools.NewSkillTool(entry.Name, entry.Description, entry.InputSpec, scriptPath, skillExec)

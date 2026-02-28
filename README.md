@@ -31,7 +31,7 @@ Forge is designed for safe execution:
 * Does NOT create public tunnels
 * Does NOT expose webhooks automatically
 * Uses outbound-only connections (Slack Socket Mode, Telegram polling)
-* Enforces outbound domain allowlists at both build-time and runtime
+* Enforces outbound domain allowlists at both build-time and runtime, including subprocess HTTP via a local egress proxy
 * Encrypts secrets at rest (AES-256-GCM) with per-agent isolation
 * Signs build artifacts (Ed25519) for supply chain integrity
 * Supports restricted network profiles with audit logging
@@ -189,6 +189,7 @@ Skill scripts run in a restricted environment via `SkillCommandExecutor`:
 - **Isolated environment**: Only `PATH`, `HOME`, and explicitly declared env vars are passed through
 - **Configurable timeout**: Each skill declares a `timeout_hint` in its YAML frontmatter (e.g., 300s for research)
 - **No shell execution**: Scripts run via `bash <script> <json-input>`, not through a shell interpreter
+- **Egress proxy enforcement**: When egress mode is `allowlist` or `deny-all`, a local HTTP/HTTPS proxy is started and `HTTP_PROXY`/`HTTPS_PROXY` env vars are injected into subprocess environments, ensuring `curl`, `wget`, Python `requests`, and other HTTP clients route through the same domain allowlist used by in-process tools (see [Subprocess Egress Proxy](#subprocess-egress-proxy) below)
 
 ### Built-in Skills
 
@@ -422,6 +423,39 @@ Key behaviors:
 - **Tool domains auto-inferred** — declaring `web_search` in tools automatically allows `api.tavily.com` and `api.perplexity.ai`
 - **Capability bundles** — declaring `slack` capability adds `slack.com`, `hooks.slack.com`, `api.slack.com`
 - Blocked requests return: `egress blocked: domain "X" not in allowlist (mode=allowlist)`
+
+### Subprocess Egress Proxy
+
+The `EgressEnforcer` only works for in-process Go `http.Client` calls. Skill scripts and `cli_execute` subprocesses bypass it because they use external tools like `curl` or `wget`. To close this gap, Forge starts a **local HTTP/HTTPS forward proxy** that validates domains against the same allowlist:
+
+```
+┌─────────────────────────────────────────────────────┐
+│                   forge run                         │
+│                                                     │
+│  In-process HTTP ──→ EgressEnforcer (RoundTripper)  │
+│                                                     │
+│  Subprocesses ──→ HTTP_PROXY ──→ EgressProxy        │
+│  (curl, wget,       127.0.0.1:<port>  (validates    │
+│   python, etc.)                        domains)     │
+└─────────────────────────────────────────────────────┘
+```
+
+Key properties:
+
+- **Local-only**: Binds to `127.0.0.1:0` (random port), never exposed externally
+- **Per-instance**: Each `forge run` gets its own proxy on a different random port
+- **HTTPS CONNECT support**: Validates the destination hostname from the CONNECT line, then blind-relays bytes (no MITM, no custom CA certs needed)
+- **Transparent**: Both uppercase (`HTTP_PROXY`, `HTTPS_PROXY`) and lowercase (`http_proxy`, `https_proxy`) env vars are set to cover all common HTTP clients
+- **Container-aware**: Skipped when running inside Docker/Kubernetes (detected via `KUBERNETES_SERVICE_HOST` env var or `/.dockerenv`), where `NetworkPolicy` handles egress enforcement instead
+- **Mode-aware**: Skipped in `dev-open` mode (no restrictions needed)
+- **Audit logged**: Proxy decisions emit the same `egress_allowed`/`egress_blocked` audit events as the in-process enforcer, with `"source": "proxy"` for distinction
+
+The proxy appears in the startup banner when active:
+
+```
+  Egress:     strict / allowlist
+  Proxy:      http://127.0.0.1:54321
+```
 
 ### Egress Profiles
 
@@ -867,7 +901,7 @@ forge/
     memory/            Long-term memory (vector + keyword search)
     runtime/           Agent loop, hooks, compactor, audit logger
     secrets/           Encrypted secret storage (AES-256-GCM + Argon2id)
-    security/          Egress resolver, enforcer, K8s NetworkPolicy
+    security/          Egress resolver, enforcer, proxy, K8s NetworkPolicy
     tools/             Tool registry, builtins, adapters, skill_tool
     types/             Config types
   forge-cli/           CLI application
@@ -949,7 +983,8 @@ Forge provides those building blocks.
 - [Runtime](docs/runtime.md) — LLM agent loop, providers, and memory
 - [Tools](docs/tools.md) — Tool system: builtins, adapters, custom tools
 - [Skills](docs/skills.md) — Skills definition and compilation
-- [Security & Egress](docs/security-egress.md) — Egress security controls
+- [Security](docs/security/SECURITY.md) — Complete security architecture
+- [Egress Security](docs/security/egress.md) — Egress enforcement deep dive
 - [Hooks](docs/hooks.md) — Agent loop hook system
 - [Plugins](docs/plugins.md) — Framework plugin system
 - [Channels](docs/channels.md) — Channel adapter architecture

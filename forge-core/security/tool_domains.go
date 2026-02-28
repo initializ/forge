@@ -15,6 +15,8 @@ var DefaultToolDomains = map[string][]string{
 	"twilio_sms":        {"api.twilio.com"},
 	"aws_bedrock":       {"bedrock-runtime.us-east-1.amazonaws.com"},
 	"azure_openai":      {"openai.azure.com"},
+	"tavily_research":   {"api.tavily.com"},
+	"tavily_search":     {"api.tavily.com"},
 }
 
 // InferToolDomains looks up known domains for the given tool names and returns a deduplicated list.

@@ -83,6 +83,29 @@ func (r *LocalRegistry) LoadScript(name string) ([]byte, error) {
 	return fs.ReadFile(r.fsys, dirName+"/scripts/"+name+".sh")
 }
 
+// ListScripts returns the filenames of all scripts for the named skill.
+func (r *LocalRegistry) ListScripts(name string) []string {
+	dirName := r.dirName(name)
+	scriptsDir := dirName + "/scripts"
+	entries, err := fs.ReadDir(r.fsys, scriptsDir)
+	if err != nil {
+		return nil
+	}
+	var scripts []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			scripts = append(scripts, e.Name())
+		}
+	}
+	return scripts
+}
+
+// LoadScriptByName reads a specific script file for the named skill.
+func (r *LocalRegistry) LoadScriptByName(name, scriptFile string) ([]byte, error) {
+	dirName := r.dirName(name)
+	return fs.ReadFile(r.fsys, dirName+"/scripts/"+scriptFile)
+}
+
 // dirName returns the directory name for a skill. The directory name matches
 // the skill name (which is the directory name used in the embedded FS).
 func (r *LocalRegistry) dirName(name string) string {

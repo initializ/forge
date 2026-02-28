@@ -31,7 +31,7 @@ Forge is designed for safe execution:
 * Does NOT create public tunnels
 * Does NOT expose webhooks automatically
 * Uses outbound-only connections (Slack Socket Mode, Telegram polling)
-* Enforces outbound domain allowlists at both build-time and runtime
+* Enforces outbound domain allowlists at both build-time and runtime, including subprocess HTTP via a local egress proxy
 * Encrypts secrets at rest (AES-256-GCM) with per-agent isolation
 * Signs build artifacts (Ed25519) for supply chain integrity
 * Supports restricted network profiles with audit logging
@@ -142,6 +142,88 @@ Get weather forecast for a location.
 
 Each `## Tool:` heading defines a tool the agent can call. The frontmatter declares binary dependencies and environment variable requirements. Skills compile into JSON artifacts and prompt text during `forge build`.
 
+### Skill Registry
+
+Forge ships with a built-in skill registry. Add skills to your project with a single command:
+
+```bash
+# Add a skill from the registry
+forge skills add tavily-research
+
+# Validate skill requirements
+forge skills validate
+
+# Audit skill security
+forge skills audit --embedded
+```
+
+`forge skills add` copies the skill's SKILL.md and any associated scripts into your project's `skills/` directory. It validates binary and environment requirements, checks for existing values in your environment, `.env` file, and encrypted secrets, and prompts only for truly missing values with a suggestion to use `forge secrets set` for sensitive keys.
+
+### Skills as First-Class Tools
+
+Script-backed skills are automatically registered as **first-class LLM tools** at runtime. When a skill has scripts in `skills/scripts/`, Forge:
+
+1. Parses the skill's SKILL.md for tool definitions, descriptions, and input schemas
+2. Creates a named tool for each `## Tool:` entry (e.g., `tavily_research` becomes a tool the LLM can call directly)
+3. Executes the skill's shell script with JSON input when the LLM invokes it
+
+This means the LLM sees skill tools alongside builtins like `web_search` and `http_request` — no generic `cli_execute` indirection needed.
+
+For skills **without** scripts (binary-backed skills like `github`), Forge injects a lightweight catalog into the system prompt. The LLM can then use the `read_skill` builtin tool to load full instructions on demand, and invoke the skill via `cli_execute`.
+
+```
+┌─────────────────────────────────────────────┐
+│              LLM Tool Registry              │
+├─────────────────┬───────────────────────────┤
+│  Builtins       │  web_search, http_request │
+│  Skill Tools    │  tavily_research, ...     │  ← auto-registered from scripts
+│  read_skill     │  lazy-load any SKILL.md   │
+│  cli_execute    │  run approved binaries    │
+└─────────────────┴───────────────────────────┘
+```
+
+### Skill Execution Security
+
+Skill scripts run in a restricted environment via `SkillCommandExecutor`:
+
+- **Isolated environment**: Only `PATH`, `HOME`, and explicitly declared env vars are passed through
+- **Configurable timeout**: Each skill declares a `timeout_hint` in its YAML frontmatter (e.g., 300s for research)
+- **No shell execution**: Scripts run via `bash <script> <json-input>`, not through a shell interpreter
+- **Egress proxy enforcement**: When egress mode is `allowlist` or `deny-all`, a local HTTP/HTTPS proxy is started and `HTTP_PROXY`/`HTTPS_PROXY` env vars are injected into subprocess environments, ensuring `curl`, `wget`, Python `requests`, and other HTTP clients route through the same domain allowlist used by in-process tools (see [Subprocess Egress Proxy](#subprocess-egress-proxy) below)
+
+### Built-in Skills
+
+| Skill | Description | Scripts |
+|-------|-------------|---------|
+| `tavily-research` | Deep multi-source research via Tavily API | `tavily-research.sh`, `tavily-research-poll.sh` |
+
+### Tavily Research Skill
+
+The `tavily-research` skill demonstrates the **async two-tool pattern** for long-running operations:
+
+```bash
+forge skills add tavily-research
+```
+
+This registers two tools:
+
+| Tool | Purpose | Behavior |
+|------|---------|----------|
+| `tavily_research` | Submit a research query | Returns immediately with a `request_id` |
+| `tavily_research_poll` | Wait for results | Polls internally for up to ~5 minutes, returns complete report |
+
+The LLM uses them in sequence: submit the research request, inform the user that research is in progress, then call the poll tool which handles all waiting internally. The complete report (1000-3000 words with sources) is returned to the LLM and delivered to the user.
+
+**Research models:**
+
+| Model | Speed | Use Case |
+|-------|-------|----------|
+| `mini` | ~30s | Quick overviews, simple topics |
+| `pro` | ~300s | Comprehensive analysis, complex topics |
+| `auto` | Varies | Let the API choose based on query complexity |
+
+Requires: `curl`, `jq`, `TAVILY_API_KEY` environment variable.
+
 ---
 
 ## Tools
@@ -158,7 +240,8 @@ Forge ships with built-in tools, adapter tools, and supports custom tools:
 | `datetime_now` | Get current date and time |
 | `uuid_generate` | Generate UUID v4 identifiers |
 | `math_calculate` | Evaluate mathematical expressions |
-| `web_search` | Search the web (Tavily or Perplexity) |
+| `web_search` | Search the web for quick lookups and recent information |
+| `read_skill` | Load full instructions for an available skill on demand |
 | `memory_search` | Search long-term memory (when enabled) |
 | `memory_get` | Read memory files (when enabled) |
 | `cli_execute` | Execute pre-approved CLI binaries |
@@ -309,6 +392,15 @@ export AGENT_URL=http://localhost:8080
 forge channel serve slack
 ```
 
+### Large Response Handling
+
+When an agent response exceeds 4096 characters (common with research reports), channel adapters automatically split it into a **summary message** and a **file attachment**:
+
+1. A brief summary (first paragraph, up to 600 characters) is sent as a regular message
+2. The full report is uploaded as a downloadable Markdown file (`research-report.md`)
+
+This works on both Slack (via `files.upload`) and Telegram (via `sendDocument`). If file upload fails, adapters fall back to chunked messages. Markdown is converted to platform-native formatting (Slack mrkdwn or Telegram HTML).
+
 ---
 
 ## Security
@@ -331,6 +423,39 @@ Key behaviors:
 - **Tool domains auto-inferred** — declaring `web_search` in tools automatically allows `api.tavily.com` and `api.perplexity.ai`
 - **Capability bundles** — declaring `slack` capability adds `slack.com`, `hooks.slack.com`, `api.slack.com`
 - Blocked requests return: `egress blocked: domain "X" not in allowlist (mode=allowlist)`
+
+### Subprocess Egress Proxy
+
+The `EgressEnforcer` only works for in-process Go `http.Client` calls. Skill scripts and `cli_execute` subprocesses bypass it because they use external tools like `curl` or `wget`. To close this gap, Forge starts a **local HTTP/HTTPS forward proxy** that validates domains against the same allowlist:
+
+```
+┌─────────────────────────────────────────────────────┐
+│                   forge run                         │
+│                                                     │
+│  In-process HTTP ──→ EgressEnforcer (RoundTripper)  │
+│                                                     │
+│  Subprocesses ──→ HTTP_PROXY ──→ EgressProxy        │
+│  (curl, wget,       127.0.0.1:<port>  (validates    │
+│   python, etc.)                        domains)     │
+└─────────────────────────────────────────────────────┘
+```
+
+Key properties:
+
+- **Local-only**: Binds to `127.0.0.1:0` (random port), never exposed externally
+- **Per-instance**: Each `forge run` gets its own proxy on a different random port
+- **HTTPS CONNECT support**: Validates the destination hostname from the CONNECT line, then blind-relays bytes (no MITM, no custom CA certs needed)
+- **Transparent**: Both uppercase (`HTTP_PROXY`, `HTTPS_PROXY`) and lowercase (`http_proxy`, `https_proxy`) env vars are set to cover all common HTTP clients
+- **Container-aware**: Skipped when running inside Docker/Kubernetes (detected via `KUBERNETES_SERVICE_HOST` env var or `/.dockerenv`), where `NetworkPolicy` handles egress enforcement instead
+- **Mode-aware**: Skipped in `dev-open` mode (no restrictions needed)
+- **Audit logged**: Proxy decisions emit the same `egress_allowed`/`egress_blocked` audit events as the in-process enforcer, with `"source": "proxy"` for distinction
+
+The proxy appears in the startup banner when active:
+
+```
+  Egress:     strict / allowlist
+  Proxy:      http://127.0.0.1:54321
+```
 
 ### Egress Profiles
 
@@ -554,6 +679,8 @@ When context grows too large, the **Compactor** automatically:
 3. Summarizes via LLM (with extractive fallback)
 4. Replaces old messages with the summary
 
+Research tool results receive special handling during compaction: they are preserved with a higher extraction limit (5000 vs 2000 characters) and tagged distinctly in long-term memory logs (e.g., `[research][tool:tavily_research]`) so research insights persist across sessions.
+
 ```yaml
 memory:
   char_budget: 200000       # override auto-detection
@@ -599,7 +726,7 @@ Falls back to keyword-only search if no embedding provider is available (e.g., w
 
 ## Hooks
 
-The agent loop fires hooks at five points, enabling observability and custom behavior:
+The agent loop fires hooks at key points, enabling observability and custom behavior:
 
 | Hook Point | When | Available Data |
 |------------|------|---------------|
@@ -608,8 +735,13 @@ The agent loop fires hooks at five points, enabling observability and custom beh
 | `BeforeToolExec` | Before each tool execution | ToolName, ToolInput, TaskID, CorrelationID |
 | `AfterToolExec` | After each tool execution | ToolName, ToolInput, ToolOutput, Error, TaskID, CorrelationID |
 | `OnError` | On LLM call errors | Error, TaskID, CorrelationID |
+| `OnProgress` | During tool execution | Phase, ToolName, StatusMessage |
 
 Hooks fire in registration order. If any hook returns an error, execution stops (useful for security enforcement).
+
+### Progress Tracking
+
+The runner automatically registers progress hooks that emit real-time status updates during tool execution. Progress events include the tool name, phase (`tool_start` / `tool_end`), and a human-readable status message. These events are streamed to clients via SSE when using the A2A HTTP server, enabling live progress indicators in web and chat UIs.
 
 ---
 
@@ -750,6 +882,7 @@ memory:
 | `forge package [--push] [--prod] [--registry] [--with-channels]` | Build container image |
 | `forge export [--pretty] [--include-schemas] [--simulate-import]` | Export for Command platform |
 | `forge tool list\|describe` | List or inspect registered tools |
+| `forge skills add\|validate\|audit\|sign\|keygen` | Manage agent skills |
 | `forge channel add\|serve\|list\|status` | Manage channel adapters |
 | `forge secret set\|get\|list\|delete [--local]` | Manage encrypted secrets |
 | `forge key generate\|trust\|list` | Manage Ed25519 signing keys |
@@ -768,18 +901,25 @@ forge/
     memory/            Long-term memory (vector + keyword search)
     runtime/           Agent loop, hooks, compactor, audit logger
     secrets/           Encrypted secret storage (AES-256-GCM + Argon2id)
-    security/          Egress resolver, enforcer, K8s NetworkPolicy
-    tools/             Tool registry, builtins, adapters
+    security/          Egress resolver, enforcer, proxy, K8s NetworkPolicy
+    tools/             Tool registry, builtins, adapters, skill_tool
     types/             Config types
   forge-cli/           CLI application
-    cmd/               CLI commands (init, build, run, package, etc.)
-    runtime/           Runner, subprocess executor, file watcher
+    cmd/               CLI commands (init, build, run, skills, etc.)
+    runtime/           Runner, skill registration, subprocess executor
     internal/tui/      Interactive init wizard (Bubbletea)
-    tools/             CLI-specific tools (cli_execute, devtools)
+    tools/             CLI-specific tools (cli_execute, skill executor)
   forge-plugins/       Channel plugins
-    telegram/          Telegram adapter (polling)
-    slack/             Slack adapter (Socket Mode)
-    markdown/          Markdown converter for channel messages
+    telegram/          Telegram adapter (polling, document upload)
+    slack/             Slack adapter (Socket Mode, file upload)
+    markdown/          Markdown converter, message splitting
+  forge-skills/        Skill system
+    contract/          Skill types, registry interface
+    local/             Embedded + local skill registries
+    requirements/      Requirement aggregation and derivation
+    analyzer/          Security audit for skills
+    resolver/          Binary and env var resolution
+    trust/             Skill signing and verification
 ```
 
 ---
@@ -843,7 +983,8 @@ Forge provides those building blocks.
 - [Runtime](docs/runtime.md) — LLM agent loop, providers, and memory
 - [Tools](docs/tools.md) — Tool system: builtins, adapters, custom tools
 - [Skills](docs/skills.md) — Skills definition and compilation
-- [Security & Egress](docs/security-egress.md) — Egress security controls
+- [Security](docs/security/SECURITY.md) — Complete security architecture
+- [Egress Security](docs/security/egress.md) — Egress enforcement deep dive
 - [Hooks](docs/hooks.md) — Agent loop hook system
 - [Plugins](docs/plugins.md) — Framework plugin system
 - [Channels](docs/channels.md) — Channel adapter architecture

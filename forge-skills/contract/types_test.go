@@ -14,6 +14,7 @@ func (registryStub) LoadContent(string) ([]byte, error) {
 }
 func (registryStub) HasScript(string) bool             { return false }
 func (registryStub) LoadScript(string) ([]byte, error) { return nil, nil }
+func (registryStub) ListScripts(string) []string       { return nil }
 
 func TestSkillDescriptorFields(t *testing.T) {
 	sd := SkillDescriptor{

@@ -8,9 +8,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/initializ/forge/forge-cli/config"
+	"github.com/initializ/forge/forge-cli/runtime"
 	cliskills "github.com/initializ/forge/forge-cli/skills"
 	"github.com/initializ/forge/forge-skills/analyzer"
 	"github.com/initializ/forge/forge-skills/local"
@@ -114,19 +116,24 @@ func runSkillsAdd(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("  Added skill file: skills/%s.md\n", name)
 
-	// Write script if the skill has one
-	if reg.HasScript(name) {
-		scriptContent, sErr := reg.LoadScript(name)
-		if sErr == nil {
-			scriptDir := filepath.Join(skillDir, "scripts")
-			if mkErr := os.MkdirAll(scriptDir, 0o755); mkErr != nil {
-				fmt.Printf("  Warning: could not create scripts directory: %s\n", mkErr)
-			} else {
-				scriptPath := filepath.Join(scriptDir, name+".sh")
+	// Write all scripts for the skill
+	scriptFiles := reg.ListScripts(name)
+	if len(scriptFiles) > 0 {
+		scriptDir := filepath.Join(skillDir, "scripts")
+		if mkErr := os.MkdirAll(scriptDir, 0o755); mkErr != nil {
+			fmt.Printf("  Warning: could not create scripts directory: %s\n", mkErr)
+		} else {
+			for _, sf := range scriptFiles {
+				scriptContent, sErr := reg.LoadScriptByName(name, sf)
+				if sErr != nil {
+					fmt.Printf("  Warning: could not load script %s: %s\n", sf, sErr)
+					continue
+				}
+				scriptPath := filepath.Join(scriptDir, sf)
 				if wErr := os.WriteFile(scriptPath, scriptContent, 0o755); wErr != nil {
 					fmt.Printf("  Warning: could not write script: %s\n", wErr)
 				} else {
-					fmt.Printf("  Added script:     skills/scripts/%s.sh\n", name)
+					fmt.Printf("  Added script:     skills/scripts/%s\n", sf)
 				}
 			}
 		}
@@ -144,34 +151,51 @@ func runSkillsAdd(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Check env var requirements
+	// Load existing .env file to check alongside OS env
+	envPath := filepath.Join(wd, ".env")
+	dotEnv, _ := runtime.LoadEnvFile(envPath)
+	secretKeys := loadSecretPlaceholders(envPath)
+
+	// Check env var requirements against OS env + .env file + secrets
 	missingEnvs := []string{}
 	if len(info.RequiredEnv) > 0 {
 		fmt.Println("\n  Environment requirements:")
 		for _, env := range info.RequiredEnv {
-			if os.Getenv(env) == "" {
+			switch {
+			case os.Getenv(env) != "":
+				fmt.Printf("    %s — ok (environment)\n", env)
+			case dotEnv[env] != "":
+				fmt.Printf("    %s — ok (.env)\n", env)
+			case secretKeys[env]:
+				fmt.Printf("    %s — ok (secrets)\n", env)
+			default:
 				fmt.Printf("    %s — NOT SET\n", env)
 				missingEnvs = append(missingEnvs, env)
-			} else {
-				fmt.Printf("    %s — ok\n", env)
 			}
 		}
 	}
 
 	// Prompt for missing env vars
 	if len(missingEnvs) > 0 {
+		if hasSecretKeys(missingEnvs) {
+			fmt.Println("\n  Tip: For sensitive values, consider using 'forge secrets set <KEY>' instead.")
+		}
 		reader := bufio.NewReader(os.Stdin)
 		for _, env := range missingEnvs {
 			fmt.Printf("\n  Enter value for %s (or press Enter to skip): ", env)
 			val, _ := reader.ReadString('\n')
 			val = strings.TrimSpace(val)
 			if val != "" {
-				// Append to .env file
-				envPath := filepath.Join(wd, ".env")
+				// Check if key already exists in .env before appending
+				if existing, ok := dotEnv[env]; ok && existing != "" {
+					fmt.Printf("  %s already set in .env, skipping\n", env)
+					continue
+				}
 				f, fErr := os.OpenFile(envPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 				if fErr == nil {
 					_, _ = fmt.Fprintf(f, "# Required by %s skill\n%s=%s\n", name, env, val)
 					_ = f.Close()
+					dotEnv[env] = val // track for subsequent iterations
 					fmt.Printf("  Added %s to .env\n", env)
 				}
 			}
@@ -283,6 +307,41 @@ func envFromOS() map[string]string {
 		}
 	}
 	return env
+}
+
+// hasSecretKeys returns true if any of the env var names look like secrets.
+func hasSecretKeys(keys []string) bool {
+	return slices.ContainsFunc(keys, isSecretKey)
+}
+
+// loadSecretPlaceholders scans a .env file for commented-out secret placeholders
+// like "# TAVILY_API_KEY=<encrypted>" and returns a set of those key names.
+func loadSecretPlaceholders(path string) map[string]bool {
+	keys := make(map[string]bool)
+	f, err := os.Open(path)
+	if err != nil {
+		return keys
+	}
+	defer func() { _ = f.Close() }()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		// Match lines like: # KEY_NAME=<encrypted>
+		after, found := strings.CutPrefix(line, "#")
+		if !found {
+			continue
+		}
+		after = strings.TrimSpace(after)
+		k, v, ok := strings.Cut(after, "=")
+		if !ok {
+			continue
+		}
+		if strings.Contains(v, "<encrypted>") {
+			keys[k] = true
+		}
+	}
+	return keys
 }
 
 func runSkillsAudit(cmd *cobra.Command, args []string) error {

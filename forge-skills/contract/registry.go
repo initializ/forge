@@ -17,4 +17,7 @@ type SkillRegistry interface {
 
 	// LoadScript reads the script content for the named skill.
 	LoadScript(name string) ([]byte, error)
+
+	// ListScripts returns the filenames of all scripts for the named skill.
+	ListScripts(name string) []string
 }

@@ -276,8 +276,8 @@ func TestIsLocalhost(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.host, func(t *testing.T) {
-			if got := isLocalhost(tt.host); got != tt.expected {
-				t.Errorf("isLocalhost(%q) = %v, want %v", tt.host, got, tt.expected)
+			if got := IsLocalhost(tt.host); got != tt.expected {
+				t.Errorf("IsLocalhost(%q) = %v, want %v", tt.host, got, tt.expected)
 			}
 		})
 	}

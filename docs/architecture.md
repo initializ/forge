@@ -288,4 +288,4 @@ The local runner (`forge run`) orchestrates:
 
 ## Egress Security
 
-Build-time egress controls generate allowlist artifacts and Kubernetes NetworkPolicy manifests. The resolver in `forge-core/security` combines explicit domains, tool-inferred domains, and capability bundles. See [docs/security-egress.md](security-egress.md) for details.
+Egress controls operate at both build time and runtime. Build-time controls generate allowlist artifacts and Kubernetes NetworkPolicy manifests. Runtime controls include an in-process `EgressEnforcer` (Go `http.RoundTripper`) and a local `EgressProxy` for subprocess HTTP traffic. The resolver in `forge-core/security` combines explicit domains, tool-inferred domains, and capability bundles. See [security/egress.md](security/egress.md) for details.

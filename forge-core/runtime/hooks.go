@@ -59,3 +59,28 @@ func (r *HookRegistry) Fire(ctx context.Context, point HookPoint, hctx *HookCont
 	}
 	return nil
 }
+
+// ProgressEvent describes a progress update during task execution.
+type ProgressEvent struct {
+	Phase   string // "tool_start", "tool_end"
+	Tool    string
+	Message string
+}
+
+// ProgressEmitter is a callback that emits progress events to the client.
+type ProgressEmitter func(event ProgressEvent)
+
+type progressEmitterKey struct{}
+
+// WithProgressEmitter stores a ProgressEmitter in the context.
+func WithProgressEmitter(ctx context.Context, emitter ProgressEmitter) context.Context {
+	return context.WithValue(ctx, progressEmitterKey{}, emitter)
+}
+
+// ProgressEmitterFromContext retrieves the ProgressEmitter from the context, or nil.
+func ProgressEmitterFromContext(ctx context.Context) ProgressEmitter {
+	if e, ok := ctx.Value(progressEmitterKey{}).(ProgressEmitter); ok {
+		return e
+	}
+	return nil
+}

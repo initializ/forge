@@ -10,6 +10,7 @@ type SkillDescriptor struct {
 	OptionalEnv   []string
 	RequiredBins  []string
 	EgressDomains []string
+	TimeoutHint   int         // suggested timeout in seconds (0 = use default)
 	Provenance    *Provenance `json:"provenance,omitempty"`
 }
 
@@ -68,16 +69,18 @@ type CompiledSkill struct {
 
 // AggregatedRequirements is the union of all skill requirements.
 type AggregatedRequirements struct {
-	Bins        []string   // union of all bins, deduplicated, sorted
-	EnvRequired []string   // union of required vars (promoted from optional if needed)
-	EnvOneOf    [][]string // separate groups per skill (not merged across skills)
-	EnvOptional []string   // union of optional vars minus those promoted to required
+	Bins           []string   // union of all bins, deduplicated, sorted
+	EnvRequired    []string   // union of required vars (promoted from optional if needed)
+	EnvOneOf       [][]string // separate groups per skill (not merged across skills)
+	EnvOptional    []string   // union of optional vars minus those promoted to required
+	MaxTimeoutHint int        // maximum timeout_hint across all skills (seconds)
 }
 
 // DerivedCLIConfig holds auto-derived cli_execute configuration from skill requirements.
 type DerivedCLIConfig struct {
 	AllowedBinaries []string
 	EnvPassthrough  []string
+	TimeoutHint     int // suggested timeout in seconds (0 = use default)
 }
 
 // TrustLevel indicates the trust classification of a skill.

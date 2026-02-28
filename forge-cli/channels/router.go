@@ -24,7 +24,7 @@ func NewRouter(agentURL string) *Router {
 	return &Router{
 		agentURL: agentURL,
 		client: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: 360 * time.Second,
 		},
 	}
 }

@@ -74,7 +74,7 @@ func Scan(fsys fs.FS) ([]contract.SkillDescriptor, error) {
 			// Extract forge-specific fields
 			if meta.Metadata != nil {
 				if forgeMap, ok := meta.Metadata["forge"]; ok {
-					sd.RequiredBins, sd.RequiredEnv, sd.OneOfEnv, sd.OptionalEnv, sd.EgressDomains = extractFromForgeMap(forgeMap)
+					sd.RequiredBins, sd.RequiredEnv, sd.OneOfEnv, sd.OptionalEnv, sd.EgressDomains, sd.TimeoutHint = extractFromForgeMap(forgeMap)
 				}
 			}
 
@@ -102,7 +102,7 @@ func Scan(fsys fs.FS) ([]contract.SkillDescriptor, error) {
 }
 
 // extractFromForgeMap extracts typed fields from the forge metadata map.
-func extractFromForgeMap(forgeMap map[string]any) (bins, reqEnv, oneOfEnv, optEnv, egress []string) {
+func extractFromForgeMap(forgeMap map[string]any) (bins, reqEnv, oneOfEnv, optEnv, egress []string, timeoutHint int) {
 	// Extract egress_domains
 	if raw, ok := forgeMap["egress_domains"]; ok {
 		if arr, ok := raw.([]any); ok {
@@ -111,6 +111,16 @@ func extractFromForgeMap(forgeMap map[string]any) (bins, reqEnv, oneOfEnv, optEn
 					egress = append(egress, s)
 				}
 			}
+		}
+	}
+
+	// Extract timeout_hint
+	if raw, ok := forgeMap["timeout_hint"]; ok {
+		switch v := raw.(type) {
+		case int:
+			timeoutHint = v
+		case float64:
+			timeoutHint = int(v)
 		}
 	}
 

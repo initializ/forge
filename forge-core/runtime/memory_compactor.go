@@ -276,6 +276,15 @@ func (c *Compactor) flushToDisk(taskID string, mem *Memory) {
 	}
 }
 
+// extractiveLimit returns the character limit for tool result extraction.
+// Research tools get a higher limit to preserve more of their reports.
+func extractiveLimit(toolName string) int {
+	if strings.Contains(toolName, "research") {
+		return 5000
+	}
+	return maxExtractiveChars
+}
+
 // flushToLongTermMemory extracts key observations from messages being
 // compacted and appends them to the long-term daily log.
 func (c *Compactor) flushToLongTermMemory(messages []llm.ChatMessage) {
@@ -288,12 +297,17 @@ func (c *Compactor) flushToLongTermMemory(messages []llm.ChatMessage) {
 		switch msg.Role {
 		case llm.RoleTool:
 			// Tool results contain factual observations worth preserving.
+			limit := extractiveLimit(msg.Name)
 			content := msg.Content
-			if len(content) > maxExtractiveChars {
-				content = content[:maxExtractiveChars] + "..."
+			if len(content) > limit {
+				content = content[:limit] + "..."
 			}
 			if content != "" {
-				fmt.Fprintf(&observations, "- [tool:%s] %s\n", msg.Name, content)
+				tag := fmt.Sprintf("[tool:%s]", msg.Name)
+				if strings.Contains(msg.Name, "research") {
+					tag = fmt.Sprintf("[research][tool:%s]", msg.Name)
+				}
+				fmt.Fprintf(&observations, "- %s %s\n", tag, content)
 			}
 		case llm.RoleAssistant:
 			// Capture key decisions from assistant responses.

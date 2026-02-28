@@ -16,12 +16,12 @@ func TestEmbeddedRegistry_DiscoverAll(t *testing.T) {
 		t.Fatalf("List error: %v", err)
 	}
 
-	if len(skills) != 3 {
+	if len(skills) != 4 {
 		names := make([]string, len(skills))
 		for i, s := range skills {
 			names[i] = s.Name
 		}
-		t.Fatalf("expected 3 skills, got %d: %v", len(skills), names)
+		t.Fatalf("expected 4 skills, got %d: %v", len(skills), names)
 	}
 
 	// Verify all expected skills are present
@@ -31,9 +31,10 @@ func TestEmbeddedRegistry_DiscoverAll(t *testing.T) {
 		hasBins     bool
 		hasEgress   bool
 	}{
-		"github":        {displayName: "Github", hasEnv: true, hasBins: true, hasEgress: true},
-		"weather":       {displayName: "Weather", hasEnv: false, hasBins: true, hasEgress: true},
-		"tavily-search": {displayName: "Tavily Search", hasEnv: true, hasBins: true, hasEgress: true},
+		"github":          {displayName: "Github", hasEnv: true, hasBins: true, hasEgress: true},
+		"weather":         {displayName: "Weather", hasEnv: false, hasBins: true, hasEgress: true},
+		"tavily-search":   {displayName: "Tavily Search", hasEnv: true, hasBins: true, hasEgress: true},
+		"tavily-research": {displayName: "Tavily Research", hasEnv: true, hasBins: true, hasEgress: true},
 	}
 
 	for _, s := range skills {
@@ -128,6 +129,57 @@ func TestEmbeddedRegistry_TavilySearchDetails(t *testing.T) {
 	}
 	if !strings.Contains(string(script), "TAVILY_API_KEY") {
 		t.Error("script should reference TAVILY_API_KEY")
+	}
+}
+
+func TestEmbeddedRegistry_TavilyResearchDetails(t *testing.T) {
+	reg, err := NewEmbeddedRegistry()
+	if err != nil {
+		t.Fatalf("NewEmbeddedRegistry error: %v", err)
+	}
+
+	s := reg.Get("tavily-research")
+	if s == nil {
+		t.Fatal("Get(\"tavily-research\") returned nil")
+	}
+	if s.Description != "Deep multi-source research using Tavily Research API" {
+		t.Errorf("Description = %q", s.Description)
+	}
+	if len(s.RequiredEnv) != 1 || s.RequiredEnv[0] != "TAVILY_API_KEY" {
+		t.Errorf("RequiredEnv = %v", s.RequiredEnv)
+	}
+	if len(s.RequiredBins) < 2 {
+		t.Errorf("RequiredBins = %v, want at least [curl, jq]", s.RequiredBins)
+	}
+
+	foundDomain := false
+	for _, d := range s.EgressDomains {
+		if d == "api.tavily.com" {
+			foundDomain = true
+		}
+	}
+	if !foundDomain {
+		t.Errorf("EgressDomains = %v, want api.tavily.com", s.EgressDomains)
+	}
+
+	// Check script
+	if !reg.HasScript("tavily-research") {
+		t.Error("tavily-research should have a script")
+	}
+	script, err := reg.LoadScript("tavily-research")
+	if err != nil {
+		t.Fatalf("LoadScript error: %v", err)
+	}
+	if !strings.Contains(string(script), "TAVILY_API_KEY") {
+		t.Error("script should reference TAVILY_API_KEY")
+	}
+	if !strings.Contains(string(script), "api.tavily.com/research") {
+		t.Error("script should call the research endpoint")
+	}
+
+	// Check timeout hint
+	if s.TimeoutHint != 300 {
+		t.Errorf("TimeoutHint = %d, want 300", s.TimeoutHint)
 	}
 }
 

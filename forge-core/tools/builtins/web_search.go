@@ -11,8 +11,11 @@ import (
 
 type webSearchTool struct{}
 
-func (t *webSearchTool) Name() string             { return "web_search" }
-func (t *webSearchTool) Description() string      { return "Search the web using Tavily or Perplexity AI" }
+func (t *webSearchTool) Name() string { return "web_search" }
+func (t *webSearchTool) Description() string {
+	return "Search the web for quick lookups, fact checks, and recent information. " +
+		"For in-depth research or comprehensive reports, prefer the tavily_research tool if available."
+}
 func (t *webSearchTool) Category() tools.Category { return tools.CategoryBuiltin }
 
 func (t *webSearchTool) InputSchema() json.RawMessage {

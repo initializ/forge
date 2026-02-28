@@ -614,13 +614,17 @@ func scaffold(opts *initOptions) error {
 			return fmt.Errorf("writing skill file %s: %w", skillName, err)
 		}
 
-		// Vendor script if the skill has one
-		if scfReg.HasScript(skillName) {
-			scriptContent, sErr := scfReg.LoadScript(skillName)
-			if sErr == nil {
-				scriptDir := filepath.Join(dir, "skills", "scripts")
-				_ = os.MkdirAll(scriptDir, 0o755)
-				scriptPath := filepath.Join(scriptDir, skillName+".sh")
+		// Vendor scripts if the skill has any
+		scriptFiles := scfReg.ListScripts(skillName)
+		if len(scriptFiles) > 0 {
+			scriptDir := filepath.Join(dir, "skills", "scripts")
+			_ = os.MkdirAll(scriptDir, 0o755)
+			for _, sf := range scriptFiles {
+				scriptContent, sErr := scfReg.LoadScriptByName(skillName, sf)
+				if sErr != nil {
+					continue
+				}
+				scriptPath := filepath.Join(scriptDir, sf)
 				if wErr := os.WriteFile(scriptPath, scriptContent, 0o755); wErr != nil {
 					fmt.Printf("Warning: could not write script for %q: %s\n", skillName, wErr)
 				}

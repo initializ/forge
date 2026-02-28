@@ -101,7 +101,7 @@ def search(query: str) -> str:
 	}
 }
 
-func TestFrameworkAdapterStage_CustomNoWrapper(t *testing.T) {
+func TestFrameworkAdapterStage_ForgeNoWrapper(t *testing.T) {
 	workDir := t.TempDir()
 	outDir := t.TempDir()
 
@@ -112,7 +112,7 @@ func TestFrameworkAdapterStage_CustomNoWrapper(t *testing.T) {
 	bc.Config = &types.ForgeConfig{
 		AgentID:    "test-agent",
 		Version:    "0.1.0",
-		Framework:  "custom",
+		Framework:  "forge",
 		Entrypoint: "python agent.py",
 	}
 
@@ -125,9 +125,9 @@ func TestFrameworkAdapterStage_CustomNoWrapper(t *testing.T) {
 		t.Fatal("expected PluginConfig to be set")
 	}
 
-	// Custom should NOT generate a wrapper
+	// Forge should NOT generate a wrapper
 	if bc.WrapperFile != "" {
-		t.Errorf("expected empty WrapperFile for custom, got %q", bc.WrapperFile)
+		t.Errorf("expected empty WrapperFile for forge, got %q", bc.WrapperFile)
 	}
 }
 

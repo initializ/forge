@@ -97,8 +97,7 @@ func TestRunValidate_CommandCompat(t *testing.T) {
 	cfgPath := writeTestForgeYAML(t, dir, `
 agent_id: test-agent
 version: 0.1.0
-framework: custom
-entrypoint: python agent.py
+framework: forge
 model:
   provider: openai
   name: gpt-4
@@ -145,8 +144,7 @@ func TestRunValidate_CommandCompat_MissingRuntime(t *testing.T) {
 	cfgPath := writeTestForgeYAML(t, dir, `
 agent_id: test-agent
 version: 0.1.0
-framework: custom
-entrypoint: python agent.py
+framework: forge
 `)
 
 	// agent.json without runtime
@@ -187,8 +185,7 @@ func TestRunValidate_CommandCompat_NoBuild(t *testing.T) {
 	cfgPath := writeTestForgeYAML(t, dir, `
 agent_id: test-agent
 version: 0.1.0
-framework: custom
-entrypoint: python agent.py
+framework: forge
 `)
 
 	// No .forge-output directory

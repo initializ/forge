@@ -19,7 +19,7 @@ func TestRunner_MockIntegration(t *testing.T) {
 	cfg := &types.ForgeConfig{
 		AgentID:    "test-agent",
 		Version:    "0.1.0",
-		Framework:  "custom",
+		Framework:  "forge",
 		Entrypoint: "python main.py",
 		Tools: []types.ToolRef{
 			{Name: "search"},

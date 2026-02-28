@@ -20,6 +20,7 @@ import (
 	"github.com/initializ/forge/forge-core/llm/providers"
 	"github.com/initializ/forge/forge-core/memory"
 	coreruntime "github.com/initializ/forge/forge-core/runtime"
+	"github.com/initializ/forge/forge-core/secrets"
 	"github.com/initializ/forge/forge-core/security"
 	"github.com/initializ/forge/forge-core/tools"
 	"github.com/initializ/forge/forge-core/tools/builtins"
@@ -64,11 +65,20 @@ func NewRunner(cfg RunnerConfig) (*Runner, error) {
 
 // Run starts the development server. It blocks until ctx is cancelled.
 func (r *Runner) Run(ctx context.Context) error {
+	// 0. Verify build output integrity if checksums.json exists.
+	outputDir := filepath.Join(r.cfg.WorkDir, ".forge-output")
+	if err := VerifyBuildOutput(outputDir); err != nil {
+		r.logger.Warn("build output verification failed", map[string]any{"error": err.Error()})
+	}
+
 	// 1. Load .env file
 	envVars, err := LoadEnvFile(r.cfg.EnvFilePath)
 	if err != nil {
 		return fmt.Errorf("loading env file: %w", err)
 	}
+
+	// Overlay secrets from configured providers
+	r.overlaySecrets(envVars)
 
 	// Apply model override
 	if r.cfg.ModelOverride != "" {
@@ -110,7 +120,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			lifecycle = rt
 			executor = NewSubprocessExecutor(rt)
 		default:
-			// Custom framework — build tool registry and try LLM executor
+			// Forge framework — build tool registry and use built-in LLM executor
 			reg := tools.NewRegistry()
 			if err := builtins.RegisterAll(reg); err != nil {
 				r.logger.Warn("failed to register builtin tools", map[string]any{"error": err.Error()})
@@ -776,11 +786,10 @@ func (r *Runner) buildLLMClient(mc *coreruntime.ModelConfig) (llm.Client, error)
 // createProviderClient creates an LLM client for a provider, using OAuth
 // credentials if available for supported providers.
 func (r *Runner) createProviderClient(provider string, cfg llm.ClientConfig) (llm.Client, error) {
-	// Check for stored OAuth credentials — but only if no API key is already
-	// configured. A real API key means the user chose API-key auth and we
-	// should use the standard OpenAI Chat Completions endpoint, not the
-	// Codex Responses endpoint that OAuth tokens require.
-	if provider == "openai" && cfg.APIKey == "" {
+	// Check for stored OAuth credentials — but only if no real API key is
+	// configured. The "__oauth__" sentinel means the user chose OAuth auth
+	// during init, so we should load the actual token from the credential store.
+	if provider == "openai" && (cfg.APIKey == "" || cfg.APIKey == "__oauth__") {
 		token, err := oauth.LoadCredentials(provider)
 		if err == nil && token != nil && token.RefreshToken != "" {
 			oauthCfg := oauth.OpenAIConfig()
@@ -811,7 +820,7 @@ func (r *Runner) printBanner() {
 	fmt.Fprintf(os.Stderr, "  Port:       %d\n", r.cfg.Port)
 	if r.cfg.MockTools {
 		fmt.Fprintf(os.Stderr, "  Mode:       mock (no subprocess)\n")
-	} else {
+	} else if r.cfg.Config.Entrypoint != "" {
 		fmt.Fprintf(os.Stderr, "  Entrypoint: %s\n", r.cfg.Config.Entrypoint)
 	}
 	// Model info
@@ -1082,6 +1091,159 @@ func (r *Runner) resolveEmbedder(mc *coreruntime.ModelConfig) llm.Embedder {
 	}
 
 	return embedder
+}
+
+// overlaySecrets reads secrets from the configured provider chain and overlays
+// them into envVars for known API key variables. Existing values are not overwritten.
+func (r *Runner) overlaySecrets(envVars map[string]string) {
+	provider := r.buildSecretProvider()
+	if provider == nil {
+		return
+	}
+
+	// Known secret keys to overlay into env for model resolution.
+	knownKeys := []string{
+		"OPENAI_API_KEY",
+		"ANTHROPIC_API_KEY",
+		"GEMINI_API_KEY",
+		"LLM_API_KEY",
+		"MODEL_API_KEY",
+		"TAVILY_API_KEY",
+		"PERPLEXITY_API_KEY",
+		"TELEGRAM_BOT_TOKEN",
+		"SLACK_APP_TOKEN",
+		"SLACK_BOT_TOKEN",
+	}
+
+	for _, key := range knownKeys {
+		if envVars[key] != "" {
+			continue // don't overwrite existing values
+		}
+		val, err := provider.Get(key)
+		if err == nil {
+			envVars[key] = val
+			r.logger.Info("secret loaded", map[string]any{"key": key, "provider": provider.Name()})
+		}
+	}
+}
+
+// passphraseFromEnv returns a callback that reads the passphrase from FORGE_PASSPHRASE.
+// Since run.go prompts interactively and sets the env var before calling into the
+// runner, this callback will find the passphrase when a TTY is available.
+func passphraseFromEnv() func() (string, error) {
+	return func() (string, error) {
+		if p := os.Getenv("FORGE_PASSPHRASE"); p != "" {
+			return p, nil
+		}
+		return "", fmt.Errorf("FORGE_PASSPHRASE not set")
+	}
+}
+
+// buildSecretProvider creates a Provider from the config's secrets.providers list.
+// Returns nil if no providers are configured (backward compat: default is env only,
+// which is already handled by the env file loading).
+func (r *Runner) buildSecretProvider() secrets.Provider {
+	providerNames := r.cfg.Config.Secrets.Providers
+	if len(providerNames) == 0 {
+		return nil // no explicit secret providers configured
+	}
+
+	passCb := passphraseFromEnv()
+
+	var providers []secrets.Provider
+	for _, name := range providerNames {
+		switch name {
+		case "env":
+			providers = append(providers, secrets.NewEnvProvider(""))
+		case "encrypted-file":
+			// Agent-local secrets file (in agent workdir)
+			localPath := filepath.Join(r.cfg.WorkDir, ".forge", "secrets.enc")
+			providers = append(providers, secrets.NewEncryptedFileProvider(localPath, passCb))
+
+			// Global fallback secrets file
+			home, err := os.UserHomeDir()
+			if err == nil {
+				globalPath := filepath.Join(home, ".forge", "secrets.enc")
+				providers = append(providers, secrets.NewEncryptedFileProvider(globalPath, passCb))
+			}
+		default:
+			r.logger.Warn("unknown secret provider, skipping", map[string]any{"provider": name})
+		}
+	}
+
+	if len(providers) == 0 {
+		return nil
+	}
+	if len(providers) == 1 {
+		return providers[0]
+	}
+	return secrets.NewChainProvider(providers...)
+}
+
+// OverlaySecretsToEnv loads secrets from the config's provider chain and sets
+// them in the OS environment so that channel adapters (which use os.Getenv) can
+// access encrypted secrets. Only keys not already set in the env are written.
+// workDir is the agent directory used to locate agent-local secrets.
+func OverlaySecretsToEnv(cfg *types.ForgeConfig, workDir string) {
+	providerNames := cfg.Secrets.Providers
+	if len(providerNames) == 0 {
+		return
+	}
+
+	passCb := passphraseFromEnv()
+
+	var chain []secrets.Provider
+	for _, name := range providerNames {
+		switch name {
+		case "encrypted-file":
+			// Agent-local secrets file
+			localPath := filepath.Join(workDir, ".forge", "secrets.enc")
+			chain = append(chain, secrets.NewEncryptedFileProvider(localPath, passCb))
+
+			// Global fallback secrets file
+			home, err := os.UserHomeDir()
+			if err == nil {
+				globalPath := filepath.Join(home, ".forge", "secrets.enc")
+				chain = append(chain, secrets.NewEncryptedFileProvider(globalPath, passCb))
+			}
+		case "env":
+			// env provider uses os.Getenv — already available, skip
+		}
+	}
+
+	if len(chain) == 0 {
+		return
+	}
+
+	var provider secrets.Provider
+	if len(chain) == 1 {
+		provider = chain[0]
+	} else {
+		provider = secrets.NewChainProvider(chain...)
+	}
+
+	knownKeys := []string{
+		"OPENAI_API_KEY",
+		"ANTHROPIC_API_KEY",
+		"GEMINI_API_KEY",
+		"LLM_API_KEY",
+		"MODEL_API_KEY",
+		"TAVILY_API_KEY",
+		"PERPLEXITY_API_KEY",
+		"TELEGRAM_BOT_TOKEN",
+		"SLACK_APP_TOKEN",
+		"SLACK_BOT_TOKEN",
+	}
+
+	for _, key := range knownKeys {
+		if os.Getenv(key) != "" {
+			continue
+		}
+		val, err := provider.Get(key)
+		if err == nil && val != "" {
+			_ = os.Setenv(key, val)
+		}
+	}
 }
 
 func defaultStr(s, def string) string {

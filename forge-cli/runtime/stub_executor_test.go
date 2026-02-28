@@ -9,7 +9,7 @@ import (
 )
 
 func TestStubExecutor_Execute(t *testing.T) {
-	exec := NewStubExecutor("custom")
+	exec := NewStubExecutor("forge")
 	task := &a2a.Task{ID: "t-1"}
 	msg := &a2a.Message{
 		Role:  a2a.MessageRoleUser,
@@ -20,7 +20,7 @@ func TestStubExecutor_Execute(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), "custom") {
+	if !strings.Contains(err.Error(), "forge") {
 		t.Errorf("error should contain framework name, got: %q", err.Error())
 	}
 	if !strings.Contains(err.Error(), "not configured") {
@@ -46,7 +46,7 @@ func TestStubExecutor_ExecuteStream(t *testing.T) {
 }
 
 func TestStubExecutor_Close(t *testing.T) {
-	exec := NewStubExecutor("custom")
+	exec := NewStubExecutor("forge")
 	if err := exec.Close(); err != nil {
 		t.Errorf("Close: %v", err)
 	}

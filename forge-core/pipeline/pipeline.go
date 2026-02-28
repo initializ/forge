@@ -14,10 +14,11 @@ type Stage interface {
 
 // PipelineOptions carries shared configuration for all pipeline stages.
 type PipelineOptions struct {
-	WorkDir    string
-	OutputDir  string
-	ConfigPath string
-	Env        map[string]string
+	WorkDir        string
+	OutputDir      string
+	ConfigPath     string
+	Env            map[string]string
+	SigningKeyPath string // Ed25519 private key for signing build output
 }
 
 // Pipeline executes a sequence of stages in order.

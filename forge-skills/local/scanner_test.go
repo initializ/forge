@@ -153,6 +153,89 @@ Valid.
 	}
 }
 
+func TestScan_CategoryAndTagsPropagated(t *testing.T) {
+	fsys := fstest.MapFS{
+		"k8s-triage/SKILL.md": &fstest.MapFile{
+			Data: []byte(`---
+name: k8s-triage
+description: Kubernetes incident triage
+category: sre
+tags:
+  - kubernetes
+  - incident-response
+  - triage
+metadata:
+  forge:
+    requires:
+      bins:
+        - kubectl
+---
+## Tool: k8s_triage
+Diagnose Kubernetes workloads.
+`),
+		},
+	}
+
+	skills, err := Scan(fsys)
+	if err != nil {
+		t.Fatalf("Scan error: %v", err)
+	}
+	if len(skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d", len(skills))
+	}
+	if skills[0].Category != "sre" {
+		t.Errorf("Category = %q, want sre", skills[0].Category)
+	}
+	wantTags := []string{"kubernetes", "incident-response", "triage"}
+	if len(skills[0].Tags) != len(wantTags) {
+		t.Fatalf("Tags = %v, want %v", skills[0].Tags, wantTags)
+	}
+	for i, tag := range wantTags {
+		if skills[0].Tags[i] != tag {
+			t.Errorf("Tags[%d] = %q, want %q", i, skills[0].Tags[i], tag)
+		}
+	}
+}
+
+func TestScan_DeniedToolsPropagated(t *testing.T) {
+	fsys := fstest.MapFS{
+		"k8s-triage/SKILL.md": &fstest.MapFile{
+			Data: []byte(`---
+name: k8s-triage
+description: Kubernetes triage
+metadata:
+  forge:
+    requires:
+      bins:
+        - kubectl
+    denied_tools:
+      - http_request
+      - web_search
+---
+## Tool: k8s_triage
+Diagnose workloads.
+`),
+		},
+	}
+
+	skills, err := Scan(fsys)
+	if err != nil {
+		t.Fatalf("Scan error: %v", err)
+	}
+	if len(skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d", len(skills))
+	}
+	if len(skills[0].DeniedTools) != 2 {
+		t.Fatalf("DeniedTools = %v, want 2 items", skills[0].DeniedTools)
+	}
+	if skills[0].DeniedTools[0] != "http_request" {
+		t.Errorf("DeniedTools[0] = %q, want http_request", skills[0].DeniedTools[0])
+	}
+	if skills[0].DeniedTools[1] != "web_search" {
+		t.Errorf("DeniedTools[1] = %q, want web_search", skills[0].DeniedTools[1])
+	}
+}
+
 func TestScan_DisplayNameDerived(t *testing.T) {
 	fsys := fstest.MapFS{
 		"tavily-search/SKILL.md": &fstest.MapFile{

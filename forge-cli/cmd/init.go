@@ -609,15 +609,18 @@ func scaffold(opts *initOptions) error {
 			fmt.Printf("Warning: could not load skill file for %q: %s\n", skillName, err)
 			continue
 		}
-		skillPath := filepath.Join(dir, "skills", skillName+".md")
+		// Write to subdirectory: skills/{name}/SKILL.md
+		skillSubDir := filepath.Join(dir, "skills", skillName)
+		_ = os.MkdirAll(skillSubDir, 0o755)
+		skillPath := filepath.Join(skillSubDir, "SKILL.md")
 		if err := os.WriteFile(skillPath, content, 0o644); err != nil {
 			return fmt.Errorf("writing skill file %s: %w", skillName, err)
 		}
 
-		// Vendor scripts if the skill has any
+		// Vendor scripts to skills/{name}/scripts/
 		scriptFiles := scfReg.ListScripts(skillName)
 		if len(scriptFiles) > 0 {
-			scriptDir := filepath.Join(dir, "skills", "scripts")
+			scriptDir := filepath.Join(skillSubDir, "scripts")
 			_ = os.MkdirAll(scriptDir, 0o755)
 			for _, sf := range scriptFiles {
 				scriptContent, sErr := scfReg.LoadScriptByName(skillName, sf)
@@ -1145,6 +1148,17 @@ func buildEnvVars(opts *initOptions) []envVarEntry {
 					Comment: fmt.Sprintf("One of required by %s skill", skillName),
 				})
 			}
+		}
+		for _, env := range info.OptionalEnv {
+			if written[env] {
+				continue
+			}
+			val := opts.EnvVars[env]
+			if val == "" {
+				continue // only write optional vars the user actually provided
+			}
+			written[env] = true
+			vars = append(vars, envVarEntry{Key: env, Value: val, Comment: fmt.Sprintf("Optional for %s skill", skillName)})
 		}
 	}
 

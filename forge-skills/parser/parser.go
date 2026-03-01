@@ -4,12 +4,17 @@ package parser
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"io"
+	"regexp"
 	"strings"
 
 	"github.com/initializ/forge/forge-skills/contract"
 	"gopkg.in/yaml.v3"
 )
+
+// kebabPattern matches lowercase kebab-case identifiers: "a", "foo-bar", "k8s-triage".
+var kebabPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
 // Parse reads skill entries from an io.Reader and extracts structured SkillEntry values.
 //
@@ -61,6 +66,10 @@ func Parse(r io.Reader) ([]contract.SkillEntry, error) {
 				current.OutputSpec = strings.TrimSpace(strings.TrimPrefix(trimmed, "**Output:**"))
 				continue
 			}
+			if strings.HasPrefix(trimmed, "**Output format:**") {
+				current.OutputFormat = strings.TrimSpace(strings.TrimPrefix(trimmed, "**Output format:**"))
+				continue
+			}
 			// Paragraph text becomes description
 			if trimmed != "" {
 				if current.Description != "" {
@@ -101,6 +110,9 @@ func ParseWithMetadata(r io.Reader) ([]contract.SkillEntry, *contract.SkillMetad
 		if err := yaml.Unmarshal(fm, meta); err != nil {
 			return nil, nil, err
 		}
+		if err := validateCategoryAndTags(meta); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	var forgeReqs *contract.SkillRequirements
@@ -109,15 +121,18 @@ func ParseWithMetadata(r io.Reader) ([]contract.SkillEntry, *contract.SkillMetad
 		forgeReqs, egressDomains = extractForgeReqs(meta)
 	}
 
+	bodyStr := strings.TrimSpace(string(body))
+
 	entries, err := Parse(bytes.NewReader(body))
 	if err != nil {
 		return nil, meta, err
 	}
 
-	// Attach metadata to each entry
+	// Attach metadata and full body to each entry
 	for i := range entries {
 		entries[i].Metadata = meta
 		entries[i].ForgeReqs = forgeReqs
+		entries[i].Body = bodyStr
 		_ = egressDomains // egress_domains are available via ForgeSkillMeta but not stored on SkillEntry
 	}
 
@@ -169,6 +184,36 @@ func extractFrontmatter(content []byte) ([]byte, []byte, bool) {
 	}
 
 	return fm, body, true
+}
+
+// validateCategoryAndTags normalizes and validates the category and tags on a SkillMetadata.
+// Category and each tag must be lowercase kebab-case (e.g. "sre", "incident-response").
+// Tags are deduplicated preserving first-occurrence order.
+func validateCategoryAndTags(meta *contract.SkillMetadata) error {
+	if meta.Category != "" {
+		meta.Category = strings.ToLower(meta.Category)
+		if !kebabPattern.MatchString(meta.Category) {
+			return fmt.Errorf("invalid category %q: must be lowercase kebab-case (e.g. \"sre\", \"dev-tools\")", meta.Category)
+		}
+	}
+
+	if len(meta.Tags) > 0 {
+		seen := make(map[string]bool, len(meta.Tags))
+		deduped := make([]string, 0, len(meta.Tags))
+		for _, tag := range meta.Tags {
+			tag = strings.ToLower(tag)
+			if !kebabPattern.MatchString(tag) {
+				return fmt.Errorf("invalid tag %q: must be lowercase kebab-case (e.g. \"kubernetes\", \"incident-response\")", tag)
+			}
+			if !seen[tag] {
+				seen[tag] = true
+				deduped = append(deduped, tag)
+			}
+		}
+		meta.Tags = deduped
+	}
+
+	return nil
 }
 
 // extractForgeReqs extracts SkillRequirements and egress_domains from the generic metadata map

@@ -16,12 +16,12 @@ func TestEmbeddedRegistry_DiscoverAll(t *testing.T) {
 		t.Fatalf("List error: %v", err)
 	}
 
-	if len(skills) != 4 {
+	if len(skills) != 5 {
 		names := make([]string, len(skills))
 		for i, s := range skills {
 			names[i] = s.Name
 		}
-		t.Fatalf("expected 4 skills, got %d: %v", len(skills), names)
+		t.Fatalf("expected 5 skills, got %d: %v", len(skills), names)
 	}
 
 	// Verify all expected skills are present
@@ -31,10 +31,11 @@ func TestEmbeddedRegistry_DiscoverAll(t *testing.T) {
 		hasBins     bool
 		hasEgress   bool
 	}{
-		"github":          {displayName: "Github", hasEnv: true, hasBins: true, hasEgress: true},
-		"weather":         {displayName: "Weather", hasEnv: false, hasBins: true, hasEgress: true},
-		"tavily-search":   {displayName: "Tavily Search", hasEnv: true, hasBins: true, hasEgress: true},
-		"tavily-research": {displayName: "Tavily Research", hasEnv: true, hasBins: true, hasEgress: true},
+		"github":              {displayName: "Github", hasEnv: true, hasBins: true, hasEgress: true},
+		"weather":             {displayName: "Weather", hasEnv: false, hasBins: true, hasEgress: true},
+		"tavily-search":       {displayName: "Tavily Search", hasEnv: true, hasBins: true, hasEgress: true},
+		"tavily-research":     {displayName: "Tavily Research", hasEnv: true, hasBins: true, hasEgress: true},
+		"k8s-incident-triage": {displayName: "K8s Incident Triage", hasEnv: false, hasBins: true, hasEgress: false},
 	}
 
 	for _, s := range skills {

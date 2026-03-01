@@ -120,6 +120,46 @@ func TestAggregate_OneOfKeptSeparate(t *testing.T) {
 	}
 }
 
+func TestAggregate_DeniedToolsCollected(t *testing.T) {
+	entries := []contract.SkillEntry{
+		{
+			Name: "k8s-triage",
+			Metadata: &contract.SkillMetadata{
+				Metadata: map[string]map[string]any{
+					"forge": {
+						"denied_tools": []any{"http_request", "web_search"},
+					},
+				},
+			},
+			ForgeReqs: &contract.SkillRequirements{
+				Bins: []string{"kubectl"},
+			},
+		},
+		{
+			Name: "another-skill",
+			Metadata: &contract.SkillMetadata{
+				Metadata: map[string]map[string]any{
+					"forge": {
+						"denied_tools": []any{"web_search", "csv_parse"},
+					},
+				},
+			},
+		},
+	}
+
+	reqs := AggregateRequirements(entries)
+	// Should be deduplicated and sorted: csv_parse, http_request, web_search
+	if len(reqs.DeniedTools) != 3 {
+		t.Fatalf("DeniedTools = %v, want 3 items", reqs.DeniedTools)
+	}
+	expected := []string{"csv_parse", "http_request", "web_search"}
+	for i, v := range expected {
+		if reqs.DeniedTools[i] != v {
+			t.Errorf("DeniedTools[%d] = %q, want %q", i, reqs.DeniedTools[i], v)
+		}
+	}
+}
+
 func TestAggregate_NoRequirements(t *testing.T) {
 	entries := []contract.SkillEntry{
 		{Name: "a"},

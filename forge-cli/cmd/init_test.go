@@ -392,13 +392,13 @@ func TestScaffold_VendorsSkills(t *testing.T) {
 		t.Fatalf("scaffold error: %v", err)
 	}
 
-	skillPath := filepath.Join("skill-test", "skills", "github.md")
+	skillPath := filepath.Join("skill-test", "skills", "github", "SKILL.md")
 	content, err := os.ReadFile(skillPath)
 	if err != nil {
 		t.Fatalf("reading vendored skill: %v", err)
 	}
 	if !strings.Contains(string(content), "## Tool: github_create_issue") {
-		t.Errorf("vendored github.md missing expected tool heading")
+		t.Errorf("vendored SKILL.md missing expected tool heading")
 	}
 }
 

@@ -138,6 +138,46 @@ func TestCheckPolicy_MaxEgressDomains(t *testing.T) {
 	}
 }
 
+func TestCheckPolicy_ExcessiveTagsWarning(t *testing.T) {
+	tags := make([]string, 25)
+	for i := range tags {
+		tags[i] = "tag"
+	}
+	sd := &contract.SkillDescriptor{
+		Name: "many-tags",
+		Tags: tags,
+	}
+	violations := CheckPolicy(sd, false, DefaultPolicy())
+
+	found := false
+	for _, v := range violations {
+		if v.Rule == "excessive-tags" && v.Severity == "warning" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected excessive-tags warning for 25 tags")
+	}
+}
+
+func TestCheckPolicy_TagsWithinLimit(t *testing.T) {
+	tags := make([]string, 5)
+	for i := range tags {
+		tags[i] = "tag"
+	}
+	sd := &contract.SkillDescriptor{
+		Name: "few-tags",
+		Tags: tags,
+	}
+	violations := CheckPolicy(sd, false, DefaultPolicy())
+
+	for _, v := range violations {
+		if v.Rule == "excessive-tags" {
+			t.Fatal("should not have excessive-tags violation for 5 tags")
+		}
+	}
+}
+
 func TestCheckPolicy_MaxRiskScore(t *testing.T) {
 	policy := DefaultPolicy()
 	policy.MaxRiskScore = 10

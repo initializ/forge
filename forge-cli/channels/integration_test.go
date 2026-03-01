@@ -124,8 +124,9 @@ func TestSlackPlugin_MockA2A(t *testing.T) {
 			gotText = p.Text
 		}
 	}
-	if gotText != "echo: hello agent" {
-		t.Errorf("response text = %q, want %q", gotText, "echo: hello agent")
+	wantText := "echo: [channel:slack channel_target:C456]\nhello agent"
+	if gotText != wantText {
+		t.Errorf("response text = %q, want %q", gotText, wantText)
 	}
 }
 
@@ -186,7 +187,8 @@ func TestTelegramPlugin_MockA2A(t *testing.T) {
 			gotText = p.Text
 		}
 	}
-	if gotText != "echo: hello telegram" {
-		t.Errorf("response text = %q, want %q", gotText, "echo: hello telegram")
+	wantText := "echo: [channel:telegram channel_target:555]\nhello telegram"
+	if gotText != wantText {
+		t.Errorf("response text = %q, want %q", gotText, wantText)
 	}
 }

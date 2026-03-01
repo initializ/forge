@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -133,16 +132,6 @@ func readDaemonState(path string) (daemonState, bool) {
 	return state, true
 }
 
-// isProcessAlive checks whether a process with the given PID exists using signal(0).
-func isProcessAlive(pid int) bool {
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	err = proc.Signal(syscall.Signal(0))
-	return err == nil
-}
-
 // serveStartRun starts the daemon by forking "forge run" in the background.
 func serveStartRun(cmd *cobra.Command, args []string) error {
 	statePath := stateFilePath()
@@ -204,7 +193,7 @@ func serveStartRun(cmd *cobra.Command, args []string) error {
 	child.Stdout = logFile
 	child.Stderr = logFile
 	child.Env = os.Environ()
-	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	child.SysProcAttr = daemonSysProcAttr()
 
 	if err := child.Start(); err != nil {
 		_ = logFile.Close()
@@ -258,7 +247,7 @@ func serveStopRun(cmd *cobra.Command, args []string) error {
 
 	// Send SIGTERM
 	fmt.Fprintf(os.Stderr, "Stopping daemon (PID %d)...\n", state.PID)
-	if err := proc.Signal(syscall.SIGTERM); err != nil {
+	if err := sendTermSignal(proc); err != nil {
 		os.Remove(statePath) //nolint:errcheck
 		return fmt.Errorf("sending SIGTERM: %w", err)
 	}
@@ -276,7 +265,7 @@ func serveStopRun(cmd *cobra.Command, args []string) error {
 
 	// Fallback to SIGKILL
 	fmt.Fprintln(os.Stderr, "Daemon did not stop in time, sending SIGKILL...")
-	if err := proc.Signal(syscall.SIGKILL); err != nil {
+	if err := sendKillSignal(proc); err != nil {
 		os.Remove(statePath) //nolint:errcheck
 		return fmt.Errorf("sending SIGKILL: %w", err)
 	}

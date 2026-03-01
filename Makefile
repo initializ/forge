@@ -3,9 +3,9 @@ VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo de
 COMMIT    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 LDFLAGS   := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)
 COVERFILE := coverage.out
-MODULES   := forge-core forge-cli forge-plugins
+MODULES   := forge-core forge-cli forge-plugins forge-ui
 
-.PHONY: build test test-integration vet fmt lint cover cover-html install clean release help
+.PHONY: build test test-integration vet fmt lint cover cover-html install clean release fetch-monaco help
 
 ## build: Compile the forge binary
 build:
@@ -51,6 +51,10 @@ clean:
 ## release: Build a snapshot release using goreleaser
 release:
 	goreleaser release --snapshot --clean
+
+## fetch-monaco: Build tree-shaken YAML-only Monaco editor (~615KB)
+fetch-monaco:
+	@bash forge-ui/static/dist/monaco/build.sh forge-ui/static/dist/monaco
 
 ## help: Show this help message
 help:

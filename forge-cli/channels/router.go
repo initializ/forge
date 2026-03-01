@@ -47,11 +47,15 @@ func (r *Router) forwardToA2A(ctx context.Context, event *channels.ChannelEvent)
 		taskID = fmt.Sprintf("%s-%s-%s", event.Channel, event.WorkspaceID, event.UserID)
 	}
 
+	// Inject channel context so the LLM knows where this message originated.
+	// This enables schedule_set to automatically capture channel/target for delivery.
+	contextPrefix := fmt.Sprintf("[channel:%s channel_target:%s]\n", event.Channel, event.WorkspaceID)
+
 	params := a2a.SendTaskParams{
 		ID: taskID,
 		Message: a2a.Message{
 			Role:  a2a.MessageRoleUser,
-			Parts: []a2a.Part{a2a.NewTextPart(event.Message)},
+			Parts: []a2a.Part{a2a.NewTextPart(contextPrefix + event.Message)},
 		},
 	}
 

@@ -28,7 +28,8 @@ func TestRouter_ForwardToA2A_Success(t *testing.T) {
 			t.Fatalf("decoding params: %v", err)
 		}
 
-		if params.Message.Parts[0].Text != "hello agent" {
+		expectedText := "[channel:test channel_target:W123]\nhello agent"
+		if params.Message.Parts[0].Text != expectedText {
 			t.Errorf("unexpected message text: %s", params.Message.Parts[0].Text)
 		}
 

@@ -1,16 +1,16 @@
-# Forge
+# Forge — Secure Portable AI Agent Runtime
 
-Turn a `SKILL.md` into a portable, secure, runnable AI agent.
+## What is Forge?
 
-Forge is a portable runtime for building and running secure AI agents from simple skill definitions. It takes Agent Skills and makes them:
+Forge is a secure, portable AI agent runtime that allows developers to run AI agents locally, in cloud, or in enterprise environments without exposing inbound tunnels.
 
-* A runnable AI agent with tool calling
-* A portable, containerized bundle
-* A local HTTP / A2A service
-* A Slack or Telegram bot
-* A secure, restricted execution environment
-
-No Docker required. No inbound tunnels required. No cloud lock-in.
+Forge enables:
+- Atomic agent execution
+- Secure outbound-only connectivity
+- Portable skill-based agents
+- Channel connectors (Slack, Telegram)
+- Cron scheduling
+- Enterprise-grade identity support
 
 ---
 
@@ -22,7 +22,7 @@ Write a SKILL.md. Run `forge init`. Your agent is live.
 
 The wizard configures your model provider, validates your API key,
 connects Slack or Telegram, picks skills, and starts your agent.
-Zero to running in under 5 minutes.
+Zero to running in under 60 seconds.
 
 **Secure by Default**
 
@@ -95,7 +95,7 @@ SKILL.md --> Parse --> Discover tools/requirements --> Compile AgentSpec
                                                             |
                                                             v
                                                     Run LLM agent loop
-                                                   (tool calling + memory)
+                                               (tool calling + memory + cron)
 ```
 
 1. You write a `SKILL.md` that describes what the agent can do
@@ -103,7 +103,7 @@ SKILL.md --> Parse --> Discover tools/requirements --> Compile AgentSpec
 3. The build pipeline discovers tools, resolves egress domains, and compiles an `AgentSpec`
 4. Security policies (egress allowlists, capability bundles) are applied
 5. Build artifacts are checksummed and optionally signed (Ed25519)
-6. At runtime, encrypted secrets are decrypted and the LLM-powered tool-calling loop executes with session persistence and memory
+6. At runtime, encrypted secrets are decrypted and the LLM-powered tool-calling loop executes with session persistence, memory, and a cron scheduler for recurring tasks
 
 ---
 
@@ -314,6 +314,10 @@ Forge ships with built-in tools, adapter tools, and supports custom tools:
 | `memory_search` | Search long-term memory (when enabled) |
 | `memory_get` | Read memory files (when enabled) |
 | `cli_execute` | Execute pre-approved CLI binaries |
+| `schedule_set` | Create or update a recurring cron schedule |
+| `schedule_list` | List all active and inactive schedules |
+| `schedule_delete` | Remove an LLM-created schedule |
+| `schedule_history` | View execution history for scheduled tasks |
 
 ### Adapter Tools
 
@@ -560,7 +564,7 @@ All runtime events are emitted as structured NDJSON to stderr with correlation I
 {"ts":"2026-02-26T10:00:02Z","event":"session_end","correlation_id":"a1b2c3d4","task_id":"task-1","fields":{"state":"completed"}}
 ```
 
-Event types: `session_start`, `session_end`, `tool_exec`, `egress_allowed`, `egress_blocked`, `llm_call`, `guardrail_check`.
+Event types: `session_start`, `session_end`, `tool_exec`, `egress_allowed`, `egress_blocked`, `llm_call`, `guardrail_check`, `schedule_fire`, `schedule_complete`, `schedule_skip`, `schedule_modify`.
 
 ### Build-Time Security
 
@@ -923,23 +927,117 @@ Key design: `forge-cli` imports `forge-ui` (not vice versa). CLI-specific logic 
 
 ---
 
-## Running Modes
+## Scheduling (Cron)
 
-| | `forge run` | `forge serve` |
-|---|------------|--------------|
-| **Purpose** | Development | Production service |
-| **Channels** | `--with slack,telegram` | Reads from `forge.yaml` |
-| **Sessions** | Single session | Multi-session with TTL |
-| **Logging** | Human-readable | JSON structured logs |
-| **Lifecycle** | Interactive | PID file, graceful shutdown |
+Forge includes a built-in cron scheduler for recurring tasks. Schedules can be defined in `forge.yaml` or created dynamically by the agent at runtime.
+
+### Configuration
+
+```yaml
+schedules:
+  - id: daily-report
+    cron: "@daily"
+    task: "Generate and send the daily status report"
+    skill: "tavily-research"           # optional: invoke a specific skill
+    channel: telegram                  # optional: deliver results to a channel
+    channel_target: "-100123456"       # optional: destination chat/channel ID
+```
+
+### Cron Expressions
+
+| Format | Example | Description |
+|--------|---------|-------------|
+| 5-field standard | `*/15 * * * *` | Every 15 minutes |
+| Aliases | `@hourly`, `@daily`, `@weekly`, `@monthly` | Common intervals |
+| Intervals | `@every 5m`, `@every 1h30m` | Duration-based (minimum 1 minute) |
+
+### Schedule Management
+
+The agent has four built-in tools for managing schedules at runtime:
+
+| Tool | Description |
+|------|-------------|
+| `schedule_set` | Create or update a recurring schedule |
+| `schedule_list` | List all active and inactive schedules |
+| `schedule_delete` | Remove a schedule (LLM-created only; YAML-defined cannot be deleted) |
+| `schedule_history` | View execution history for scheduled tasks |
+
+Schedules can also be managed via the CLI:
 
 ```bash
-# Development
+# List all schedules
+forge schedule list
+```
+
+### Channel Delivery
+
+When a schedule includes `channel` and `channel_target`, the agent's response is automatically delivered to the specified channel after each execution. When schedules are created from channel conversations (Slack, Telegram), the channel context is automatically available so the agent can capture the delivery target.
+
+### Execution Details
+
+- **Tick interval**: 30 seconds
+- **Overlap prevention**: A schedule won't fire again if its previous run is still in progress
+- **Persistence**: Schedules are stored in `.forge/memory/SCHEDULES.md` and survive restarts
+- **History**: The last 50 executions are recorded with status, duration, and correlation IDs
+- **Audit events**: `schedule_fire`, `schedule_complete`, `schedule_skip`, `schedule_modify`
+
+---
+
+## Running Modes
+
+### `forge run` — Foreground Server
+
+Run the agent as a foreground HTTP server. Used for development and container deployments.
+
+```bash
+# Development (all interfaces, immediate shutdown)
 forge run --with slack --port 8080
 
-# Production
-forge serve --port 8080 --session-ttl 30m
+# Container deployment
+forge run --host 0.0.0.0 --shutdown-timeout 30s
 ```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--port` | `8080` | HTTP server port |
+| `--host` | `""` (all interfaces) | Bind address |
+| `--shutdown-timeout` | `0` (immediate) | Graceful shutdown timeout |
+| `--with` | — | Channel adapters (e.g. `slack,telegram`) |
+| `--mock-tools` | `false` | Use mock executor for testing |
+| `--model` | — | Override model name |
+| `--provider` | — | Override LLM provider |
+| `--env` | `.env` | Path to env file |
+| `--enforce-guardrails` | `false` | Enforce guardrail violations as errors |
+
+### `forge serve` — Background Daemon
+
+Manage the agent as a background daemon process with PID/log management.
+
+```bash
+# Start daemon (secure defaults: 127.0.0.1, 30s shutdown timeout)
+forge serve
+
+# Start on custom port
+forge serve start --port 9090 --host 0.0.0.0
+
+# Stop the daemon
+forge serve stop
+
+# Check status (PID, uptime, health)
+forge serve status
+
+# View recent logs (last 100 lines)
+forge serve logs
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `start` (default) | Start the daemon in background |
+| `stop` | Send SIGTERM (10s timeout, SIGKILL fallback) |
+| `status` | Show PID, listen address, health check |
+| `logs` | Tail `.forge/serve.log` |
+
+The daemon forks `forge run` in the background with `setsid`, writes state to `.forge/serve.json`, and redirects output to `.forge/serve.log`. Passphrase prompting for encrypted secrets happens in the parent process (which has TTY access) before forking.
 
 ---
 
@@ -1024,6 +1122,14 @@ memory:
   vector_weight: 0.7                # Hybrid search vector weight
   keyword_weight: 0.3               # Hybrid search keyword weight
   decay_half_life_days: 7           # Temporal decay half-life
+
+schedules:                          # Recurring scheduled tasks (optional)
+  - id: "daily-report"
+    cron: "@daily"
+    task: "Generate daily status report"
+    skill: ""                       # Optional skill to invoke
+    channel: "telegram"             # Optional channel for delivery
+    channel_target: "-100123456"    # Destination chat/channel ID
 ```
 
 ### Environment Variables
@@ -1056,8 +1162,9 @@ memory:
 | `forge init [name]` | Initialize a new agent project (interactive wizard) |
 | `forge build` | Compile agent artifacts (AgentSpec, egress allowlist, skills) |
 | `forge validate [--strict] [--command-compat]` | Validate agent spec and forge.yaml |
-| `forge run [--with slack,telegram] [--port 8080]` | Run agent locally with A2A dev server |
-| `forge serve [--port 8080] [--session-ttl 30m]` | Run as production service |
+| `forge run [--with slack,telegram] [--port 8080] [--host] [--shutdown-timeout]` | Run agent as foreground server |
+| `forge serve [start\|stop\|status\|logs]` | Manage agent as background daemon |
+| `forge schedule list` | List configured cron schedules |
 | `forge package [--push] [--prod] [--registry] [--with-channels]` | Build container image |
 | `forge export [--pretty] [--include-schemas] [--simulate-import]` | Export for Command platform |
 | `forge tool list\|describe` | List or inspect registered tools |
@@ -1079,13 +1186,14 @@ forge/
     llm/               LLM client, fallback chains, OAuth
     memory/            Long-term memory (vector + keyword search)
     runtime/           Agent loop, hooks, compactor, audit logger
+    scheduler/         Cron scheduler (parser, tick loop, overlap prevention)
     secrets/           Encrypted secret storage (AES-256-GCM + Argon2id)
     security/          Egress resolver, enforcer, proxy, K8s NetworkPolicy
     tools/             Tool registry, builtins, adapters, skill_tool
     types/             Config types
   forge-cli/           CLI application
-    cmd/               CLI commands (init, build, run, skills, etc.)
-    runtime/           Runner, skill registration, subprocess executor
+    cmd/               CLI commands (init, build, run, serve, schedule, etc.)
+    runtime/           Runner, skill registration, scheduler store, subprocess executor
     internal/tui/      Interactive init wizard (Bubbletea)
     tools/             CLI-specific tools (cli_execute, skill executor)
   forge-plugins/       Channel plugins

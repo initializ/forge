@@ -10,6 +10,12 @@ func TestRunCmd_FlagDefaults(t *testing.T) {
 	if runPort != 8080 {
 		t.Errorf("default port: got %d, want 8080", runPort)
 	}
+	if runHost != "" {
+		t.Errorf("host should default to empty, got %q", runHost)
+	}
+	if runShutdownTimeout != 0 {
+		t.Errorf("shutdown-timeout should default to 0, got %v", runShutdownTimeout)
+	}
 	if runMockTools {
 		t.Error("mock-tools should default to false")
 	}

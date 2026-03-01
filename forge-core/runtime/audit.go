@@ -12,13 +12,17 @@ import (
 
 // Audit event type constants.
 const (
-	AuditSessionStart  = "session_start"
-	AuditSessionEnd    = "session_end"
-	AuditToolExec      = "tool_exec"
-	AuditEgressAllowed = "egress_allowed"
-	AuditEgressBlocked = "egress_blocked"
-	AuditLLMCall       = "llm_call"
-	AuditGuardrail     = "guardrail_check"
+	AuditSessionStart     = "session_start"
+	AuditSessionEnd       = "session_end"
+	AuditToolExec         = "tool_exec"
+	AuditEgressAllowed    = "egress_allowed"
+	AuditEgressBlocked    = "egress_blocked"
+	AuditLLMCall          = "llm_call"
+	AuditGuardrail        = "guardrail_check"
+	AuditScheduleFire     = "schedule_fire"
+	AuditScheduleComplete = "schedule_complete"
+	AuditScheduleSkip     = "schedule_skip"
+	AuditScheduleModify   = "schedule_modify"
 )
 
 // AuditEvent is a single structured audit record emitted as NDJSON.

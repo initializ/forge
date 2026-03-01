@@ -338,6 +338,16 @@ func (s *SkillsStep) checkOneOfGroups() bool {
 	return allSatisfied
 }
 
+// isSecretKey returns true if the env var name indicates a secret value
+// that should be masked during input (API keys, tokens, passwords).
+func isSecretKey(key string) bool {
+	upper := strings.ToUpper(key)
+	return strings.HasSuffix(upper, "_API_KEY") ||
+		strings.HasSuffix(upper, "_TOKEN") ||
+		strings.HasSuffix(upper, "_SECRET") ||
+		strings.HasSuffix(upper, "_PASSWORD")
+}
+
 func (s *SkillsStep) initCurrentPrompt() {
 	if s.currentPrompt >= len(s.envPrompts) {
 		return
@@ -346,6 +356,7 @@ func (s *SkillsStep) initCurrentPrompt() {
 	s.keyInput = components.NewSecretInput(
 		prompt.label,
 		prompt.allowSkip,
+		isSecretKey(prompt.envVar),
 		s.styles.Theme.Accent,
 		s.styles.Theme.Success,
 		s.styles.Theme.Error,
@@ -402,9 +413,11 @@ func (s *SkillsStep) Apply(ctx *tui.WizardContext) {
 
 func skillIcon(name string) string {
 	icons := map[string]string{
-		"github":        "🐙",
-		"weather":       "🌤️",
-		"tavily-search": "🔍",
+		"github":              "🐙",
+		"weather":             "🌤️",
+		"tavily-search":       "🔍",
+		"k8s-incident-triage": "☸️",
+		"k8s_incident_triage": "☸️",
 	}
 	if icon, ok := icons[name]; ok {
 		return icon

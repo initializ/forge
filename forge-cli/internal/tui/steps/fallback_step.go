@@ -204,7 +204,7 @@ func (s *FallbackStep) advanceToNextKey() (tui.Step, tea.Cmd) {
 	s.phase = fallbackKeyPhase
 	label := fmt.Sprintf("%s API Key (fallback)", providerDisplayName(provider))
 	s.keyInput = components.NewSecretInput(
-		label, true,
+		label, true, true,
 		s.styles.Theme.Accent,
 		s.styles.Theme.Success,
 		s.styles.Theme.Error,
@@ -229,7 +229,7 @@ func (s *FallbackStep) updateKeyPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
 			// Retry key input
 			label := fmt.Sprintf("%s API Key (retry — %s)", providerDisplayName(provider), msg.Err)
 			s.keyInput = components.NewSecretInput(
-				label, true,
+				label, true, true,
 				s.styles.Theme.Accent,
 				s.styles.Theme.Success,
 				s.styles.Theme.Error,

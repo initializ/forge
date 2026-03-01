@@ -71,10 +71,13 @@ func Scan(fsys fs.FS) ([]contract.SkillDescriptor, error) {
 				sd.Description = meta.Description
 			}
 
+			sd.Category = meta.Category
+			sd.Tags = meta.Tags
+
 			// Extract forge-specific fields
 			if meta.Metadata != nil {
 				if forgeMap, ok := meta.Metadata["forge"]; ok {
-					sd.RequiredBins, sd.RequiredEnv, sd.OneOfEnv, sd.OptionalEnv, sd.EgressDomains, sd.TimeoutHint = extractFromForgeMap(forgeMap)
+					sd.RequiredBins, sd.RequiredEnv, sd.OneOfEnv, sd.OptionalEnv, sd.EgressDomains, sd.DeniedTools, sd.TimeoutHint = extractFromForgeMap(forgeMap)
 				}
 			}
 
@@ -102,13 +105,24 @@ func Scan(fsys fs.FS) ([]contract.SkillDescriptor, error) {
 }
 
 // extractFromForgeMap extracts typed fields from the forge metadata map.
-func extractFromForgeMap(forgeMap map[string]any) (bins, reqEnv, oneOfEnv, optEnv, egress []string, timeoutHint int) {
+func extractFromForgeMap(forgeMap map[string]any) (bins, reqEnv, oneOfEnv, optEnv, egress, deniedTools []string, timeoutHint int) {
 	// Extract egress_domains
 	if raw, ok := forgeMap["egress_domains"]; ok {
 		if arr, ok := raw.([]any); ok {
 			for _, v := range arr {
 				if s, ok := v.(string); ok {
 					egress = append(egress, s)
+				}
+			}
+		}
+	}
+
+	// Extract denied_tools
+	if raw, ok := forgeMap["denied_tools"]; ok {
+		if arr, ok := raw.([]any); ok {
+			for _, v := range arr {
+				if s, ok := v.(string); ok {
+					deniedTools = append(deniedTools, s)
 				}
 			}
 		}

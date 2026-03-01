@@ -205,7 +205,7 @@ func (s *ToolsStep) initKeyInput(suffix string) {
 	s.phase = toolsWebSearchKeyPhase
 	s.keyInput = components.NewSecretInput(
 		keyLabel,
-		false, // required — cannot skip
+		false, true, // required — cannot skip; masked
 		s.styles.Theme.Accent,
 		s.styles.Theme.Success,
 		s.styles.Theme.Error,

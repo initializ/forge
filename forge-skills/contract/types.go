@@ -5,23 +5,28 @@ type SkillDescriptor struct {
 	Name          string
 	DisplayName   string
 	Description   string
+	Category      string
+	Tags          []string
 	RequiredEnv   []string
 	OneOfEnv      []string
 	OptionalEnv   []string
 	RequiredBins  []string
 	EgressDomains []string
+	DeniedTools   []string
 	TimeoutHint   int         // suggested timeout in seconds (0 = use default)
 	Provenance    *Provenance `json:"provenance,omitempty"`
 }
 
 // SkillEntry represents a single tool/skill parsed from a SKILL.md file.
 type SkillEntry struct {
-	Name        string
-	Description string
-	InputSpec   string
-	OutputSpec  string
-	Metadata    *SkillMetadata     // nil if no frontmatter
-	ForgeReqs   *SkillRequirements // convenience: extracted from metadata.forge.requires
+	Name         string
+	Description  string
+	InputSpec    string
+	OutputSpec   string
+	OutputFormat string
+	Body         string             // full markdown body after frontmatter
+	Metadata     *SkillMetadata     // nil if no frontmatter
+	ForgeReqs    *SkillRequirements // convenience: extracted from metadata.forge.requires
 }
 
 // SkillMetadata holds the full frontmatter parsed from YAML between --- delimiters.
@@ -29,6 +34,8 @@ type SkillEntry struct {
 type SkillMetadata struct {
 	Name        string                    `yaml:"name,omitempty"`
 	Description string                    `yaml:"description,omitempty"`
+	Category    string                    `yaml:"category,omitempty"`
+	Tags        []string                  `yaml:"tags,omitempty"`
 	Metadata    map[string]map[string]any `yaml:"metadata,omitempty"`
 }
 
@@ -36,6 +43,7 @@ type SkillMetadata struct {
 type ForgeSkillMeta struct {
 	Requires      *SkillRequirements `yaml:"requires,omitempty" json:"requires,omitempty"`
 	EgressDomains []string           `yaml:"egress_domains,omitempty" json:"egress_domains,omitempty"`
+	DeniedTools   []string           `yaml:"denied_tools,omitempty" json:"denied_tools,omitempty"`
 }
 
 // SkillRequirements declares CLI binaries and environment variables a skill needs.
@@ -61,10 +69,20 @@ type CompiledSkills struct {
 
 // CompiledSkill represents a single compiled skill.
 type CompiledSkill struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	InputSpec   string `json:"input_spec,omitempty"`
-	OutputSpec  string `json:"output_spec,omitempty"`
+	Name         string   `json:"name"`
+	Description  string   `json:"description"`
+	Category     string   `json:"category,omitempty"`
+	Tags         []string `json:"tags,omitempty"`
+	InputSpec    string   `json:"input_spec,omitempty"`
+	OutputSpec   string   `json:"output_spec,omitempty"`
+	OutputFormat string   `json:"output_format,omitempty"`
+	Body         string   `json:"body,omitempty"`
+}
+
+// SkillFilter defines criteria for filtering skill lists.
+type SkillFilter struct {
+	Category string
+	Tags     []string
 }
 
 // AggregatedRequirements is the union of all skill requirements.
@@ -74,13 +92,17 @@ type AggregatedRequirements struct {
 	EnvOneOf       [][]string // separate groups per skill (not merged across skills)
 	EnvOptional    []string   // union of optional vars minus those promoted to required
 	MaxTimeoutHint int        // maximum timeout_hint across all skills (seconds)
+	DeniedTools    []string   // union of denied tools across skills, deduplicated, sorted
+	EgressDomains  []string   // union of egress domains across skills, deduplicated, sorted
 }
 
 // DerivedCLIConfig holds auto-derived cli_execute configuration from skill requirements.
 type DerivedCLIConfig struct {
 	AllowedBinaries []string
 	EnvPassthrough  []string
-	TimeoutHint     int // suggested timeout in seconds (0 = use default)
+	TimeoutHint     int      // suggested timeout in seconds (0 = use default)
+	DeniedTools     []string // tools to remove from registry before LLM execution
+	EgressDomains   []string // additional egress domains from skills
 }
 
 // TrustLevel indicates the trust classification of a skill.

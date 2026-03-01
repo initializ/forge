@@ -207,7 +207,7 @@ func (s *ProviderStep) updateSelectPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
 			s.phase = providerKeyPhase
 			label := fmt.Sprintf("%s API Key", providerDisplayName(val))
 			s.keyInput = components.NewSecretInput(
-				label, true,
+				label, true, true,
 				s.styles.Theme.Accent,
 				s.styles.Theme.Success,
 				s.styles.Theme.Error,
@@ -256,7 +256,7 @@ func (s *ProviderStep) updateAuthMethodPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
 		s.phase = providerKeyPhase
 		label := fmt.Sprintf("%s API Key", providerDisplayName(s.provider))
 		s.keyInput = components.NewSecretInput(
-			label, true,
+			label, true, true,
 			s.styles.Theme.Accent,
 			s.styles.Theme.Success,
 			s.styles.Theme.Error,
@@ -283,7 +283,7 @@ func (s *ProviderStep) updateOAuthPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
 			s.phase = providerKeyPhase
 			label := fmt.Sprintf("%s API Key (OAuth failed — %s)", providerDisplayName(s.provider), msg.Err)
 			s.keyInput = components.NewSecretInput(
-				label, true,
+				label, true, true,
 				s.styles.Theme.Accent,
 				s.styles.Theme.Success,
 				s.styles.Theme.Error,
@@ -346,7 +346,7 @@ func (s *ProviderStep) updateValidatingPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
 				s.phase = providerKeyPhase
 				label := fmt.Sprintf("%s API Key (retry — %s)", providerDisplayName(s.provider), msg.Err)
 				s.keyInput = components.NewSecretInput(
-					label, true,
+					label, true, true,
 					s.styles.Theme.Accent,
 					s.styles.Theme.Success,
 					s.styles.Theme.Error,
@@ -458,7 +458,7 @@ func (s *ProviderStep) updateCustomModelPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
 		s.phase = providerCustomAuthPhase
 		s.keyInput = components.NewSecretInput(
 			"API key or auth token (optional)",
-			true,
+			true, true,
 			s.styles.Theme.Accent,
 			s.styles.Theme.Success,
 			s.styles.Theme.Error,

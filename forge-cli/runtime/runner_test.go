@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"testing"
 	"time"
 
@@ -204,6 +205,137 @@ func TestNewRunner_DefaultPort(t *testing.T) {
 	}
 	if runner.cfg.Port != 8080 {
 		t.Errorf("default port: got %d, want 8080", runner.cfg.Port)
+	}
+}
+
+func TestDiscoverSkillFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create flat skill: skills/search.md
+	skillsDir := dir + "/skills"
+	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skillsDir+"/search.md", []byte("# search"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create subdirectory skill: skills/k8s-triage/SKILL.md
+	subDir := skillsDir + "/k8s-triage"
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(subDir+"/SKILL.md", []byte("# k8s triage"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create main SKILL.md
+	if err := os.WriteFile(dir+"/SKILL.md", []byte("# main"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &Runner{
+		cfg: RunnerConfig{
+			Config:  &types.ForgeConfig{},
+			WorkDir: dir,
+		},
+	}
+
+	files := runner.discoverSkillFiles()
+
+	// Should find: skills/search.md, skills/k8s-triage/SKILL.md, SKILL.md
+	if len(files) != 3 {
+		t.Fatalf("expected 3 files, got %d: %v", len(files), files)
+	}
+
+	// Check that all expected files are present
+	found := map[string]bool{}
+	for _, f := range files {
+		found[f] = true
+	}
+	wantFlat := skillsDir + "/search.md"
+	wantSub := subDir + "/SKILL.md"
+	wantMain := dir + "/SKILL.md"
+	if !found[wantFlat] {
+		t.Errorf("missing flat skill: %s", wantFlat)
+	}
+	if !found[wantSub] {
+		t.Errorf("missing subdirectory skill: %s", wantSub)
+	}
+	if !found[wantMain] {
+		t.Errorf("missing main SKILL.md: %s", wantMain)
+	}
+}
+
+func TestExpandEgressDomains(t *testing.T) {
+	envVars := map[string]string{
+		"K8S_API_DOMAIN": "my-cluster.eastus.azmk8s.io",
+		"MULTI_DOMAINS":  "a.eks.amazonaws.com, b.azmk8s.io",
+		"EMPTY_VAR":      "",
+	}
+
+	tests := []struct {
+		name   string
+		domain string
+		want   []string
+	}{
+		{
+			name:   "no variable",
+			domain: "api.example.com",
+			want:   []string{"api.example.com"},
+		},
+		{
+			name:   "dollar variable",
+			domain: "$K8S_API_DOMAIN",
+			want:   []string{"my-cluster.eastus.azmk8s.io"},
+		},
+		{
+			name:   "braced variable",
+			domain: "${K8S_API_DOMAIN}",
+			want:   []string{"my-cluster.eastus.azmk8s.io"},
+		},
+		{
+			name:   "wildcard with variable",
+			domain: "*.$K8S_API_DOMAIN",
+			want:   []string{"*.my-cluster.eastus.azmk8s.io"},
+		},
+		{
+			name:   "unset variable returns nil",
+			domain: "$NONEXISTENT_VAR_12345",
+			want:   nil,
+		},
+		{
+			name:   "empty variable returns nil",
+			domain: "$EMPTY_VAR",
+			want:   nil,
+		},
+		{
+			name:   "mixed literal and variable",
+			domain: "prefix-${K8S_API_DOMAIN}-suffix",
+			want:   []string{"prefix-my-cluster.eastus.azmk8s.io-suffix"},
+		},
+		{
+			name:   "comma separated domains from variable",
+			domain: "$MULTI_DOMAINS",
+			want:   []string{"a.eks.amazonaws.com", "b.azmk8s.io"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Ensure NONEXISTENT_VAR_12345 is truly unset in OS env
+			os.Unsetenv("NONEXISTENT_VAR_12345") //nolint:errcheck
+			got := expandEgressDomains(tt.domain, envVars)
+			if len(got) != len(tt.want) {
+				t.Fatalf("expandEgressDomains(%q) = %v (len %d), want %v (len %d)",
+					tt.domain, got, len(got), tt.want, len(tt.want))
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("expandEgressDomains(%q)[%d] = %q, want %q", tt.domain, i, got[i], tt.want[i])
+				}
+			}
+		})
 	}
 }
 

@@ -5,4 +5,5 @@ use (
 	./forge-cli
 	./forge-plugins
 	./forge-skills
+	./forge-ui
 )

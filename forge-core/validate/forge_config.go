@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"regexp"
 
+	"github.com/initializ/forge/forge-core/scheduler"
 	"github.com/initializ/forge/forge-core/types"
 )
+
+var kebabCasePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
 var (
 	agentIDPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
@@ -84,6 +87,30 @@ func ValidateForgeConfig(cfg *types.ForgeConfig) *ValidationResult {
 	for _, p := range cfg.Secrets.Providers {
 		if !knownSecretProviders[p] {
 			r.Warnings = append(r.Warnings, fmt.Sprintf("unknown secret provider %q (known: env, encrypted-file)", p))
+		}
+	}
+
+	// Validate schedules config
+	seenScheduleIDs := make(map[string]bool, len(cfg.Schedules))
+	for i, s := range cfg.Schedules {
+		if s.ID == "" {
+			r.Errors = append(r.Errors, fmt.Sprintf("schedules[%d]: id is required", i))
+		} else if !kebabCasePattern.MatchString(s.ID) {
+			r.Errors = append(r.Errors, fmt.Sprintf("schedules[%d]: id %q must be kebab-case", i, s.ID))
+		} else if seenScheduleIDs[s.ID] {
+			r.Errors = append(r.Errors, fmt.Sprintf("schedules[%d]: duplicate id %q", i, s.ID))
+		} else {
+			seenScheduleIDs[s.ID] = true
+		}
+
+		if s.Cron == "" {
+			r.Errors = append(r.Errors, fmt.Sprintf("schedules[%d]: cron is required", i))
+		} else if _, err := scheduler.Parse(s.Cron); err != nil {
+			r.Errors = append(r.Errors, fmt.Sprintf("schedules[%d]: invalid cron %q: %s", i, s.Cron, err))
+		}
+
+		if s.Task == "" {
+			r.Errors = append(r.Errors, fmt.Sprintf("schedules[%d]: task is required", i))
 		}
 	}
 

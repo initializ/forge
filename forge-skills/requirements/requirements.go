@@ -17,9 +17,35 @@ func AggregateRequirements(entries []contract.SkillEntry) *contract.AggregatedRe
 	binSet := make(map[string]bool)
 	reqSet := make(map[string]bool)
 	optSet := make(map[string]bool)
+	deniedSet := make(map[string]bool)
+	egressSet := make(map[string]bool)
 	var oneOfGroups [][]string
 
 	for _, e := range entries {
+		// Collect forge-level metadata (denied_tools, egress_domains)
+		if e.Metadata != nil && e.Metadata.Metadata != nil {
+			if forgeMap, ok := e.Metadata.Metadata["forge"]; ok {
+				if raw, ok := forgeMap["denied_tools"]; ok {
+					if arr, ok := raw.([]any); ok {
+						for _, v := range arr {
+							if s, ok := v.(string); ok {
+								deniedSet[s] = true
+							}
+						}
+					}
+				}
+				if raw, ok := forgeMap["egress_domains"]; ok {
+					if arr, ok := raw.([]any); ok {
+						for _, v := range arr {
+							if s, ok := v.(string); ok {
+								egressSet[s] = true
+							}
+						}
+					}
+				}
+			}
+		}
+
 		if e.ForgeReqs == nil {
 			continue
 		}
@@ -47,8 +73,10 @@ func AggregateRequirements(entries []contract.SkillEntry) *contract.AggregatedRe
 	}
 
 	agg := &contract.AggregatedRequirements{
-		Bins:     sortedKeys(binSet),
-		EnvOneOf: oneOfGroups,
+		Bins:          sortedKeys(binSet),
+		EnvOneOf:      oneOfGroups,
+		DeniedTools:   sortedKeys(deniedSet),
+		EgressDomains: sortedKeys(egressSet),
 	}
 	agg.EnvRequired = sortedKeys(reqSet)
 	agg.EnvOptional = sortedKeys(optSet)

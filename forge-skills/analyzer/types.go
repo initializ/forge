@@ -66,5 +66,6 @@ type SecurityPolicy struct {
 	DeniedEnvPatterns []string `yaml:"denied_env_patterns" json:"denied_env_patterns,omitempty"`
 	ScriptPolicy      string   `yaml:"script_policy" json:"script_policy"` // "allow"|"warn"|"deny"
 	MaxRiskScore      int      `yaml:"max_risk_score" json:"max_risk_score"`
+	MaxTags           int      `yaml:"max_tags" json:"max_tags"`
 	TrustedDomains    []string `yaml:"trusted_domains" json:"trusted_domains,omitempty"`
 }

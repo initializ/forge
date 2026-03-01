@@ -25,6 +25,7 @@ type SecretInput struct {
 	state     SecretInputState
 	err       string
 	allowSkip bool
+	masked    bool
 
 	// Styles
 	LabelStyle   lipgloss.Style
@@ -39,12 +40,19 @@ type SecretInput struct {
 	kbd          KbdHint
 }
 
-// NewSecretInput creates a new masked input component.
-func NewSecretInput(label string, allowSkip bool, accentColor, successColor, errorColor, borderColor lipgloss.Color, labelStyle, borderStyle, successStyle, errorStyle, hintStyle lipgloss.Style, kbdKeyStyle, kbdDescStyle lipgloss.Style) SecretInput {
+// NewSecretInput creates a new input component.
+// When masked is true, input is hidden with '•' characters (for secrets).
+// When masked is false, input is shown in plaintext (for config values).
+func NewSecretInput(label string, allowSkip bool, masked bool, accentColor, successColor, errorColor, borderColor lipgloss.Color, labelStyle, borderStyle, successStyle, errorStyle, hintStyle lipgloss.Style, kbdKeyStyle, kbdDescStyle lipgloss.Style) SecretInput {
 	ti := textinput.New()
-	ti.Placeholder = "paste key here"
-	ti.EchoMode = textinput.EchoPassword
-	ti.EchoCharacter = '•'
+	if masked {
+		ti.Placeholder = "paste key here"
+		ti.EchoMode = textinput.EchoPassword
+		ti.EchoCharacter = '•'
+	} else {
+		ti.Placeholder = "enter value"
+		ti.EchoMode = textinput.EchoNormal
+	}
 	ti.Focus()
 	ti.CharLimit = 200
 	ti.Cursor.Style = lipgloss.NewStyle().Foreground(accentColor)
@@ -61,6 +69,7 @@ func NewSecretInput(label string, allowSkip bool, accentColor, successColor, err
 		Label:        label,
 		input:        ti,
 		allowSkip:    allowSkip,
+		masked:       masked,
 		state:        SecretInputEditing,
 		LabelStyle:   labelStyle,
 		BorderStyle:  borderStyle,
@@ -96,7 +105,11 @@ func (s SecretInput) Update(msg tea.Msg) (SecretInput, tea.Cmd) {
 				return s, nil
 			}
 			if val == "" {
-				s.err = "key is required"
+				if s.masked {
+					s.err = "key is required"
+				} else {
+					s.err = "value is required"
+				}
 				return s, nil
 			}
 			s.done = true

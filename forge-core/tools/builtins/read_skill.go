@@ -57,8 +57,30 @@ func (t *ReadSkillTool) Execute(_ context.Context, args json.RawMessage) (string
 		return `{"error": "invalid skill name"}`, nil
 	}
 
-	path := filepath.Join(t.workDir, "skills", input.Name+".md")
-	data, err := os.ReadFile(path)
+	// Try multiple naming conventions to find the skill file.
+	// Tool names use underscores (k8s_triage) while directories use hyphens (k8s-incident-triage).
+	nameVariants := []string{input.Name}
+	hyphenated := strings.ReplaceAll(input.Name, "_", "-")
+	if hyphenated != input.Name {
+		nameVariants = append(nameVariants, hyphenated)
+	}
+
+	var data []byte
+	var err error
+	for _, name := range nameVariants {
+		// Flat format: skills/{name}.md
+		path := filepath.Join(t.workDir, "skills", name+".md")
+		data, err = os.ReadFile(path)
+		if err == nil {
+			break
+		}
+		// Subdirectory format: skills/{name}/SKILL.md
+		path = filepath.Join(t.workDir, "skills", name, "SKILL.md")
+		data, err = os.ReadFile(path)
+		if err == nil {
+			break
+		}
+	}
 	if err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Sprintf(`{"error": "skill %q not found"}`, input.Name), nil

@@ -40,3 +40,23 @@ changelog:
       - "^test:"
       - "^ci:"
       - "^chore:"
+
+brews:
+  - name: forge
+    repository:
+      owner: initializ
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/initializ/forge"
+    description: "Forge is a secure, portable AI Agent runtime. Run agents locally, in cloud, or enterprise environments without exposing inbound tunnels."
+    license: "Apache-2.0"
+    install: |
+      bin.install "forge"
+    test: |
+      system "#{bin}/forge", "--version"
+    commit_author:
+      name: "forge-bot"
+      email: "forge-bot@initializ.ai"
+    commit_msg_template: "chore: update forge formula to {{ .Tag }}"

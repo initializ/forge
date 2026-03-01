@@ -116,10 +116,22 @@ func (r *Runner) Run(ctx context.Context) error {
 	for i, t := range r.cfg.Config.Tools {
 		egressToolNames[i] = t.Name
 	}
+	// Merge skill-derived egress domains with explicitly configured domains.
+	// Both sources may contain $VAR or ${VAR} references which are
+	// expanded from .env and OS environment (e.g. "$K8S_API_DOMAIN").
+	var egressDomains []string
+	for _, d := range r.cfg.Config.Egress.AllowedDomains {
+		egressDomains = append(egressDomains, expandEgressDomains(d, envVars)...)
+	}
+	if r.derivedCLIConfig != nil && len(r.derivedCLIConfig.EgressDomains) > 0 {
+		for _, d := range r.derivedCLIConfig.EgressDomains {
+			egressDomains = append(egressDomains, expandEgressDomains(d, envVars)...)
+		}
+	}
 	egressCfg, egressErr := security.Resolve(
 		r.cfg.Config.Egress.Profile,
 		r.cfg.Config.Egress.Mode,
-		r.cfg.Config.Egress.AllowedDomains,
+		egressDomains,
 		egressToolNames,
 		r.cfg.Config.Egress.Capabilities,
 	)
@@ -196,9 +208,11 @@ func (r *Runner) Run(ctx context.Context) error {
 				r.logger.Warn("failed to register read_skill", map[string]any{"error": regErr.Error()})
 			}
 
-			// Register cli_execute if configured
+			// Register cli_execute if configured explicitly or auto-derived from skills
+			hasExplicitCLI := false
 			for _, toolRef := range r.cfg.Config.Tools {
 				if toolRef.Name == "cli_execute" && toolRef.Config != nil {
+					hasExplicitCLI = true
 					cliCfg := clitools.ParseCLIExecuteConfig(toolRef.Config)
 					// Apply timeout hint from skill requirements if larger than explicit config
 					if r.derivedCLIConfig != nil && r.derivedCLIConfig.TimeoutHint > cliCfg.TimeoutSeconds {
@@ -216,6 +230,24 @@ func (r *Runner) Run(ctx context.Context) error {
 						}
 					}
 					break
+				}
+			}
+			// Auto-register cli_execute from skill-derived config when not explicitly configured
+			if !hasExplicitCLI && r.derivedCLIConfig != nil && len(r.derivedCLIConfig.AllowedBinaries) > 0 {
+				cliCfg := clitools.CLIExecuteConfig{
+					AllowedBinaries: r.derivedCLIConfig.AllowedBinaries,
+					EnvPassthrough:  r.derivedCLIConfig.EnvPassthrough,
+					TimeoutSeconds:  r.derivedCLIConfig.TimeoutHint,
+				}
+				r.cliExecTool = clitools.NewCLIExecuteTool(cliCfg)
+				if regErr := reg.Register(r.cliExecTool); regErr != nil {
+					r.logger.Warn("failed to register auto-derived cli_execute", map[string]any{"error": regErr.Error()})
+				} else {
+					avail, missing := r.cliExecTool.Availability()
+					r.logger.Info("cli_execute auto-registered from skill requirements", map[string]any{
+						"binaries":  r.derivedCLIConfig.AllowedBinaries,
+						"available": len(avail), "missing": len(missing),
+					})
 				}
 			}
 
@@ -243,8 +275,28 @@ func (r *Runner) Run(ctx context.Context) error {
 				r.cliExecTool.SetProxyURL(proxyURL)
 			}
 
-			// Register skill tools from skills/*.md files
+			// Register skill tools from skill files
 			r.registerSkillTools(reg, proxyURL)
+
+			// Remove denied tools from the registry, but preserve user-selected builtins
+			if r.derivedCLIConfig != nil && len(r.derivedCLIConfig.DeniedTools) > 0 {
+				userSelected := make(map[string]bool, len(r.cfg.Config.BuiltinTools))
+				for _, name := range r.cfg.Config.BuiltinTools {
+					userSelected[name] = true
+				}
+
+				var removed []string
+				for _, denied := range r.derivedCLIConfig.DeniedTools {
+					if userSelected[denied] {
+						continue // user explicitly selected this tool, keep it
+					}
+					reg.Remove(denied)
+					removed = append(removed, denied)
+				}
+				if len(removed) > 0 {
+					r.logger.Info("removed denied tools", map[string]any{"denied": removed})
+				}
+			}
 
 			// Log registered tool names
 			toolNames := reg.List()
@@ -977,14 +1029,19 @@ func (r *Runner) printBanner(proxyURL string) {
 	fmt.Fprintf(os.Stderr, "  Press Ctrl+C to stop\n\n")
 }
 
-// registerSkillTools scans skills/*.md and the main SKILL.md for skill entries
-// that have associated scripts. Each script-backed skill is registered as a
-// first-class tool in the registry.
-func (r *Runner) registerSkillTools(reg *tools.Registry, proxyURL string) {
+// discoverSkillFiles returns all skill file paths from both flat and subdirectory formats,
+// plus the main SKILL.md (or custom path from forge.yaml).
+func (r *Runner) discoverSkillFiles() []string {
 	skillsDir := filepath.Join(r.cfg.WorkDir, "skills")
+
+	// Flat format: skills/*.md
 	matches, _ := filepath.Glob(filepath.Join(skillsDir, "*.md"))
 
-	// Also check main SKILL.md
+	// Subdirectory format: skills/*/SKILL.md
+	subDirMatches, _ := filepath.Glob(filepath.Join(skillsDir, "*", "SKILL.md"))
+	matches = append(matches, subDirMatches...)
+
+	// Main SKILL.md (or custom path from forge.yaml)
 	mainSkill := "SKILL.md"
 	if r.cfg.Config.Skills.Path != "" {
 		mainSkill = r.cfg.Config.Skills.Path
@@ -996,6 +1053,14 @@ func (r *Runner) registerSkillTools(reg *tools.Registry, proxyURL string) {
 		matches = append(matches, mainSkill)
 	}
 
+	return matches
+}
+
+// registerSkillTools scans skill files for skill entries that have associated
+// scripts. Each script-backed skill is registered as a first-class tool in the registry.
+func (r *Runner) registerSkillTools(reg *tools.Registry, proxyURL string) {
+	matches := r.discoverSkillFiles()
+
 	var registered int
 	for _, match := range matches {
 		entries, meta, err := cliskills.ParseFileWithMetadata(match)
@@ -1003,13 +1068,32 @@ func (r *Runner) registerSkillTools(reg *tools.Registry, proxyURL string) {
 			continue
 		}
 
+		// Derive skill directory name from the SKILL.md path (for subdirectory skills)
+		skillDirName := ""
+		if strings.HasSuffix(match, "/SKILL.md") {
+			skillDirName = filepath.Base(filepath.Dir(match))
+		}
+
 		for _, entry := range entries {
 			// Map tool name (underscores) to script name (hyphens)
 			scriptName := strings.ReplaceAll(entry.Name, "_", "-")
-			scriptPath := filepath.Join("skills", "scripts", scriptName+".sh")
-			absScript := filepath.Join(r.cfg.WorkDir, scriptPath)
 
-			if _, err := os.Stat(absScript); err != nil {
+			// Look for scripts in subdirectory layout first: skills/{dir}/scripts/{name}.sh
+			// Then fall back to legacy flat layout: skills/scripts/{name}.sh
+			var scriptPath string
+			if skillDirName != "" {
+				candidate := filepath.Join("skills", skillDirName, "scripts", scriptName+".sh")
+				if _, err := os.Stat(filepath.Join(r.cfg.WorkDir, candidate)); err == nil {
+					scriptPath = candidate
+				}
+			}
+			if scriptPath == "" {
+				candidate := filepath.Join("skills", "scripts", scriptName+".sh")
+				if _, err := os.Stat(filepath.Join(r.cfg.WorkDir, candidate)); err == nil {
+					scriptPath = candidate
+				}
+			}
+			if scriptPath == "" {
 				continue // No script file, skip
 			}
 
@@ -1070,21 +1154,7 @@ func (r *Runner) buildSystemPrompt() string {
 // (those without scripts) for the system prompt. Script-backed skills are
 // already registered as first-class tools and don't need catalog entries.
 func (r *Runner) buildSkillCatalog() string {
-	skillsDir := filepath.Join(r.cfg.WorkDir, "skills")
-	matches, _ := filepath.Glob(filepath.Join(skillsDir, "*.md"))
-
-	// Also check main SKILL.md
-	mainSkill := "SKILL.md"
-	if r.cfg.Config.Skills.Path != "" {
-		mainSkill = r.cfg.Config.Skills.Path
-	}
-	if !filepath.IsAbs(mainSkill) {
-		mainSkill = filepath.Join(r.cfg.WorkDir, mainSkill)
-	}
-	if info, err := os.Stat(mainSkill); err == nil && !info.IsDir() {
-		matches = append(matches, mainSkill)
-	}
-
+	matches := r.discoverSkillFiles()
 	if len(matches) == 0 {
 		return ""
 	}
@@ -1096,16 +1166,48 @@ func (r *Runner) buildSkillCatalog() string {
 			continue
 		}
 
+		// Derive skill directory name from the SKILL.md path (for subdirectory skills)
+		catalogSkillDir := ""
+		if strings.HasSuffix(match, "/SKILL.md") {
+			catalogSkillDir = filepath.Base(filepath.Dir(match))
+		}
+
 		for _, entry := range entries {
 			// Skip skills that have scripts (already registered as tools)
 			scriptName := strings.ReplaceAll(entry.Name, "_", "-")
-			scriptPath := filepath.Join(r.cfg.WorkDir, "skills", "scripts", scriptName+".sh")
-			if _, err := os.Stat(scriptPath); err == nil {
+			hasScript := false
+			// Check subdirectory layout: skills/{dir}/scripts/{name}.sh
+			if catalogSkillDir != "" {
+				sp := filepath.Join(r.cfg.WorkDir, "skills", catalogSkillDir, "scripts", scriptName+".sh")
+				if _, err := os.Stat(sp); err == nil {
+					hasScript = true
+				}
+			}
+			// Check legacy flat layout: skills/scripts/{name}.sh
+			if !hasScript {
+				sp := filepath.Join(r.cfg.WorkDir, "skills", "scripts", scriptName+".sh")
+				if _, err := os.Stat(sp); err == nil {
+					hasScript = true
+				}
+			}
+			if hasScript {
 				continue
 			}
 
 			if entry.Name != "" && entry.Description != "" {
-				catalogEntries = append(catalogEntries, fmt.Sprintf("- %s: %s", entry.Name, entry.Description))
+				line := fmt.Sprintf("- %s: %s", entry.Name, entry.Description)
+				// Add tool hint when skill requires specific binaries
+				if entry.ForgeReqs != nil && len(entry.ForgeReqs.Bins) > 0 {
+					line += fmt.Sprintf(" (use cli_execute with: %s)", strings.Join(entry.ForgeReqs.Bins, ", "))
+				}
+				catalogEntries = append(catalogEntries, line)
+
+				// Include full skill instructions when available
+				if entry.Body != "" {
+					catalogEntries = append(catalogEntries, "")
+					catalogEntries = append(catalogEntries, entry.Body)
+					catalogEntries = append(catalogEntries, "")
+				}
 			}
 		}
 	}
@@ -1115,9 +1217,7 @@ func (r *Runner) buildSkillCatalog() string {
 	}
 
 	var b strings.Builder
-	b.WriteString("## Available Skills\n")
-	b.WriteString("The following skills are available. Use read_skill to read full\n")
-	b.WriteString("instructions before invoking a skill via cli_execute.\n\n")
+	b.WriteString("## Available Skills\n\n")
 	for _, entry := range catalogEntries {
 		b.WriteString(entry)
 		b.WriteString("\n")
@@ -1128,25 +1228,27 @@ func (r *Runner) buildSkillCatalog() string {
 // validateSkillRequirements loads skill requirements and validates them.
 // It also auto-derives cli_execute config from skill requirements.
 func (r *Runner) validateSkillRequirements(envVars map[string]string) error {
-	// Resolve skills file path
-	skillsPath := "SKILL.md"
-	if r.cfg.Config.Skills.Path != "" {
-		skillsPath = r.cfg.Config.Skills.Path
-	}
-	if !filepath.IsAbs(skillsPath) {
-		skillsPath = filepath.Join(r.cfg.WorkDir, skillsPath)
-	}
-
-	// Skip if file not found
-	if _, err := os.Stat(skillsPath); os.IsNotExist(err) {
+	matches := r.discoverSkillFiles()
+	if len(matches) == 0 {
 		return nil
 	}
 
-	entries, _, err := cliskills.ParseFileWithMetadata(skillsPath)
-	if err != nil {
-		r.logger.Warn("failed to parse skills with metadata", map[string]any{"error": err.Error()})
+	var allEntries []contract.SkillEntry
+	for _, match := range matches {
+		entries, _, err := cliskills.ParseFileWithMetadata(match)
+		if err != nil {
+			r.logger.Warn("failed to parse skills with metadata", map[string]any{
+				"file": match, "error": err.Error(),
+			})
+			continue
+		}
+		allEntries = append(allEntries, entries...)
+	}
+	if len(allEntries) == 0 {
 		return nil
 	}
+
+	entries := allEntries
 
 	reqs := requirements.AggregateRequirements(entries)
 	if len(reqs.Bins) == 0 && len(reqs.EnvRequired) == 0 && len(reqs.EnvOneOf) == 0 && len(reqs.EnvOptional) == 0 {
@@ -1213,6 +1315,40 @@ func envFromOS() map[string]string {
 		}
 	}
 	return env
+}
+
+// expandEgressDomains expands $VAR and ${VAR} references in an egress domain
+// string using the provided env vars map, falling back to OS environment.
+// The expanded result is split on commas so a single env var can provide
+// multiple domains (e.g. K8S_API_DOMAIN="a.eks.amazonaws.com,b.azmk8s.io").
+// Returns nil if the domain is a pure variable reference that resolves to empty.
+func expandEgressDomains(domain string, envVars map[string]string) []string {
+	if !strings.Contains(domain, "$") {
+		return []string{domain} // no variable reference, return as-is
+	}
+
+	result := os.Expand(domain, func(key string) string {
+		if v, ok := envVars[key]; ok && v != "" {
+			return v
+		}
+		return os.Getenv(key)
+	})
+
+	result = strings.TrimSpace(result)
+	if result == "" {
+		return nil
+	}
+
+	// Split on commas to support multiple domains in a single variable.
+	parts := strings.Split(result, ",")
+	var out []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // initLongTermMemory sets up the long-term memory system if enabled.

@@ -151,6 +151,73 @@ spanning multiple lines.
 	}
 }
 
+func TestParse_OutputFormat(t *testing.T) {
+	t.Run("parsed into OutputFormat field", func(t *testing.T) {
+		input := `## Tool: web_search
+Search the web.
+
+**Input:** query string
+**Output:** list of results
+**Output format:** Use markdown tables for results. Wrap URLs in code blocks.
+`
+		entries, err := Parse(strings.NewReader(input))
+		if err != nil {
+			t.Fatalf("Parse error: %v", err)
+		}
+		if len(entries) != 1 {
+			t.Fatalf("expected 1 entry, got %d", len(entries))
+		}
+		if entries[0].OutputFormat != "Use markdown tables for results. Wrap URLs in code blocks." {
+			t.Errorf("OutputFormat = %q", entries[0].OutputFormat)
+		}
+	})
+
+	t.Run("coexists with Input and Output", func(t *testing.T) {
+		input := `## Tool: formatter
+Format data.
+
+**Input:** raw data
+**Output:** formatted output
+**Output format:** Always use code blocks.
+`
+		entries, err := Parse(strings.NewReader(input))
+		if err != nil {
+			t.Fatalf("Parse error: %v", err)
+		}
+		if len(entries) != 1 {
+			t.Fatalf("expected 1 entry, got %d", len(entries))
+		}
+		if entries[0].InputSpec != "raw data" {
+			t.Errorf("InputSpec = %q, want 'raw data'", entries[0].InputSpec)
+		}
+		if entries[0].OutputSpec != "formatted output" {
+			t.Errorf("OutputSpec = %q, want 'formatted output'", entries[0].OutputSpec)
+		}
+		if entries[0].OutputFormat != "Always use code blocks." {
+			t.Errorf("OutputFormat = %q, want 'Always use code blocks.'", entries[0].OutputFormat)
+		}
+	})
+
+	t.Run("missing leaves field empty", func(t *testing.T) {
+		input := `## Tool: simple
+A simple tool.
+
+**Input:** text
+**Output:** result
+`
+		entries, err := Parse(strings.NewReader(input))
+		if err != nil {
+			t.Fatalf("Parse error: %v", err)
+		}
+		if len(entries) != 1 {
+			t.Fatalf("expected 1 entry, got %d", len(entries))
+		}
+		if entries[0].OutputFormat != "" {
+			t.Errorf("OutputFormat should be empty, got %q", entries[0].OutputFormat)
+		}
+	})
+}
+
 func TestParseWithMetadata_NoFrontmatter(t *testing.T) {
 	input := `## Tool: web_search
 A tool for searching the web.
@@ -357,5 +424,208 @@ Create a GitHub issue.
 	}
 	if !reflect.DeepEqual(entries[0].ForgeReqs.Bins, []string{"gh"}) {
 		t.Errorf("Bins = %v, want [gh]", entries[0].ForgeReqs.Bins)
+	}
+}
+
+func TestParseWithMetadata_ValidCategoryAndTags(t *testing.T) {
+	input := `---
+name: k8s-triage
+description: Triage Kubernetes issues
+category: sre
+tags:
+  - kubernetes
+  - incident-response
+  - triage
+---
+## Tool: k8s_triage
+Diagnose Kubernetes workloads.
+`
+	entries, meta, err := ParseWithMetadata(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseWithMetadata error: %v", err)
+	}
+	if meta.Category != "sre" {
+		t.Errorf("Category = %q, want sre", meta.Category)
+	}
+	if !reflect.DeepEqual(meta.Tags, []string{"kubernetes", "incident-response", "triage"}) {
+		t.Errorf("Tags = %v", meta.Tags)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+}
+
+func TestParseWithMetadata_MissingCategoryAndTags(t *testing.T) {
+	input := `---
+name: simple
+description: Simple skill
+---
+## Tool: simple_tool
+Does things.
+`
+	_, meta, err := ParseWithMetadata(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseWithMetadata error: %v", err)
+	}
+	if meta.Category != "" {
+		t.Errorf("Category should be empty, got %q", meta.Category)
+	}
+	if meta.Tags != nil {
+		t.Errorf("Tags should be nil, got %v", meta.Tags)
+	}
+}
+
+func TestParseWithMetadata_UppercaseCategoryNormalized(t *testing.T) {
+	input := `---
+name: myskill
+category: SRE
+---
+## Tool: my_tool
+Does things.
+`
+	_, meta, err := ParseWithMetadata(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseWithMetadata error: %v", err)
+	}
+	if meta.Category != "sre" {
+		t.Errorf("Category = %q, want sre (normalized)", meta.Category)
+	}
+}
+
+func TestParseWithMetadata_CategoryWithSpacesRejected(t *testing.T) {
+	input := `---
+name: myskill
+category: "dev tools"
+---
+## Tool: my_tool
+Does things.
+`
+	_, _, err := ParseWithMetadata(strings.NewReader(input))
+	if err == nil {
+		t.Fatal("expected error for category with spaces")
+	}
+}
+
+func TestParseWithMetadata_DuplicateTagsDeduplicated(t *testing.T) {
+	input := `---
+name: myskill
+tags:
+  - kubernetes
+  - triage
+  - kubernetes
+  - triage
+  - observability
+---
+## Tool: my_tool
+Does things.
+`
+	_, meta, err := ParseWithMetadata(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseWithMetadata error: %v", err)
+	}
+	want := []string{"kubernetes", "triage", "observability"}
+	if !reflect.DeepEqual(meta.Tags, want) {
+		t.Errorf("Tags = %v, want %v (deduplicated)", meta.Tags, want)
+	}
+}
+
+func TestParseWithMetadata_TagWithUnderscoresRejected(t *testing.T) {
+	input := `---
+name: myskill
+tags:
+  - valid-tag
+  - invalid_tag
+---
+## Tool: my_tool
+Does things.
+`
+	_, _, err := ParseWithMetadata(strings.NewReader(input))
+	if err == nil {
+		t.Fatal("expected error for tag with underscores")
+	}
+}
+
+func TestParseWithMetadata_BodyCaptured(t *testing.T) {
+	input := `---
+name: k8s-triage
+description: Kubernetes incident triage
+metadata:
+  forge:
+    requires:
+      bins:
+        - kubectl
+---
+## Tool: k8s_triage
+
+Diagnose unhealthy Kubernetes workloads.
+
+**Input:** namespace and resource
+**Output:** triage report
+
+## Detection Heuristics
+
+- Check pod status and restart counts
+- Inspect OOMKilled containers
+
+## Safety Constraints
+
+- Never delete resources
+`
+	entries, _, err := ParseWithMetadata(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseWithMetadata error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if entries[0].Body == "" {
+		t.Fatal("expected non-empty Body")
+	}
+	if !strings.Contains(entries[0].Body, "## Detection Heuristics") {
+		t.Error("Body should contain '## Detection Heuristics'")
+	}
+	if !strings.Contains(entries[0].Body, "## Safety Constraints") {
+		t.Error("Body should contain '## Safety Constraints'")
+	}
+	if !strings.Contains(entries[0].Body, "## Tool: k8s_triage") {
+		t.Error("Body should contain '## Tool: k8s_triage'")
+	}
+}
+
+func TestParseWithMetadata_BodyCapturedNoFrontmatter(t *testing.T) {
+	input := `## Tool: simple
+A simple tool.
+
+**Input:** text
+`
+	entries, _, err := ParseWithMetadata(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseWithMetadata error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if entries[0].Body == "" {
+		t.Fatal("expected non-empty Body even without frontmatter")
+	}
+	if !strings.Contains(entries[0].Body, "## Tool: simple") {
+		t.Error("Body should contain tool heading")
+	}
+}
+
+func TestParseWithMetadata_EmptyTagsArray(t *testing.T) {
+	input := `---
+name: myskill
+tags: []
+---
+## Tool: my_tool
+Does things.
+`
+	_, meta, err := ParseWithMetadata(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseWithMetadata error: %v", err)
+	}
+	if len(meta.Tags) != 0 {
+		t.Errorf("Tags should be empty, got %v", meta.Tags)
 	}
 }

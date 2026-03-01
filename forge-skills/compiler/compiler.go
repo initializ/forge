@@ -20,10 +20,16 @@ func Compile(entries []contract.SkillEntry) (*contract.CompiledSkills, error) {
 
 	for _, e := range entries {
 		skill := contract.CompiledSkill{
-			Name:        e.Name,
-			Description: e.Description,
-			InputSpec:   e.InputSpec,
-			OutputSpec:  e.OutputSpec,
+			Name:         e.Name,
+			Description:  e.Description,
+			InputSpec:    e.InputSpec,
+			OutputSpec:   e.OutputSpec,
+			OutputFormat: e.OutputFormat,
+			Body:         e.Body,
+		}
+		if e.Metadata != nil {
+			skill.Category = e.Metadata.Category
+			skill.Tags = e.Metadata.Tags
 		}
 		cs.Skills = append(cs.Skills, skill)
 
@@ -37,6 +43,12 @@ func Compile(entries []contract.SkillEntry) (*contract.CompiledSkills, error) {
 		}
 		if e.OutputSpec != "" {
 			fmt.Fprintf(&promptBuilder, "Output: %s\n", e.OutputSpec)
+		}
+		if e.OutputFormat != "" {
+			fmt.Fprintf(&promptBuilder, "Output format: %s\n", e.OutputFormat)
+		}
+		if e.Body != "" {
+			fmt.Fprintf(&promptBuilder, "\n%s\n", e.Body)
 		}
 		promptBuilder.WriteString("\n")
 	}

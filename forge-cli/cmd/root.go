@@ -40,6 +40,8 @@ func init() {
 	rootCmd.AddCommand(skillsCmd)
 	rootCmd.AddCommand(secretCmd)
 	rootCmd.AddCommand(keyCmd)
+	rootCmd.AddCommand(scheduleCmd)
+	rootCmd.AddCommand(serveCmd)
 }
 
 // SetVersionInfo sets the version and commit for display.

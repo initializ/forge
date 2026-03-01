@@ -20,6 +20,7 @@ import (
 	"github.com/initializ/forge/forge-core/llm/providers"
 	"github.com/initializ/forge/forge-core/memory"
 	coreruntime "github.com/initializ/forge/forge-core/runtime"
+	"github.com/initializ/forge/forge-core/scheduler"
 	"github.com/initializ/forge/forge-core/secrets"
 	"github.com/initializ/forge/forge-core/security"
 	"github.com/initializ/forge/forge-core/tools"
@@ -35,6 +36,8 @@ type RunnerConfig struct {
 	Config            *types.ForgeConfig
 	WorkDir           string
 	Port              int
+	Host              string        // bind host (e.g. "127.0.0.1" for serve, "" for run)
+	ShutdownTimeout   time.Duration // graceful shutdown timeout (0 = immediate)
 	MockTools         bool
 	EnforceGuardrails bool
 	ModelOverride     string
@@ -44,6 +47,10 @@ type RunnerConfig struct {
 	Channels          []string // active channel adapters from --with flag
 }
 
+// ScheduleNotifier is called after a scheduled task completes to deliver the
+// result to the appropriate channel (e.g. Slack, Telegram).
+type ScheduleNotifier func(ctx context.Context, channel, target string, response *a2a.Message) error
+
 // Runner orchestrates the local A2A development server.
 type Runner struct {
 	cfg              RunnerConfig
@@ -51,6 +58,9 @@ type Runner struct {
 	cliExecTool      *clitools.CLIExecuteTool
 	modelConfig      *coreruntime.ModelConfig   // resolved model config (for banner)
 	derivedCLIConfig *contract.DerivedCLIConfig // auto-derived from skill requirements
+	sched            *scheduler.Scheduler       // cron scheduler (nil until started)
+	startTime        time.Time                  // server start time (for /health uptime)
+	scheduleNotifier ScheduleNotifier           // optional: delivers cron results to channels
 }
 
 // NewRunner creates a Runner from the given config.
@@ -63,6 +73,12 @@ func NewRunner(cfg RunnerConfig) (*Runner, error) {
 	}
 	logger := coreruntime.NewJSONLogger(os.Stderr, cfg.Verbose)
 	return &Runner{cfg: cfg, logger: logger}, nil
+}
+
+// SetScheduleNotifier sets the callback used to deliver scheduled task results
+// to channel adapters. Must be called before Run().
+func (r *Runner) SetScheduleNotifier(fn ScheduleNotifier) {
+	r.scheduleNotifier = fn
 }
 
 // Run starts the development server. It blocks until ctx is cancelled.
@@ -381,7 +397,32 @@ func (r *Runner) Run(ctx context.Context) error {
 						defer memMgr.Close() //nolint:errcheck
 					}
 
+					// Initialize scheduler store and register schedule tools.
+					schedStore := r.initScheduler(reg)
+
 					executor = coreruntime.NewLLMExecutor(execCfg)
+
+					// Start cron scheduler after executor is ready.
+					if schedStore != nil {
+						dispatch := r.makeScheduleDispatcher(executor, egressClient, auditLogger)
+						var auditFn scheduler.AuditFunc
+						if auditLogger != nil {
+							auditFn = func(event, scheduleID string, fields map[string]any) {
+								if fields == nil {
+									fields = make(map[string]any)
+								}
+								fields["schedule_id"] = scheduleID
+								auditLogger.Emit(coreruntime.AuditEvent{
+									Event:  event,
+									Fields: fields,
+								})
+							}
+						}
+						r.sched = scheduler.New(schedStore, dispatch, r.logger, auditFn)
+						r.syncYAMLSchedules(ctx, schedStore)
+						r.sched.Start(ctx)
+						defer r.sched.Stop()
+					}
 
 					r.logger.Info("using LLM executor", map[string]any{
 						"provider":  mc.Provider,
@@ -409,13 +450,19 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	// 6. Create A2A server
+	r.startTime = time.Now()
 	srv := server.NewServer(server.ServerConfig{
-		Port:      r.cfg.Port,
-		AgentCard: card,
+		Port:            r.cfg.Port,
+		Host:            r.cfg.Host,
+		ShutdownTimeout: r.cfg.ShutdownTimeout,
+		AgentCard:       card,
 	})
 
 	// 7. Register JSON-RPC handlers
 	r.registerHandlers(srv, executor, guardrails, egressClient, auditLogger)
+
+	// 7b. Register REST-style HTTP handlers
+	r.registerRESTHandlers(srv, executor, guardrails, egressClient, auditLogger)
 
 	// 9. Start file watcher
 	watchCtx, watchCancel := context.WithCancel(ctx)
@@ -752,6 +799,361 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 	})
 }
 
+// executeTask is the shared task execution pipeline used by both JSON-RPC and REST handlers.
+func (r *Runner) executeTask(
+	ctx context.Context,
+	params a2a.SendTaskParams,
+	store *a2a.TaskStore,
+	executor coreruntime.AgentExecutor,
+	guardrails *coreruntime.GuardrailEngine,
+	egressClient *http.Client,
+	auditLogger *coreruntime.AuditLogger,
+) (*a2a.Task, error) {
+	correlationID := coreruntime.GenerateID()
+	ctx = security.WithEgressClient(ctx, egressClient)
+	ctx = coreruntime.WithCorrelationID(ctx, correlationID)
+	ctx = coreruntime.WithTaskID(ctx, params.ID)
+
+	auditLogger.Emit(coreruntime.AuditEvent{
+		Event:         coreruntime.AuditSessionStart,
+		CorrelationID: correlationID,
+		TaskID:        params.ID,
+	})
+
+	task := store.Get(params.ID)
+	if task == nil {
+		task = &a2a.Task{ID: params.ID}
+	}
+	task.Status = a2a.TaskStatus{State: a2a.TaskStateSubmitted}
+	store.Put(task)
+
+	if err := guardrails.CheckInbound(&params.Message); err != nil {
+		task.Status = a2a.TaskStatus{
+			State: a2a.TaskStateFailed,
+			Message: &a2a.Message{
+				Role:  a2a.MessageRoleAgent,
+				Parts: []a2a.Part{a2a.NewTextPart("Guardrail violation: " + err.Error())},
+			},
+		}
+		store.Put(task)
+		auditLogger.Emit(coreruntime.AuditEvent{
+			Event:         coreruntime.AuditSessionEnd,
+			CorrelationID: correlationID,
+			TaskID:        params.ID,
+			Fields:        map[string]any{"state": string(a2a.TaskStateFailed)},
+		})
+		return task, nil
+	}
+
+	task.History = append(task.History, params.Message)
+	task.Status = a2a.TaskStatus{State: a2a.TaskStateWorking}
+	store.Put(task)
+
+	respMsg, err := executor.Execute(ctx, task, &params.Message)
+	if err != nil {
+		r.logger.Error("execute failed", map[string]any{"task_id": params.ID, "error": err.Error()})
+		task.Status = a2a.TaskStatus{
+			State: a2a.TaskStateFailed,
+			Message: &a2a.Message{
+				Role:  a2a.MessageRoleAgent,
+				Parts: []a2a.Part{a2a.NewTextPart(err.Error())},
+			},
+		}
+		store.Put(task)
+		auditLogger.Emit(coreruntime.AuditEvent{
+			Event:         coreruntime.AuditSessionEnd,
+			CorrelationID: correlationID,
+			TaskID:        params.ID,
+			Fields:        map[string]any{"state": string(a2a.TaskStateFailed)},
+		})
+		return task, nil
+	}
+
+	if respMsg != nil {
+		if err := guardrails.CheckOutbound(respMsg); err != nil {
+			task.Status = a2a.TaskStatus{
+				State: a2a.TaskStateFailed,
+				Message: &a2a.Message{
+					Role:  a2a.MessageRoleAgent,
+					Parts: []a2a.Part{a2a.NewTextPart("Outbound guardrail violation: " + err.Error())},
+				},
+			}
+			store.Put(task)
+			auditLogger.Emit(coreruntime.AuditEvent{
+				Event:         coreruntime.AuditSessionEnd,
+				CorrelationID: correlationID,
+				TaskID:        params.ID,
+				Fields:        map[string]any{"state": string(a2a.TaskStateFailed)},
+			})
+			return task, nil
+		}
+	}
+
+	if respMsg != nil {
+		task.History = append(task.History, *respMsg)
+	}
+
+	task.Status = a2a.TaskStatus{
+		State:   a2a.TaskStateCompleted,
+		Message: respMsg,
+	}
+	if respMsg != nil {
+		task.Artifacts = []a2a.Artifact{
+			{
+				Name:  "response",
+				Parts: respMsg.Parts,
+			},
+		}
+	}
+	store.Put(task)
+	auditLogger.Emit(coreruntime.AuditEvent{
+		Event:         coreruntime.AuditSessionEnd,
+		CorrelationID: correlationID,
+		TaskID:        params.ID,
+		Fields:        map[string]any{"state": string(task.Status.State)},
+	})
+	r.logger.Info("task completed", map[string]any{"task_id": params.ID, "state": string(task.Status.State)})
+	return task, nil
+}
+
+// restTaskRequest is the simplified JSON body for REST task endpoints.
+type restTaskRequest struct {
+	Task struct {
+		ID      string      `json:"id"`
+		Message a2a.Message `json:"message"`
+	} `json:"task"`
+}
+
+// registerRESTHandlers registers REST-style HTTP endpoints on the server.
+func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.AgentExecutor, guardrails *coreruntime.GuardrailEngine, egressClient *http.Client, auditLogger *coreruntime.AuditLogger) {
+	store := srv.TaskStore()
+
+	// POST /tasks/send — synchronous REST endpoint
+	srv.RegisterHTTPHandler("POST /tasks/send", func(w http.ResponseWriter, req *http.Request) {
+		var body restTaskRequest
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body: " + err.Error()})
+			return
+		}
+		if body.Task.ID == "" {
+			body.Task.ID = coreruntime.GenerateID()
+		}
+
+		params := a2a.SendTaskParams{
+			ID:      body.Task.ID,
+			Message: body.Task.Message,
+		}
+
+		task, err := r.executeTask(req.Context(), params, store, executor, guardrails, egressClient, auditLogger)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, task)
+	})
+
+	// POST /tasks/sendSubscribe — SSE streaming REST endpoint
+	srv.RegisterHTTPHandler("POST /tasks/sendSubscribe", func(w http.ResponseWriter, req *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming not supported"})
+			return
+		}
+
+		var body restTaskRequest
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body: " + err.Error()})
+			return
+		}
+		if body.Task.ID == "" {
+			body.Task.ID = coreruntime.GenerateID()
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+
+		params := a2a.SendTaskParams{
+			ID:      body.Task.ID,
+			Message: body.Task.Message,
+		}
+
+		correlationID := coreruntime.GenerateID()
+		ctx := security.WithEgressClient(req.Context(), egressClient)
+		ctx = coreruntime.WithCorrelationID(ctx, correlationID)
+		ctx = coreruntime.WithTaskID(ctx, params.ID)
+
+		auditLogger.Emit(coreruntime.AuditEvent{
+			Event:         coreruntime.AuditSessionStart,
+			CorrelationID: correlationID,
+			TaskID:        params.ID,
+		})
+
+		task := store.Get(params.ID)
+		if task == nil {
+			task = &a2a.Task{ID: params.ID}
+		}
+		task.Status = a2a.TaskStatus{State: a2a.TaskStateSubmitted}
+		store.Put(task)
+		server.WriteSSEEvent(w, flusher, "status", task) //nolint:errcheck
+
+		if err := guardrails.CheckInbound(&params.Message); err != nil {
+			task.Status = a2a.TaskStatus{
+				State: a2a.TaskStateFailed,
+				Message: &a2a.Message{
+					Role:  a2a.MessageRoleAgent,
+					Parts: []a2a.Part{a2a.NewTextPart("Guardrail violation: " + err.Error())},
+				},
+			}
+			store.Put(task)
+			server.WriteSSEEvent(w, flusher, "status", task) //nolint:errcheck
+			auditLogger.Emit(coreruntime.AuditEvent{
+				Event:         coreruntime.AuditSessionEnd,
+				CorrelationID: correlationID,
+				TaskID:        params.ID,
+				Fields:        map[string]any{"state": string(a2a.TaskStateFailed)},
+			})
+			return
+		}
+
+		task.History = append(task.History, params.Message)
+		task.Status = a2a.TaskStatus{State: a2a.TaskStateWorking}
+		store.Put(task)
+		server.WriteSSEEvent(w, flusher, "status", task) //nolint:errcheck
+
+		ctx = coreruntime.WithProgressEmitter(ctx, func(event coreruntime.ProgressEvent) {
+			progressTask := &a2a.Task{
+				ID: params.ID,
+				Status: a2a.TaskStatus{
+					State: a2a.TaskStateWorking,
+					Message: &a2a.Message{
+						Role:  a2a.MessageRoleAgent,
+						Parts: []a2a.Part{a2a.NewTextPart(event.Message)},
+					},
+				},
+				Metadata: map[string]any{
+					"progress_phase": event.Phase,
+					"progress_tool":  event.Tool,
+				},
+			}
+			server.WriteSSEEvent(w, flusher, "progress", progressTask) //nolint:errcheck
+		})
+
+		ch, err := executor.ExecuteStream(ctx, task, &params.Message)
+		if err != nil {
+			task.Status = a2a.TaskStatus{
+				State: a2a.TaskStateFailed,
+				Message: &a2a.Message{
+					Role:  a2a.MessageRoleAgent,
+					Parts: []a2a.Part{a2a.NewTextPart(err.Error())},
+				},
+			}
+			store.Put(task)
+			server.WriteSSEEvent(w, flusher, "status", task) //nolint:errcheck
+			auditLogger.Emit(coreruntime.AuditEvent{
+				Event:         coreruntime.AuditSessionEnd,
+				CorrelationID: correlationID,
+				TaskID:        params.ID,
+				Fields:        map[string]any{"state": string(a2a.TaskStateFailed)},
+			})
+			return
+		}
+
+		var finalState a2a.TaskState
+		for respMsg := range ch {
+			if grErr := guardrails.CheckOutbound(respMsg); grErr != nil {
+				task.Status = a2a.TaskStatus{
+					State: a2a.TaskStateFailed,
+					Message: &a2a.Message{
+						Role:  a2a.MessageRoleAgent,
+						Parts: []a2a.Part{a2a.NewTextPart("Outbound guardrail violation: " + grErr.Error())},
+					},
+				}
+				store.Put(task)
+				server.WriteSSEEvent(w, flusher, "result", task) //nolint:errcheck
+				finalState = a2a.TaskStateFailed
+				break
+			}
+
+			task.History = append(task.History, *respMsg)
+			task.Status = a2a.TaskStatus{
+				State:   a2a.TaskStateCompleted,
+				Message: respMsg,
+			}
+			task.Artifacts = []a2a.Artifact{
+				{
+					Name:  "response",
+					Parts: respMsg.Parts,
+				},
+			}
+			store.Put(task)
+			server.WriteSSEEvent(w, flusher, "result", task) //nolint:errcheck
+			finalState = a2a.TaskStateCompleted
+		}
+
+		auditLogger.Emit(coreruntime.AuditEvent{
+			Event:         coreruntime.AuditSessionEnd,
+			CorrelationID: correlationID,
+			TaskID:        params.ID,
+			Fields:        map[string]any{"state": string(finalState)},
+		})
+	})
+
+	// GET /health — health check with uptime
+	srv.RegisterHTTPHandler("GET /health", func(w http.ResponseWriter, req *http.Request) {
+		uptime := time.Since(r.startTime).Seconds()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":         "ok",
+			"uptime_seconds": int(uptime),
+		})
+	})
+
+	// GET /info — agent metadata
+	srv.RegisterHTTPHandler("GET /info", func(w http.ResponseWriter, req *http.Request) {
+		info := map[string]any{
+			"agent_id": r.cfg.Config.AgentID,
+			"version":  r.cfg.Config.Version,
+		}
+		if r.modelConfig != nil {
+			info["model"] = r.modelConfig.Provider + "/" + r.modelConfig.Client.Model
+		}
+
+		// Skills
+		skillFiles := r.discoverSkillFiles()
+		var skillNames []string
+		for _, sf := range skillFiles {
+			entries, _, err := cliskills.ParseFileWithMetadata(sf)
+			if err != nil {
+				continue
+			}
+			for _, e := range entries {
+				if e.Name != "" {
+					skillNames = append(skillNames, e.Name)
+				}
+			}
+		}
+		if len(skillNames) > 0 {
+			info["skills"] = skillNames
+		}
+
+		// Tools
+		var toolNames []string
+		for _, t := range r.cfg.Config.Tools {
+			toolNames = append(toolNames, t.Name)
+		}
+		if len(toolNames) > 0 {
+			info["tools"] = toolNames
+		}
+
+		// Channels
+		if len(r.cfg.Channels) > 0 {
+			info["channels"] = r.cfg.Channels
+		}
+
+		writeJSON(w, http.StatusOK, info)
+	})
+}
+
 func (r *Runner) loadToolSpecs() []agentspec.ToolSpec {
 	var toolSpecs []agentspec.ToolSpec
 	for _, t := range r.cfg.Config.Tools {
@@ -964,12 +1366,18 @@ func (r *Runner) createProviderClient(provider string, cfg llm.ClientConfig) (ll
 }
 
 func (r *Runner) printBanner(proxyURL string) {
+	title := "Forge Dev Server"
+	if r.cfg.Host != "" {
+		title = "Forge Server"
+	}
+	host := defaultStr(r.cfg.Host, "0.0.0.0")
+
 	fmt.Fprintf(os.Stderr, "\n")
-	fmt.Fprintf(os.Stderr, "  Forge Dev Server\n")
+	fmt.Fprintf(os.Stderr, "  %s\n", title)
 	fmt.Fprintf(os.Stderr, "  ────────────────────────────────────────\n")
 	fmt.Fprintf(os.Stderr, "  Agent:      %s (v%s)\n", r.cfg.Config.AgentID, r.cfg.Config.Version)
 	fmt.Fprintf(os.Stderr, "  Framework:  %s\n", r.cfg.Config.Framework)
-	fmt.Fprintf(os.Stderr, "  Port:       %d\n", r.cfg.Port)
+	fmt.Fprintf(os.Stderr, "  Listen:     %s:%d\n", host, r.cfg.Port)
 	if r.cfg.MockTools {
 		fmt.Fprintf(os.Stderr, "  Mode:       mock (no subprocess)\n")
 	} else if r.cfg.Config.Entrypoint != "" {
@@ -1024,6 +1432,7 @@ func (r *Runner) printBanner(proxyURL string) {
 	fmt.Fprintf(os.Stderr, "  ────────────────────────────────────────\n")
 	fmt.Fprintf(os.Stderr, "  Agent Card: http://localhost:%d/.well-known/agent.json\n", r.cfg.Port)
 	fmt.Fprintf(os.Stderr, "  Health:     http://localhost:%d/healthz\n", r.cfg.Port)
+	fmt.Fprintf(os.Stderr, "  REST:       http://localhost:%d/tasks/send\n", r.cfg.Port)
 	fmt.Fprintf(os.Stderr, "  JSON-RPC:   POST http://localhost:%d/\n", r.cfg.Port)
 	fmt.Fprintf(os.Stderr, "  ────────────────────────────────────────\n")
 	fmt.Fprintf(os.Stderr, "  Press Ctrl+C to stop\n\n")
@@ -1144,10 +1553,17 @@ func (r *Runner) registerSkillTools(reg *tools.Registry, proxyURL string) {
 func (r *Runner) buildSystemPrompt() string {
 	base := fmt.Sprintf("You are %s, an AI agent.", r.cfg.Config.AgentID)
 	catalog := r.buildSkillCatalog()
-	if catalog == "" {
-		return base
+	if catalog != "" {
+		base += "\n\n" + catalog
 	}
-	return base + "\n\n" + catalog
+
+	// Add scheduler awareness if schedules are configured or tools are available.
+	schedSection := r.buildSchedulerPrompt()
+	if schedSection != "" {
+		base += "\n\n" + schedSection
+	}
+
+	return base
 }
 
 // buildSkillCatalog generates a lightweight catalog of binary-backed skills
@@ -1641,9 +2057,202 @@ func OverlaySecretsToEnv(cfg *types.ForgeConfig, workDir string) {
 	}
 }
 
+// writeJSON writes a JSON response with the given status code.
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v) //nolint:errcheck
+}
+
 func defaultStr(s, def string) string {
 	if s != "" {
 		return s
 	}
 	return def
+}
+
+// initScheduler creates the schedule store and registers schedule tools.
+func (r *Runner) initScheduler(reg *tools.Registry) scheduler.ScheduleStore {
+	schedPath := filepath.Join(r.cfg.WorkDir, ".forge", "memory", "SCHEDULES.md")
+	store := NewMemoryScheduleStore(schedPath)
+
+	// We can't pass the scheduler itself yet (it's created after), so we use
+	// a lazy reloader that will be set once the scheduler is created.
+	reloader := &lazyScheduleReloader{runner: r}
+
+	if regErr := reg.Register(builtins.NewScheduleSetTool(store, reloader)); regErr != nil {
+		r.logger.Warn("failed to register schedule_set tool", map[string]any{"error": regErr.Error()})
+	}
+	if regErr := reg.Register(builtins.NewScheduleListTool(store)); regErr != nil {
+		r.logger.Warn("failed to register schedule_list tool", map[string]any{"error": regErr.Error()})
+	}
+	if regErr := reg.Register(builtins.NewScheduleDeleteTool(store, reloader)); regErr != nil {
+		r.logger.Warn("failed to register schedule_delete tool", map[string]any{"error": regErr.Error()})
+	}
+	if regErr := reg.Register(builtins.NewScheduleHistoryTool(store)); regErr != nil {
+		r.logger.Warn("failed to register schedule_history tool", map[string]any{"error": regErr.Error()})
+	}
+
+	r.logger.Info("schedule tools registered", nil)
+	return store
+}
+
+// lazyScheduleReloader implements builtins.ScheduleReloader by delegating to the
+// runner's scheduler, which may not exist yet at tool registration time.
+type lazyScheduleReloader struct {
+	runner *Runner
+}
+
+func (l *lazyScheduleReloader) Reload(ctx context.Context) {
+	if l.runner.sched != nil {
+		l.runner.sched.Reload(ctx)
+	}
+}
+
+// makeScheduleDispatcher creates a TaskDispatcher that executes scheduled tasks
+// via the LLM executor.
+func (r *Runner) makeScheduleDispatcher(executor coreruntime.AgentExecutor, egressClient *http.Client, auditLogger *coreruntime.AuditLogger) scheduler.TaskDispatcher {
+	return func(ctx context.Context, sched scheduler.Schedule) error {
+		taskID := fmt.Sprintf("sched-%s-%d", sched.ID, time.Now().Unix())
+		correlationID := coreruntime.GenerateID()
+
+		// Set up context with security and tracing.
+		ctx = security.WithEgressClient(ctx, egressClient)
+		ctx = coreruntime.WithCorrelationID(ctx, correlationID)
+		ctx = coreruntime.WithTaskID(ctx, taskID)
+
+		auditLogger.Emit(coreruntime.AuditEvent{
+			Event:         coreruntime.AuditScheduleFire,
+			CorrelationID: correlationID,
+			TaskID:        taskID,
+			Fields:        map[string]any{"schedule_id": sched.ID},
+		})
+
+		// Build the task message.
+		msgText := fmt.Sprintf("[Scheduled Task: %s]\n\n%s", sched.ID, sched.Task)
+		if sched.Skill != "" {
+			msgText = fmt.Sprintf("[Scheduled Task: %s] [Skill: %s]\n\n%s", sched.ID, sched.Skill, sched.Task)
+		}
+
+		task := &a2a.Task{
+			ID:     taskID,
+			Status: a2a.TaskStatus{State: a2a.TaskStateWorking},
+		}
+
+		msg := &a2a.Message{
+			Role:  a2a.MessageRoleUser,
+			Parts: []a2a.Part{a2a.NewTextPart(msgText)},
+		}
+
+		respMsg, err := executor.Execute(ctx, task, msg)
+
+		auditLogger.Emit(coreruntime.AuditEvent{
+			Event:         coreruntime.AuditScheduleComplete,
+			CorrelationID: correlationID,
+			TaskID:        taskID,
+			Fields: map[string]any{
+				"schedule_id": sched.ID,
+				"success":     err == nil,
+			},
+		})
+
+		// Deliver result to channel if configured.
+		if err == nil && respMsg != nil && sched.Channel != "" && sched.ChannelTarget != "" {
+			if r.scheduleNotifier != nil {
+				if notifyErr := r.scheduleNotifier(ctx, sched.Channel, sched.ChannelTarget, respMsg); notifyErr != nil {
+					r.logger.Warn("failed to notify channel for scheduled task", map[string]any{
+						"schedule_id": sched.ID,
+						"channel":     sched.Channel,
+						"error":       notifyErr.Error(),
+					})
+				}
+			} else {
+				r.logger.Warn("schedule has channel configured but no channel adapters are active; use --with flag", map[string]any{
+					"schedule_id": sched.ID,
+					"channel":     sched.Channel,
+				})
+			}
+		}
+
+		return err
+	}
+}
+
+// syncYAMLSchedules upserts schedules from forge.yaml into the store and
+// removes stale yaml-sourced schedules no longer in config.
+func (r *Runner) syncYAMLSchedules(ctx context.Context, store scheduler.ScheduleStore) {
+	yamlConfigs := r.cfg.Config.Schedules
+	if len(yamlConfigs) == 0 {
+		return
+	}
+
+	// Build set of yaml schedule IDs from config.
+	configIDs := make(map[string]bool, len(yamlConfigs))
+	for _, sc := range yamlConfigs {
+		configIDs[sc.ID] = true
+
+		now := time.Now().UTC()
+		existing, _ := store.Get(ctx, sc.ID)
+
+		sched := scheduler.Schedule{
+			ID:            sc.ID,
+			Cron:          sc.Cron,
+			Task:          sc.Task,
+			Skill:         sc.Skill,
+			Channel:       sc.Channel,
+			ChannelTarget: sc.ChannelTarget,
+			Source:        "yaml",
+			Enabled:       true,
+			Created:       now,
+		}
+
+		// Preserve runtime state from existing schedule.
+		if existing != nil {
+			sched.Created = existing.Created
+			sched.LastRun = existing.LastRun
+			sched.LastStatus = existing.LastStatus
+			sched.RunCount = existing.RunCount
+		}
+
+		if err := store.Set(ctx, sched); err != nil {
+			r.logger.Warn("failed to sync yaml schedule", map[string]any{
+				"id": sc.ID, "error": err.Error(),
+			})
+		}
+	}
+
+	// Remove stale yaml-sourced schedules.
+	existing, _ := store.List(ctx)
+	for _, s := range existing {
+		if s.Source == "yaml" && !configIDs[s.ID] {
+			if err := store.Delete(ctx, s.ID); err != nil {
+				r.logger.Warn("failed to remove stale yaml schedule", map[string]any{
+					"id": s.ID, "error": err.Error(),
+				})
+			}
+		}
+	}
+
+	r.logger.Info("synced yaml schedules", map[string]any{"count": len(yamlConfigs)})
+}
+
+// buildSchedulerPrompt generates the scheduler awareness section for the system prompt.
+func (r *Runner) buildSchedulerPrompt() string {
+	return `## Scheduler
+
+You have access to a built-in cron scheduler for recurring tasks. Use these tools to manage schedules:
+
+- **schedule_set**: Create or update a recurring schedule (cron expression + task description)
+- **schedule_list**: List all active and inactive schedules
+- **schedule_delete**: Remove a schedule (LLM-created only; yaml-defined cannot be deleted)
+- **schedule_history**: View execution history for scheduled tasks
+
+Cron expressions support: standard 5-field (min hour dom mon dow), aliases (@hourly, @daily, @weekly, @monthly), and intervals (@every 5m, @every 1h).
+
+### Channel delivery
+Messages from channels include a context line: ` + "`" + `[channel:<name> channel_target:<id>]` + "`" + `
+When creating a schedule from a channel conversation, **always** extract these values and pass them to schedule_set:
+- **channel**: the adapter name from the context line (e.g. "slack", "telegram")
+- **channel_target**: the destination ID from the context line (Slack channel ID, Telegram chat ID)
+Without these, scheduled task results will execute but not be sent to any channel.`
 }

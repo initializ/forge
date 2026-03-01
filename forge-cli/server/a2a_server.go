@@ -3,11 +3,14 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"sync"
+	"syscall"
+	"time"
 
 	"github.com/initializ/forge/forge-core/a2a"
 )
@@ -20,29 +23,41 @@ type SSEHandler func(ctx context.Context, id any, rawParams json.RawMessage, w h
 
 // ServerConfig configures the A2A HTTP server.
 type ServerConfig struct {
-	Port      int
-	AgentCard *a2a.AgentCard
+	Port            int
+	Host            string        // bind address (default "" = all interfaces)
+	ShutdownTimeout time.Duration // graceful shutdown timeout (0 = immediate)
+	AgentCard       *a2a.AgentCard
+}
+
+type httpRoute struct {
+	pattern string
+	handler http.HandlerFunc
 }
 
 // Server is an A2A-compliant HTTP server with JSON-RPC 2.0 dispatch.
 type Server struct {
-	port        int
-	card        *a2a.AgentCard
-	cardMu      sync.RWMutex
-	store       *a2a.TaskStore
-	handlers    map[string]Handler
-	sseHandlers map[string]SSEHandler
-	srv         *http.Server
+	port            int
+	host            string
+	shutdownTimeout time.Duration
+	card            *a2a.AgentCard
+	cardMu          sync.RWMutex
+	store           *a2a.TaskStore
+	handlers        map[string]Handler
+	sseHandlers     map[string]SSEHandler
+	httpHandlers    []httpRoute
+	srv             *http.Server
 }
 
 // NewServer creates a new A2A server.
 func NewServer(cfg ServerConfig) *Server {
 	s := &Server{
-		port:        cfg.Port,
-		card:        cfg.AgentCard,
-		store:       a2a.NewTaskStore(),
-		handlers:    make(map[string]Handler),
-		sseHandlers: make(map[string]SSEHandler),
+		port:            cfg.Port,
+		host:            cfg.Host,
+		shutdownTimeout: cfg.ShutdownTimeout,
+		card:            cfg.AgentCard,
+		store:           a2a.NewTaskStore(),
+		handlers:        make(map[string]Handler),
+		sseHandlers:     make(map[string]SSEHandler),
 	}
 	return s
 }
@@ -57,6 +72,12 @@ func (s *Server) RegisterSSEHandler(method string, h SSEHandler) {
 	s.sseHandlers[method] = h
 }
 
+// RegisterHTTPHandler registers a standard HTTP handler on the server's mux.
+// Used for REST-style endpoints alongside JSON-RPC.
+func (s *Server) RegisterHTTPHandler(pattern string, handler http.HandlerFunc) {
+	s.httpHandlers = append(s.httpHandlers, httpRoute{pattern, handler})
+}
+
 // UpdateAgentCard replaces the agent card (for hot-reload).
 func (s *Server) UpdateAgentCard(card *a2a.AgentCard) {
 	s.cardMu.Lock()
@@ -69,6 +90,12 @@ func (s *Server) TaskStore() *a2a.TaskStore {
 	return s.store
 }
 
+// Port returns the port the server is configured to listen on (or the actual
+// port after Start resolves port conflicts).
+func (s *Server) Port() int {
+	return s.port
+}
+
 func (s *Server) agentCard() *a2a.AgentCard {
 	s.cardMu.RLock()
 	defer s.cardMu.RUnlock()
@@ -79,24 +106,54 @@ func (s *Server) agentCard() *a2a.AgentCard {
 // an error occurs.
 func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
+
+	// Register REST-style HTTP handlers first (more specific patterns)
+	for _, route := range s.httpHandlers {
+		mux.HandleFunc(route.pattern, route.handler)
+	}
+
+	// Register core A2A handlers
 	mux.HandleFunc("GET /.well-known/agent.json", s.handleAgentCard)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("POST /", s.handleJSONRPC)
 	mux.HandleFunc("GET /", s.handleAgentCard)
 
 	s.srv = &http.Server{
-		Addr:    fmt.Sprintf(":%d", s.port),
-		Handler: corsMiddleware(mux),
+		Handler:      corsMiddleware(mux),
+		WriteTimeout: 0, // SSE-safe: no write deadline
+		IdleTimeout:  120 * time.Second,
 	}
 
-	ln, err := net.Listen("tcp", s.srv.Addr)
-	if err != nil {
-		return fmt.Errorf("listen on %s: %w", s.srv.Addr, err)
+	// Try specified port, then auto-increment up to 10 times on conflict.
+	var ln net.Listener
+	var listenErr error
+	actualPort := s.port
+	for range 10 {
+		addr := fmt.Sprintf("%s:%d", s.host, actualPort)
+		ln, listenErr = net.Listen("tcp", addr)
+		if listenErr == nil {
+			break
+		}
+		if !isAddrInUse(listenErr) {
+			return fmt.Errorf("listen on %s: %w", addr, listenErr)
+		}
+		actualPort++
 	}
+	if listenErr != nil {
+		return fmt.Errorf("all ports %d-%d in use: %w", s.port, actualPort, listenErr)
+	}
+	s.port = actualPort // update so banner/info reflect actual port
+	s.srv.Addr = fmt.Sprintf("%s:%d", s.host, actualPort)
 
 	go func() {
 		<-ctx.Done()
-		s.srv.Shutdown(context.Background()) //nolint:errcheck
+		shutdownCtx := context.Background()
+		if s.shutdownTimeout > 0 {
+			var cancel context.CancelFunc
+			shutdownCtx, cancel = context.WithTimeout(shutdownCtx, s.shutdownTimeout)
+			defer cancel()
+		}
+		s.srv.Shutdown(shutdownCtx) //nolint:errcheck
 	}()
 
 	if err := s.srv.Serve(ln); err != nil && err != http.ErrServerClosed {
@@ -187,6 +244,18 @@ func WriteSSEEvent(w http.ResponseWriter, flusher http.Flusher, event string, da
 	_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, jsonData)
 	flusher.Flush()
 	return nil
+}
+
+// isAddrInUse returns true if the error indicates the address is already in use.
+func isAddrInUse(err error) bool {
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		var sysErr *syscall.Errno
+		if errors.As(opErr.Err, &sysErr) {
+			return *sysErr == syscall.EADDRINUSE
+		}
+	}
+	return false
 }
 
 func init() {

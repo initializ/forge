@@ -9,19 +9,30 @@ import (
 
 // ForgeConfig represents the top-level forge.yaml configuration.
 type ForgeConfig struct {
-	AgentID      string        `yaml:"agent_id"`
-	Version      string        `yaml:"version"`
-	Framework    string        `yaml:"framework"`
-	Entrypoint   string        `yaml:"entrypoint"`
-	Model        ModelRef      `yaml:"model,omitempty"`
-	Tools        []ToolRef     `yaml:"tools,omitempty"`
-	BuiltinTools []string      `yaml:"builtin_tools,omitempty"`
-	Channels     []string      `yaml:"channels,omitempty"`
-	Registry     string        `yaml:"registry,omitempty"`
-	Egress       EgressRef     `yaml:"egress,omitempty"`
-	Skills       SkillsRef     `yaml:"skills,omitempty"`
-	Memory       MemoryConfig  `yaml:"memory,omitempty"`
-	Secrets      SecretsConfig `yaml:"secrets,omitempty"`
+	AgentID      string           `yaml:"agent_id"`
+	Version      string           `yaml:"version"`
+	Framework    string           `yaml:"framework"`
+	Entrypoint   string           `yaml:"entrypoint"`
+	Model        ModelRef         `yaml:"model,omitempty"`
+	Tools        []ToolRef        `yaml:"tools,omitempty"`
+	BuiltinTools []string         `yaml:"builtin_tools,omitempty"`
+	Channels     []string         `yaml:"channels,omitempty"`
+	Registry     string           `yaml:"registry,omitempty"`
+	Egress       EgressRef        `yaml:"egress,omitempty"`
+	Skills       SkillsRef        `yaml:"skills,omitempty"`
+	Memory       MemoryConfig     `yaml:"memory,omitempty"`
+	Secrets      SecretsConfig    `yaml:"secrets,omitempty"`
+	Schedules    []ScheduleConfig `yaml:"schedules,omitempty"`
+}
+
+// ScheduleConfig defines a recurring scheduled task in forge.yaml.
+type ScheduleConfig struct {
+	ID            string `yaml:"id"`
+	Cron          string `yaml:"cron"`
+	Task          string `yaml:"task"`
+	Skill         string `yaml:"skill,omitempty"`
+	Channel       string `yaml:"channel,omitempty"`        // channel adapter name (e.g. "slack", "telegram")
+	ChannelTarget string `yaml:"channel_target,omitempty"` // destination ID (channel ID, chat ID)
 }
 
 // SecretsConfig configures secret management providers.

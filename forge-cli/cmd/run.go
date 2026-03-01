@@ -8,17 +8,19 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/initializ/forge/forge-cli/channels"
-	"github.com/initializ/forge/forge-cli/config"
 	"github.com/initializ/forge/forge-cli/runtime"
-	"github.com/initializ/forge/forge-core/validate"
+	"github.com/initializ/forge/forge-core/a2a"
+	corechannels "github.com/initializ/forge/forge-core/channels"
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 )
 
 var (
 	runPort              int
+	runHost              string
+	runShutdownTimeout   time.Duration
 	runMockTools         bool
 	runEnforceGuardrails bool
 	runModel             string
@@ -35,6 +37,8 @@ var runCmd = &cobra.Command{
 
 func init() {
 	runCmd.Flags().IntVar(&runPort, "port", 8080, "port for the A2A dev server")
+	runCmd.Flags().StringVar(&runHost, "host", "", "bind address (e.g. 0.0.0.0 for containers)")
+	runCmd.Flags().DurationVar(&runShutdownTimeout, "shutdown-timeout", 0, "graceful shutdown timeout (e.g. 30s)")
 	runCmd.Flags().BoolVar(&runMockTools, "mock-tools", false, "use mock runtime instead of subprocess")
 	runCmd.Flags().BoolVar(&runEnforceGuardrails, "enforce-guardrails", false, "enforce guardrail violations as errors")
 	runCmd.Flags().StringVar(&runModel, "model", "", "override model name (sets MODEL_NAME env var)")
@@ -44,84 +48,24 @@ func init() {
 }
 
 func runRun(cmd *cobra.Command, args []string) error {
-	cfgPath := cfgFile
-	if !filepath.IsAbs(cfgPath) {
-		wd, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("getting working directory: %w", err)
-		}
-		cfgPath = filepath.Join(wd, cfgPath)
-	}
-
-	cfg, err := config.LoadForgeConfig(cfgPath)
+	cfg, workDir, err := loadAndPrepareConfig(runEnvFile)
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
+		return err
 	}
 
-	result := validate.ValidateForgeConfig(cfg)
-	if !result.IsValid() {
-		for _, e := range result.Errors {
-			fmt.Fprintf(os.Stderr, "ERROR: %s\n", e)
-		}
-		return fmt.Errorf("config validation failed: %d error(s)", len(result.Errors))
-	}
-
-	workDir := filepath.Dir(cfgPath)
-
-	// Resolve env file path relative to workdir
-	envPath := runEnvFile
-	if !filepath.IsAbs(envPath) {
-		envPath = filepath.Join(workDir, envPath)
-	}
-
-	// Load .env into process environment so channel adapters can resolve env vars
-	envVars, err := runtime.LoadEnvFile(envPath)
-	if err != nil {
-		return fmt.Errorf("loading env file: %w", err)
-	}
-	for k, v := range envVars {
-		if os.Getenv(k) == "" {
-			_ = os.Setenv(k, v)
-		}
-	}
-
-	// Prompt for passphrase if encrypted secrets are configured but passphrase is missing.
-	if containsStr(cfg.Secrets.Providers, "encrypted-file") && os.Getenv("FORGE_PASSPHRASE") == "" {
-		if term.IsTerminal(int(os.Stdin.Fd())) {
-			fmt.Fprint(os.Stderr, "Enter passphrase for encrypted secrets: ")
-			raw, pErr := term.ReadPassword(int(os.Stdin.Fd()))
-			fmt.Fprintln(os.Stderr)
-			if pErr == nil && len(raw) > 0 {
-				_ = os.Setenv("FORGE_PASSPHRASE", string(raw))
-			}
-		} else {
-			fmt.Fprintln(os.Stderr, "Warning: secrets.providers includes encrypted-file but FORGE_PASSPHRASE is not set; encrypted secrets will not be loaded")
-		}
-	}
-
-	// Overlay encrypted secrets into OS environment so channel adapters
-	// (which use os.Getenv via ResolveEnvVars) can access them.
-	runtime.OverlaySecretsToEnv(cfg, workDir)
-
-	// Parse channel names from --with flag for banner display
-	var activeChannels []string
-	if runWithChannels != "" {
-		for _, name := range strings.Split(runWithChannels, ",") {
-			if n := strings.TrimSpace(name); n != "" {
-				activeChannels = append(activeChannels, n)
-			}
-		}
-	}
+	activeChannels := parseChannels(runWithChannels)
 
 	runner, err := runtime.NewRunner(runtime.RunnerConfig{
 		Config:            cfg,
 		WorkDir:           workDir,
 		Port:              runPort,
+		Host:              runHost,
+		ShutdownTimeout:   runShutdownTimeout,
 		MockTools:         runMockTools,
 		EnforceGuardrails: runEnforceGuardrails,
 		ModelOverride:     runModel,
 		ProviderOverride:  runProvider,
-		EnvFilePath:       envPath,
+		EnvFilePath:       resolveEnvPath(workDir, runEnvFile),
 		Verbose:           verbose,
 		Channels:          activeChannels,
 	})
@@ -147,6 +91,9 @@ func runRun(cmd *cobra.Command, args []string) error {
 		agentURL := fmt.Sprintf("http://localhost:%d", runPort)
 		router := channels.NewRouter(agentURL)
 
+		// Collect initialized plugins so the scheduler can deliver results.
+		activePlugins := make(map[string]corechannels.ChannelPlugin)
+
 		names := strings.Split(runWithChannels, ",")
 		for _, name := range names {
 			name = strings.TrimSpace(name)
@@ -171,6 +118,8 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 			defer plugin.Stop() //nolint:errcheck
 
+			activePlugins[name] = plugin
+
 			go func() {
 				if err := plugin.Start(ctx, router.Handler()); err != nil {
 					fmt.Fprintf(os.Stderr, "channel %s error: %v\n", plugin.Name(), err)
@@ -178,6 +127,21 @@ func runRun(cmd *cobra.Command, args []string) error {
 			}()
 
 			fmt.Fprintf(os.Stderr, "  Channel:    %s adapter started\n", name)
+		}
+
+		// Wire up schedule notifier so cron results are delivered to channels.
+		if len(activePlugins) > 0 {
+			runner.SetScheduleNotifier(func(ctx context.Context, channel, target string, response *a2a.Message) error {
+				plugin, ok := activePlugins[channel]
+				if !ok {
+					return fmt.Errorf("channel adapter %q not active", channel)
+				}
+				event := &corechannels.ChannelEvent{
+					Channel:     channel,
+					WorkspaceID: target,
+				}
+				return plugin.SendResponse(event, response)
+			})
 		}
 	}
 

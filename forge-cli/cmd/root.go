@@ -42,6 +42,7 @@ func init() {
 	rootCmd.AddCommand(keyCmd)
 	rootCmd.AddCommand(scheduleCmd)
 	rootCmd.AddCommand(serveCmd)
+	rootCmd.AddCommand(uiCmd)
 }
 
 // SetVersionInfo sets the version and commit for display.

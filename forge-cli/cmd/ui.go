@@ -138,7 +138,7 @@ func runUI(cmd *cobra.Command, args []string) error {
 
 		// Set passphrase for secret encryption if provided
 		if opts.Passphrase != "" {
-			os.Setenv("FORGE_PASSPHRASE", opts.Passphrase)
+			_ = os.Setenv("FORGE_PASSPHRASE", opts.Passphrase)
 		}
 
 		storeProviderEnvVar(initOpts)

@@ -1,16 +1,16 @@
-# Forge
+# Forge — Secure Portable AI Agent Runtime
 
-Turn a `SKILL.md` into a portable, secure, runnable AI agent.
+## What is Forge?
 
-Forge is a portable runtime for building and running secure AI agents from simple skill definitions. It takes Agent Skills and makes them:
+Forge is a secure, portable AI agent runtime that allows developers to run AI agents locally, in cloud, or in enterprise environments without exposing inbound tunnels.
 
-* A runnable AI agent with tool calling
-* A portable, containerized bundle
-* A local HTTP / A2A service
-* A Slack or Telegram bot
-* A secure, restricted execution environment
-
-No Docker required. No inbound tunnels required. No cloud lock-in.
+Forge enables:
+- Atomic agent execution
+- Secure outbound-only connectivity
+- Portable skill-based agents
+- Channel connectors (Slack, Telegram)
+- Cron scheduling
+- Enterprise-grade identity support
 
 ---
 
@@ -22,7 +22,7 @@ Write a SKILL.md. Run `forge init`. Your agent is live.
 
 The wizard configures your model provider, validates your API key,
 connects Slack or Telegram, picks skills, and starts your agent.
-Zero to running in under 5 minutes.
+Zero to running in under 60 seconds.
 
 **Secure by Default**
 

@@ -169,17 +169,19 @@ Script-backed skills are automatically registered as **first-class LLM tools** a
 
 This means the LLM sees skill tools alongside builtins like `web_search` and `http_request` — no generic `cli_execute` indirection needed.
 
-For skills **without** scripts (binary-backed skills like `github`), Forge injects a lightweight catalog into the system prompt. The LLM can then use the `read_skill` builtin tool to load full instructions on demand, and invoke the skill via `cli_execute`.
+For skills **without** scripts (binary-backed skills like `k8s-incident-triage`), Forge injects the full skill instructions into the system prompt. The complete SKILL.md body — including triage steps, detection heuristics, output structure, and safety constraints — is included inline so the LLM follows the skill protocol without needing an extra tool call. Skills are invoked via `cli_execute` with the declared binary dependencies.
 
 ```
-┌─────────────────────────────────────────────┐
-│              LLM Tool Registry              │
-├─────────────────┬───────────────────────────┤
-│  Builtins       │  web_search, http_request │
-│  Skill Tools    │  tavily_research, ...     │  ← auto-registered from scripts
-│  read_skill     │  lazy-load any SKILL.md   │
-│  cli_execute    │  run approved binaries    │
-└─────────────────┴───────────────────────────┘
+┌─────────────────────────────────────────────────┐
+│                LLM Tool Registry                │
+├─────────────────┬───────────────────────────────┤
+│  Builtins       │  web_search, http_request     │
+│  Skill Tools    │  tavily_research, ...         │  ← auto-registered from scripts
+│  read_skill     │  load any SKILL.md on demand  │
+│  cli_execute    │  run approved binaries        │
+├─────────────────┴───────────────────────────────┤
+│  System Prompt: full skill instructions inline  │  ← binary-backed skills
+└─────────────────────────────────────────────────┘
 ```
 
 ### Skill Execution Security
@@ -191,11 +193,37 @@ Skill scripts run in a restricted environment via `SkillCommandExecutor`:
 - **No shell execution**: Scripts run via `bash <script> <json-input>`, not through a shell interpreter
 - **Egress proxy enforcement**: When egress mode is `allowlist` or `deny-all`, a local HTTP/HTTPS proxy is started and `HTTP_PROXY`/`HTTPS_PROXY` env vars are injected into subprocess environments, ensuring `curl`, `wget`, Python `requests`, and other HTTP clients route through the same domain allowlist used by in-process tools (see [Subprocess Egress Proxy](#subprocess-egress-proxy) below)
 
+### Skill Categories & Tags
+
+Skills can declare a `category` and `tags` in their frontmatter for organization and filtering:
+
+```markdown
+---
+name: k8s-incident-triage
+category: sre
+tags:
+  - kubernetes
+  - incident-response
+  - triage
+---
+```
+
+Categories and tags must be lowercase kebab-case. Use them to filter skills:
+
+```bash
+# List skills by category
+forge skills list --category sre
+
+# Filter by tags (AND semantics — skill must have all listed tags)
+forge skills list --tags kubernetes,incident-response
+```
+
 ### Built-in Skills
 
 | Skill | Description | Scripts |
 |-------|-------------|---------|
 | `tavily-research` | Deep multi-source research via Tavily API | `tavily-research.sh`, `tavily-research-poll.sh` |
+| `k8s-incident-triage` | Read-only Kubernetes incident triage using kubectl | — (binary-backed) |
 
 ### Tavily Research Skill
 
@@ -223,6 +251,47 @@ The LLM uses them in sequence: submit the research request, inform the user that
 | `auto` | Varies | Let the API choose based on query complexity |
 
 Requires: `curl`, `jq`, `TAVILY_API_KEY` environment variable.
+
+### Kubernetes Incident Triage Skill
+
+The `k8s-incident-triage` skill performs read-only triage of Kubernetes workloads using `kubectl`:
+
+```bash
+forge skills add k8s-incident-triage
+```
+
+This registers a single tool:
+
+| Tool | Purpose | Behavior |
+|------|---------|----------|
+| `k8s_triage` | Diagnose unhealthy workloads, pods, or namespaces | Runs read-only kubectl commands, produces a structured triage report |
+
+The skill accepts two input modes:
+
+- **Human mode** — natural language like `"triage payments-prod"` or `"why are pods pending in checkout-prod?"`
+- **Automation mode** — structured JSON with namespace, workload, pod, and diagnostic options
+
+**Triage process:**
+
+1. Verify cluster access (kubectl version, cluster-info)
+2. Fast health snapshot (pods, deployments, statefulsets)
+3. Events timeline (FailedScheduling, probe failures, evictions)
+4. Describe pods & workloads (container state, restart counts, probes)
+5. Node diagnostics (optional — NotReady, memory/disk pressure)
+6. Logs (optional — with previous container logs for CrashLoopBackOff)
+7. Metrics (optional — via metrics-server)
+
+**Detection heuristics** classify issues into: CrashLoop, OOMKilled, Image Pull Failure, Scheduling Constraint, Probe Failure, PVC/Volume Failure, Node Pressure/Eviction, Rollout Stuck. Each finding includes a hypothesis, evidence, confidence score (0.0–1.0), and recommended next commands.
+
+**Safety:** This skill is strictly read-only. It never executes `apply`, `patch`, `delete`, `exec`, `port-forward`, `scale`, or `rollout restart`. It never prints Secret values.
+
+Requires: `kubectl`, optional `KUBECONFIG`, `K8S_API_DOMAIN`, `DEFAULT_NAMESPACE` environment variables.
+
+### Skill Instructions in System Prompt
+
+Forge injects the **full body** of each skill's SKILL.md into the LLM system prompt. This means all detailed operational instructions — triage steps, detection heuristics, output structure, safety constraints — are directly available in the LLM's context without requiring an extra `read_skill` tool call.
+
+For skills with extensive instructions (like `k8s-incident-triage` with ~150 lines of triage procedures), this ensures the LLM follows the complete skill protocol from the first interaction.
 
 ---
 
@@ -882,7 +951,7 @@ memory:
 | `forge package [--push] [--prod] [--registry] [--with-channels]` | Build container image |
 | `forge export [--pretty] [--include-schemas] [--simulate-import]` | Export for Command platform |
 | `forge tool list\|describe` | List or inspect registered tools |
-| `forge skills add\|validate\|audit\|sign\|keygen` | Manage agent skills |
+| `forge skills add\|list\|validate\|audit\|sign\|keygen\|trust-report` | Manage agent skills |
 | `forge channel add\|serve\|list\|status` | Manage channel adapters |
 | `forge secret set\|get\|list\|delete [--local]` | Manage encrypted secrets |
 | `forge key generate\|trust\|list` | Manage Ed25519 signing keys |
@@ -914,8 +983,10 @@ forge/
     slack/             Slack adapter (Socket Mode, file upload)
     markdown/          Markdown converter, message splitting
   forge-skills/        Skill system
-    contract/          Skill types, registry interface
+    contract/          Skill types, registry interface, filtering
     local/             Embedded + local skill registries
+    parser/            SKILL.md parser (frontmatter + body extraction)
+    compiler/          Skill compiler (prompt generation)
     requirements/      Requirement aggregation and derivation
     analyzer/          Security audit for skills
     resolver/          Binary and env var resolution

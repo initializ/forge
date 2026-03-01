@@ -97,7 +97,7 @@ func (s *ChannelStep) updateSelectPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
 			s.phase = channelTokenPhase
 			s.keyInput = components.NewSecretInput(
 				"Telegram Bot Token (from @BotFather)",
-				true,
+				true, true,
 				s.styles.Theme.Accent,
 				s.styles.Theme.Success,
 				s.styles.Theme.Error,
@@ -115,7 +115,7 @@ func (s *ChannelStep) updateSelectPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
 			s.phase = channelTokenPhase
 			s.keyInput = components.NewSecretInput(
 				"Slack App Token (xapp-...)",
-				true,
+				true, true,
 				s.styles.Theme.Accent,
 				s.styles.Theme.Success,
 				s.styles.Theme.Error,
@@ -157,7 +157,7 @@ func (s *ChannelStep) updateTokenPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
 			s.phase = channelSlackBotTokenPhase
 			s.keyInput = components.NewSecretInput(
 				"Slack Bot Token (xoxb-...)",
-				true,
+				true, true,
 				s.styles.Theme.Accent,
 				s.styles.Theme.Success,
 				s.styles.Theme.Error,

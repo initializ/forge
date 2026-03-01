@@ -15,6 +15,7 @@ import (
 	"github.com/initializ/forge/forge-cli/runtime"
 	cliskills "github.com/initializ/forge/forge-cli/skills"
 	"github.com/initializ/forge/forge-skills/analyzer"
+	"github.com/initializ/forge/forge-skills/contract"
 	"github.com/initializ/forge/forge-skills/local"
 	"github.com/initializ/forge/forge-skills/requirements"
 	"github.com/initializ/forge/forge-skills/resolver"
@@ -60,6 +61,19 @@ var skillsKeygenCmd = &cobra.Command{
 	RunE:  runSkillsKeygen,
 }
 
+var skillsListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List all available skills (embedded + local)",
+	RunE:  runSkillsList,
+}
+
+var skillsTrustReportCmd = &cobra.Command{
+	Use:   "trust-report <name>",
+	Short: "Show trust and security details for a skill",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runSkillsTrustReport,
+}
+
 var auditFormat string
 var auditEmbedded bool
 var auditDir string
@@ -71,6 +85,8 @@ func init() {
 	skillsCmd.AddCommand(skillsAuditCmd)
 	skillsCmd.AddCommand(skillsSignCmd)
 	skillsCmd.AddCommand(skillsKeygenCmd)
+	skillsCmd.AddCommand(skillsListCmd)
+	skillsCmd.AddCommand(skillsTrustReportCmd)
 
 	skillsAuditCmd.Flags().StringVar(&auditFormat, "format", "text", "Output format: text or json")
 	skillsAuditCmd.Flags().BoolVar(&auditEmbedded, "embedded", false, "Audit embedded skills from the binary")
@@ -99,10 +115,10 @@ func runSkillsAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("getting working directory: %w", err)
 	}
 
-	// Write skill markdown
-	skillDir := filepath.Join(wd, "skills")
-	if err := os.MkdirAll(skillDir, 0o755); err != nil {
-		return fmt.Errorf("creating skills directory: %w", err)
+	// Write skill markdown to subdirectory: skills/{name}/SKILL.md
+	skillSubDir := filepath.Join(wd, "skills", name)
+	if err := os.MkdirAll(skillSubDir, 0o755); err != nil {
+		return fmt.Errorf("creating skill directory: %w", err)
 	}
 
 	content, err := reg.LoadContent(name)
@@ -110,16 +126,16 @@ func runSkillsAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("loading skill file: %w", err)
 	}
 
-	skillPath := filepath.Join(skillDir, name+".md")
+	skillPath := filepath.Join(skillSubDir, "SKILL.md")
 	if err := os.WriteFile(skillPath, content, 0o644); err != nil {
 		return fmt.Errorf("writing skill file: %w", err)
 	}
-	fmt.Printf("  Added skill file: skills/%s.md\n", name)
+	fmt.Printf("  Added skill file: skills/%s/SKILL.md\n", name)
 
-	// Write all scripts for the skill
+	// Write all scripts to skills/{name}/scripts/
 	scriptFiles := reg.ListScripts(name)
 	if len(scriptFiles) > 0 {
-		scriptDir := filepath.Join(skillDir, "scripts")
+		scriptDir := filepath.Join(skillSubDir, "scripts")
 		if mkErr := os.MkdirAll(scriptDir, 0o755); mkErr != nil {
 			fmt.Printf("  Warning: could not create scripts directory: %s\n", mkErr)
 		} else {
@@ -133,7 +149,7 @@ func runSkillsAdd(cmd *cobra.Command, args []string) error {
 				if wErr := os.WriteFile(scriptPath, scriptContent, 0o755); wErr != nil {
 					fmt.Printf("  Warning: could not write script: %s\n", wErr)
 				} else {
-					fmt.Printf("  Added script:     skills/scripts/%s\n", sf)
+					fmt.Printf("  Added script:     skills/%s/scripts/%s\n", name, sf)
 				}
 			}
 		}
@@ -397,10 +413,19 @@ func runSkillsAudit(cmd *cobra.Command, args []string) error {
 		}
 
 		// Build hasScript checker from filesystem
+		// Check subdirectory layout first: skills/{name}/scripts/{name}.sh
+		// Then fallback to flat layout: skills/scripts/{name}.sh
 		skillsDir := filepath.Dir(skillsPath)
 		hasScript := func(name string) bool {
-			scriptPath := filepath.Join(skillsDir, "scripts", name+".sh")
-			_, statErr := os.Stat(scriptPath)
+			scriptName := strings.ReplaceAll(name, "_", "-")
+			// Subdirectory layout
+			subPath := filepath.Join(skillsDir, scriptName, "scripts", scriptName+".sh")
+			if _, statErr := os.Stat(subPath); statErr == nil {
+				return true
+			}
+			// Legacy flat layout
+			flatPath := filepath.Join(skillsDir, "scripts", scriptName+".sh")
+			_, statErr := os.Stat(flatPath)
 			return statErr == nil
 		}
 
@@ -500,4 +525,111 @@ func runSkillsKeygen(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Key pair generated:\n  Private: %s\n  Public:  %s\n", privPath, pubPath)
 	fmt.Printf("\nTo trust this key for signature verification, copy %s to ~/.forge/trusted-keys/\n", filepath.Base(pubPath))
 	return nil
+}
+
+func runSkillsList(_ *cobra.Command, _ []string) error {
+	// Collect skills from embedded registry
+	embeddedReg, err := local.NewEmbeddedRegistry()
+	if err != nil {
+		return fmt.Errorf("loading embedded registry: %w", err)
+	}
+	embeddedSkills, err := embeddedReg.List()
+	if err != nil {
+		return fmt.Errorf("listing embedded skills: %w", err)
+	}
+
+	// Collect skills from local project directory
+	var localSkills []contract.SkillDescriptor
+	wd, _ := os.Getwd()
+	skillsDir := filepath.Join(wd, "skills")
+	if info, statErr := os.Stat(skillsDir); statErr == nil && info.IsDir() {
+		localReg, localErr := local.NewLocalRegistry(os.DirFS(skillsDir))
+		if localErr == nil {
+			ls, _ := localReg.List()
+			localSkills = ls
+		}
+	}
+
+	// Merge lists
+	allSkills := make([]contract.SkillDescriptor, 0, len(embeddedSkills)+len(localSkills))
+	allSkills = append(allSkills, embeddedSkills...)
+	allSkills = append(allSkills, localSkills...)
+
+	if len(allSkills) == 0 {
+		fmt.Println("No skills found.")
+		return nil
+	}
+
+	// Print table header
+	fmt.Printf("%-25s %-12s %-10s %-10s %s\n", "NAME", "CATEGORY", "TRUST", "SOURCE", "DESCRIPTION")
+	fmt.Printf("%-25s %-12s %-10s %-10s %s\n", "----", "--------", "-----", "------", "-----------")
+
+	for _, s := range allSkills {
+		cat := s.Category
+		if cat == "" {
+			cat = "\u2014"
+		}
+		trustLevel := "unknown"
+		source := "unknown"
+		if s.Provenance != nil {
+			trustLevel = string(s.Provenance.Trust)
+			source = s.Provenance.Source
+		}
+		desc := s.Description
+		if len(desc) > 50 {
+			desc = desc[:47] + "..."
+		}
+		fmt.Printf("%-25s %-12s %-10s %-10s %s\n", s.Name, cat, trustLevel, source, desc)
+	}
+
+	return nil
+}
+
+func runSkillsTrustReport(_ *cobra.Command, args []string) error {
+	name := args[0]
+
+	// Search in embedded registry
+	embeddedReg, err := local.NewEmbeddedRegistry()
+	if err != nil {
+		return fmt.Errorf("loading embedded registry: %w", err)
+	}
+	sd := embeddedReg.Get(name)
+
+	// Search in local registry if not found
+	if sd == nil {
+		wd, _ := os.Getwd()
+		skillsDir := filepath.Join(wd, "skills")
+		if info, statErr := os.Stat(skillsDir); statErr == nil && info.IsDir() {
+			localReg, localErr := local.NewLocalRegistry(os.DirFS(skillsDir))
+			if localErr == nil {
+				sd = localReg.Get(name)
+			}
+		}
+	}
+
+	if sd == nil {
+		return fmt.Errorf("skill %q not found in embedded or local registries", name)
+	}
+
+	// Print trust report
+	fmt.Printf("Name:           %s\n", sd.Name)
+	fmt.Printf("Category:       %s\n", valueOrDash(sd.Category))
+	fmt.Printf("Tags:           %s\n", valueOrDash(strings.Join(sd.Tags, ", ")))
+	if sd.Provenance != nil {
+		fmt.Printf("Source:         %s\n", sd.Provenance.Source)
+		fmt.Printf("Trust Level:    %s\n", sd.Provenance.Trust)
+		fmt.Printf("Checksum:       %s\n", valueOrDash(sd.Provenance.Checksum))
+	}
+	fmt.Printf("Required Bins:  %s\n", valueOrDash(strings.Join(sd.RequiredBins, ", ")))
+	fmt.Printf("Required Env:   %s\n", valueOrDash(strings.Join(sd.RequiredEnv, ", ")))
+	fmt.Printf("Egress Domains: %s\n", valueOrDash(strings.Join(sd.EgressDomains, ", ")))
+
+	return nil
+}
+
+func valueOrDash(s string) string {
+	if s == "" {
+		return "\u2014"
+	}
+	return s
 }

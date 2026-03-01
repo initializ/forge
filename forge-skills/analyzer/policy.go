@@ -18,6 +18,7 @@ func DefaultPolicy() SecurityPolicy {
 		},
 		ScriptPolicy:   "warn",
 		MaxRiskScore:   75,
+		MaxTags:        20,
 		TrustedDomains: nil,
 	}
 }
@@ -86,7 +87,16 @@ func CheckPolicy(sd *contract.SkillDescriptor, hasScript bool, policy SecurityPo
 		// "allow" - no violation
 	}
 
-	// Rule 5: MaxRiskScore
+	// Rule 5: MaxTags
+	if policy.MaxTags > 0 && len(sd.Tags) > policy.MaxTags {
+		violations = append(violations, PolicyViolation{
+			Rule:     "excessive-tags",
+			Severity: "warning",
+			Message:  fmt.Sprintf("skill has %d tags (recommended max: %d)", len(sd.Tags), policy.MaxTags),
+		})
+	}
+
+	// Rule 6: MaxRiskScore
 	if policy.MaxRiskScore > 0 {
 		assessment := AnalyzeSkillDescriptor(sd, hasScript)
 		if assessment.Score.Value > policy.MaxRiskScore {
@@ -112,6 +122,10 @@ func CheckPolicyFromEntry(entry *contract.SkillEntry, hasScript bool, policy Sec
 func entryToDescriptor(entry *contract.SkillEntry) *contract.SkillDescriptor {
 	sd := &contract.SkillDescriptor{
 		Name: entry.Name,
+	}
+	if entry.Metadata != nil {
+		sd.Category = entry.Metadata.Category
+		sd.Tags = entry.Metadata.Tags
 	}
 	if entry.ForgeReqs != nil {
 		sd.RequiredBins = entry.ForgeReqs.Bins

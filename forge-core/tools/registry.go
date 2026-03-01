@@ -37,6 +37,13 @@ func (r *Registry) Register(t Tool) error {
 	return nil
 }
 
+// Remove deletes a tool from the registry by name. No-op if not found.
+func (r *Registry) Remove(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.tools, name)
+}
+
 // Get returns the tool with the given name, or nil if not found.
 func (r *Registry) Get(name string) Tool {
 	r.mu.RLock()

@@ -39,6 +39,8 @@ func DeriveCLIConfig(reqs *contract.AggregatedRequirements) *contract.DerivedCLI
 		AllowedBinaries: reqs.Bins, // already sorted from AggregateRequirements
 		EnvPassthrough:  envPass,
 		TimeoutHint:     reqs.MaxTimeoutHint,
+		DeniedTools:     reqs.DeniedTools,   // already sorted from AggregateRequirements
+		EgressDomains:   reqs.EgressDomains, // already sorted from AggregateRequirements
 	}
 }
 

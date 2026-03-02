@@ -1,5 +1,9 @@
 # CLI Reference
 
+> Part of [Forge Documentation](../README.md)
+
+Complete reference for all Forge CLI commands.
+
 ## Global Flags
 
 | Flag | Short | Default | Description |
@@ -127,6 +131,8 @@ forge run [flags]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--port` | `8080` | Port for the A2A dev server |
+| `--host` | `""` (all interfaces) | Bind address |
+| `--shutdown-timeout` | `0` (immediate) | Graceful shutdown timeout |
 | `--mock-tools` | `false` | Use mock runtime instead of subprocess |
 | `--enforce-guardrails` | `false` | Enforce guardrail violations as errors |
 | `--model` | | Override model name (sets `MODEL_NAME` env var) |
@@ -146,9 +152,60 @@ forge run --port 9090 --mock-tools
 # Run with LLM provider and channels
 forge run --provider openai --model gpt-4 --with slack
 
+# Container deployment
+forge run --host 0.0.0.0 --shutdown-timeout 30s
+
 # Run with guardrails enforced
 forge run --enforce-guardrails --env .env.production
 ```
+
+---
+
+## `forge serve`
+
+Manage the agent as a background daemon process.
+
+```
+forge serve [start|stop|status|logs] [flags]
+```
+
+### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `start` (default) | Start the daemon in background |
+| `stop` | Send SIGTERM (10s timeout, SIGKILL fallback) |
+| `status` | Show PID, listen address, health check |
+| `logs` | Tail `.forge/serve.log` |
+
+### Flags (start)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--port` | `8080` | HTTP server port |
+| `--host` | `127.0.0.1` | Bind address (secure default) |
+| `--with` | | Channel adapters |
+
+### Examples
+
+```bash
+# Start daemon (secure defaults: 127.0.0.1, 30s shutdown timeout)
+forge serve
+
+# Start on custom port
+forge serve start --port 9090 --host 0.0.0.0
+
+# Stop the daemon
+forge serve stop
+
+# Check status (PID, uptime, health)
+forge serve status
+
+# View recent logs (last 100 lines)
+forge serve logs
+```
+
+The daemon forks `forge run` in the background with `setsid`, writes state to `.forge/serve.json`, and redirects output to `.forge/serve.log`.
 
 ---
 
@@ -226,6 +283,18 @@ forge package --with-channels
 
 ---
 
+## `forge schedule`
+
+Manage cron schedules.
+
+```
+forge schedule list
+```
+
+Lists all configured cron schedules (both YAML-defined and LLM-created).
+
+---
+
 ## `forge tool`
 
 Manage and inspect agent tools.
@@ -244,16 +313,6 @@ Show tool details and input schema.
 
 ```bash
 forge tool describe <name>
-```
-
-### Examples
-
-```bash
-# List all tools
-forge tool list
-
-# Describe a specific tool
-forge tool describe web-search
 ```
 
 ---
@@ -296,22 +355,105 @@ Show configured channels from `forge.yaml`.
 forge channel status
 ```
 
-### Examples
+---
+
+## `forge secret`
+
+Manage encrypted secrets.
 
 ```bash
-# Add Slack adapter
-forge channel add slack
+# Store a secret (prompts for value securely)
+forge secret set OPENAI_API_KEY
 
-# Add Telegram adapter
-forge channel add telegram
+# Store with inline value
+forge secret set SLACK_BOT_TOKEN xoxb-...
 
-# List available adapters
-forge channel list
+# Retrieve a secret (shows source)
+forge secret get OPENAI_API_KEY
 
-# Show configured channels
-forge channel status
+# List all secret keys
+forge secret list
 
-# Run Slack adapter standalone
-export AGENT_URL=http://localhost:8080
-forge channel serve slack
+# Delete a secret
+forge secret delete OLD_KEY
+
+# Agent-local secret
+forge secret set API_KEY --local
 ```
+
+---
+
+## `forge key`
+
+Manage Ed25519 signing keys.
+
+```bash
+# Generate an Ed25519 signing keypair
+forge key generate
+
+# Generate with a custom name
+forge key generate --name ci-key
+
+# Add a public key to the trusted keyring
+forge key trust ~/.forge/signing-key.pub
+
+# List signing and trusted keys
+forge key list
+```
+
+---
+
+## `forge skills`
+
+Manage agent skills.
+
+```bash
+# Add a skill from the registry
+forge skills add <skill-name>
+
+# List available skills
+forge skills list
+
+# Filter by category
+forge skills list --category sre
+
+# Filter by tags
+forge skills list --tags kubernetes,incident-response
+
+# Validate skill requirements
+forge skills validate
+
+# Audit skill security
+forge skills audit --embedded
+
+# Sign a skill
+forge skills sign
+
+# Generate a signing key
+forge skills keygen
+
+# Generate trust report
+forge skills trust-report
+```
+
+---
+
+## `forge ui`
+
+Launch the local web dashboard.
+
+```bash
+# Launch with defaults
+forge ui
+
+# Specify workspace and port
+forge ui --dir /path/to/workspace --port 4200
+
+# Launch without auto-opening browser
+forge ui --no-open
+```
+
+See [Dashboard](dashboard.md) for full documentation.
+
+---
+← [Hooks](hooks.md) | [Back to README](../README.md) | [Configuration](configuration.md) →

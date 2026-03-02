@@ -1,24 +1,40 @@
 # Architecture
 
-## Overview
+> Part of [Forge Documentation](../README.md)
 
-Forge is a portable runtime for building and running secure AI agents from simple skill definitions. The core data flow is:
+Forge is a portable runtime for building and running secure AI agents from simple skill definitions.
+
+## At a Glance
 
 ```
-SKILL.md → Parse → Discover tools/requirements → Compile AgentSpec → Apply security → Run LLM loop
+SKILL.md --> Parse --> Discover tools/requirements --> Compile AgentSpec
+                                                            |
+                                                            v
+                                                    Apply security policy
+                                                            |
+                                                            v
+                                                    Run LLM agent loop
+                                               (tool calling + memory + cron)
 ```
 
-Skill definitions and `forge.yaml` configuration are compiled into a canonical `AgentSpec`, security policies are applied, and the resulting agent can be run locally, packaged into a container, or served over the A2A protocol.
+1. You write a `SKILL.md` that describes what the agent can do
+2. Forge parses the skill definitions and optional YAML frontmatter (binary deps, env vars)
+3. The build pipeline discovers tools, resolves egress domains, and compiles an `AgentSpec`
+4. Security policies (egress allowlists, capability bundles) are applied
+5. Build artifacts are checksummed and optionally signed (Ed25519)
+6. At runtime, encrypted secrets are decrypted and the LLM-powered tool-calling loop executes with session persistence, memory, and a cron scheduler for recurring tasks
 
 ## Module Architecture
 
-Forge is organized as a Go workspace with three modules:
+Forge is organized as a Go workspace with five modules:
 
 ```
 go.work
-├── forge-core/     Embeddable library
-├── forge-cli/      CLI frontend
-└── forge-plugins/  Channel plugin implementations
+├── forge-core/       Embeddable library
+├── forge-cli/        CLI frontend
+├── forge-plugins/    Channel plugin implementations
+├── forge-ui/         Local web dashboard
+└── forge-skills/     Skill system (registry, parser, compiler)
 ```
 
 ### forge-core — Library
@@ -32,6 +48,14 @@ Command-line application built on top of forge-core. Includes Cobra commands, bu
 ### forge-plugins — Channel Plugins
 
 Messaging platform integrations that implement the `channels.ChannelPlugin` interface from forge-core. Ships Slack, Telegram, and markdown formatting plugins.
+
+### forge-ui — Web Dashboard
+
+Local web dashboard for managing agents from the browser. Single Go module embedded into the `forge` binary. See [Dashboard](dashboard.md) for details.
+
+### forge-skills — Skill System
+
+Skill system including the embedded and local skill registries, SKILL.md parser, skill compiler, requirement aggregation, security analyzer, binary/env resolver, and skill signing/verification.
 
 ## Package Map
 
@@ -66,7 +90,7 @@ Messaging platform integrations that implement the `channels.ChannelPlugin` inte
 | Package | Responsibility | Key Types |
 |---------|---------------|-----------|
 | `cmd/forge` | Main entry point | — |
-| `cmd` | CLI command implementations | `init`, `build`, `run`, `validate`, `package`, `export`, `tool`, `channel`, `skills` |
+| `cmd` | CLI command implementations | `init`, `build`, `run`, `validate`, `package`, `export`, `tool`, `channel`, `skills`, `serve`, `schedule`, `secret`, `key`, `ui` |
 | `config` | ForgeConfig loading and YAML parsing | — |
 | `build` | Build pipeline stage implementations | `FrameworkAdapterStage`, `AgentSpecStage`, `ToolsStage`, `SkillsStage`, `EgressStage`, etc. |
 | `container` | Container image builders | `DockerBuilder`, `PodmanBuilder`, `BuildahBuilder` |
@@ -90,6 +114,19 @@ Messaging platform integrations that implement the `channels.ChannelPlugin` inte
 | `channels/slack` | Slack channel adapter (Socket Mode) |
 | `channels/telegram` | Telegram channel adapter (polling) |
 | `channels/markdown` | Markdown formatting helper |
+
+### forge-skills
+
+| Package | Responsibility |
+|---------|---------------|
+| `contract` | Skill types, registry interface, filtering |
+| `local` | Embedded + local skill registries |
+| `parser` | SKILL.md parser (frontmatter + body extraction) |
+| `compiler` | Skill compiler (prompt generation) |
+| `requirements` | Requirement aggregation and derivation |
+| `analyzer` | Security audit for skills |
+| `resolver` | Binary and env var resolution |
+| `trust` | Skill signing and verification |
 
 ## Key Interfaces
 
@@ -259,33 +296,55 @@ forge run
   → channels.Router (optional)            [forge-cli/channels]
 ```
 
+## Module Directory Tree
+
+```
+forge/
+  forge-core/          Core library
+    a2a/               A2A protocol types
+    llm/               LLM client, fallback chains, OAuth
+    memory/            Long-term memory (vector + keyword search)
+    runtime/           Agent loop, hooks, compactor, audit logger
+    scheduler/         Cron scheduler (parser, tick loop, overlap prevention)
+    secrets/           Encrypted secret storage (AES-256-GCM + Argon2id)
+    security/          Egress resolver, enforcer, proxy, K8s NetworkPolicy
+    tools/             Tool registry, builtins, adapters, skill_tool
+    types/             Config types
+  forge-cli/           CLI application
+    cmd/               CLI commands (init, build, run, serve, schedule, etc.)
+    runtime/           Runner, skill registration, scheduler store, subprocess executor
+    internal/tui/      Interactive init wizard (Bubbletea)
+    tools/             CLI-specific tools (cli_execute, skill executor)
+  forge-plugins/       Channel plugins
+    telegram/          Telegram adapter (polling, document upload)
+    slack/             Slack adapter (Socket Mode, file upload)
+    markdown/          Markdown converter, message splitting
+  forge-ui/            Local web dashboard
+    server.go          HTTP server, routing, CORS
+    handlers*.go       REST API (agents, config, wizard, skills)
+    process.go         Agent process manager
+    discovery.go       Workspace scanner
+    sse.go             Real-time event broker
+    chat.go            A2A streaming chat proxy
+    static/dist/       Embedded SPA (Preact + HTM + Monaco)
+  forge-skills/        Skill system
+    contract/          Skill types, registry interface, filtering
+    local/             Embedded + local skill registries
+    parser/            SKILL.md parser (frontmatter + body extraction)
+    compiler/          Skill compiler (prompt generation)
+    requirements/      Requirement aggregation and derivation
+    analyzer/          Security audit for skills
+    resolver/          Binary and env var resolution
+    trust/             Skill signing and verification
+```
+
 ## Schema Validation
 
 AgentSpec JSON is validated against `schemas/agentspec.v1.0.schema.json` (JSON Schema draft-07) using the `gojsonschema` library. The schema is embedded in the binary via `go:embed` in `forge-core/schemas/`.
 
-Validation checks include:
-- `agent_id` matches pattern `^[a-z0-9-]+$`
-- `version` matches semver pattern
-- Required fields: `forge_version`, `agent_id`, `version`, `name`
-- Nested object schemas for runtime, tools, policy_scaffold, identity, a2a, model
-
-## Template System
-
-Templates use Go's `text/template` package and are embedded via `go:embed` in `forge-cli/templates/`. Templates are used for:
-
-- **Build output** — Dockerfile, Kubernetes manifests
-- **Init scaffolding** — forge.yaml, agent entrypoints, tool examples, .gitignore
-- **Framework wrappers** — A2A wrappers for CrewAI and LangChain
-
-## Runtime Architecture
-
-The local runner (`forge run`) orchestrates:
-
-1. **Executor selection** — `LLMExecutor` (custom with LLM) lives in forge-core; `SubprocessExecutor`, `MockExecutor`, `StubExecutor` live in `forge-cli/runtime`
-2. **A2A server** — JSON-RPC 2.0 HTTP server handling `tasks/send`, `tasks/get`, `tasks/cancel` (in `forge-cli/server`)
-3. **Guardrail engine** — Optional inbound/outbound message checking (in `forge-core/runtime`)
-4. **Channel adapters** — Optional Slack/Telegram bridges forwarding events to the A2A server (in `forge-plugins/channels`)
-
 ## Egress Security
 
-Egress controls operate at both build time and runtime. Build-time controls generate allowlist artifacts and Kubernetes NetworkPolicy manifests. Runtime controls include an in-process `EgressEnforcer` (Go `http.RoundTripper`) and a local `EgressProxy` for subprocess HTTP traffic. The resolver in `forge-core/security` combines explicit domains, tool-inferred domains, and capability bundles. See [security/egress.md](security/egress.md) for details.
+Egress controls operate at both build time and runtime. Build-time controls generate allowlist artifacts and Kubernetes NetworkPolicy manifests. Runtime controls include an in-process `EgressEnforcer` (Go `http.RoundTripper`) and a local `EgressProxy` for subprocess HTTP traffic. See [Egress Security](security/egress.md) for details.
+
+---
+← [Installation](installation.md) | [Back to README](../README.md) | [Skills](skills.md) →

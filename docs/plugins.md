@@ -139,3 +139,6 @@ type Plugin interface {
 ```
 
 Available hook points: `pre-build`, `post-build`, `pre-push`, `post-push`.
+
+---
+← [Deployment](deployment.md) | [Back to README](../README.md) | [Command Integration](command-integration.md) →

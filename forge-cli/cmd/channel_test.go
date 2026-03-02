@@ -49,8 +49,8 @@ channels:
 	if err != nil {
 		t.Fatalf("reading .env: %v", err)
 	}
-	if !strings.Contains(string(envData), "SLACK_SIGNING_SECRET") {
-		t.Error(".env missing SLACK_SIGNING_SECRET")
+	if !strings.Contains(string(envData), "SLACK_APP_TOKEN") {
+		t.Error(".env missing SLACK_APP_TOKEN")
 	}
 	if !strings.Contains(string(envData), "SLACK_BOT_TOKEN") {
 		t.Error(".env missing SLACK_BOT_TOKEN")
@@ -180,10 +180,9 @@ func TestChannelServeNoAgentURL(t *testing.T) {
 	// Write a valid channel config
 	_ = os.WriteFile(filepath.Join(dir, "slack-config.yaml"), []byte(`
 adapter: slack
-webhook_port: 3000
 settings:
-  signing_secret: test
-  bot_token: test
+  app_token: xapp-test
+  bot_token: xoxb-test
 `), 0644) //nolint:errcheck
 
 	t.Setenv("AGENT_URL", "")

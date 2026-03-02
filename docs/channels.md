@@ -35,6 +35,32 @@ This command:
 3. Adds the channel to `forge.yaml`'s `channels` list
 4. Prints setup instructions
 
+## Slack App Setup
+
+Before running the Slack adapter, create and configure a Slack App:
+
+1. **Create a Slack App** at https://api.slack.com/apps → "Create New App" → "From scratch"
+2. **Enable Socket Mode** — Settings → Socket Mode → toggle **On**
+3. **Generate an App-Level Token** — Basic Information → "App-Level Tokens" → "Generate Token and Scopes" → add the `connections:write` scope → copy the `xapp-...` token
+4. **Enable Event Subscriptions** — Features → Event Subscriptions → toggle **On** → Subscribe to bot events:
+   - `message.channels` — messages in public channels
+   - `message.im` — direct messages
+   - `app_mention` — @mentions of your bot
+5. **Set Bot Token Scopes** — Features → OAuth & Permissions → Bot Token Scopes → add:
+   - `app_mentions:read`
+   - `chat:write`
+   - `channels:history`
+   - `im:history`
+   - `files:write` (for large response file uploads)
+   - `reactions:write` (for processing indicators)
+6. **Install the App** — Settings → Install App → "Install to Workspace" → copy the `xoxb-...` Bot Token
+7. **Add tokens to `.env`**:
+   ```
+   SLACK_APP_TOKEN=xapp-1-...
+   SLACK_BOT_TOKEN=xoxb-...
+   ```
+8. **Invite the bot** to any channel where you want it active: `/invite @YourBot`
+
 ## Configuration
 
 ### Slack (`slack-config.yaml`)

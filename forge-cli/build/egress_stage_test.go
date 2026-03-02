@@ -120,9 +120,10 @@ func TestEgressStage_AllowlistWithCapabilities(t *testing.T) {
 
 	// Check that slack domains are in the resolved AllDomains
 	wantDomains := map[string]bool{
-		"slack.com":       true,
-		"hooks.slack.com": true,
-		"api.slack.com":   true,
+		"slack.com":             true,
+		"wss-primary.slack.com": true,
+		"api.slack.com":         true,
+		"files.slack.com":       true,
 	}
 	for d := range wantDomains {
 		found := false

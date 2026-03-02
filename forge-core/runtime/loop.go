@@ -135,6 +135,11 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 		toolDefs = e.tools.ToolDefinitions()
 	}
 
+	// Track large tool outputs so they can be included as file parts
+	// in the response (the LLM may truncate them due to output token limits).
+	const largeToolOutputThreshold = 8000
+	var largeToolOutputs []a2a.Part
+
 	// Agent loop
 	for i := 0; i < e.maxIter; i++ {
 		// Run compaction before LLM call (best-effort).
@@ -190,13 +195,13 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 		// Check if we're done (no tool calls)
 		if resp.FinishReason == "stop" || len(resp.Message.ToolCalls) == 0 {
 			e.persistSession(task.ID, mem)
-			return llmMessageToA2A(resp.Message), nil
+			return llmMessageToA2A(resp.Message, largeToolOutputs...), nil
 		}
 
 		// Execute tool calls
 		if e.tools == nil {
 			e.persistSession(task.ID, mem)
-			return llmMessageToA2A(resp.Message), nil
+			return llmMessageToA2A(resp.Message, largeToolOutputs...), nil
 		}
 
 		for _, tc := range resp.Message.ToolCalls {
@@ -232,6 +237,18 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 				CorrelationID: CorrelationIDFromContext(ctx),
 			}); err != nil {
 				return nil, fmt.Errorf("after tool exec hook: %w", err)
+			}
+
+			// Track large tool outputs for pass-through in the response.
+			if len(result) > largeToolOutputThreshold {
+				largeToolOutputs = append(largeToolOutputs, a2a.Part{
+					Kind: a2a.PartKindFile,
+					File: &a2a.FileContent{
+						Name:     tc.Function.Name + "-output.md",
+						MimeType: "text/markdown",
+						Bytes:    []byte(result),
+					},
+				})
 			}
 
 			// Append tool result to memory
@@ -311,14 +328,18 @@ func a2aMessageToLLM(msg a2a.Message) llm.ChatMessage {
 }
 
 // llmMessageToA2A converts an LLM chat message to an A2A message.
-func llmMessageToA2A(msg llm.ChatMessage) *a2a.Message {
+// Any extra parts (e.g. large tool output files) are appended after the text part.
+func llmMessageToA2A(msg llm.ChatMessage, extraParts ...a2a.Part) *a2a.Message {
 	role := a2a.MessageRoleAgent
 	if msg.Role == llm.RoleUser {
 		role = a2a.MessageRoleUser
 	}
 
+	parts := []a2a.Part{a2a.NewTextPart(msg.Content)}
+	parts = append(parts, extraParts...)
+
 	return &a2a.Message{
 		Role:  role,
-		Parts: []a2a.Part{a2a.NewTextPart(msg.Content)},
+		Parts: parts,
 	}
 }

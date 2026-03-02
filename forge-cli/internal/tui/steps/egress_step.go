@@ -138,10 +138,11 @@ func inferSource(domain string, ctx *tui.WizardContext) string {
 
 	// Channel domains
 	channelDomains := map[string]string{
-		"api.telegram.org": "channel",
-		"slack.com":        "channel",
-		"hooks.slack.com":  "channel",
-		"api.slack.com":    "channel",
+		"api.telegram.org":      "channel",
+		"slack.com":             "channel",
+		"wss-primary.slack.com": "channel",
+		"api.slack.com":         "channel",
+		"files.slack.com":       "channel",
 	}
 	if src, ok := channelDomains[domain]; ok {
 		return src

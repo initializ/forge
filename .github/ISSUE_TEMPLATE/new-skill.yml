@@ -1,0 +1,78 @@
+name: New Skill Proposal
+description: Propose a new Forge skill
+title: "[Skill]: "
+labels: ["skill", "proposal"]
+body:
+  - type: input
+    id: skill-name
+    attributes:
+      label: Skill name
+      description: "Kebab-case identifier (e.g. `my-cool-skill`)"
+      placeholder: my-cool-skill
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What does this skill do and why is it useful?
+      placeholder: Describe the skill's purpose and use cases
+    validations:
+      required: true
+
+  - type: dropdown
+    id: execution-type
+    attributes:
+      label: Execution type
+      description: How will the skill's tools run?
+      options:
+        - Script-backed (shell scripts in scripts/)
+        - Binary-backed (compiled binary in PATH)
+    validations:
+      required: true
+
+  - type: input
+    id: category
+    attributes:
+      label: Category
+      description: "Skill category (e.g. sre, research, ops, dev, security)"
+      placeholder: ops
+
+  - type: textarea
+    id: requirements
+    attributes:
+      label: Requirements
+      description: List required binaries, environment variables, and egress domains
+      placeholder: |
+        Binaries: curl, jq
+        Env vars: MY_API_KEY (required)
+        Egress: api.example.com
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Example use case
+      description: Describe a concrete scenario where this skill would be used
+      placeholder: |
+        As a developer, I want to ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: security
+    attributes:
+      label: Security considerations
+      description: Describe any security implications (network access, credentials, read-only constraints)
+      placeholder: |
+        - Read-only access to ...
+        - Requires API key for ...
+
+  - type: textarea
+    id: example-interaction
+    attributes:
+      label: Example interaction
+      description: Show an example input/output or conversation with the skill
+      placeholder: |
+        Input: {"query": "example"}
+        Output: {"results": [...]}

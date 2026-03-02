@@ -140,130 +140,25 @@ tools:
 
 ## Secrets Management
 
-Forge provides encrypted secret storage with per-agent isolation and defense-in-depth.
+Forge provides AES-256-GCM encrypted secret storage with Argon2id key derivation, per-agent isolation, and a three-tier resolution hierarchy (agent-local -> global -> environment). Secrets are managed via `forge secret set|get|list|delete`.
 
-### Encryption
-
-- **Algorithm**: AES-256-GCM (authenticated encryption)
-- **Key derivation**: Argon2id (memory-hard, resistant to GPU attacks)
-- **File format**: `salt(16 bytes) || nonce(12 bytes) || ciphertext`
-- **Plaintext format**: JSON key-value map
-
-### Storage Hierarchy
-
-Secrets are resolved in order, with earlier sources taking priority:
-
-1. **Agent-local** — `<agent-dir>/.forge/secrets.enc`
-2. **Global** — `~/.forge/secrets.enc`
-3. **Environment variables** — `os.Getenv()`
-
-This enables per-agent key isolation: different agents can use different API keys even on the same machine.
-
-### Passphrase Handling
-
-| Context | Behavior |
-|---------|----------|
-| `forge run` (TTY) | Prompts interactively if `FORGE_PASSPHRASE` not set |
-| `forge run` (CI/CD) | Reads from `FORGE_PASSPHRASE` environment variable |
-| `forge init` (first time) | Prompts for passphrase + confirmation |
-| `forge init` (subsequent) | Prompts once and validates against existing file |
-
-### File Safety
-
-- `.forge/` directories are automatically added to `.gitignore`
-- `*.enc` files are excluded in `.dockerignore`
-- Secret files never appear in container images
-
-### Commands
-
-```bash
-forge secret set OPENAI_API_KEY              # Prompts for value securely
-forge secret set SLACK_BOT_TOKEN xoxb-...    # Inline value
-forge secret get OPENAI_API_KEY              # Shows value and source
-forge secret list                            # Lists all keys
-forge secret delete OLD_KEY                  # Removes a key
-forge secret set API_KEY --local             # Agent-local secret
-```
-
-### Configuration
-
-```yaml
-secrets:
-  providers:
-    - encrypted-file    # AES-256-GCM encrypted file
-    - env               # Environment variables (fallback)
-```
+For full details, see **[Secrets Management](secrets.md)**.
 
 ---
 
 ## Build Integrity
 
-Forge supports Ed25519 signing of build artifacts for supply chain integrity verification.
+Forge supports Ed25519 signing and SHA-256 checksumming of build artifacts for supply chain integrity. At runtime, `forge run` can verify artifacts against trusted keys before execution.
 
-### Signing Flow
-
-1. `forge build` computes SHA-256 checksums of all generated artifacts
-2. If a signing key exists at `~/.forge/signing-key.pem`, the checksums are signed with Ed25519
-3. `checksums.json` is written with checksums, signature, and key ID
-
-### Verification Flow
-
-At runtime, `forge run` optionally verifies build artifacts:
-1. Validates SHA-256 checksums of all files against `checksums.json`
-2. Verifies the Ed25519 signature against trusted keys in `~/.forge/trusted-keys/`
-3. If `checksums.json` doesn't exist, verification is skipped (opt-in)
-
-### Key Management
-
-```bash
-forge key generate                     # Generate Ed25519 keypair
-forge key generate --name ci-key       # Named keypair
-forge key trust ~/.forge/signing-key.pub   # Add to trusted keyring
-forge key list                         # List signing + trusted keys
-```
-
-### Production Build Safety
-
-The build pipeline includes a `secret-safety` stage that:
-- Blocks production builds (`--prod`) that only use `encrypted-file` without `env` provider
-- Warns if `.dockerignore` is missing alongside a generated Dockerfile
-- Rejects `dev-open` egress mode in production builds
-- Filters out dev-only tools (`local_shell`, `local_file_browser`)
+For full details, see **[Build Signing & Verification](signing.md)**.
 
 ---
 
 ## Guardrails
 
-The guardrail engine checks inbound and outbound messages against configurable policy rules.
+The guardrail engine checks inbound and outbound messages against policy rules including content filtering, PII detection, and jailbreak protection. Guardrails run in `enforce` (blocking) or `warn` (logging) mode.
 
-### Built-in Guardrails
-
-| Guardrail | Direction | Description |
-|-----------|-----------|-------------|
-| `content_filter` | Inbound + Outbound | Blocks messages containing configured blocked words |
-| `no_pii` | Outbound | Detects email addresses, phone numbers, and SSNs via regex |
-| `jailbreak_protection` | Inbound | Detects common jailbreak phrases ("ignore previous instructions", etc.) |
-
-### Modes
-
-| Mode | Behavior |
-|------|----------|
-| `enforce` | Blocks violating messages, returns error to caller |
-| `warn` | Logs violation, allows message to pass |
-
-### Configuration
-
-Guardrails are defined in the policy scaffold, loaded from `policy-scaffold.json` or generated during `forge build`.
-
-### Runtime
-
-```bash
-# Run with guardrails enforced
-forge run --enforce-guardrails
-
-# Default: warn mode (log only)
-forge run
-```
+For full details, see **[Content Guardrails](guardrails.md)**.
 
 ---
 
@@ -337,7 +232,13 @@ Production builds enforce:
 | Document | Description |
 |----------|-------------|
 | [Egress Security](egress.md) | Deep dive into egress enforcement: profiles, modes, domain matching, proxy architecture, NetworkPolicy |
+| [Secrets Management](secrets.md) | Encrypted storage, per-agent secrets, passphrase handling |
+| [Build Signing & Verification](signing.md) | Key management, build signing, runtime verification |
+| [Content Guardrails](guardrails.md) | PII detection, jailbreak protection, custom rules |
 | [Architecture](../architecture.md) | System design, module layout, and data flows |
 | [Tools](../tools.md) | Tool system including `cli_execute` security layers |
 | [Skills](../skills.md) | Skill definitions and runtime execution |
 | [Commands](../commands.md) | CLI reference including security-related flags |
+
+---
+← [Channels](../channels.md) | [Back to README](../../README.md) | [Egress Security](egress.md) →

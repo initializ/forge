@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/initializ/forge/forge-core/auth"
 )
 
 // handleChat proxies a chat message to a running agent via A2A JSON-RPC
@@ -74,6 +76,11 @@ func (s *UIServer) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	agentReq.Header.Set("Content-Type", "application/json")
+
+	// Load and set auth token from the agent directory.
+	if token := s.loadAgentToken(agentID); token != "" {
+		agentReq.Header.Set("Authorization", "Bearer "+token)
+	}
 
 	agentResp, err := client.Do(agentReq)
 	if err != nil {
@@ -273,6 +280,20 @@ func extractPreview(messagesRaw json.RawMessage) string {
 		}
 	}
 	return ""
+}
+
+// loadAgentToken attempts to read the auth token for an agent from its directory.
+func (s *UIServer) loadAgentToken(agentID string) string {
+	agents, err := s.scanner.Scan()
+	if err != nil {
+		return ""
+	}
+	agent, ok := agents[agentID]
+	if !ok {
+		return ""
+	}
+	token, _ := auth.LoadToken(agent.Directory)
+	return token
 }
 
 // sanitizeForFilename replaces characters unsafe for filenames.

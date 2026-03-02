@@ -27,6 +27,8 @@ var (
 	runProvider          string
 	runEnvFile           string
 	runWithChannels      string
+	runNoAuth            bool
+	runAuthToken         string
 )
 
 var runCmd = &cobra.Command{
@@ -45,6 +47,8 @@ func init() {
 	runCmd.Flags().StringVar(&runProvider, "provider", "", "LLM provider (openai, anthropic, ollama)")
 	runCmd.Flags().StringVar(&runEnvFile, "env", ".env", "path to .env file")
 	runCmd.Flags().StringVar(&runWithChannels, "with", "", "comma-separated channel adapters to start (e.g. slack,telegram)")
+	runCmd.Flags().BoolVar(&runNoAuth, "no-auth", false, "disable bearer token authentication (localhost only)")
+	runCmd.Flags().StringVar(&runAuthToken, "auth-token", "", "explicit bearer token (default: auto-generated)")
 }
 
 func runRun(cmd *cobra.Command, args []string) error {
@@ -68,9 +72,16 @@ func runRun(cmd *cobra.Command, args []string) error {
 		EnvFilePath:       resolveEnvPath(workDir, runEnvFile),
 		Verbose:           verbose,
 		Channels:          activeChannels,
+		NoAuth:            runNoAuth,
+		AuthToken:         runAuthToken,
 	})
 	if err != nil {
 		return fmt.Errorf("creating runner: %w", err)
+	}
+
+	// Resolve auth token early so channel adapters can use it.
+	if err := runner.ResolveAuth(); err != nil {
+		return fmt.Errorf("resolving auth: %w", err)
 	}
 
 	// Set up signal handling
@@ -89,7 +100,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	if runWithChannels != "" {
 		registry := defaultRegistry()
 		agentURL := fmt.Sprintf("http://localhost:%d", runPort)
-		router := channels.NewRouter(agentURL)
+		router := channels.NewRouter(agentURL, runner.AuthToken())
 
 		// Collect initialized plugins so the scheduler can deliver results.
 		activePlugins := make(map[string]corechannels.ChannelPlugin)

@@ -1,10 +1,12 @@
 # LLM Runtime Engine
 
+> Part of [Forge Documentation](../README.md)
+
 The runtime engine powers `forge run` — executing agent tasks via LLM providers with tool calling, conversation memory, and lifecycle hooks.
 
 ## Agent Loop
 
-The core agent loop is implemented in `internal/runtime/engine/loop.go`. It follows a simple pattern:
+The core agent loop follows a simple pattern:
 
 1. **Initialize memory** with the system prompt and task history
 2. **Append** the user message
@@ -19,6 +21,78 @@ User message → Memory → LLM → tool_calls? → Execute tools → LLM → ..
 
 The loop terminates when `FinishReason == "stop"` or `len(ToolCalls) == 0`.
 
+## LLM Providers
+
+Forge supports multiple LLM providers with automatic fallback:
+
+| Provider | Default Model | Auth |
+|----------|--------------|------|
+| `openai` | `gpt-5.2-2025-12-11` | API key or OAuth |
+| `anthropic` | `claude-sonnet-4-20250514` | API key |
+| `gemini` | `gemini-2.5-flash` | API key |
+| `ollama` | `llama3` | None (local) |
+| Custom | Configurable | API key |
+
+### Configuration
+
+```yaml
+model:
+  provider: openai
+  name: gpt-4o
+```
+
+Or override with environment variables:
+
+```bash
+export FORGE_MODEL_PROVIDER=anthropic
+export ANTHROPIC_API_KEY=sk-ant-...
+forge run
+```
+
+Provider is auto-detected from available API keys if not explicitly set. Provider configuration is resolved via `ResolveModelConfig()` in priority order:
+
+1. **CLI flag** `--provider` (highest priority)
+2. **Environment variables**: `FORGE_MODEL_PROVIDER`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`
+3. **forge.yaml** `model` section (lowest priority)
+
+### OpenAI OAuth
+
+For OpenAI, Forge supports browser-based OAuth login (matching the Codex CLI flow) as an alternative to API keys:
+
+```bash
+forge init my-agent
+# Select "OpenAI" -> "Login with browser (OAuth)"
+# Browser opens for authentication
+```
+
+OAuth tokens are stored in `~/.forge/credentials/openai.json` and automatically refreshed.
+
+### Fallback Chains
+
+Configure fallback providers for automatic failover when the primary provider is unavailable:
+
+```yaml
+model:
+  provider: openai
+  name: gpt-4o
+  fallbacks:
+    - provider: anthropic
+      name: claude-sonnet-4-20250514
+    - provider: gemini
+```
+
+Or via environment variable:
+
+```bash
+export FORGE_MODEL_FALLBACKS="anthropic:claude-sonnet-4-20250514,gemini:gemini-2.5-flash"
+```
+
+Fallback behavior:
+- **Retriable errors** (rate limits, overloaded, timeouts) try the next provider
+- **Non-retriable errors** (auth, billing, bad format) abort immediately
+- Per-provider exponential backoff cooldowns prevent thundering herd
+- Fallbacks are also auto-detected from available API keys when not explicitly configured
+
 ## Executor Types
 
 The runtime supports multiple executor implementations:
@@ -29,61 +103,75 @@ The runtime supports multiple executor implementations:
 | `SubprocessExecutor` | Framework agents (CrewAI, LangChain) running as subprocesses |
 | `StubExecutor` | Returns canned responses for testing |
 
-Executor selection happens in `internal/runtime/runner.go` based on framework type and configuration.
+Executor selection happens in `runner.go` based on framework type and configuration.
 
-## Provider Configuration
+## Running Modes
 
-Provider configuration is resolved in `internal/runtime/engine/config.go` via `ResolveModelConfig()`. Sources are checked in priority order:
+### `forge run` — Foreground Server
 
-1. **CLI flag** `--provider` (highest priority)
-2. **Environment variables**: `FORGE_MODEL_PROVIDER`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `LLM_API_KEY`
-3. **forge.yaml** `model` section (lowest priority)
+Run the agent as a foreground HTTP server. Used for development and container deployments.
 
-If no provider is explicitly set, the system auto-detects from available API keys.
+```bash
+# Development (all interfaces, immediate shutdown)
+forge run --with slack --port 8080
 
-### Supported Providers
-
-| Provider | Default Model | Base URL Override |
-|----------|--------------|-------------------|
-| `openai` | `gpt-4o` | `OPENAI_BASE_URL` |
-| `anthropic` | `claude-sonnet-4-20250514` | `ANTHROPIC_BASE_URL` |
-| `ollama` | `llama3` | `OLLAMA_BASE_URL` |
-
-All providers implement the `llm.Client` interface defined in `internal/runtime/llm/client.go`:
-
-```go
-type Client interface {
-    Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error)
-    ChatStream(ctx context.Context, req *ChatRequest) (<-chan StreamDelta, error)
-    ModelID() string
-}
+# Container deployment
+forge run --host 0.0.0.0 --shutdown-timeout 30s
 ```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--port` | `8080` | HTTP server port |
+| `--host` | `""` (all interfaces) | Bind address |
+| `--shutdown-timeout` | `0` (immediate) | Graceful shutdown timeout |
+| `--with` | — | Channel adapters (e.g. `slack,telegram`) |
+| `--mock-tools` | `false` | Use mock executor for testing |
+| `--model` | — | Override model name |
+| `--provider` | — | Override LLM provider |
+| `--env` | `.env` | Path to env file |
+| `--enforce-guardrails` | `false` | Enforce guardrail violations as errors |
+
+### `forge serve` — Background Daemon
+
+Manage the agent as a background daemon process with PID/log management.
+
+```bash
+# Start daemon (secure defaults: 127.0.0.1, 30s shutdown timeout)
+forge serve
+
+# Start on custom port
+forge serve start --port 9090 --host 0.0.0.0
+
+# Stop the daemon
+forge serve stop
+
+# Check status (PID, uptime, health)
+forge serve status
+
+# View recent logs (last 100 lines)
+forge serve logs
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `start` (default) | Start the daemon in background |
+| `stop` | Send SIGTERM (10s timeout, SIGKILL fallback) |
+| `status` | Show PID, listen address, health check |
+| `logs` | Tail `.forge/serve.log` |
+
+The daemon forks `forge run` in the background with `setsid`, writes state to `.forge/serve.json`, and redirects output to `.forge/serve.log`. Passphrase prompting for encrypted secrets happens in the parent process (which has TTY access) before forking.
 
 ## Conversation Memory
 
-Memory management is handled by `internal/runtime/engine/memory.go`. Key behaviors:
+For details on session persistence, context window management, compaction, and long-term memory, see [Memory](memory.md).
 
-- **System prompt** is always prepended to the message list (never trimmed)
-- **Character budget** defaults to 32,000 characters (~8,000 tokens)
-- When over budget, **oldest messages are trimmed first**
-- The **most recent message is never trimmed**
-- Memory is per-task (created fresh for each `Execute` call)
-- Thread-safe via `sync.Mutex`
+## Hooks
+
+The engine fires hooks at key points in the loop. See [Hooks](hooks.md) for details.
 
 ## Streaming
 
 The current implementation (v1) runs the full tool-calling loop non-streaming. `ExecuteStream` calls `Execute` internally and emits the final response as a single message on a channel. True word-by-word streaming during tool loops is planned for v2.
 
-## Hooks
-
-The engine fires hooks at key points in the loop. See [docs/hooks.md](hooks.md) for details.
-
-## Related Files
-
-- `internal/runtime/engine/loop.go` — Agent loop implementation
-- `internal/runtime/engine/memory.go` — Conversation memory
-- `internal/runtime/engine/config.go` — Provider configuration resolution
-- `internal/runtime/engine/hooks.go` — Hook system
-- `internal/runtime/llm/client.go` — LLM client interface
-- `internal/runtime/llm/types.go` — Canonical chat types
-- `internal/runtime/llm/providers/` — Provider implementations
+---
+← [Tools](tools.md) | [Back to README](../README.md) | [Memory](memory.md) →

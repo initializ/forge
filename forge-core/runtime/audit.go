@@ -23,6 +23,8 @@ const (
 	AuditScheduleComplete = "schedule_complete"
 	AuditScheduleSkip     = "schedule_skip"
 	AuditScheduleModify   = "schedule_modify"
+	AuditAuthSuccess      = "auth_success"
+	AuditAuthFailure      = "auth_failure"
 )
 
 // AuditEvent is a single structured audit record emitted as NDJSON.

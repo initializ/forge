@@ -15,14 +15,17 @@ import (
 
 // Router forwards channel events to an A2A agent server via JSON-RPC over HTTP.
 type Router struct {
-	agentURL string
-	client   *http.Client
+	agentURL    string
+	bearerToken string
+	client      *http.Client
 }
 
 // NewRouter creates a Router that forwards events to the A2A server at agentURL.
-func NewRouter(agentURL string) *Router {
+// If bearerToken is non-empty, it is sent as an Authorization header on requests.
+func NewRouter(agentURL, bearerToken string) *Router {
 	return &Router{
-		agentURL: agentURL,
+		agentURL:    agentURL,
+		bearerToken: bearerToken,
 		client: &http.Client{
 			Timeout: 360 * time.Second,
 		},
@@ -81,12 +84,23 @@ func (r *Router) forwardToA2A(ctx context.Context, event *channels.ChannelEvent)
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	if r.bearerToken != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+r.bearerToken)
+	}
 
 	resp, err := r.client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("sending request to A2A server: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+
+	// Check for HTTP-level errors (e.g. 401 Unauthorized from auth middleware).
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, fmt.Errorf("A2A server returned 401 Unauthorized (check auth token)")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("A2A server returned HTTP %d", resp.StatusCode)
+	}
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {

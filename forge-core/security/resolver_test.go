@@ -122,10 +122,11 @@ func TestResolve_AllowlistWithCapabilities(t *testing.T) {
 
 	// Check that slack domains are in AllDomains
 	want := map[string]bool{
-		"api.example.com": true,
-		"slack.com":       true,
-		"hooks.slack.com": true,
-		"api.slack.com":   true,
+		"api.example.com":       true,
+		"slack.com":             true,
+		"wss-primary.slack.com": true,
+		"api.slack.com":         true,
+		"files.slack.com":       true,
 	}
 	for d := range want {
 		found := false

@@ -207,16 +207,28 @@ func (s *ChannelStep) View(width int) string {
 				s.styles.DimTxt.Render("3. Copy the bot token"),
 			)
 		case "slack":
-			instructions = fmt.Sprintf("  %s\n  %s\n  %s\n  %s\n\n",
-				s.styles.SecondaryTxt.Render("Slack Socket Mode Setup:"),
+			instructions = fmt.Sprintf("  %s\n  %s\n  %s\n  %s\n  %s\n  %s\n\n",
+				s.styles.SecondaryTxt.Render("Slack App Setup (Step 1/2 — App-Level Token):"),
 				s.styles.DimTxt.Render("1. Create a Slack App at https://api.slack.com/apps"),
-				s.styles.DimTxt.Render("2. Enable Socket Mode, generate app-level token"),
-				s.styles.DimTxt.Render("3. Add bot scopes: chat:write, app_mentions:read"),
+				s.styles.DimTxt.Render("   → \"Create New App\" → \"From scratch\""),
+				s.styles.DimTxt.Render("2. Settings → Socket Mode → toggle ON"),
+				s.styles.DimTxt.Render("3. Basic Information → App-Level Tokens → Generate"),
+				s.styles.DimTxt.Render("   → add scope: connections:write → copy the xapp-... token"),
 			)
 		}
 		return instructions + s.keyInput.View(width)
 	case channelSlackBotTokenPhase:
-		return s.keyInput.View(width)
+		botInstructions := fmt.Sprintf("  %s\n  %s\n  %s\n  %s\n  %s\n  %s\n  %s\n  %s\n\n",
+			s.styles.SecondaryTxt.Render("Slack App Setup (Step 2/2 — Bot Token):"),
+			s.styles.DimTxt.Render("4. Event Subscriptions → toggle ON → Subscribe to bot events:"),
+			s.styles.DimTxt.Render("   → message.channels, message.im, app_mention"),
+			s.styles.DimTxt.Render("5. OAuth & Permissions → Bot Token Scopes → add:"),
+			s.styles.DimTxt.Render("   → app_mentions:read, chat:write, channels:history,"),
+			s.styles.DimTxt.Render("     im:history, files:write, reactions:write"),
+			s.styles.DimTxt.Render("6. Install App → Install to Workspace"),
+			s.styles.DimTxt.Render("   → copy the xoxb-... Bot User OAuth Token"),
+		)
+		return botInstructions + s.keyInput.View(width)
 	}
 	return ""
 }

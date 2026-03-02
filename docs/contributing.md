@@ -154,3 +154,6 @@ Releases are automated via GoReleaser:
 3. Tag the release: `git tag v0.1.0`
 4. Push the tag: `git push origin v0.1.0`
 5. GitHub Actions runs GoReleaser to build and publish binaries
+
+---
+← [Command Integration](command-integration.md) | [Back to README](../README.md)

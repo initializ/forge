@@ -105,7 +105,7 @@ func TestSlackPlugin_MockA2A(t *testing.T) {
 	}
 
 	// Test Router round-trip with mock A2A
-	router := clichannels.NewRouter(srv.URL)
+	router := clichannels.NewRouter(srv.URL, "")
 	handler := router.Handler()
 
 	resp, err := handler(context.Background(), event)
@@ -172,7 +172,7 @@ func TestTelegramPlugin_MockA2A(t *testing.T) {
 	}
 
 	// Test Router round-trip with mock A2A
-	router := clichannels.NewRouter(srv.URL)
+	router := clichannels.NewRouter(srv.URL, "")
 	handler := router.Handler()
 
 	resp, err := handler(context.Background(), event)

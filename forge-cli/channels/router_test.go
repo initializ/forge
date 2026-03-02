@@ -50,7 +50,7 @@ func TestRouter_ForwardToA2A_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	router := NewRouter(srv.URL)
+	router := NewRouter(srv.URL, "")
 	event := &channels.ChannelEvent{
 		Channel:     "test",
 		WorkspaceID: "W123",
@@ -83,7 +83,7 @@ func TestRouter_ForwardToA2A_Error(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	router := NewRouter(srv.URL)
+	router := NewRouter(srv.URL, "")
 	event := &channels.ChannelEvent{
 		Channel:     "test",
 		WorkspaceID: "W123",
@@ -113,7 +113,7 @@ func TestRouter_ForwardToA2A_NoMessage(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	router := NewRouter(srv.URL)
+	router := NewRouter(srv.URL, "")
 	event := &channels.ChannelEvent{
 		Channel:     "test",
 		WorkspaceID: "W123",
@@ -131,7 +131,7 @@ func TestRouter_ForwardToA2A_NoMessage(t *testing.T) {
 }
 
 func TestRouter_Handler(t *testing.T) {
-	router := NewRouter("http://localhost:9999")
+	router := NewRouter("http://localhost:9999", "")
 	handler := router.Handler()
 	if handler == nil {
 		t.Fatal("Handler() returned nil")

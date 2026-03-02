@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/initializ/forge/forge-core/a2a"
+	"github.com/initializ/forge/forge-core/auth"
 	"github.com/initializ/forge/forge-core/types"
 )
 
@@ -57,6 +58,15 @@ func TestRunner_MockIntegration(t *testing.T) {
 	baseURL := fmt.Sprintf("http://localhost:%d", port)
 	waitForServer(t, baseURL, 5*time.Second)
 
+	// Load the auto-generated auth token.
+	token, err := auth.LoadToken(dir)
+	if err != nil {
+		t.Fatalf("loading auth token: %v", err)
+	}
+	if token == "" {
+		t.Fatal("expected non-empty auth token")
+	}
+
 	// Test healthz
 	t.Run("healthz", func(t *testing.T) {
 		resp, err := http.Get(baseURL + "/healthz")
@@ -100,7 +110,7 @@ func TestRunner_MockIntegration(t *testing.T) {
 		}
 
 		body, _ := json.Marshal(rpcReq)
-		resp, err := http.Post(baseURL+"/", "application/json", bytes.NewReader(body))
+		resp, err := authPost(baseURL+"/", token, body)
 		if err != nil {
 			t.Fatalf("send request: %v", err)
 		}
@@ -136,7 +146,7 @@ func TestRunner_MockIntegration(t *testing.T) {
 		}
 
 		body, _ := json.Marshal(rpcReq)
-		resp, err := http.Post(baseURL+"/", "application/json", bytes.NewReader(body))
+		resp, err := authPost(baseURL+"/", token, body)
 		if err != nil {
 			t.Fatalf("get request: %v", err)
 		}
@@ -160,7 +170,7 @@ func TestRunner_MockIntegration(t *testing.T) {
 		}
 
 		body, _ := json.Marshal(rpcReq)
-		resp, err := http.Post(baseURL+"/", "application/json", bytes.NewReader(body))
+		resp, err := authPost(baseURL+"/", token, body)
 		if err != nil {
 			t.Fatalf("cancel request: %v", err)
 		}
@@ -357,4 +367,15 @@ func waitForServer(t *testing.T, baseURL string, timeout time.Duration) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+// authPost sends a POST request with a bearer token.
+func authPost(url, token string, body []byte) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	return http.DefaultClient.Do(req)
 }

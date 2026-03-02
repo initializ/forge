@@ -27,6 +27,7 @@ type ServerConfig struct {
 	Host            string        // bind address (default "" = all interfaces)
 	ShutdownTimeout time.Duration // graceful shutdown timeout (0 = immediate)
 	AgentCard       *a2a.AgentCard
+	AuthMiddleware  func(http.Handler) http.Handler // optional auth middleware
 }
 
 type httpRoute struct {
@@ -45,6 +46,7 @@ type Server struct {
 	handlers        map[string]Handler
 	sseHandlers     map[string]SSEHandler
 	httpHandlers    []httpRoute
+	authMiddleware  func(http.Handler) http.Handler
 	srv             *http.Server
 }
 
@@ -58,6 +60,7 @@ func NewServer(cfg ServerConfig) *Server {
 		store:           a2a.NewTaskStore(),
 		handlers:        make(map[string]Handler),
 		sseHandlers:     make(map[string]SSEHandler),
+		authMiddleware:  cfg.AuthMiddleware,
 	}
 	return s
 }
@@ -118,8 +121,16 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("POST /", s.handleJSONRPC)
 	mux.HandleFunc("GET /", s.handleAgentCard)
 
+	// Build handler chain: CORS → Auth → Mux
+	// CORS is outermost so OPTIONS preflight is handled before auth.
+	var handler http.Handler = mux
+	if s.authMiddleware != nil {
+		handler = s.authMiddleware(handler)
+	}
+	handler = corsMiddleware(handler)
+
 	s.srv = &http.Server{
-		Handler:      corsMiddleware(mux),
+		Handler:      handler,
 		WriteTimeout: 0, // SSE-safe: no write deadline
 		IdleTimeout:  120 * time.Second,
 	}
@@ -226,7 +237,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

@@ -192,3 +192,6 @@ The following are considered stable and will not change without a major version 
 - Deprecated APIs will be marked with `// Deprecated:` comments
 - Deprecated APIs will continue to work for at least one minor version
 - Removal of deprecated APIs requires a major version bump
+
+---
+← [Plugins](plugins.md) | [Back to README](../README.md) | [Contributing](contributing.md) →

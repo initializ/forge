@@ -229,3 +229,6 @@ Events without `"source"` come from the in-process enforcer; events with `"sourc
 | `forge-cli/tools/exec.go` | `SkillCommandExecutor` — proxy env injection for skill scripts |
 | `forge-cli/tools/cli_execute.go` | `CLIExecuteTool` — proxy env injection for CLI binaries |
 | `forge-cli/runtime/runner.go` | Proxy lifecycle management in `Run()` |
+
+---
+← [Security Overview](overview.md) | [Back to README](../../README.md) | [Secrets](secrets.md) →

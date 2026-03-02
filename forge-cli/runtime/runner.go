@@ -15,6 +15,7 @@ import (
 	clitools "github.com/initializ/forge/forge-cli/tools"
 	"github.com/initializ/forge/forge-core/a2a"
 	"github.com/initializ/forge/forge-core/agentspec"
+	"github.com/initializ/forge/forge-core/auth"
 	"github.com/initializ/forge/forge-core/llm"
 	"github.com/initializ/forge/forge-core/llm/oauth"
 	"github.com/initializ/forge/forge-core/llm/providers"
@@ -45,6 +46,8 @@ type RunnerConfig struct {
 	EnvFilePath       string
 	Verbose           bool
 	Channels          []string // active channel adapters from --with flag
+	NoAuth            bool     // disable bearer token authentication
+	AuthToken         string   // explicit bearer token (empty = auto-generate)
 }
 
 // ScheduleNotifier is called after a scheduled task completes to deliver the
@@ -61,6 +64,7 @@ type Runner struct {
 	sched            *scheduler.Scheduler       // cron scheduler (nil until started)
 	startTime        time.Time                  // server start time (for /health uptime)
 	scheduleNotifier ScheduleNotifier           // optional: delivers cron results to channels
+	authToken        string                     // resolved auth token (empty if --no-auth)
 }
 
 // NewRunner creates a Runner from the given config.
@@ -79,6 +83,38 @@ func NewRunner(cfg RunnerConfig) (*Runner, error) {
 // to channel adapters. Must be called before Run().
 func (r *Runner) SetScheduleNotifier(fn ScheduleNotifier) {
 	r.scheduleNotifier = fn
+}
+
+// ResolveAuth resolves the auth token early (before Run). This is needed so
+// channel adapters can be configured with the token before Run() blocks.
+// Safe to call multiple times — subsequent calls are no-ops.
+func (r *Runner) ResolveAuth() error {
+	if r.authToken != "" || r.cfg.NoAuth {
+		return nil // already resolved
+	}
+	local := isLocalhost(r.cfg.Host)
+	if r.cfg.NoAuth && !local {
+		return fmt.Errorf("--no-auth is only allowed when binding to localhost (current host: %s)", r.cfg.Host)
+	}
+	token := r.cfg.AuthToken
+	if token == "" {
+		var err error
+		token, err = auth.GenerateToken()
+		if err != nil {
+			return fmt.Errorf("generating auth token: %w", err)
+		}
+	}
+	r.authToken = token
+	if err := auth.StoreToken(r.cfg.WorkDir, token); err != nil {
+		return fmt.Errorf("storing auth token: %w", err)
+	}
+	ensureGitignore(r.cfg.WorkDir)
+	return nil
+}
+
+// AuthToken returns the resolved bearer token. Empty if auth is disabled.
+func (r *Runner) AuthToken() string {
+	return r.authToken
 }
 
 // Run starts the development server. It blocks until ctx is cancelled.
@@ -449,6 +485,12 @@ func (r *Runner) Run(ctx context.Context) error {
 		defer lifecycle.Stop() //nolint:errcheck
 	}
 
+	// 6a. Resolve auth configuration.
+	authCfg, err := r.resolveAuth(auditLogger)
+	if err != nil {
+		return fmt.Errorf("resolving auth: %w", err)
+	}
+
 	// 6. Create A2A server
 	r.startTime = time.Now()
 	srv := server.NewServer(server.ServerConfig{
@@ -456,6 +498,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		Host:            r.cfg.Host,
 		ShutdownTimeout: r.cfg.ShutdownTimeout,
 		AgentCard:       card,
+		AuthMiddleware:  auth.Middleware(authCfg),
 	})
 
 	// 7. Register JSON-RPC handlers
@@ -1425,6 +1468,16 @@ func (r *Runner) printBanner(proxyURL string) {
 			defaultStr(r.cfg.Config.Egress.Profile, "strict"),
 			defaultStr(r.cfg.Config.Egress.Mode, "deny-all"))
 	}
+	// Auth
+	if r.cfg.NoAuth {
+		fmt.Fprintf(os.Stderr, "  Auth:       disabled (--no-auth)\n")
+	} else if r.authToken != "" {
+		fmt.Fprintf(os.Stderr, "  Auth:       enabled (token in .forge/runtime.token)\n")
+	}
+	// LAN exposure warning
+	if !isLocalhost(r.cfg.Host) && !r.cfg.NoAuth {
+		fmt.Fprintf(os.Stderr, "  WARNING:    binding to non-localhost; ensure firewall rules are in place\n")
+	}
 	// Egress proxy
 	if proxyURL != "" {
 		fmt.Fprintf(os.Stderr, "  Proxy:      %s\n", proxyURL)
@@ -1436,6 +1489,67 @@ func (r *Runner) printBanner(proxyURL string) {
 	fmt.Fprintf(os.Stderr, "  JSON-RPC:   POST http://localhost:%d/\n", r.cfg.Port)
 	fmt.Fprintf(os.Stderr, "  ────────────────────────────────────────\n")
 	fmt.Fprintf(os.Stderr, "  Press Ctrl+C to stop\n\n")
+}
+
+// resolveAuth builds the auth middleware config. Token resolution is done by
+// ResolveAuth() (called early so channel adapters can use it); this method
+// just wires the already-resolved token into a middleware Config with the audit callback.
+func (r *Runner) resolveAuth(auditLogger *coreruntime.AuditLogger) (auth.Config, error) {
+	// Ensure token is resolved (no-op if already done by ResolveAuth).
+	if err := r.ResolveAuth(); err != nil {
+		return auth.Config{}, err
+	}
+
+	if r.cfg.NoAuth {
+		return auth.Config{Enabled: false}, nil
+	}
+
+	cfg := auth.Config{
+		Enabled:   true,
+		Token:     r.authToken,
+		SkipPaths: auth.DefaultSkipPaths(),
+		OnAuth: func(req *http.Request, success bool) {
+			if auditLogger == nil {
+				return
+			}
+			event := coreruntime.AuditAuthSuccess
+			if !success {
+				event = coreruntime.AuditAuthFailure
+			}
+			auditLogger.Emit(coreruntime.AuditEvent{
+				Event: event,
+				Fields: map[string]any{
+					"method":      req.Method,
+					"path":        req.URL.Path,
+					"remote_addr": req.RemoteAddr,
+				},
+			})
+		},
+	}
+	return cfg, nil
+}
+
+// ensureGitignore makes sure .forge/ is listed in the project's .gitignore.
+func ensureGitignore(workDir string) {
+	gitignorePath := filepath.Join(workDir, ".gitignore")
+	data, err := os.ReadFile(gitignorePath)
+	if err != nil && !os.IsNotExist(err) {
+		return
+	}
+
+	content := string(data)
+	for _, line := range strings.Split(content, "\n") {
+		if strings.TrimSpace(line) == ".forge/" || strings.TrimSpace(line) == ".forge" {
+			return // already present
+		}
+	}
+
+	// Append .forge/ to .gitignore.
+	entry := ".forge/\n"
+	if len(content) > 0 && !strings.HasSuffix(content, "\n") {
+		entry = "\n" + entry
+	}
+	os.WriteFile(gitignorePath, []byte(content+entry), 0644) //nolint:errcheck
 }
 
 // discoverSkillFiles returns all skill file paths from both flat and subdirectory formats,
@@ -2069,6 +2183,11 @@ func defaultStr(s, def string) string {
 		return s
 	}
 	return def
+}
+
+// isLocalhost returns true if the host string refers to a localhost address.
+func isLocalhost(host string) bool {
+	return host == "" || host == "127.0.0.1" || host == "localhost" || host == "::1"
 }
 
 // initScheduler creates the schedule store and registers schedule tools.

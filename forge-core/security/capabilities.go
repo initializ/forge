@@ -2,7 +2,7 @@ package security
 
 // DefaultCapabilityBundles maps capability names to their required domain sets.
 var DefaultCapabilityBundles = map[string][]string{
-	"slack":    {"slack.com", "hooks.slack.com", "api.slack.com"},
+	"slack":    {"slack.com", "wss-primary.slack.com", "api.slack.com", "files.slack.com"},
 	"telegram": {"api.telegram.org"},
 }
 

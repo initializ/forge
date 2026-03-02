@@ -269,18 +269,45 @@ func (p *Plugin) NormalizeEvent(raw []byte) (*channels.ChannelEvent, error) {
 }
 
 // SendResponse sends a text message back to the Telegram chat.
-// For large responses (>8000 chars), sends a summary message and uploads
+// If the runtime attached file parts (large tool outputs), those are used
+// for the document upload since the LLM text may be truncated.
+// For large responses (>4096 chars), sends a summary message and uploads
 // the full report as a document.
 func (p *Plugin) SendResponse(event *channels.ChannelEvent, response *a2a.Message) error {
 	text := extractText(response)
-	log.Printf("[telegram] SendResponse: text length=%d chars", len(text))
+	fileContent, fileName := extractLargestFile(response)
+	log.Printf("[telegram] SendResponse: text length=%d chars, file part=%d chars", len(text), len(fileContent))
 
-	// For large responses, split into summary + document upload
-	if len(text) > 4096 {
-		summary, report := markdown.SplitSummaryAndReport(text)
-		summaryHTML := markdown.ToTelegramHTML(summary)
+	// If we have a file part from the runtime, upload it and send the text
+	// as a summary. The file part contains the complete, untruncated tool
+	// output; the text is the LLM's (potentially truncated) summary.
+	if fileContent != "" {
+		if fileName == "" {
+			fileName = "research-report.md"
+		}
 
-		// Send summary message
+		uploadOK := true
+		if err := p.sendDocument(event, fileName, fileContent); err != nil {
+			log.Printf("[telegram] sendDocument failed (len=%d): %v", len(fileContent), err)
+			noReplyEvent := *event
+			noReplyEvent.MessageID = ""
+			if err2 := p.sendDocument(&noReplyEvent, fileName, fileContent); err2 != nil {
+				log.Printf("[telegram] sendDocument retry failed: %v — falling back to chunked messages", err2)
+				uploadOK = false
+			}
+		}
+
+		if !uploadOK {
+			return p.sendChunked(event, fileContent)
+		}
+
+		// Document uploaded — send LLM text as summary with "attached" note.
+		summary := text
+		if len(summary) > 600 {
+			summary, _ = markdown.SplitSummaryAndReport(summary)
+		}
+		summaryText := summary + "\n\nFull report attached as file above."
+		summaryHTML := markdown.ToTelegramHTML(summaryText)
 		payload := map[string]any{
 			"chat_id":    event.WorkspaceID,
 			"text":       summaryHTML,
@@ -290,22 +317,46 @@ func (p *Plugin) SendResponse(event *channels.ChannelEvent, response *a2a.Messag
 			payload["reply_to_message_id"] = event.MessageID
 		}
 		if err := p.sendMessage(payload); err != nil {
-			// Fallback plain text
 			delete(payload, "parse_mode")
-			payload["text"] = summary
+			payload["text"] = summaryText
 			_ = p.sendMessage(payload)
 		}
+		return nil
+	}
 
-		// Upload full report as document
+	// No file parts — use text-based logic.
+	if len(text) > 4096 {
+		summary, report := markdown.SplitSummaryAndReport(text)
+
+		uploadOK := true
 		if err := p.sendDocument(event, "research-report.md", report); err != nil {
 			log.Printf("[telegram] sendDocument failed (len=%d): %v", len(report), err)
-			// Retry without reply context (common Telegram API failure cause)
 			noReplyEvent := *event
 			noReplyEvent.MessageID = ""
 			if err2 := p.sendDocument(&noReplyEvent, "research-report.md", report); err2 != nil {
 				log.Printf("[telegram] sendDocument retry failed: %v — falling back to chunked messages", err2)
-				return p.sendChunked(event, text)
+				uploadOK = false
 			}
+		}
+
+		if !uploadOK {
+			return p.sendChunked(event, text)
+		}
+
+		summaryText := summary + "\n\nFull report attached as file above."
+		summaryHTML := markdown.ToTelegramHTML(summaryText)
+		payload := map[string]any{
+			"chat_id":    event.WorkspaceID,
+			"text":       summaryHTML,
+			"parse_mode": "HTML",
+		}
+		if event.MessageID != "" {
+			payload["reply_to_message_id"] = event.MessageID
+		}
+		if err := p.sendMessage(payload); err != nil {
+			delete(payload, "parse_mode")
+			payload["text"] = summaryText
+			_ = p.sendMessage(payload)
 		}
 		return nil
 	}
@@ -323,7 +374,6 @@ func (p *Plugin) SendResponse(event *channels.ChannelEvent, response *a2a.Messag
 			payload["reply_to_message_id"] = event.MessageID
 		}
 		if err := p.sendMessage(payload); err != nil {
-			// Fallback: retry without parse_mode (plain text)
 			delete(payload, "parse_mode")
 			payload["text"] = text
 			if fbErr := p.sendMessage(payload); fbErr != nil {
@@ -516,6 +566,23 @@ func extractText(msg *a2a.Message) string {
 		text = "(no text response)"
 	}
 	return text
+}
+
+// extractLargestFile returns the content and filename of the largest file part
+// in the message, or empty strings if no file parts exist.
+// The runtime attaches large tool outputs as file parts so they aren't
+// truncated by LLM output token limits.
+func extractLargestFile(msg *a2a.Message) (content, filename string) {
+	if msg == nil {
+		return "", ""
+	}
+	for _, p := range msg.Parts {
+		if p.Kind == a2a.PartKindFile && p.File != nil && len(p.File.Bytes) > len(content) {
+			content = string(p.File.Bytes)
+			filename = p.File.Name
+		}
+	}
+	return content, filename
 }
 
 // Telegram API types (minimal, for parsing).

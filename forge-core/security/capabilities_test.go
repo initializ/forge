@@ -7,9 +7,10 @@ import (
 func TestResolveCapabilities_Slack(t *testing.T) {
 	domains := ResolveCapabilities([]string{"slack"})
 	expected := map[string]bool{
-		"slack.com":       true,
-		"hooks.slack.com": true,
-		"api.slack.com":   true,
+		"slack.com":             true,
+		"wss-primary.slack.com": true,
+		"api.slack.com":         true,
+		"files.slack.com":       true,
 	}
 	if len(domains) != len(expected) {
 		t.Fatalf("got %d domains, want %d: %v", len(domains), len(expected), domains)
@@ -40,9 +41,9 @@ func TestResolveCapabilities_Unknown(t *testing.T) {
 
 func TestResolveCapabilities_Dedup(t *testing.T) {
 	domains := ResolveCapabilities([]string{"slack", "slack"})
-	// Should deduplicate: slack.com, hooks.slack.com, api.slack.com
-	if len(domains) != 3 {
-		t.Errorf("got %d domains after dedup, want 3: %v", len(domains), domains)
+	// Should deduplicate: slack.com, wss-primary.slack.com, api.slack.com, files.slack.com
+	if len(domains) != 4 {
+		t.Errorf("got %d domains after dedup, want 4: %v", len(domains), domains)
 	}
 }
 

@@ -637,6 +637,14 @@ func scaffold(opts *initOptions) error {
 
 	fmt.Printf("\nCreated agent project in ./%s\n", opts.AgentID)
 
+	// Show channel-specific reminders
+	for _, ch := range opts.Channels {
+		if ch == "slack" {
+			fmt.Println()
+			fmt.Println("  Slack reminder: /invite @YourBot in each channel you want it active in.")
+		}
+	}
+
 	// In non-interactive mode, just print the command
 	if opts.NonInteractive {
 		fmt.Printf("  cd %s && forge run\n", opts.AgentID)

@@ -458,6 +458,51 @@ forge run --with slack
 forge run --with slack,telegram
 ```
 
+### Slack App Setup
+
+Before running the Slack adapter, create and configure a Slack App:
+
+1. **Create a Slack App** at https://api.slack.com/apps → "Create New App" → "From scratch"
+2. **Enable Socket Mode** — Settings → Socket Mode → toggle **On**
+3. **Generate an App-Level Token** — Basic Information → "App-Level Tokens" → "Generate Token and Scopes" → add the `connections:write` scope → copy the `xapp-...` token
+4. **Enable Event Subscriptions** — Features → Event Subscriptions → toggle **On** → Subscribe to bot events:
+   - `message.channels` — messages in public channels
+   - `message.im` — direct messages
+   - `app_mention` — @mentions of your bot
+5. **Set Bot Token Scopes** — Features → OAuth & Permissions → Bot Token Scopes → add:
+   - `app_mentions:read`
+   - `chat:write`
+   - `channels:history`
+   - `im:history`
+   - `files:write` (for large response file uploads)
+   - `reactions:write` (for processing indicators)
+6. **Install the App** — Settings → Install App → "Install to Workspace" → copy the `xoxb-...` Bot Token
+7. **Add tokens to `.env`**:
+   ```
+   SLACK_APP_TOKEN=xapp-1-...
+   SLACK_BOT_TOKEN=xoxb-...
+   ```
+8. **Invite the bot** to channels where you want it active: `/invite @YourBot`
+
+### Mention-Aware Filtering
+
+The Slack adapter resolves the bot's own user ID at startup via `auth.test` and uses it for intelligent message filtering:
+
+- **Channel messages** — the bot only responds when explicitly @mentioned (e.g. `@ForgeBot what's the status?`)
+- **Thread replies** — the bot responds to all messages in a thread it's participating in, unless the message @mentions a different user
+- **Direct messages** — all DMs are processed
+- Bot mentions are stripped from the message text before passing to the LLM, so it sees clean input
+
+### Processing Indicators
+
+When the Slack adapter receives a message:
+
+1. An :eyes: reaction is added immediately to acknowledge receipt
+2. If the handler takes longer than 15 seconds, an interim message is posted: _"Researching, I'll post the result shortly..."_
+3. The :eyes: reaction is removed when the response is ready
+
+This gives users visual feedback that their message is being processed, especially for long-running research queries.
+
 Channels can also run standalone as separate services:
 
 ```bash
@@ -472,7 +517,9 @@ When an agent response exceeds 4096 characters (common with research reports), c
 1. A brief summary (first paragraph, up to 600 characters) is sent as a regular message
 2. The full report is uploaded as a downloadable Markdown file (`research-report.md`)
 
-This works on both Slack (via `files.upload`) and Telegram (via `sendDocument`). If file upload fails, adapters fall back to chunked messages. Markdown is converted to platform-native formatting (Slack mrkdwn or Telegram HTML).
+This works on both Slack (via `files.getUploadURLExternal`) and Telegram (via `sendDocument`). If file upload fails, adapters fall back to chunked messages. Markdown is converted to platform-native formatting (Slack mrkdwn or Telegram HTML).
+
+Additionally, the runtime tracks large tool outputs (>8000 characters) and attaches them as file parts in the A2A response. This ensures channel adapters receive the complete, untruncated tool output even when the LLM's text summary is truncated by output token limits. JSON tool outputs (e.g. Tavily Research/Search results) are automatically unwrapped into readable markdown before delivery.
 
 ---
 
@@ -494,7 +541,7 @@ Key behaviors:
 - **Localhost always allowed** (`127.0.0.1`, `::1`, `localhost`) in all modes
 - **Wildcard domains** supported (e.g., `*.github.com` matches `api.github.com`)
 - **Tool domains auto-inferred** — declaring `web_search` in tools automatically allows `api.tavily.com` and `api.perplexity.ai`
-- **Capability bundles** — declaring `slack` capability adds `slack.com`, `hooks.slack.com`, `api.slack.com`
+- **Capability bundles** — declaring `slack` capability adds `slack.com`, `wss-primary.slack.com`, `api.slack.com`, `files.slack.com`
 - Blocked requests return: `egress blocked: domain "X" not in allowlist (mode=allowlist)`
 
 ### Subprocess Egress Proxy
@@ -1285,7 +1332,17 @@ Forge provides those building blocks.
 - [Hooks](docs/hooks.md) — Agent loop hook system
 - [Plugins](docs/plugins.md) — Framework plugin system
 - [Channels](docs/channels.md) — Channel adapter architecture
-- [Contributing](docs/contributing.md) — Development guide and PR process
+
+## Contributing
+
+We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide, including:
+
+- Development setup and multi-module workflow
+- How to contribute a new skill (copy the [skill template](forge-skills/local/embedded/_template/), validate, and PR)
+- Security rules for egress, secrets, and tool restrictions
+- Pull request process and code style
+
+Please read our [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
 
 ## License
 

@@ -67,11 +67,10 @@ func TestSlackPlugin_MockA2A(t *testing.T) {
 
 	plugin := slack.New()
 	err := plugin.Init(channels.ChannelConfig{
-		Adapter:     "slack",
-		WebhookPort: 0,
+		Adapter: "slack",
 		Settings: map[string]string{
-			"signing_secret": "test-secret",
-			"bot_token":      "xoxb-test-token",
+			"app_token": "xapp-test-token",
+			"bot_token": "xoxb-test-token",
 		},
 	})
 	if err != nil {

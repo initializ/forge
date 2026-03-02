@@ -485,13 +485,14 @@ func TestDeriveEgressDomains(t *testing.T) {
 	domains := deriveEgressDomains(opts, skillInfos)
 
 	expected := map[string]bool{
-		"api.openai.com":  true,
-		"slack.com":       true,
-		"hooks.slack.com": true,
-		"api.slack.com":   true,
-		"api.tavily.com":  true,
-		"api.github.com":  true,
-		"github.com":      true,
+		"api.openai.com":        true,
+		"slack.com":             true,
+		"wss-primary.slack.com": true,
+		"api.slack.com":         true,
+		"files.slack.com":       true,
+		"api.tavily.com":        true,
+		"api.github.com":        true,
+		"github.com":            true,
 	}
 	for _, d := range domains {
 		if !expected[d] {

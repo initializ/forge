@@ -1,0 +1,12 @@
+# scripts/ directory — Script-backed tool execution
+#
+# Naming convention:
+#   Tool name underscores → filename hyphens
+#   Example: tool `my_search` → scripts/my-search.sh
+#
+# Each script receives a single JSON argument from the runtime.
+# Scripts must be executable (chmod +x).
+#
+# If your skill is binary-backed (uses a compiled binary listed in
+# requires.bins instead of shell scripts), delete this entire
+# scripts/ directory.

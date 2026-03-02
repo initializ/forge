@@ -21,7 +21,7 @@ func SplitSummaryAndReport(text string) (summary, report string) {
 		summary = truncateAtSentence(text, 500)
 	}
 
-	summary = strings.TrimSpace(summary) + "\n\n_Full report attached as file._"
+	summary = strings.TrimSpace(summary)
 	return summary, report
 }
 

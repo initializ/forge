@@ -1,0 +1,83 @@
+name: Bug Report
+description: Report a bug in Forge
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of Forge is affected?
+      options:
+        - forge-core (registry, tools, security, channels, LLM)
+        - forge-cli (commands, TUI wizard, runtime)
+        - forge-plugins (channel plugins, markdown converter)
+        - forge-skills (skill parser, compiler, analyzer, trust)
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear description of the bug
+      placeholder: Describe the bug
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: How can we reproduce this behavior?
+      placeholder: |
+        1. Run `forge ...`
+        2. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened?
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: "e.g. macOS 14.2, Ubuntu 22.04, Windows 11"
+      placeholder: macOS 14.2
+
+  - type: input
+    id: go-version
+    attributes:
+      label: Go version
+      description: "Output of `go version`"
+      placeholder: go1.25.0
+
+  - type: textarea
+    id: forge-yaml
+    attributes:
+      label: forge.yaml (if relevant)
+      description: Paste your `forge.yaml` configuration (redact secrets)
+      render: yaml
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / error output
+      description: Paste any relevant log output or error messages
+      render: text

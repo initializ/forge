@@ -11,6 +11,7 @@ import (
 
 	"github.com/initializ/forge/forge-cli/channels"
 	"github.com/initializ/forge/forge-cli/templates"
+	"github.com/initializ/forge/forge-core/auth"
 	corechannels "github.com/initializ/forge/forge-core/channels"
 	"github.com/initializ/forge/forge-plugins/channels/slack"
 	"github.com/initializ/forge/forge-plugins/channels/telegram"
@@ -133,7 +134,12 @@ func runChannelServe(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create router
-	router := channels.NewRouter(agentURL)
+	// Load auth token if present for the agent directory.
+	var channelToken string
+	if wd, err := os.Getwd(); err == nil {
+		channelToken, _ = auth.LoadToken(wd)
+	}
+	router := channels.NewRouter(agentURL, channelToken)
 
 	// Signal handling
 	ctx, cancel := context.WithCancel(context.Background())

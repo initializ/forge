@@ -17,9 +17,11 @@ import (
 
 // daemonState is persisted in .forge/serve.json.
 type daemonState struct {
-	PID  int    `json:"pid"`
-	Port int    `json:"port"`
-	Host string `json:"host"`
+	PID         int    `json:"pid"`
+	Port        int    `json:"port"`
+	Host        string `json:"host"`
+	AuthEnabled bool   `json:"auth_enabled"`
+	TokenPath   string `json:"token_path,omitempty"`
 }
 
 var (
@@ -31,6 +33,8 @@ var (
 	serveProvider          string
 	serveEnvFile           string
 	serveWithChannels      string
+	serveNoAuth            bool
+	serveAuthToken         string
 )
 
 var serveCmd = &cobra.Command{
@@ -88,6 +92,8 @@ func registerServeFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&serveProvider, "provider", "", "LLM provider (openai, anthropic, ollama)")
 	cmd.Flags().StringVar(&serveEnvFile, "env", ".env", "path to .env file")
 	cmd.Flags().StringVar(&serveWithChannels, "with", "", "comma-separated channel adapters to start (e.g. slack,telegram)")
+	cmd.Flags().BoolVar(&serveNoAuth, "no-auth", false, "disable bearer token authentication (localhost only)")
+	cmd.Flags().StringVar(&serveAuthToken, "auth-token", "", "explicit bearer token (default: auto-generated)")
 }
 
 func init() {
@@ -175,6 +181,12 @@ func serveStartRun(cmd *cobra.Command, args []string) error {
 	if serveWithChannels != "" {
 		runArgs = append(runArgs, "--with", serveWithChannels)
 	}
+	if serveNoAuth {
+		runArgs = append(runArgs, "--no-auth")
+	}
+	if serveAuthToken != "" {
+		runArgs = append(runArgs, "--auth-token", serveAuthToken)
+	}
 
 	// Ensure .forge directory exists
 	forgeDir := filepath.Dir(statePath)
@@ -201,10 +213,18 @@ func serveStartRun(cmd *cobra.Command, args []string) error {
 	}
 
 	// Write state file
+	authEnabled := !serveNoAuth
+	var tokenPath string
+	if authEnabled {
+		wd, _ := os.Getwd()
+		tokenPath = filepath.Join(wd, ".forge", "runtime.token")
+	}
 	state := daemonState{
-		PID:  child.Process.Pid,
-		Port: servePort,
-		Host: serveHost,
+		PID:         child.Process.Pid,
+		Port:        servePort,
+		Host:        serveHost,
+		AuthEnabled: authEnabled,
+		TokenPath:   tokenPath,
 	}
 	stateData, _ := json.Marshal(state)
 	if err := os.WriteFile(statePath, stateData, 0644); err != nil {
@@ -223,6 +243,11 @@ func serveStartRun(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stderr, "Daemon started:\n")
 	fmt.Fprintf(os.Stderr, "  PID:     %d\n", state.PID)
 	fmt.Fprintf(os.Stderr, "  Listen:  %s:%d\n", state.Host, state.Port)
+	if state.AuthEnabled {
+		fmt.Fprintf(os.Stderr, "  Auth:    enabled (token in %s)\n", state.TokenPath)
+	} else {
+		fmt.Fprintf(os.Stderr, "  Auth:    disabled\n")
+	}
 	fmt.Fprintf(os.Stderr, "  Logs:    %s\n", logPath)
 
 	return nil
@@ -291,6 +316,11 @@ func serveStatusRun(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stderr, "Status:  running\n")
 	fmt.Fprintf(os.Stderr, "PID:     %d\n", state.PID)
 	fmt.Fprintf(os.Stderr, "Listen:  %s:%d\n", state.Host, state.Port)
+	if state.AuthEnabled {
+		fmt.Fprintf(os.Stderr, "Auth:    enabled\n")
+	} else {
+		fmt.Fprintf(os.Stderr, "Auth:    disabled\n")
+	}
 	fmt.Fprintf(os.Stderr, "Logs:    %s\n", logPath)
 
 	// Try to hit the health endpoint for uptime

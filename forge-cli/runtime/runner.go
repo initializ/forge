@@ -1639,6 +1639,7 @@ func (r *Runner) registerSkillTools(reg *tools.Registry, proxyURL string) {
 			var envVars []string
 			if entry.ForgeReqs != nil && entry.ForgeReqs.Env != nil {
 				envVars = append(envVars, entry.ForgeReqs.Env.Required...)
+				envVars = append(envVars, entry.ForgeReqs.Env.OneOf...)
 				envVars = append(envVars, entry.ForgeReqs.Env.Optional...)
 			}
 

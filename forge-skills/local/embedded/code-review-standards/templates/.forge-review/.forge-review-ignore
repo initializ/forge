@@ -1,0 +1,42 @@
+# .forge-review-ignore
+# Gitignore-style patterns for files to skip during code review.
+# One pattern per line. Blank lines and lines starting with # are ignored.
+
+# Dependencies
+vendor/
+node_modules/
+go.sum
+
+# Generated code
+*.generated.go
+*.pb.go
+*_gen.go
+*_generated.ts
+
+# Build artifacts
+dist/
+build/
+out/
+*.min.js
+*.min.css
+*.bundle.js
+
+# Test fixtures and snapshots
+testdata/
+**/fixtures/**
+**/__snapshots__/**
+
+# Documentation (review separately if needed)
+*.md
+LICENSE
+CHANGELOG
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db

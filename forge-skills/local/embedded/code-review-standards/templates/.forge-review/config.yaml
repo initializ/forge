@@ -1,0 +1,44 @@
+# .forge-review/config.yaml
+# Organization code review configuration for Forge AI code review skill.
+# See: https://github.com/initializ/forge (code-review-standards skill)
+
+version: "1"
+
+# Default review settings
+review:
+  # Focus areas to always include in reviews.
+  # Options: bugs, security, style, performance, maintainability
+  default_focus:
+    - bugs
+    - security
+
+  # Minimum severity threshold: only report findings at or above this level.
+  # Options: nitpick, info, warning, error
+  min_severity: info
+
+  # Maximum findings to report per review (prevents overwhelming output).
+  max_findings: 50
+
+# Language-specific settings.
+# Enable/disable standards files per language.
+languages:
+  go:
+    standards_file: standards/go.md
+    enabled: true
+  python:
+    standards_file: standards/python.md
+    enabled: true
+  typescript:
+    standards_file: standards/typescript.md
+    enabled: true
+
+# File patterns to always skip during review.
+# Supplements .forge-review-ignore for programmatic exclusions.
+skip_patterns:
+  - "vendor/**"
+  - "node_modules/**"
+  - "*.generated.go"
+  - "*.min.js"
+  - "**/*.pb.go"
+  - "dist/**"
+  - "build/**"

@@ -33,6 +33,7 @@ type initOptions struct {
 	Language       string
 	ModelProvider  string
 	APIKey         string // validated provider key
+	OrganizationID string // OpenAI enterprise organization ID
 	Fallbacks      []tui.FallbackProvider
 	Channels       []string
 	SkillsFile     string
@@ -54,21 +55,22 @@ type toolEntry struct {
 
 // templateData is passed to all templates during rendering.
 type templateData struct {
-	Name          string
-	AgentID       string
-	Framework     string
-	Language      string
-	Entrypoint    string
-	ModelProvider string
-	ModelName     string
-	Fallbacks     []fallbackTmplData
-	Channels      []string
-	Tools         []toolEntry
-	BuiltinTools  []string
-	SkillEntries  []skillTmplData
-	EgressDomains []string
-	EnvVars       []envVarEntry
-	HasSecrets    bool
+	Name           string
+	AgentID        string
+	Framework      string
+	Language       string
+	Entrypoint     string
+	ModelProvider  string
+	ModelName      string
+	OrganizationID string
+	Fallbacks      []fallbackTmplData
+	Channels       []string
+	Tools          []toolEntry
+	BuiltinTools   []string
+	SkillEntries   []skillTmplData
+	EgressDomains  []string
+	EnvVars        []envVarEntry
+	HasSecrets     bool
 }
 
 // fallbackTmplData holds template data for a fallback provider.
@@ -116,6 +118,7 @@ func init() {
 	initCmd.Flags().StringSlice("tools", nil, "builtin tools to enable (e.g., web_search,http_request)")
 	initCmd.Flags().StringSlice("skills", nil, "registry skills to include (e.g., github,weather)")
 	initCmd.Flags().String("api-key", "", "LLM provider API key")
+	initCmd.Flags().String("org-id", "", "OpenAI organization ID (enterprise)")
 	initCmd.Flags().StringSlice("fallbacks", nil, "fallback LLM providers (e.g., openai,gemini)")
 	initCmd.Flags().Bool("force", false, "overwrite existing directory")
 }
@@ -142,6 +145,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	opts.BuiltinTools, _ = cmd.Flags().GetStringSlice("tools")
 	opts.Skills, _ = cmd.Flags().GetStringSlice("skills")
 	opts.APIKey, _ = cmd.Flags().GetString("api-key")
+	opts.OrganizationID, _ = cmd.Flags().GetString("org-id")
 	fallbackProviders, _ := cmd.Flags().GetStringSlice("fallbacks")
 	for _, p := range fallbackProviders {
 		opts.Fallbacks = append(opts.Fallbacks, tui.FallbackProvider{Provider: p})
@@ -286,6 +290,7 @@ func collectInteractive(opts *initOptions) error {
 	opts.ModelProvider = ctx.Provider
 	opts.APIKey = ctx.APIKey
 	opts.AuthMethod = ctx.AuthMethod
+	opts.OrganizationID = ctx.OrganizationID
 	opts.Fallbacks = ctx.Fallbacks
 	opts.CustomModel = ctx.CustomModel
 	// Use wizard-selected model name if available
@@ -928,14 +933,15 @@ func getFileManifest(opts *initOptions) []fileToRender {
 
 func buildTemplateData(opts *initOptions) templateData {
 	data := templateData{
-		Name:          opts.Name,
-		AgentID:       opts.AgentID,
-		Framework:     opts.Framework,
-		Language:      opts.Language,
-		ModelProvider: opts.ModelProvider,
-		Channels:      opts.Channels,
-		Tools:         opts.Tools,
-		BuiltinTools:  opts.BuiltinTools,
+		Name:           opts.Name,
+		AgentID:        opts.AgentID,
+		Framework:      opts.Framework,
+		Language:       opts.Language,
+		ModelProvider:  opts.ModelProvider,
+		OrganizationID: opts.OrganizationID,
+		Channels:       opts.Channels,
+		Tools:          opts.Tools,
+		BuiltinTools:   opts.BuiltinTools,
 	}
 
 	// Set entrypoint based on framework (only for subprocess-based frameworks)
@@ -1033,6 +1039,9 @@ func buildEnvVars(opts *initOptions) []envVarEntry {
 			val = "your-api-key-here"
 		}
 		vars = append(vars, envVarEntry{Key: "OPENAI_API_KEY", Value: val, Comment: "OpenAI API key"})
+		if orgID := opts.OrganizationID; orgID != "" {
+			vars = append(vars, envVarEntry{Key: "OPENAI_ORG_ID", Value: orgID, Comment: "OpenAI organization ID (enterprise)"})
+		}
 	case "anthropic":
 		val := opts.EnvVars["ANTHROPIC_API_KEY"]
 		if val == "" {

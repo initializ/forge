@@ -358,6 +358,10 @@ func (r *Runner) Run(ctx context.Context) error {
 			mc := coreruntime.ResolveModelConfig(r.cfg.Config, envVars, r.cfg.ProviderOverride)
 			if mc != nil {
 				r.modelConfig = mc
+				// Export org ID for skill scripts
+				if mc.Client.OrgID != "" {
+					_ = os.Setenv("OPENAI_ORG_ID", mc.Client.OrgID)
+				}
 				llmClient, llmErr := r.buildLLMClient(mc)
 				if llmErr != nil {
 					r.logger.Warn("failed to create LLM client, using stub", map[string]any{"error": llmErr.Error()})
@@ -1304,6 +1308,9 @@ func (r *Runner) registerAuditHooks(hooks *coreruntime.HookRegistry, auditLogger
 		if hctx.Response != nil && hctx.Response.Usage.TotalTokens > 0 {
 			fields["tokens"] = hctx.Response.Usage.TotalTokens
 		}
+		if r.modelConfig != nil && r.modelConfig.Client.OrgID != "" {
+			fields["organization_id"] = r.modelConfig.Client.OrgID
+		}
 		auditLogger.Emit(coreruntime.AuditEvent{
 			Event:         coreruntime.AuditLLMCall,
 			CorrelationID: hctx.CorrelationID,
@@ -1993,6 +2000,7 @@ func (r *Runner) resolveEmbedder(mc *coreruntime.ModelConfig) llm.Embedder {
 
 	cfg := providers.OpenAIEmbedderConfig{
 		APIKey: mc.Client.APIKey,
+		OrgID:  mc.Client.OrgID,
 		Model:  r.cfg.Config.Memory.EmbeddingModel,
 	}
 
@@ -2002,6 +2010,7 @@ func (r *Runner) resolveEmbedder(mc *coreruntime.ModelConfig) llm.Embedder {
 			if fb.Provider == embProvider {
 				cfg.APIKey = fb.Client.APIKey
 				cfg.BaseURL = fb.Client.BaseURL
+				cfg.OrgID = fb.Client.OrgID
 				break
 			}
 		}

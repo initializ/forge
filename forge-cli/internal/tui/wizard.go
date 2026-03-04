@@ -14,21 +14,22 @@ type FallbackProvider struct {
 
 // WizardContext accumulates all data across wizard steps.
 type WizardContext struct {
-	Name          string
-	Provider      string
-	APIKey        string
-	AuthMethod    string // "apikey" or "oauth" — how the user authenticated
-	ModelName     string // selected model ID (e.g. "gpt-5.3-codex")
-	Fallbacks     []FallbackProvider
-	Channel       string
-	ChannelTokens map[string]string
-	BuiltinTools  []string
-	Skills        []string
-	EgressDomains []string
-	CustomBaseURL string
-	CustomModel   string
-	CustomAPIKey  string
-	EnvVars       map[string]string
+	Name           string
+	Provider       string
+	APIKey         string
+	AuthMethod     string // "apikey" or "oauth" — how the user authenticated
+	ModelName      string // selected model ID (e.g. "gpt-5.3-codex")
+	OrganizationID string // OpenAI enterprise organization ID
+	Fallbacks      []FallbackProvider
+	Channel        string
+	ChannelTokens  map[string]string
+	BuiltinTools   []string
+	Skills         []string
+	EgressDomains  []string
+	CustomBaseURL  string
+	CustomModel    string
+	CustomAPIKey   string
+	EnvVars        map[string]string
 }
 
 // NewWizardContext creates an initialized WizardContext.
@@ -99,6 +100,11 @@ func (w WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		w.width = msg.Width
 		w.height = msg.Height
+		if w.current < len(w.steps) {
+			updated, cmd := w.steps[w.current].Update(msg)
+			w.steps[w.current] = updated
+			return w, cmd
+		}
 		return w, nil
 
 	case tea.KeyMsg:

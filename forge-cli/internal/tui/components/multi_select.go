@@ -22,6 +22,8 @@ type MultiSelectItem struct {
 type MultiSelect struct {
 	Items  []MultiSelectItem
 	cursor int
+	offset int // index of first visible item
+	height int // terminal height (0 = no constraint)
 	done   bool
 
 	// Styles
@@ -59,21 +61,59 @@ func (m *MultiSelect) Init() tea.Cmd {
 	return nil
 }
 
+// maxVisibleItems returns how many items fit in the viewport.
+func (m MultiSelect) maxVisibleItems() int {
+	if m.height <= 0 || len(m.Items) == 0 {
+		return len(m.Items)
+	}
+	// Each item ≈ 4 lines (border top, content, border bottom, gap).
+	// Reserve ~18 lines for wizard chrome (banner, progress, kbd hints, padding).
+	available := (m.height - 18) / 4
+	if available < 3 {
+		available = 3
+	}
+	if available >= len(m.Items) {
+		return len(m.Items)
+	}
+	return available
+}
+
+// adjustOffset ensures the cursor is within the visible window.
+func (m *MultiSelect) adjustOffset() {
+	maxVisible := m.maxVisibleItems()
+	if m.cursor < m.offset {
+		m.offset = m.cursor
+	}
+	if m.cursor >= m.offset+maxVisible {
+		m.offset = m.cursor - maxVisible + 1
+	}
+	if m.offset < 0 {
+		m.offset = 0
+	}
+}
+
 // Update handles keyboard input.
 func (m MultiSelect) Update(msg tea.Msg) (MultiSelect, tea.Cmd) {
 	if m.done {
 		return m, nil
 	}
 
-	if msg, ok := msg.(tea.KeyMsg); ok {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.height = msg.Height
+		m.adjustOffset()
+		return m, nil
+	case tea.KeyMsg:
 		switch msg.String() {
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
+				m.adjustOffset()
 			}
 		case "down", "j":
 			if m.cursor < len(m.Items)-1 {
 				m.cursor++
+				m.adjustOffset()
 			}
 		case " ":
 			m.Items[m.cursor].Checked = !m.Items[m.cursor].Checked
@@ -99,14 +139,28 @@ func (m MultiSelect) Update(msg tea.Msg) (MultiSelect, tea.Cmd) {
 
 // View renders the multi-select list.
 func (m MultiSelect) View(width int) string {
-	var out string
+	var b strings.Builder
 
 	itemWidth := width - 6
 	if itemWidth < 30 {
 		itemWidth = 30
 	}
 
-	for i, item := range m.Items {
+	maxVisible := m.maxVisibleItems()
+	start := m.offset
+	end := start + maxVisible
+	if end > len(m.Items) {
+		end = len(m.Items)
+	}
+
+	// Scroll indicator: items above
+	if start > 0 {
+		hint := fmt.Sprintf("  ▲ %d more above", start)
+		b.WriteString(lipgloss.NewStyle().Foreground(m.DimColor).Render(hint) + "\n")
+	}
+
+	for i := start; i < end; i++ {
+		item := m.Items[i]
 		isCursor := i == m.cursor
 		var checkbox, icon, label, desc string
 
@@ -148,11 +202,17 @@ func (m MultiSelect) View(width int) string {
 			border = m.InactiveBorder.Width(itemWidth)
 		}
 
-		out += "  " + border.Render(content) + "\n"
+		b.WriteString("  " + border.Render(content) + "\n")
 	}
 
-	out += "\n" + m.kbd.View()
-	return out
+	// Scroll indicator: items below
+	if end < len(m.Items) {
+		hint := fmt.Sprintf("  ▼ %d more below", len(m.Items)-end)
+		b.WriteString(lipgloss.NewStyle().Foreground(m.DimColor).Render(hint) + "\n")
+	}
+
+	b.WriteString("\n" + m.kbd.View())
+	return b.String()
 }
 
 // Done returns true when selection is confirmed.

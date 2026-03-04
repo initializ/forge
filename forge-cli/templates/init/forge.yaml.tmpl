@@ -9,6 +9,9 @@ model:
   provider: {{.ModelProvider}}
   name: {{.ModelName}}
   version: "latest"
+{{- if .OrganizationID}}
+  organization_id: {{.OrganizationID}}
+{{- end}}
 {{- if .Fallbacks}}
   fallbacks:
 {{- range .Fallbacks}}

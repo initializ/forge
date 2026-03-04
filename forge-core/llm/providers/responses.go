@@ -19,6 +19,7 @@ import (
 // endpoint (chatgpt.com/backend-api) rather than the Chat Completions API.
 type ResponsesClient struct {
 	apiKey       string
+	orgID        string
 	baseURL      string
 	model        string
 	client       *http.Client
@@ -37,6 +38,7 @@ func NewResponsesClient(cfg llm.ClientConfig) *ResponsesClient {
 	}
 	return &ResponsesClient{
 		apiKey:  cfg.APIKey,
+		orgID:   cfg.OrgID,
 		baseURL: strings.TrimRight(baseURL, "/"),
 		model:   cfg.Model,
 		client:  &http.Client{Timeout: timeout},
@@ -139,6 +141,9 @@ func (c *ResponsesClient) setHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 	if c.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	if c.orgID != "" {
+		req.Header.Set("OpenAI-Organization", c.orgID)
 	}
 }
 

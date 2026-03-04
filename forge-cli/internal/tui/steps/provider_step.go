@@ -2,6 +2,7 @@ package steps
 
 import (
 	"fmt"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -18,6 +19,7 @@ const (
 	providerValidatingPhase
 	providerOAuthPhase
 	providerModelPhase
+	providerOrgIDPhase
 	providerCustomURLPhase
 	providerCustomModelPhase
 	providerCustomAuthPhase
@@ -65,6 +67,7 @@ type ProviderStep struct {
 	apiKey             string
 	authMethod         string // "apikey" or "oauth"
 	modelID            string // selected model ID
+	orgID              string // OpenAI enterprise organization ID
 	customURL          string
 	customModel        string
 	customAuth         string
@@ -124,6 +127,24 @@ func (s *ProviderStep) Update(msg tea.Msg) (tui.Step, tea.Cmd) {
 		return s, nil
 	}
 
+	if wsm, ok := msg.(tea.WindowSizeMsg); ok {
+		switch s.phase {
+		case providerSelectPhase:
+			updated, cmd := s.selector.Update(wsm)
+			s.selector = updated
+			return s, cmd
+		case providerAuthMethodPhase:
+			updated, cmd := s.authMethodSelector.Update(wsm)
+			s.authMethodSelector = updated
+			return s, cmd
+		case providerModelPhase:
+			updated, cmd := s.modelSelector.Update(wsm)
+			s.modelSelector = updated
+			return s, cmd
+		}
+		return s, nil
+	}
+
 	switch s.phase {
 	case providerSelectPhase:
 		return s.updateSelectPhase(msg)
@@ -137,6 +158,8 @@ func (s *ProviderStep) Update(msg tea.Msg) (tui.Step, tea.Cmd) {
 		return s.updateOAuthPhase(msg)
 	case providerModelPhase:
 		return s.updateModelPhase(msg)
+	case providerOrgIDPhase:
+		return s.updateOrgIDPhase(msg)
 	case providerCustomURLPhase:
 		return s.updateCustomURLPhase(msg)
 	case providerCustomModelPhase:
@@ -417,6 +440,47 @@ func (s *ProviderStep) updateModelPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
 	if s.modelSelector.Done() {
 		_, val := s.modelSelector.Selected()
 		s.modelID = val
+		// Show org ID prompt for API key auth
+		if s.authMethod == "apikey" {
+			return s, s.showOrgIDPrompt()
+		}
+		s.complete = true
+		return s, func() tea.Msg { return tui.StepCompleteMsg{} }
+	}
+
+	return s, cmd
+}
+
+// showOrgIDPrompt sets up the org ID text input phase.
+func (s *ProviderStep) showOrgIDPrompt() tea.Cmd {
+	s.phase = providerOrgIDPhase
+	s.textInput = components.NewTextInput(
+		"OpenAI Organization ID (optional — press Enter to skip)",
+		"org-xxxxxxxxxxxxxxxxxxxxxxxx",
+		false, // no slug hint
+		func(val string) error {
+			if val != "" && !strings.HasPrefix(val, "org-") {
+				return fmt.Errorf("must start with org-")
+			}
+			return nil
+		},
+		s.styles.Theme.Accent,
+		s.styles.AccentTxt,
+		s.styles.InactiveBorder,
+		s.styles.ErrorTxt,
+		s.styles.DimTxt,
+		s.styles.KbdKey,
+		s.styles.KbdDesc,
+	)
+	return s.textInput.Init()
+}
+
+func (s *ProviderStep) updateOrgIDPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
+	updated, cmd := s.textInput.Update(msg)
+	s.textInput = updated
+
+	if s.textInput.Done() {
+		s.orgID = s.textInput.Value()
 		s.complete = true
 		return s, func() tea.Msg { return tui.StepCompleteMsg{} }
 	}
@@ -523,6 +587,8 @@ func (s *ProviderStep) View(width int) string {
 		return ""
 	case providerModelPhase:
 		return s.modelSelector.View(width)
+	case providerOrgIDPhase:
+		return s.textInput.View(width)
 	case providerCustomURLPhase, providerCustomModelPhase:
 		return s.textInput.View(width)
 	case providerCustomAuthPhase:
@@ -563,6 +629,7 @@ func (s *ProviderStep) Apply(ctx *tui.WizardContext) {
 	ctx.APIKey = s.apiKey
 	ctx.AuthMethod = s.authMethod
 	ctx.ModelName = s.modelID
+	ctx.OrganizationID = s.orgID
 	ctx.CustomBaseURL = s.customURL
 	ctx.CustomModel = s.customModel
 	ctx.CustomAPIKey = s.customAuth
@@ -578,6 +645,9 @@ func (s *ProviderStep) Apply(ctx *tui.WizardContext) {
 		case "gemini":
 			ctx.EnvVars["GEMINI_API_KEY"] = s.apiKey
 		}
+	}
+	if s.orgID != "" {
+		ctx.EnvVars["OPENAI_ORG_ID"] = s.orgID
 	}
 }
 

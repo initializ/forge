@@ -27,7 +27,7 @@ Forge supports multiple LLM providers with automatic fallback:
 
 | Provider | Default Model | Auth |
 |----------|--------------|------|
-| `openai` | `gpt-5.2-2025-12-11` | API key or OAuth |
+| `openai` | `gpt-5.2-2025-12-11` | API key or OAuth; optional Organization ID |
 | `anthropic` | `claude-sonnet-4-20250514` | API key |
 | `gemini` | `gemini-2.5-flash` | API key |
 | `ollama` | `llama3` | None (local) |
@@ -66,6 +66,25 @@ forge init my-agent
 ```
 
 OAuth tokens are stored in `~/.forge/credentials/openai.json` and automatically refreshed.
+
+### Organization ID (OpenAI Enterprise)
+
+Enterprise OpenAI accounts can set an Organization ID to route API requests to the correct org:
+
+```yaml
+model:
+  provider: openai
+  name: gpt-4o
+  organization_id: "org-xxxxxxxxxxxxxxxxxxxxxxxx"
+```
+
+Or via environment variable (overrides YAML):
+
+```bash
+export OPENAI_ORG_ID=org-xxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+The `OpenAI-Organization` header is sent on all OpenAI API requests (chat, embeddings, responses). Fallback providers inherit the primary org ID unless overridden per-fallback. The org ID is also injected into skill subprocess environments as `OPENAI_ORG_ID`.
 
 ### Fallback Chains
 

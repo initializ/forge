@@ -91,6 +91,20 @@ func (s *ToolsStep) Update(msg tea.Msg) (tui.Step, tea.Cmd) {
 		return s, nil
 	}
 
+	if wsm, ok := msg.(tea.WindowSizeMsg); ok {
+		switch s.phase {
+		case toolsSelectPhase:
+			updated, cmd := s.multiSelect.Update(wsm)
+			s.multiSelect = updated
+			return s, cmd
+		case toolsWebSearchProviderPhase:
+			updated, cmd := s.providerSelect.Update(wsm)
+			s.providerSelect = updated
+			return s, cmd
+		}
+		return s, nil
+	}
+
 	switch s.phase {
 	case toolsSelectPhase:
 		updated, cmd := s.multiSelect.Update(msg)

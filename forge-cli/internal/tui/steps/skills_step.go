@@ -413,11 +413,19 @@ func (s *SkillsStep) Apply(ctx *tui.WizardContext) {
 
 func skillIcon(name string) string {
 	icons := map[string]string{
-		"github":              "🐙",
-		"weather":             "🌤️",
-		"tavily-search":       "🔍",
-		"k8s-incident-triage": "☸️",
-		"k8s_incident_triage": "☸️",
+		"github":                "🐙",
+		"weather":               "🌤️",
+		"tavily-search":         "🔍",
+		"tavily-research":       "🔬",
+		"k8s-incident-triage":   "☸️",
+		"k8s_incident_triage":   "☸️",
+		"k8s-pod-rightsizer":    "⚖️",
+		"k8s_pod_rightsizer":    "⚖️",
+		"code-review":           "🔎",
+		"code-review-standards": "📏",
+		"code-review-github":    "🐙",
+		"codegen-react":         "⚛️",
+		"codegen-html":          "🌐",
 	}
 	if icon, ok := icons[name]; ok {
 		return icon

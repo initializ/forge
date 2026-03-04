@@ -211,6 +211,7 @@ func collectInteractive(opts *initOptions) error {
 					Name:          s.Name,
 					DisplayName:   s.DisplayName,
 					Description:   s.Description,
+					Icon:          s.Icon,
 					RequiredEnv:   s.RequiredEnv,
 					OneOfEnv:      s.OneOfEnv,
 					OptionalEnv:   s.OptionalEnv,

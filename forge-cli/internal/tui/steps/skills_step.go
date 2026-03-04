@@ -16,6 +16,7 @@ type SkillInfo struct {
 	Name          string
 	DisplayName   string
 	Description   string
+	Icon          string
 	RequiredEnv   []string
 	OneOfEnv      []string
 	OptionalEnv   []string
@@ -70,7 +71,10 @@ func NewSkillsStep(styles *tui.StyleSet, skills []SkillInfo) *SkillsStep {
 
 	var items []components.MultiSelectItem
 	for _, sk := range skills {
-		icon := skillIcon(sk.Name)
+		icon := sk.Icon
+		if icon == "" {
+			icon = skillIcon(sk.Name)
+		}
 		var reqs []string
 		if len(sk.RequiredBins) > 0 {
 			reqs = append(reqs, "bins: "+strings.Join(sk.RequiredBins, ", "))
@@ -417,16 +421,9 @@ func (s *SkillsStep) Apply(ctx *tui.WizardContext) {
 	}
 }
 
-func skillIcon(name string) string {
-	icons := map[string]string{
-		"github":              "🐙",
-		"weather":             "🌤️",
-		"tavily-search":       "🔍",
-		"k8s-incident-triage": "☸️",
-		"k8s_incident_triage": "☸️",
-	}
-	if icon, ok := icons[name]; ok {
-		return icon
-	}
+// skillIcon returns a default icon for skills that don't declare one
+// in their SKILL.md frontmatter. Prefer adding "icon:" to frontmatter
+// instead of extending this function.
+func skillIcon(_ string) string {
 	return "📦"
 }

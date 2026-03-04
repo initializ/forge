@@ -1,5 +1,11 @@
 ---
 name: weather
+icon: 🌤️
+category: utilities
+tags:
+  - weather
+  - forecast
+  - api
 description: Get current weather and forecasts
 metadata:
   forge:

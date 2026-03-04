@@ -1,5 +1,6 @@
 ---
 name: codegen-html
+icon: 🌐
 category: developer
 tags:
   - code-generation

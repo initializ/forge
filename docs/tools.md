@@ -24,6 +24,7 @@ Tools are capabilities that an LLM agent can invoke during execution. Forge prov
 | `uuid_generate` | Generate UUID v4 identifiers |
 | `math_calculate` | Evaluate mathematical expressions |
 | `web_search` | Search the web for quick lookups and recent information |
+| `file_create` | Create a downloadable file, written to the agent's `.forge/files/` directory |
 | `read_skill` | Load full instructions for an available skill on demand |
 | `memory_search` | Search long-term memory (when enabled) |
 | `memory_get` | Read memory files (when enabled) |
@@ -79,6 +80,36 @@ tools:
 | 5 | **No shell** | Uses `exec.CommandContext` directly — no shell expansion |
 | 6 | **Environment isolation** | Only `PATH`, `HOME`, `LANG`, explicit passthrough vars, proxy vars, and `OPENAI_ORG_ID` (when set) |
 | 7 | **Output limits** | Configurable max output size (default: 1MB) to prevent memory exhaustion |
+
+## File Create
+
+The `file_create` tool generates downloadable files that are both written to disk and uploaded to the user's channel (Slack/Telegram).
+
+| Field | Description |
+|-------|-------------|
+| `filename` | Name with extension (e.g., `patches.yaml`, `report.json`) |
+| `content` | Full file content as text |
+
+**Output JSON** includes `filename`, `content`, `mime_type`, and `path`. The `path` field contains the absolute disk location, allowing other tools (e.g., `kubectl apply -f <path>`) to reference the file.
+
+**File location:** Files are written to the agent's `.forge/files/` directory (under `WorkDir`). The runtime injects this path via `FilesDir` in the executor context. When running outside the full runtime (e.g., tests), falls back to `$TMPDIR/forge-files/`.
+
+**Allowed extensions:**
+
+| Extension | MIME Type |
+|-----------|-----------|
+| `.md` | `text/markdown` |
+| `.json` | `application/json` |
+| `.yaml`, `.yml` | `text/yaml` |
+| `.txt`, `.log` | `text/plain` |
+| `.csv` | `text/csv` |
+| `.sh` | `text/x-shellscript` |
+| `.xml` | `text/xml` |
+| `.html` | `text/html` |
+| `.py` | `text/x-python` |
+| `.ts` | `text/typescript` |
+
+Filenames with path separators (`/`, `\`) or traversal patterns (`..`) are rejected.
 
 ## Memory Tools
 

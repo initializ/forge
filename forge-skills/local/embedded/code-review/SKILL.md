@@ -1,5 +1,6 @@
 ---
 name: code-review
+icon: 🔎
 category: developer
 tags:
   - code-review

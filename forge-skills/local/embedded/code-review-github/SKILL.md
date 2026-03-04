@@ -1,6 +1,6 @@
 ---
 name: code-review-github
-category: dev
+category: developer
 tags:
   - code-review
   - github

@@ -1,6 +1,6 @@
 ---
 name: code-review-standards
-category: dev
+category: developer
 tags:
   - code-review
   - standards

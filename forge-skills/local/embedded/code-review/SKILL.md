@@ -1,6 +1,6 @@
 ---
 name: code-review
-category: dev
+category: developer
 tags:
   - code-review
   - diff

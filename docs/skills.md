@@ -150,9 +150,9 @@ forge skills list --tags kubernetes,incident-response
 | `tavily-search` | — | Search the web using Tavily AI search API | `tavily-search.sh` |
 | `tavily-research` | — | Deep multi-source research via Tavily API | `tavily-research.sh`, `tavily-research-poll.sh` |
 | `k8s-incident-triage` | sre | Read-only Kubernetes incident triage using kubectl | — (binary-backed) |
-| `code-review` | dev | AI-powered code review for diffs and files | `code-review-diff.sh`, `code-review-file.sh` |
-| `code-review-standards` | dev | Initialize and manage code review standards | — (template-based) |
-| `code-review-github` | dev | Post code review results to GitHub PRs | — (binary-backed) |
+| `code-review` | developer | AI-powered code review for diffs and files | `code-review-diff.sh`, `code-review-file.sh` |
+| `code-review-standards` | developer | Initialize and manage code review standards | — (template-based) |
+| `code-review-github` | developer | Post code review results to GitHub PRs | — (binary-backed) |
 | `codegen-react` | developer | Scaffold and iterate on Vite + React apps | `codegen-react-scaffold.sh`, `codegen-react-read.sh`, `codegen-react-write.sh`, `codegen-react-run.sh` |
 | `codegen-html` | developer | Scaffold standalone Preact + HTM apps (zero dependencies) | `codegen-html-scaffold.sh`, `codegen-html-read.sh`, `codegen-html-write.sh` |
 

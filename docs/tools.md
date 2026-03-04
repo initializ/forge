@@ -77,7 +77,7 @@ tools:
 | 3 | **Argument validation** | Rejects arguments containing `$(`, backticks, or newlines |
 | 4 | **Timeout** | Configurable per-command timeout (default: 120s) |
 | 5 | **No shell** | Uses `exec.CommandContext` directly — no shell expansion |
-| 6 | **Environment isolation** | Only `PATH`, `HOME`, `LANG`, explicit passthrough vars, and proxy vars |
+| 6 | **Environment isolation** | Only `PATH`, `HOME`, `LANG`, explicit passthrough vars, proxy vars, and `OPENAI_ORG_ID` (when set) |
 | 7 | **Output limits** | Configurable max output size (default: 1MB) to prevent memory exhaustion |
 
 ## Memory Tools

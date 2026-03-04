@@ -116,6 +116,7 @@ func runUI(cmd *cobra.Command, args []string) error {
 			CustomModel:    opts.ModelName,
 			APIKey:         opts.APIKey,
 			AuthMethod:     opts.AuthMethod,
+			OrganizationID: opts.OrganizationID,
 			Fallbacks:      fallbacks,
 			Channels:       opts.Channels,
 			BuiltinTools:   opts.BuiltinTools,
@@ -134,6 +135,11 @@ func runUI(cmd *cobra.Command, args []string) error {
 		// Store web search provider preference
 		if opts.WebSearchProvider != "" {
 			initOpts.EnvVars["WEB_SEARCH_PROVIDER"] = opts.WebSearchProvider
+		}
+
+		// Store organization ID for OpenAI enterprise
+		if opts.OrganizationID != "" {
+			initOpts.EnvVars["OPENAI_ORG_ID"] = opts.OrganizationID
 		}
 
 		// Set passphrase for secret encryption if provided

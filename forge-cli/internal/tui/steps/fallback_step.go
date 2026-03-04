@@ -82,6 +82,20 @@ func (s *FallbackStep) Update(msg tea.Msg) (tui.Step, tea.Cmd) {
 		return s, nil
 	}
 
+	if wsm, ok := msg.(tea.WindowSizeMsg); ok {
+		switch s.phase {
+		case fallbackAskPhase:
+			updated, cmd := s.askSelector.Update(wsm)
+			s.askSelector = updated
+			return s, cmd
+		case fallbackSelectPhase:
+			updated, cmd := s.multiSelector.Update(wsm)
+			s.multiSelector = updated
+			return s, cmd
+		}
+		return s, nil
+	}
+
 	switch s.phase {
 	case fallbackAskPhase:
 		return s.updateAskPhase(msg)

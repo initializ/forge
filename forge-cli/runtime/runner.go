@@ -1653,6 +1653,7 @@ func (r *Runner) registerSkillTools(reg *tools.Registry, proxyURL string) {
 
 			skillExec := &clitools.SkillCommandExecutor{
 				Timeout:  timeout,
+				WorkDir:  r.cfg.WorkDir,
 				EnvVars:  envVars,
 				ProxyURL: proxyURL,
 			}

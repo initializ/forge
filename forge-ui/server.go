@@ -17,22 +17,26 @@ import (
 
 // UIServerConfig configures the UI dashboard server.
 type UIServerConfig struct {
-	Port        int             // default: 4200
-	WorkDir     string          // workspace root to scan for agents
-	StartFunc   AgentStartFunc  // injected by forge-cli
-	CreateFunc  AgentCreateFunc // injected by forge-cli (Phase 3)
-	OAuthFunc   OAuthFlowFunc   // injected by forge-cli (optional, for OAuth login)
-	AgentPort   int             // base port for agent allocation (default: 9100)
-	OpenBrowser bool            // open browser on start
+	Port          int             // default: 4200
+	WorkDir       string          // workspace root to scan for agents
+	ExePath       string          // path to forge binary for exec
+	Version       string          // forge version string
+	CreateFunc    AgentCreateFunc // injected by forge-cli (Phase 3)
+	OAuthFunc     OAuthFlowFunc   // injected by forge-cli (optional, for OAuth login)
+	LLMStreamFunc LLMStreamFunc   // injected by forge-cli (skill builder)
+	SkillSaveFunc SkillSaveFunc   // injected by forge-cli (skill builder)
+	AgentPort     int             // base port for agent allocation (default: 9100)
+	OpenBrowser   bool            // open browser on start
 }
 
 // UIServer serves the Forge dashboard UI and API.
 type UIServer struct {
-	cfg     UIServerConfig
-	scanner *Scanner
-	pm      *ProcessManager
-	broker  *SSEBroker
-	srv     *http.Server
+	cfg           UIServerConfig
+	scanner       *Scanner
+	pm            *ProcessManager
+	broker        *SSEBroker
+	srv           *http.Server
+	updateChecker *updateInfo
 }
 
 // NewUIServer creates a UIServer with the given configuration.
@@ -46,13 +50,19 @@ func NewUIServer(cfg UIServerConfig) *UIServer {
 
 	broker := NewSSEBroker()
 	scanner := NewScanner(cfg.WorkDir)
-	pm := NewProcessManager(cfg.StartFunc, broker, cfg.AgentPort)
+	pm := NewProcessManager(cfg.ExePath, broker, cfg.AgentPort)
+
+	var uc *updateInfo
+	if cfg.Version != "" && cfg.Version != "dev" {
+		uc = newUpdateChecker(cfg.Version, "initializ", "forge")
+	}
 
 	return &UIServer{
-		cfg:     cfg,
-		scanner: scanner,
-		pm:      pm,
-		broker:  broker,
+		cfg:           cfg,
+		scanner:       scanner,
+		pm:            pm,
+		broker:        broker,
+		updateChecker: uc,
 	}
 }
 
@@ -82,6 +92,16 @@ func (s *UIServer) Start(ctx context.Context) error {
 	mux.HandleFunc("GET /api/skills/{name}/content", s.handleGetSkillContent)
 	mux.HandleFunc("GET /api/tools", s.handleListBuiltinTools)
 	mux.HandleFunc("POST /api/oauth/start", s.handleOAuthStart)
+
+	// Update check
+	mux.HandleFunc("GET /api/update-check", s.handleUpdateCheck)
+
+	// Skill Builder routes
+	mux.HandleFunc("POST /api/agents/{id}/skill-builder/chat", s.handleSkillBuilderChat)
+	mux.HandleFunc("POST /api/agents/{id}/skill-builder/validate", s.handleSkillBuilderValidate)
+	mux.HandleFunc("POST /api/agents/{id}/skill-builder/save", s.handleSkillBuilderSave)
+	mux.HandleFunc("GET /api/agents/{id}/skill-builder/context", s.handleSkillBuilderContext)
+	mux.HandleFunc("GET /api/agents/{id}/skill-builder/provider", s.handleSkillBuilderProvider)
 
 	// Static file serving with SPA fallback
 	distFS, err := fs.Sub(static.FS, "dist")
@@ -137,10 +157,9 @@ func (s *UIServer) Start(ctx context.Context) error {
 		}()
 	}
 
-	// Graceful shutdown
+	// Graceful shutdown (agents survive UI shutdown)
 	go func() {
 		<-ctx.Done()
-		s.pm.StopAll()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := s.srv.Shutdown(shutdownCtx); err != nil {

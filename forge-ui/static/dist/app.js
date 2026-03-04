@@ -132,6 +132,80 @@ async function fetchSkillContent(name) {
   return res.text();
 }
 
+// ── Skill Builder API Helpers ─────────────────────────────────
+
+async function fetchSkillBuilderProvider(agentId) {
+  const res = await fetch(`/api/agents/${agentId}/skill-builder/provider`);
+  if (!res.ok) throw new Error(`Failed to fetch provider: ${res.status}`);
+  return res.json();
+}
+
+async function streamSkillBuilderChat(agentId, messages, { onChunk, onSkillDraft, onError, onDone, signal }) {
+  const res = await fetch(`/api/agents/${agentId}/skill-builder/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages }),
+    signal,
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Chat failed: ${res.status}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    // Parse SSE frames
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    let eventType = '';
+    for (const line of lines) {
+      if (line.startsWith('event: ')) {
+        eventType = line.slice(7).trim();
+      } else if (line.startsWith('data: ')) {
+        const data = line.slice(6);
+        try {
+          const parsed = JSON.parse(data);
+          if (eventType === 'chunk' && onChunk) onChunk(parsed.content || '');
+          else if (eventType === 'skill_draft' && onSkillDraft) onSkillDraft(parsed);
+          else if (eventType === 'error' && onError) onError(parsed.error || 'Unknown error');
+          else if (eventType === 'done' && onDone) onDone();
+        } catch { /* ignore parse errors */ }
+        eventType = '';
+      }
+    }
+  }
+}
+
+async function validateSkillBuilderMD(agentId, skillMD, scripts) {
+  const res = await fetch(`/api/agents/${agentId}/skill-builder/validate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ skill_md: skillMD, scripts }),
+  });
+  if (!res.ok) throw new Error(`Validation failed: ${res.status}`);
+  return res.json();
+}
+
+async function saveSkillBuilder(agentId, skillName, skillMD, scripts) {
+  const res = await fetch(`/api/agents/${agentId}/skill-builder/save`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ skill_name: skillName, skill_md: skillMD, scripts }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `Save failed: ${res.status}`);
+  return data;
+}
+
 // ── SSE Hook ─────────────────────────────────────────────────
 
 function useSSE(onEvent) {
@@ -184,6 +258,9 @@ function parseHash(hash) {
   if (configMatch) return { page: 'config', params: { id: configMatch[1] } };
   // #/skills
   if (path === 'skills') return { page: 'skills', params: {} };
+  // #/skill-builder/{id}
+  const sbMatch = path.match(/^skill-builder\/(.+)$/);
+  if (sbMatch) return { page: 'skill-builder', params: { id: sbMatch[1] } };
   return { page: 'dashboard', params: {} };
 }
 
@@ -640,6 +717,9 @@ function AgentCard({ agent, onStart, onStop }) {
         <button class="btn btn-ghost btn-sm" onClick=${(e) => { e.stopPropagation(); navigate('config/' + agent.id); }}>
           Config
         </button>
+        <button class="btn btn-ghost btn-sm" onClick=${(e) => { e.stopPropagation(); navigate('skill-builder/' + agent.id); }}>
+          Build Skill
+        </button>
       </div>
     </div>
   `;
@@ -657,7 +737,7 @@ function EmptyState() {
   `;
 }
 
-function Sidebar({ agents, activeAgentId, activePage }) {
+function Sidebar({ agents, activeAgentId, activePage, version }) {
   return html`
     <aside class="sidebar">
       <div class="sidebar-header">
@@ -707,6 +787,10 @@ function Sidebar({ agents, activeAgentId, activePage }) {
             No agents discovered
           </div>
         `}
+      </div>
+      <div class="sidebar-footer">
+        <span class="sidebar-footer-version">${version ? 'v' + version : ''}</span>
+        <a class="sidebar-footer-link" href="https://useforge.ai" target="_blank" rel="noopener noreferrer">useforge.ai</a>
       </div>
     </aside>
   `;
@@ -1982,21 +2066,333 @@ function SkillsPage() {
   `;
 }
 
+// ── Skill Builder Page ───────────────────────────────────────
+
+function SkillBuilderPage({ agentId }) {
+  const [provider, setProvider] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState('');
+  const [streaming, setStreaming] = useState(false);
+  const [skillMD, setSkillMD] = useState('');
+  const [scripts, setScripts] = useState({});
+  const [activeTab, setActiveTab] = useState('skill.md');
+  const [validation, setValidation] = useState(null);
+  const [saveStatus, setSaveStatus] = useState(null);
+  const [error, setError] = useState(null);
+  const abortRef = useRef(null);
+  const chatEndRef = useRef(null);
+  const editorRef = useRef(null);
+
+  // Fetch provider on mount
+  useEffect(() => {
+    fetchSkillBuilderProvider(agentId)
+      .then(setProvider)
+      .catch(err => setError('Failed to load provider: ' + err.message));
+  }, [agentId]);
+
+  // Auto-scroll chat
+  useEffect(() => {
+    if (chatEndRef.current) {
+      chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages]);
+
+  // Initialize Monaco for skill editor
+  useEffect(() => {
+    if (!editorRef.current) return;
+    const container = editorRef.current;
+
+    // Try to load Monaco, fallback to textarea
+    const loadEditor = async () => {
+      try {
+        const monaco = await import('/monaco/editor.js');
+        if (!container._monacoEditor) {
+          container._monacoEditor = monaco.editor.create(container, {
+            value: skillMD,
+            language: 'markdown',
+            theme: 'vs-dark',
+            minimap: { enabled: false },
+            automaticLayout: true,
+            wordWrap: 'on',
+            fontSize: 13,
+            lineNumbers: 'on',
+            scrollBeyondLastLine: false,
+          });
+          container._monacoEditor.onDidChangeModelContent(() => {
+            const val = container._monacoEditor.getValue();
+            setSkillMD(val);
+          });
+        }
+      } catch {
+        // Monaco not available — textarea fallback used
+      }
+    };
+    loadEditor();
+
+    return () => {
+      if (container._monacoEditor) {
+        container._monacoEditor.dispose();
+        container._monacoEditor = null;
+      }
+    };
+  }, []);
+
+  // Update editor content when skillMD changes from AI draft
+  useEffect(() => {
+    if (editorRef.current && editorRef.current._monacoEditor) {
+      const editor = editorRef.current._monacoEditor;
+      if (editor.getValue() !== skillMD) {
+        editor.setValue(skillMD);
+      }
+    }
+  }, [skillMD]);
+
+  const handleSend = useCallback(async () => {
+    const text = input.trim();
+    if (!text || streaming) return;
+
+    const userMsg = { role: 'user', content: text };
+    const newMessages = [...messages, userMsg];
+    setMessages(newMessages);
+    setInput('');
+    setStreaming(true);
+    setError(null);
+
+    // Add placeholder assistant message
+    const assistantMsg = { role: 'assistant', content: '' };
+    setMessages([...newMessages, assistantMsg]);
+
+    const abort = new AbortController();
+    abortRef.current = abort;
+
+    try {
+      await streamSkillBuilderChat(agentId, newMessages, {
+        signal: abort.signal,
+        onChunk(content) {
+          assistantMsg.content += content;
+          setMessages([...newMessages, { ...assistantMsg }]);
+        },
+        onSkillDraft(draft) {
+          if (draft.skill_md) setSkillMD(draft.skill_md);
+          if (draft.scripts) setScripts(draft.scripts || {});
+          setValidation(null);
+          setSaveStatus(null);
+        },
+        onError(errMsg) {
+          setError(errMsg);
+        },
+        onDone() {
+          // streaming complete
+        },
+      });
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        setError(err.message);
+      }
+    } finally {
+      setStreaming(false);
+      abortRef.current = null;
+    }
+  }, [agentId, messages, input, streaming]);
+
+  const handleValidate = useCallback(async () => {
+    try {
+      const result = await validateSkillBuilderMD(agentId, skillMD, scripts);
+      setValidation(result);
+    } catch (err) {
+      setError('Validation failed: ' + err.message);
+    }
+  }, [agentId, skillMD, scripts]);
+
+  const handleSave = useCallback(async () => {
+    // Extract name from SKILL.md frontmatter
+    const nameMatch = skillMD.match(/^name:\s*(.+)$/m);
+    const skillName = nameMatch ? nameMatch[1].trim() : '';
+    if (!skillName) {
+      setError('Cannot save: no "name" field found in SKILL.md frontmatter');
+      return;
+    }
+
+    try {
+      const result = await saveSkillBuilder(agentId, skillName, skillMD, scripts);
+      setSaveStatus(result);
+      setError(null);
+    } catch (err) {
+      setError('Save failed: ' + err.message);
+    }
+  }, [agentId, skillMD, scripts]);
+
+  const handleKeyDown = useCallback((e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  }, [handleSend]);
+
+  const scriptTabs = Object.keys(scripts);
+
+  return html`
+    <main class="main skill-builder">
+      <div class="skill-builder-left">
+        <div class="sb-header">
+          <h2>Skill Builder</h2>
+          ${provider && html`
+            <div class="provider-banner ${!provider.has_key ? 'provider-banner-error' : ''}">
+              <span>${provider.provider}/${provider.model}</span>
+              ${!provider.has_key && html`<span class="provider-warning">API key not configured</span>`}
+            </div>
+          `}
+        </div>
+
+        <div class="sb-messages">
+          ${messages.length === 0 && html`
+            <div class="sb-empty">
+              <div class="sb-empty-title">Design a new skill</div>
+              <div class="sb-empty-text">Describe the skill you want to create. The AI will generate a valid SKILL.md file.</div>
+              <div class="sb-suggestions">
+                <button class="btn btn-ghost btn-sm" onClick=${() => setInput('Create a weather lookup skill that uses curl to fetch weather data from wttr.in')}>
+                  Weather skill
+                </button>
+                <button class="btn btn-ghost btn-sm" onClick=${() => setInput('Create a GitHub issue triage skill that uses the gh CLI')}>
+                  GitHub triage
+                </button>
+                <button class="btn btn-ghost btn-sm" onClick=${() => setInput('Create a database health check skill for PostgreSQL using psql')}>
+                  DB health check
+                </button>
+              </div>
+            </div>
+          `}
+          ${messages.map((msg, i) => html`
+            <div key=${i} class="sb-message sb-message-${msg.role}">
+              <div class="sb-message-content" dangerouslySetInnerHTML=${{ __html: renderMarkdown(msg.content) }} />
+            </div>
+          `)}
+          ${streaming && html`<div class="sb-typing"><span class="spinner" /> Generating...</div>`}
+          <div ref=${chatEndRef} />
+        </div>
+
+        <div class="sb-input-area">
+          <textarea
+            class="sb-textarea"
+            placeholder="Describe the skill you want to create..."
+            value=${input}
+            onInput=${(e) => setInput(e.target.value)}
+            onKeyDown=${handleKeyDown}
+            disabled=${streaming}
+            rows="3"
+          />
+          <button
+            class="btn btn-primary"
+            onClick=${handleSend}
+            disabled=${streaming || !input.trim()}
+          >
+            ${streaming ? 'Generating...' : 'Send'}
+          </button>
+        </div>
+      </div>
+
+      <div class="skill-builder-right">
+        <div class="sb-tabs">
+          <button
+            class="sb-tab ${activeTab === 'skill.md' ? 'sb-tab-active' : ''}"
+            onClick=${() => setActiveTab('skill.md')}
+          >SKILL.md</button>
+          ${scriptTabs.map(name => html`
+            <button
+              key=${name}
+              class="sb-tab ${activeTab === name ? 'sb-tab-active' : ''}"
+              onClick=${() => setActiveTab(name)}
+            >${name}</button>
+          `)}
+        </div>
+
+        <div class="sb-editor-container">
+          ${!skillMD && !scriptTabs.length && html`
+            <div class="sb-empty-editor">
+              <div class="sb-empty-title">No artifacts yet</div>
+              <div class="sb-empty-text">Send a message to generate a SKILL.md file. Artifacts will appear here.</div>
+            </div>
+          `}
+          ${activeTab === 'skill.md' && skillMD && html`
+            <div class="editor-container" ref=${editorRef} style="height: 100%;">
+              <textarea
+                class="sb-editor-textarea"
+                value=${skillMD}
+                onInput=${(e) => setSkillMD(e.target.value)}
+                spellcheck="false"
+              />
+            </div>
+          `}
+          ${activeTab !== 'skill.md' && scripts[activeTab] && html`
+            <textarea
+              class="sb-editor-textarea"
+              value=${scripts[activeTab]}
+              onInput=${(e) => setScripts({ ...scripts, [activeTab]: e.target.value })}
+              spellcheck="false"
+            />
+          `}
+        </div>
+
+        <div class="sb-actions">
+          ${error && html`<div class="sb-error">${error}</div>`}
+
+          ${validation && html`
+            <div class="sb-validation">
+              ${validation.valid && html`<span class="sb-valid">Valid</span>`}
+              ${!validation.valid && validation.errors && validation.errors.map(e => html`
+                <div class="sb-validation-error">${e.field}: ${e.message}</div>
+              `)}
+              ${validation.warnings && validation.warnings.map(w => html`
+                <div class="sb-validation-warning">${w.field}: ${w.message}</div>
+              `)}
+            </div>
+          `}
+
+          ${saveStatus && html`
+            <div class="sb-save-success">
+              Saved to ${saveStatus.path}
+            </div>
+          `}
+
+          <div class="sb-action-buttons">
+            <button class="btn btn-ghost btn-sm" onClick=${handleValidate} disabled=${!skillMD}>
+              Revalidate
+            </button>
+            <button class="btn btn-ghost btn-sm" onClick=${() => { if (skillMD) { navigator.clipboard.writeText(skillMD); } }}>
+              Copy
+            </button>
+            <button class="btn btn-primary btn-sm" onClick=${handleSave} disabled=${!skillMD}>
+              Save & Attach
+            </button>
+          </div>
+        </div>
+      </div>
+    </main>
+  `;
+}
+
 // ── App ──────────────────────────────────────────────────────
 
 function App() {
   const [agents, setAgents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [passphrasePrompt, setPassphrasePrompt] = useState(null); // { agentId, error }
+  const [forgeVersion, setForgeVersion] = useState('');
+  const [updateAvailable, setUpdateAvailable] = useState(null); // { latest_version }
   const route = useHashRoute();
 
+  const fetchingRef = useRef(false);
+
   const loadAgents = useCallback(async () => {
+    if (fetchingRef.current) return;          // skip if a request is already in-flight
+    fetchingRef.current = true;
     try {
       const data = await fetchAgents();
       setAgents(data || []);
     } catch (err) {
       console.error('Failed to load agents:', err);
     } finally {
+      fetchingRef.current = false;
       setLoading(false);
     }
   }, []);
@@ -2004,9 +2400,19 @@ function App() {
   // Initial load
   useEffect(() => { loadAgents(); }, [loadAgents]);
 
-  // Polling fallback (every 3s)
+  // Fetch Forge version and check for updates once
   useEffect(() => {
-    const interval = setInterval(loadAgents, 3000);
+    fetch('/api/health').then(r => r.json()).then(d => {
+      if (d.version) setForgeVersion(d.version);
+    }).catch(() => {});
+    fetch('/api/update-check').then(r => r.json()).then(d => {
+      if (d.has_update && d.latest_version) setUpdateAvailable(d);
+    }).catch(() => {});
+  }, []);
+
+  // Polling fallback (every 60s) — SSE handles real-time updates; this is just a safety net
+  useEffect(() => {
+    const interval = setInterval(loadAgents, 60000);
     return () => clearInterval(interval);
   }, [loadAgents]);
 
@@ -2079,7 +2485,7 @@ function App() {
     }
   }, []);
 
-  const activeAgentId = route.page === 'chat' ? route.params.id : (route.page === 'config' ? route.params.id : null);
+  const activeAgentId = ['chat', 'config', 'skill-builder'].includes(route.page) ? route.params.id : null;
 
   const renderPage = () => {
     switch (route.page) {
@@ -2091,6 +2497,8 @@ function App() {
         return html`<${ConfigPage} agentId=${route.params.id} />`;
       case 'skills':
         return html`<${SkillsPage} />`;
+      case 'skill-builder':
+        return html`<${SkillBuilderPage} agentId=${route.params.id} />`;
       default:
         return html`<${Dashboard}
           agents=${agents}
@@ -2104,7 +2512,7 @@ function App() {
 
   return html`
     <div class="layout">
-      <${Sidebar} agents=${agents} activeAgentId=${activeAgentId} activePage=${route.page} />
+      <${Sidebar} agents=${agents} activeAgentId=${activeAgentId} activePage=${route.page} version=${forgeVersion} />
       ${renderPage()}
       ${passphrasePrompt && html`
         <${PassphraseModal}
@@ -2113,6 +2521,11 @@ function App() {
           onSubmit=${handlePassphraseSubmit}
           onCancel=${() => setPassphrasePrompt(null)}
         />
+      `}
+      ${updateAvailable && html`
+        <a class="update-banner" href="https://github.com/initializ/forge/releases/latest" target="_blank" rel="noopener noreferrer">
+          Update Available! v${updateAvailable.latest_version}
+        </a>
       `}
     </div>
   `;

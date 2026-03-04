@@ -32,8 +32,7 @@ No accidental exposure. No hidden listeners.
 
 ```bash
 # Install
-curl -sSL https://github.com/initializ/forge/releases/latest/download/forge-$(uname -s)-$(uname -m).tar.gz | tar xz
-sudo mv forge /usr/local/bin/
+curl -sSL https://raw.githubusercontent.com/initializ/forge/main/install.sh | bash
 
 # Initialize a new agent (interactive wizard)
 forge init my-agent

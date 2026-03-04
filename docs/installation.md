@@ -10,11 +10,12 @@ Forge can be installed via Homebrew, pre-built binary, or manual download on Win
 brew install initializ/tap/forge
 ```
 
-## Linux / macOS (Binary)
+## Linux / macOS (Script)
+
+Installs or upgrades Forge automatically:
 
 ```bash
-curl -sSL https://github.com/initializ/forge/releases/latest/download/forge-$(uname -s)-$(uname -m).tar.gz | tar xz
-sudo mv forge /usr/local/bin/
+curl -sSL https://raw.githubusercontent.com/initializ/forge/main/install.sh | bash
 ```
 
 ## Windows

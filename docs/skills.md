@@ -327,5 +327,9 @@ forge init my-agent --from-skills
 forge build
 ```
 
+## Skill Builder (Web UI)
+
+The [Web Dashboard](dashboard.md#skill-builder) includes an AI-powered Skill Builder that generates valid SKILL.md files and helper scripts through a conversational interface. It uses the agent's own LLM provider and includes server-side validation before saving to the agent's `skills/` directory.
+
 ---
 ← [Architecture](architecture.md) | [Back to README](../README.md) | [Tools](tools.md) →

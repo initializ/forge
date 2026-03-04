@@ -14,8 +14,9 @@ Secure by default. Runs anywhere — local, container, cloud, air-gapped.
 ## Quick Start
 
 ```bash
-# Install
-brew install initializ/tap/forge          # or download binary from GitHub Releases
+# Install (pick one)
+brew install initializ/tap/forge
+curl -sSL https://raw.githubusercontent.com/initializ/forge/main/install.sh | bash
 
 # Create and run an agent
 forge init my-agent && cd my-agent && forge run

@@ -1013,6 +1013,33 @@ body {
   opacity: 1;
 }
 
+.update-banner {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  background: var(--accent);
+  color: white;
+  padding: 8px 16px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  z-index: 100;
+  transition: opacity var(--transition), transform var(--transition);
+  animation: update-slide-in 0.4s ease-out;
+}
+
+.update-banner:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+@keyframes update-slide-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
 /* ── Wizard ──────────────────────────────────────────────── */
 
 .wizard-layout {

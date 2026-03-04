@@ -2364,6 +2364,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [passphrasePrompt, setPassphrasePrompt] = useState(null); // { agentId, error }
   const [forgeVersion, setForgeVersion] = useState('');
+  const [updateAvailable, setUpdateAvailable] = useState(null); // { latest_version }
   const route = useHashRoute();
 
   const fetchingRef = useRef(false);
@@ -2385,10 +2386,13 @@ function App() {
   // Initial load
   useEffect(() => { loadAgents(); }, [loadAgents]);
 
-  // Fetch Forge version once
+  // Fetch Forge version and check for updates once
   useEffect(() => {
     fetch('/api/health').then(r => r.json()).then(d => {
       if (d.version) setForgeVersion(d.version);
+    }).catch(() => {});
+    fetch('/api/update-check').then(r => r.json()).then(d => {
+      if (d.has_update && d.latest_version) setUpdateAvailable(d);
     }).catch(() => {});
   }, []);
 
@@ -2503,6 +2507,11 @@ function App() {
           onSubmit=${handlePassphraseSubmit}
           onCancel=${() => setPassphrasePrompt(null)}
         />
+      `}
+      ${updateAvailable && html`
+        <a class="update-banner" href="https://github.com/initializ/forge/releases/latest" target="_blank" rel="noopener noreferrer">
+          Update Available! v${updateAvailable.latest_version}
+        </a>
       `}
     </div>
   `;

@@ -37,6 +37,7 @@ func (e *OSCommandExecutor) Run(ctx context.Context, command string, args []stri
 // timeout and environment variable passthrough for skill scripts.
 type SkillCommandExecutor struct {
 	Timeout  time.Duration
+	WorkDir  string   // agent working directory — script paths are relative to this
 	EnvVars  []string // extra env var names to pass through (e.g., "TAVILY_API_KEY")
 	ProxyURL string   // egress proxy URL (e.g., "http://127.0.0.1:54321")
 }
@@ -51,6 +52,9 @@ func (e *SkillCommandExecutor) Run(ctx context.Context, command string, args []s
 
 	cmd := exec.CommandContext(cmdCtx, command, args...)
 	cmd.Stdin = bytes.NewReader(stdin)
+	if e.WorkDir != "" {
+		cmd.Dir = e.WorkDir
+	}
 
 	// Build minimal environment with only explicitly allowed variables.
 	env := []string{

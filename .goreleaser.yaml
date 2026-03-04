@@ -14,7 +14,7 @@ builds:
       - amd64
       - arm64
     ldflags:
-      - -s -w -X main.version={{.Version}}
+      - -s -w -X main.version={{.Version}} -X main.commit={{.ShortCommit}}
 
 archives:
   - formats:

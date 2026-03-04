@@ -5,10 +5,6 @@ import (
 	"time"
 )
 
-// AgentStartFunc starts an agent at agentDir on the given port.
-// Blocks until ctx is cancelled or the agent exits. Injected by forge-cli.
-type AgentStartFunc func(ctx context.Context, agentDir string, port int) error
-
 // ProcessState represents the lifecycle state of an agent process.
 type ProcessState string
 
@@ -69,12 +65,74 @@ type SSEEvent struct {
 }
 
 // AgentCreateFunc scaffolds a new agent in the workspace.
-// Injected by forge-cli (same pattern as AgentStartFunc).
+// Injected by forge-cli.
 type AgentCreateFunc func(opts AgentCreateOptions) (agentDir string, err error)
 
 // OAuthFlowFunc runs the OAuth browser flow for a provider and returns the access token.
 // Injected by forge-cli when OAuth is available.
 type OAuthFlowFunc func(provider string) (accessToken string, err error)
+
+// SkillBuilderMessage is a chat message for the skill builder conversation.
+type SkillBuilderMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// LLMStreamOptions configures a streaming LLM call for the skill builder.
+type LLMStreamOptions struct {
+	AgentDir     string
+	SystemPrompt string
+	Messages     []SkillBuilderMessage
+	OnChunk      func(string)
+	OnDone       func(fullResponse string)
+}
+
+// LLMStreamFunc streams an LLM response for the skill builder.
+// Injected by forge-cli.
+type LLMStreamFunc func(ctx context.Context, opts LLMStreamOptions) error
+
+// SkillSaveOptions configures saving a skill to an agent's skills directory.
+type SkillSaveOptions struct {
+	AgentDir  string
+	SkillName string
+	SkillMD   string
+	Scripts   map[string]string
+}
+
+// SkillSaveFunc saves a generated skill to disk.
+// Injected by forge-cli.
+type SkillSaveFunc func(opts SkillSaveOptions) error
+
+// SkillBuilderChatRequest is the POST body for the skill builder chat endpoint.
+type SkillBuilderChatRequest struct {
+	Messages []SkillBuilderMessage `json:"messages"`
+}
+
+// SkillBuilderValidateRequest is the POST body for skill validation.
+type SkillBuilderValidateRequest struct {
+	SkillMD string            `json:"skill_md"`
+	Scripts map[string]string `json:"scripts,omitempty"`
+}
+
+// SkillBuilderSaveRequest is the POST body for saving a skill.
+type SkillBuilderSaveRequest struct {
+	SkillName string            `json:"skill_name"`
+	SkillMD   string            `json:"skill_md"`
+	Scripts   map[string]string `json:"scripts,omitempty"`
+}
+
+// SkillValidationResult holds the result of validating a SKILL.md.
+type SkillValidationResult struct {
+	Valid    bool              `json:"valid"`
+	Errors   []ValidationError `json:"errors,omitempty"`
+	Warnings []ValidationError `json:"warnings,omitempty"`
+}
+
+// ValidationError describes a single validation issue.
+type ValidationError struct {
+	Field   string `json:"field"`
+	Message string `json:"message"`
+}
 
 // AgentCreateOptions contains all parameters for creating a new agent.
 type AgentCreateOptions struct {

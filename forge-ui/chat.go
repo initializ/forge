@@ -35,11 +35,17 @@ func (s *UIServer) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	port, ok := s.pm.GetPort(agentID)
-	if !ok {
+	agents, err := s.scanner.Scan()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	agent := agents[agentID]
+	if agent == nil || agent.Port == 0 {
 		writeError(w, http.StatusBadRequest, "agent is not running")
 		return
 	}
+	port := agent.Port
 
 	// Generate session ID if not provided.
 	sessionID := req.SessionID

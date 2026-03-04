@@ -25,7 +25,6 @@ func (s *UIServer) handleListAgents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.pm.MergeState(agents)
 
 	// Convert to sorted slice
 	list := make([]*AgentInfo, 0, len(agents))
@@ -52,7 +51,6 @@ func (s *UIServer) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.pm.MergeState(agents)
 
 	agent, ok := agents[id]
 	if !ok {
@@ -89,16 +87,19 @@ func (s *UIServer) handleStartAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If agent needs a passphrase and one was provided, set it in the environment
-	// so OverlaySecretsToEnv can decrypt secrets.enc.
-	if req.Passphrase != "" {
-		_ = os.Setenv("FORGE_PASSPHRASE", req.Passphrase)
-	} else if agent.NeedsPassphrase && os.Getenv("FORGE_PASSPHRASE") == "" {
+	// If agent needs a passphrase, require one.
+	if agent.NeedsPassphrase && req.Passphrase == "" && os.Getenv("FORGE_PASSPHRASE") == "" {
 		writeError(w, http.StatusBadRequest, "passphrase required for encrypted secrets")
 		return
 	}
 
-	if err := s.pm.Start(id, agent); err != nil {
+	// Pass passphrase to the daemon process via env var.
+	passphrase := req.Passphrase
+	if passphrase == "" {
+		passphrase = os.Getenv("FORGE_PASSPHRASE")
+	}
+
+	if err := s.pm.Start(id, agent, passphrase); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -114,12 +115,23 @@ func (s *UIServer) handleStopAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.pm.Stop(id); err != nil {
+	agents, err := s.scanner.Scan()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	agent, ok := agents[id]
+	if !ok {
+		writeError(w, http.StatusNotFound, "agent not found")
+		return
+	}
+
+	if err := s.pm.Stop(id, agent.Directory); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"status": "stopping", "agent_id": id})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "stopped", "agent_id": id})
 }
 
 // handleRescan forces a workspace re-scan and returns the updated agent list.
@@ -129,7 +141,6 @@ func (s *UIServer) handleRescan(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.pm.MergeState(agents)
 
 	list := make([]*AgentInfo, 0, len(agents))
 	for _, a := range agents {
@@ -180,7 +191,6 @@ func (s *UIServer) handleSSE(w http.ResponseWriter, r *http.Request) {
 func (s *UIServer) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	running := 0
 	agents, _ := s.scanner.Scan()
-	s.pm.MergeState(agents)
 	for _, a := range agents {
 		if a.Status == StateRunning || a.Status == StateStarting {
 			running++
@@ -189,5 +199,6 @@ func (s *UIServer) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":         "ok",
 		"agents_running": running,
+		"version":        s.cfg.Version,
 	})
 }

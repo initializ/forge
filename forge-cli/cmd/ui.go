@@ -6,13 +6,16 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/initializ/forge/forge-cli/config"
 	"github.com/initializ/forge/forge-cli/internal/tui"
 	"github.com/initializ/forge/forge-cli/runtime"
+	"github.com/initializ/forge/forge-core/llm"
+	"github.com/initializ/forge/forge-core/llm/providers"
+	coreruntime "github.com/initializ/forge/forge-core/runtime"
 	"github.com/initializ/forge/forge-core/util"
-	"github.com/initializ/forge/forge-core/validate"
 	forgeui "github.com/initializ/forge/forge-ui"
 	"github.com/spf13/cobra"
 )
@@ -52,49 +55,10 @@ func runUI(cmd *cobra.Command, args []string) error {
 	}
 	workDir = absDir
 
-	// Build the AgentStartFunc that wires into forge-cli's runtime.
-	startFunc := func(ctx context.Context, agentDir string, port int) error {
-		cfgPath := filepath.Join(agentDir, "forge.yaml")
-		cfg, err := config.LoadForgeConfig(cfgPath)
-		if err != nil {
-			return fmt.Errorf("loading config: %w", err)
-		}
-
-		result := validate.ValidateForgeConfig(cfg)
-		if !result.IsValid() {
-			for _, e := range result.Errors {
-				fmt.Fprintf(os.Stderr, "[%s] ERROR: %s\n", cfg.AgentID, e)
-			}
-			return fmt.Errorf("config validation failed: %d error(s)", len(result.Errors))
-		}
-
-		// Load .env
-		envPath := filepath.Join(agentDir, ".env")
-		envVars, err := runtime.LoadEnvFile(envPath)
-		if err != nil {
-			return fmt.Errorf("loading env: %w", err)
-		}
-		for k, v := range envVars {
-			if os.Getenv(k) == "" {
-				_ = os.Setenv(k, v)
-			}
-		}
-
-		// Overlay secrets
-		runtime.OverlaySecretsToEnv(cfg, agentDir)
-
-		runner, err := runtime.NewRunner(runtime.RunnerConfig{
-			Config:      cfg,
-			WorkDir:     agentDir,
-			Port:        port,
-			EnvFilePath: envPath,
-			Verbose:     verbose,
-		})
-		if err != nil {
-			return fmt.Errorf("creating runner: %w", err)
-		}
-
-		return runner.Run(ctx)
+	// Find forge executable path for daemon management.
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("finding forge executable: %w", err)
 	}
 
 	// Build the AgentCreateFunc that wraps scaffold() from init.go.
@@ -168,14 +132,135 @@ func runUI(cmd *cobra.Command, args []string) error {
 		return runOAuthFlow(provider)
 	}
 
+	// Build the LLMStreamFunc for skill builder conversations.
+	llmStreamFunc := func(ctx context.Context, opts forgeui.LLMStreamOptions) error {
+		// Load agent config
+		cfgPath := filepath.Join(opts.AgentDir, "forge.yaml")
+		cfg, err := config.LoadForgeConfig(cfgPath)
+		if err != nil {
+			return fmt.Errorf("loading config: %w", err)
+		}
+
+		// Load .env
+		envPath := filepath.Join(opts.AgentDir, ".env")
+		envVars, err := runtime.LoadEnvFile(envPath)
+		if err != nil {
+			return fmt.Errorf("loading env: %w", err)
+		}
+		for k, v := range envVars {
+			if os.Getenv(k) == "" {
+				_ = os.Setenv(k, v)
+			}
+		}
+
+		// Overlay encrypted secrets
+		runtime.OverlaySecretsToEnv(cfg, opts.AgentDir)
+
+		// Build env map for model resolution
+		envMap := make(map[string]string)
+		for k, v := range envVars {
+			envMap[k] = v
+		}
+		// Include OS env vars that may have been set by overlay
+		for _, kv := range os.Environ() {
+			parts := strings.SplitN(kv, "=", 2)
+			if len(parts) == 2 {
+				if _, exists := envMap[parts[0]]; !exists {
+					envMap[parts[0]] = parts[1]
+				}
+			}
+		}
+
+		mc := coreruntime.ResolveModelConfig(cfg, envMap, "")
+		if mc == nil {
+			return fmt.Errorf("unable to resolve model configuration")
+		}
+
+		mc.Client.Model = forgeui.SkillBuilderCodegenModel(mc.Provider, mc.Client.Model)
+
+		client, err := providers.NewClient(mc.Provider, mc.Client)
+		if err != nil {
+			return fmt.Errorf("creating LLM client: %w", err)
+		}
+
+		// Build chat request with system prompt + conversation messages
+		messages := []llm.ChatMessage{
+			{Role: "system", Content: opts.SystemPrompt},
+		}
+		for _, m := range opts.Messages {
+			messages = append(messages, llm.ChatMessage{
+				Role:    m.Role,
+				Content: m.Content,
+			})
+		}
+
+		req := &llm.ChatRequest{
+			Model:    mc.Client.Model,
+			Messages: messages,
+			Stream:   true,
+		}
+
+		ch, err := client.ChatStream(ctx, req)
+		if err != nil {
+			return fmt.Errorf("starting LLM stream: %w", err)
+		}
+
+		var fullResponse strings.Builder
+		for delta := range ch {
+			if delta.Content != "" {
+				fullResponse.WriteString(delta.Content)
+				if opts.OnChunk != nil {
+					opts.OnChunk(delta.Content)
+				}
+			}
+		}
+
+		if opts.OnDone != nil {
+			opts.OnDone(fullResponse.String())
+		}
+
+		return nil
+	}
+
+	// Build the SkillSaveFunc for saving generated skills.
+	skillSaveFunc := func(opts forgeui.SkillSaveOptions) error {
+		skillDir := filepath.Join(opts.AgentDir, "skills", opts.SkillName)
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			return fmt.Errorf("creating skill directory: %w", err)
+		}
+
+		skillPath := filepath.Join(skillDir, "SKILL.md")
+		if err := os.WriteFile(skillPath, []byte(opts.SkillMD), 0o644); err != nil {
+			return fmt.Errorf("writing SKILL.md: %w", err)
+		}
+
+		if len(opts.Scripts) > 0 {
+			scriptsDir := filepath.Join(skillDir, "scripts")
+			if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+				return fmt.Errorf("creating scripts directory: %w", err)
+			}
+			for filename, content := range opts.Scripts {
+				scriptPath := filepath.Join(scriptsDir, filename)
+				if err := os.WriteFile(scriptPath, []byte(content), 0o755); err != nil {
+					return fmt.Errorf("writing script %s: %w", filename, err)
+				}
+			}
+		}
+
+		return nil
+	}
+
 	server := forgeui.NewUIServer(forgeui.UIServerConfig{
-		Port:        uiPort,
-		WorkDir:     workDir,
-		StartFunc:   startFunc,
-		CreateFunc:  createFunc,
-		OAuthFunc:   oauthFunc,
-		AgentPort:   9100,
-		OpenBrowser: !uiNoOpen,
+		Port:          uiPort,
+		WorkDir:       workDir,
+		ExePath:       exePath,
+		Version:       appVersion,
+		CreateFunc:    createFunc,
+		OAuthFunc:     oauthFunc,
+		LLMStreamFunc: llmStreamFunc,
+		SkillSaveFunc: skillSaveFunc,
+		AgentPort:     9100,
+		OpenBrowser:   !uiNoOpen,
 	})
 
 	// Signal handling

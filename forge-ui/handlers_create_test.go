@@ -2,7 +2,6 @@ package forgeui
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -28,11 +27,6 @@ model:
   name: gpt-4o
 `)
 
-	mockStart := func(ctx context.Context, agentDir string, port int) error {
-		<-ctx.Done()
-		return nil
-	}
-
 	mockCreate := func(opts AgentCreateOptions) (string, error) {
 		dir := filepath.Join(root, opts.Name)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -51,7 +45,7 @@ model:
 	srv := NewUIServer(UIServerConfig{
 		Port:       4200,
 		WorkDir:    root,
-		StartFunc:  mockStart,
+		ExePath:    "/usr/bin/false",
 		CreateFunc: mockCreate,
 		AgentPort:  9100,
 	})

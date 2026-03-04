@@ -1,10 +1,10 @@
 package forgeui
 
 import (
-	"context"
 	"fmt"
+	"os/exec"
+	"strconv"
 	"sync"
-	"time"
 )
 
 // PortAllocator manages port assignment for agent processes.
@@ -43,167 +43,87 @@ func (pa *PortAllocator) Release(port int) {
 	delete(pa.used, port)
 }
 
-// managedAgent tracks a running agent's context and cancel func.
-type managedAgent struct {
-	cancel context.CancelFunc
-	port   int
-}
-
-// ProcessManager manages agent process lifecycles.
+// ProcessManager manages agent process lifecycles via `forge serve` commands.
 type ProcessManager struct {
-	mu        sync.RWMutex
-	startFunc AgentStartFunc
-	agents    map[string]*managedAgent
-	states    map[string]*AgentInfo
-	ports     *PortAllocator
-	broker    *SSEBroker
+	mu      sync.Mutex
+	exePath string
+	ports   *PortAllocator
+	broker  *SSEBroker
+	// allocated tracks which ports were allocated by this PM so we can release them.
+	allocated map[string]int
 }
 
 // NewProcessManager creates a ProcessManager.
-func NewProcessManager(startFunc AgentStartFunc, broker *SSEBroker, basePort int) *ProcessManager {
+func NewProcessManager(exePath string, broker *SSEBroker, basePort int) *ProcessManager {
 	return &ProcessManager{
-		startFunc: startFunc,
-		agents:    make(map[string]*managedAgent),
-		states:    make(map[string]*AgentInfo),
+		exePath:   exePath,
 		ports:     NewPortAllocator(basePort),
 		broker:    broker,
+		allocated: make(map[string]int),
 	}
 }
 
-// Start launches an agent. Returns an error if the agent is already running.
-func (pm *ProcessManager) Start(agentID string, info *AgentInfo) error {
+// Start launches an agent via `forge serve start`.
+func (pm *ProcessManager) Start(agentID string, info *AgentInfo, passphrase string) error {
 	pm.mu.Lock()
-	if _, ok := pm.agents[agentID]; ok {
-		pm.mu.Unlock()
-		return fmt.Errorf("agent %s is already running", agentID)
-	}
+	defer pm.mu.Unlock()
 
 	port := pm.ports.Allocate()
-	ctx, cancel := context.WithCancel(context.Background())
+	pm.allocated[agentID] = port
 
-	pm.agents[agentID] = &managedAgent{cancel: cancel, port: port}
+	cmd := exec.Command(pm.exePath, "serve", "start", "--port", strconv.Itoa(port), "--no-auth")
+	cmd.Dir = info.Directory
 
-	// Update state
-	now := time.Now()
-	info.Status = StateStarting
+	if passphrase != "" {
+		cmd.Env = append(cmd.Environ(), "FORGE_PASSPHRASE="+passphrase)
+	}
+
+	if err := cmd.Run(); err != nil {
+		pm.ports.Release(port)
+		delete(pm.allocated, agentID)
+
+		info.Status = StateErrored
+		info.Error = err.Error()
+		pm.broker.Broadcast(SSEEvent{Type: "agent_status", Data: info})
+
+		return fmt.Errorf("forge serve start failed: %w", err)
+	}
+
+	info.Status = StateRunning
 	info.Port = port
 	info.Error = ""
-	info.StartedAt = &now
-	pm.states[agentID] = info
-	pm.mu.Unlock()
-
 	pm.broker.Broadcast(SSEEvent{Type: "agent_status", Data: info})
 
-	// Launch in goroutine — startFunc blocks until agent exits
-	go func() {
-		// Brief delay to allow status propagation, then set running
-		time.Sleep(500 * time.Millisecond)
-		pm.mu.Lock()
-		if s, ok := pm.states[agentID]; ok && s.Status == StateStarting {
-			s.Status = StateRunning
-			pm.broker.Broadcast(SSEEvent{Type: "agent_status", Data: s})
-		}
-		pm.mu.Unlock()
+	return nil
+}
 
-		err := pm.startFunc(ctx, info.Directory, port)
+// Stop stops an agent via `forge serve stop`.
+func (pm *ProcessManager) Stop(agentID string, agentDir string) error {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
 
-		pm.mu.Lock()
-		delete(pm.agents, agentID)
+	cmd := exec.Command(pm.exePath, "serve", "stop")
+	cmd.Dir = agentDir
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("forge serve stop failed: %w", err)
+	}
+
+	if port, ok := pm.allocated[agentID]; ok {
 		pm.ports.Release(port)
+		delete(pm.allocated, agentID)
+	}
 
-		if s, ok := pm.states[agentID]; ok {
-			s.Port = 0
-			s.StartedAt = nil
-			if err != nil && ctx.Err() == nil {
-				// Agent exited with error (not from cancellation)
-				s.Status = StateErrored
-				s.Error = err.Error()
-			} else {
-				s.Status = StateStopped
-				s.Error = ""
-			}
-			pm.broker.Broadcast(SSEEvent{Type: "agent_status", Data: s})
-		}
-		pm.mu.Unlock()
-	}()
+	pm.broker.Broadcast(SSEEvent{Type: "agent_status", Data: &AgentInfo{
+		ID:        agentID,
+		Directory: agentDir,
+		Status:    StateStopped,
+	}})
 
 	return nil
 }
 
-// Stop signals an agent to stop.
-func (pm *ProcessManager) Stop(agentID string) error {
-	pm.mu.Lock()
-	managed, ok := pm.agents[agentID]
-	if !ok {
-		pm.mu.Unlock()
-		return fmt.Errorf("agent %s is not running", agentID)
-	}
-
-	if s, ok := pm.states[agentID]; ok {
-		s.Status = StateStopping
-		pm.broker.Broadcast(SSEEvent{Type: "agent_status", Data: s})
-	}
-	pm.mu.Unlock()
-
-	managed.cancel()
-	return nil
-}
-
-// GetPort returns the port of a running agent.
-func (pm *ProcessManager) GetPort(agentID string) (int, bool) {
-	pm.mu.RLock()
-	defer pm.mu.RUnlock()
-	if a, ok := pm.agents[agentID]; ok {
-		return a.port, true
-	}
-	return 0, false
-}
-
-// Status returns the current state of an agent.
-func (pm *ProcessManager) Status(agentID string) ProcessState {
-	pm.mu.RLock()
-	defer pm.mu.RUnlock()
-	if s, ok := pm.states[agentID]; ok {
-		return s.Status
-	}
-	return StateStopped
-}
-
-// GetState returns a copy of the agent's state info, or nil.
-func (pm *ProcessManager) GetState(agentID string) *AgentInfo {
-	pm.mu.RLock()
-	defer pm.mu.RUnlock()
-	if s, ok := pm.states[agentID]; ok {
-		cp := *s
-		return &cp
-	}
-	return nil
-}
-
-// MergeState merges process manager state into a discovered agent map.
-func (pm *ProcessManager) MergeState(agents map[string]*AgentInfo) {
-	pm.mu.RLock()
-	defer pm.mu.RUnlock()
-	for id, state := range pm.states {
-		if agent, ok := agents[id]; ok {
-			agent.Status = state.Status
-			agent.Port = state.Port
-			agent.Error = state.Error
-			agent.StartedAt = state.StartedAt
-		}
-	}
-}
-
-// StopAll stops all running agents.
+// StopAll is a no-op — agents intentionally survive UI shutdown.
 func (pm *ProcessManager) StopAll() {
-	pm.mu.Lock()
-	agents := make(map[string]*managedAgent, len(pm.agents))
-	for id, a := range pm.agents {
-		agents[id] = a
-	}
-	pm.mu.Unlock()
-
-	for _, a := range agents {
-		a.cancel()
-	}
+	// Agents are daemon processes that survive UI shutdown.
 }

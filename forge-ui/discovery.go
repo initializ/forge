@@ -1,12 +1,23 @@
 package forgeui
 
 import (
+	"encoding/json"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/initializ/forge/forge-core/types"
 )
+
+// externalDaemonState mirrors the daemonState written by `forge serve start`.
+type externalDaemonState struct {
+	PID  int    `json:"pid"`
+	Port int    `json:"port"`
+	Host string `json:"host"`
+}
 
 // Scanner discovers agents in a workspace directory.
 type Scanner struct {
@@ -90,7 +101,42 @@ func (s *Scanner) scanDir(dir string) (*AgentInfo, error) {
 		NeedsPassphrase: needsPassphrase(cfg, dir),
 	}
 
+	// Detect externally-running agents (started via `forge serve` or `forge run`).
+	if port, ok := detectExternalAgent(dir); ok {
+		info.Status = StateRunning
+		info.Port = port
+	}
+
 	return info, nil
+}
+
+// detectExternalAgent checks whether an agent in dir is running externally
+// (started via CLI rather than the UI). It reads .forge/serve.json and
+// verifies the port is still listening. Returns the port and true if running.
+func detectExternalAgent(dir string) (int, bool) {
+	statePath := filepath.Join(dir, ".forge", "serve.json")
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		return 0, false
+	}
+
+	var state externalDaemonState
+	if err := json.Unmarshal(data, &state); err != nil || state.Port <= 0 {
+		return 0, false
+	}
+
+	host := state.Host
+	if host == "" {
+		host = "127.0.0.1"
+	}
+
+	// Verify the port is actually listening (fast TCP probe).
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", host, state.Port), 500*time.Millisecond)
+	if err != nil {
+		return 0, false
+	}
+	_ = conn.Close()
+	return state.Port, true
 }
 
 // needsPassphrase returns true if the agent uses encrypted-file secrets

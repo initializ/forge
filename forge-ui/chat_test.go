@@ -2,7 +2,6 @@ package forgeui
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -22,7 +21,7 @@ func newTestServer(t *testing.T) (*UIServer, string) {
 
 	broker := NewSSEBroker()
 	scanner := NewScanner(dir)
-	pm := NewProcessManager(nil, broker, 9100)
+	pm := NewProcessManager("/usr/bin/false", broker, 9100)
 
 	s := &UIServer{
 		cfg:     UIServerConfig{WorkDir: dir},
@@ -285,7 +284,6 @@ func TestHandleChatProxy(t *testing.T) {
 	defer mockAgent.Close()
 
 	// Extract the port from the mock server URL.
-	// The mock server URL is like http://127.0.0.1:PORT
 	urlParts := strings.Split(mockAgent.URL, ":")
 	portStr := urlParts[len(urlParts)-1]
 	mockPort, err := strconv.Atoi(portStr)
@@ -293,24 +291,39 @@ func TestHandleChatProxy(t *testing.T) {
 		t.Fatalf("failed to parse mock server port: %v", err)
 	}
 
-	// Create server with a process manager that knows about the mock agent.
+	// Create a workspace dir with an agent and a .forge/serve.json
+	// so detectExternalAgent() finds it as running.
 	dir := t.TempDir()
+	agentDir := filepath.Join(dir, "mock-agent")
+	if err := os.MkdirAll(filepath.Join(agentDir, ".forge"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write forge.yaml
+	config := `agent_id: mock-agent
+version: 0.1.0
+framework: forge
+model:
+  provider: openai
+  name: gpt-4o
+`
+	if err := os.WriteFile(filepath.Join(agentDir, "forge.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write serve.json so the scanner detects the agent as running on mockPort.
+	serveState, _ := json.Marshal(map[string]any{
+		"pid":  os.Getpid(),
+		"port": mockPort,
+		"host": "127.0.0.1",
+	})
+	if err := os.WriteFile(filepath.Join(agentDir, ".forge", "serve.json"), serveState, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	broker := NewSSEBroker()
 	scanner := NewScanner(dir)
-	pm := NewProcessManager(nil, broker, 9100)
-
-	// Manually inject the mock agent into process manager.
-	pm.mu.Lock()
-	pm.agents["mock-agent"] = &managedAgent{
-		cancel: func() {},
-		port:   mockPort,
-	}
-	pm.states["mock-agent"] = &AgentInfo{
-		ID:     "mock-agent",
-		Status: StateRunning,
-		Port:   mockPort,
-	}
-	pm.mu.Unlock()
+	pm := NewProcessManager("/usr/bin/false", broker, 9100)
 
 	s := &UIServer{
 		cfg:     UIServerConfig{WorkDir: dir},
@@ -491,65 +504,6 @@ secrets:
 	}
 }
 
-func TestHandleStartAgentWithPassphrase(t *testing.T) {
-	s, dir := newTestServer(t)
-	agentDir := createTestAgent(t, dir, "secret-agent")
-
-	// Add encrypted-file to secrets providers.
-	config := `agent_id: secret-agent
-version: 0.1.0
-framework: forge
-model:
-  provider: openai
-  name: gpt-4o
-secrets:
-  providers:
-    - encrypted-file
-`
-	if err := os.WriteFile(filepath.Join(agentDir, "forge.yaml"), []byte(config), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	secretsDir := filepath.Join(agentDir, ".forge")
-	if err := os.MkdirAll(secretsDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(secretsDir, "secrets.enc"), []byte("encrypted-data"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	// Clear FORGE_PASSPHRASE.
-	t.Setenv("FORGE_PASSPHRASE", "")
-	_ = os.Unsetenv("FORGE_PASSPHRASE")
-
-	// Provide a mock startFunc that just blocks until cancelled.
-	s.pm.startFunc = func(ctx context.Context, agentDir string, port int) error {
-		<-ctx.Done()
-		return nil
-	}
-
-	// Start with passphrase in body — should succeed.
-	body := `{"passphrase":"my-secret"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/agents/secret-agent/start", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.SetPathValue("id", "secret-agent")
-	rec := httptest.NewRecorder()
-
-	s.handleStartAgent(rec, req)
-
-	if rec.Code != http.StatusAccepted {
-		t.Errorf("expected 202, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	// Verify FORGE_PASSPHRASE was set.
-	if got := os.Getenv("FORGE_PASSPHRASE"); got != "my-secret" {
-		t.Errorf("expected FORGE_PASSPHRASE='my-secret', got %q", got)
-	}
-
-	// Cleanup: stop the agent.
-	_ = s.pm.Stop("secret-agent")
-}
-
 func TestNeedsPassphraseDetection(t *testing.T) {
 	dir := t.TempDir()
 
@@ -618,29 +572,5 @@ secrets:
 	}
 	if !encAgent.NeedsPassphrase {
 		t.Error("expected NeedsPassphrase=true with local secrets.enc")
-	}
-}
-
-func TestGetPort(t *testing.T) {
-	broker := NewSSEBroker()
-	pm := NewProcessManager(nil, broker, 9100)
-
-	// Not running — should return false.
-	_, ok := pm.GetPort("nonexistent")
-	if ok {
-		t.Error("expected GetPort to return false for nonexistent agent")
-	}
-
-	// Manually add a managed agent.
-	pm.mu.Lock()
-	pm.agents["test"] = &managedAgent{cancel: func() {}, port: 9200}
-	pm.mu.Unlock()
-
-	port, ok := pm.GetPort("test")
-	if !ok {
-		t.Error("expected GetPort to return true for existing agent")
-	}
-	if port != 9200 {
-		t.Errorf("expected port 9200, got %d", port)
 	}
 }

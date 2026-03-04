@@ -31,11 +31,12 @@ type UIServerConfig struct {
 
 // UIServer serves the Forge dashboard UI and API.
 type UIServer struct {
-	cfg     UIServerConfig
-	scanner *Scanner
-	pm      *ProcessManager
-	broker  *SSEBroker
-	srv     *http.Server
+	cfg           UIServerConfig
+	scanner       *Scanner
+	pm            *ProcessManager
+	broker        *SSEBroker
+	srv           *http.Server
+	updateChecker *updateInfo
 }
 
 // NewUIServer creates a UIServer with the given configuration.
@@ -51,11 +52,17 @@ func NewUIServer(cfg UIServerConfig) *UIServer {
 	scanner := NewScanner(cfg.WorkDir)
 	pm := NewProcessManager(cfg.ExePath, broker, cfg.AgentPort)
 
+	var uc *updateInfo
+	if cfg.Version != "" && cfg.Version != "dev" {
+		uc = newUpdateChecker(cfg.Version, "initializ", "forge")
+	}
+
 	return &UIServer{
-		cfg:     cfg,
-		scanner: scanner,
-		pm:      pm,
-		broker:  broker,
+		cfg:           cfg,
+		scanner:       scanner,
+		pm:            pm,
+		broker:        broker,
+		updateChecker: uc,
 	}
 }
 
@@ -85,6 +92,9 @@ func (s *UIServer) Start(ctx context.Context) error {
 	mux.HandleFunc("GET /api/skills/{name}/content", s.handleGetSkillContent)
 	mux.HandleFunc("GET /api/tools", s.handleListBuiltinTools)
 	mux.HandleFunc("POST /api/oauth/start", s.handleOAuthStart)
+
+	// Update check
+	mux.HandleFunc("GET /api/update-check", s.handleUpdateCheck)
 
 	// Skill Builder routes
 	mux.HandleFunc("POST /api/agents/{id}/skill-builder/chat", s.handleSkillBuilderChat)

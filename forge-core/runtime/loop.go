@@ -31,6 +31,7 @@ type LLMExecutor struct {
 	modelName          string // resolved model name for context budget
 	charBudget         int    // resolved character budget
 	maxToolResultChars int    // computed from char budget
+	filesDir           string // directory for file_create output
 }
 
 // LLMExecutorConfig configures the LLM executor.
@@ -45,6 +46,7 @@ type LLMExecutorConfig struct {
 	Logger        Logger
 	ModelName     string // model name for context-aware budgeting
 	CharBudget    int    // explicit char budget override (0 = auto from model)
+	FilesDir      string // directory for file_create output (default: $TMPDIR/forge-files)
 }
 
 // NewLLMExecutor creates a new LLMExecutor with the given configuration.
@@ -93,11 +95,16 @@ func NewLLMExecutor(cfg LLMExecutorConfig) *LLMExecutor {
 		modelName:          cfg.ModelName,
 		charBudget:         budget,
 		maxToolResultChars: toolLimit,
+		filesDir:           cfg.FilesDir,
 	}
 }
 
 // Execute processes a message through the LLM agent loop.
 func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Message) (*a2a.Message, error) {
+	if e.filesDir != "" {
+		ctx = WithFilesDir(ctx, e.filesDir)
+	}
+
 	mem := NewMemory(e.systemPrompt, e.charBudget, e.modelName)
 
 	// Try to recover session from disk. If found, the disk snapshot
@@ -239,13 +246,31 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 				return nil, fmt.Errorf("after tool exec hook: %w", err)
 			}
 
-			// Track large tool outputs for pass-through in the response.
-			if len(result) > largeToolOutputThreshold {
+			// Handle file_create tool: always create a file part.
+			// For other tools with large output, detect content type.
+			if tc.Function.Name == "file_create" {
+				var fc struct {
+					Filename string `json:"filename"`
+					Content  string `json:"content"`
+					MimeType string `json:"mime_type"`
+				}
+				if err := json.Unmarshal([]byte(result), &fc); err == nil && fc.Filename != "" {
+					largeToolOutputs = append(largeToolOutputs, a2a.Part{
+						Kind: a2a.PartKindFile,
+						File: &a2a.FileContent{
+							Name:     fc.Filename,
+							MimeType: fc.MimeType,
+							Bytes:    []byte(fc.Content),
+						},
+					})
+				}
+			} else if len(result) > largeToolOutputThreshold {
+				name, mime := detectFileType(result, tc.Function.Name)
 				largeToolOutputs = append(largeToolOutputs, a2a.Part{
 					Kind: a2a.PartKindFile,
 					File: &a2a.FileContent{
-						Name:     tc.Function.Name + "-output.md",
-						MimeType: "text/markdown",
+						Name:     name,
+						MimeType: mime,
 						Bytes:    []byte(result),
 					},
 				})
@@ -325,6 +350,23 @@ func a2aMessageToLLM(msg a2a.Message) llm.ChatMessage {
 		Role:    role,
 		Content: strings.Join(textParts, "\n"),
 	}
+}
+
+// detectFileType inspects tool output content and returns an appropriate
+// filename and MIME type. JSON and YAML content gets typed extensions;
+// everything else defaults to markdown.
+func detectFileType(content, toolName string) (filename, mimeType string) {
+	trimmed := strings.TrimSpace(content)
+	if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
+		// Quick check: try to parse as JSON.
+		if json.Valid([]byte(trimmed)) {
+			return toolName + "-output.json", "application/json"
+		}
+	}
+	if strings.HasPrefix(trimmed, "---") {
+		return toolName + "-output.yaml", "text/yaml"
+	}
+	return toolName + "-output.md", "text/markdown"
 }
 
 // llmMessageToA2A converts an LLM chat message to an A2A message.

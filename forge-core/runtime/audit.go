@@ -64,9 +64,10 @@ func (a *AuditLogger) Emit(event AuditEvent) {
 	a.mu.Unlock()
 }
 
-// Context key types for correlation and task IDs.
+// Context key types for correlation IDs, task IDs, and file directories.
 type correlationIDKey struct{}
 type taskIDKey struct{}
+type filesDirKey struct{}
 
 // WithCorrelationID stores a correlation ID in the context.
 func WithCorrelationID(ctx context.Context, id string) context.Context {
@@ -92,6 +93,20 @@ func WithTaskID(ctx context.Context, id string) context.Context {
 func TaskIDFromContext(ctx context.Context) string {
 	if id, ok := ctx.Value(taskIDKey{}).(string); ok {
 		return id
+	}
+	return ""
+}
+
+// WithFilesDir stores a files directory path in the context.
+func WithFilesDir(ctx context.Context, dir string) context.Context {
+	return context.WithValue(ctx, filesDirKey{}, dir)
+}
+
+// FilesDirFromContext retrieves the files directory from the context.
+// Returns "" if not set.
+func FilesDirFromContext(ctx context.Context) string {
+	if dir, ok := ctx.Value(filesDirKey{}).(string); ok {
+		return dir
 	}
 	return ""
 }

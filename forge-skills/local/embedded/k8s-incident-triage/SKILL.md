@@ -1,5 +1,6 @@
 ---
 name: k8s-incident-triage
+icon: ☸️
 category: sre
 tags:
   - kubernetes

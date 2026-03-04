@@ -7,6 +7,7 @@ type SkillDescriptor struct {
 	Description   string
 	Category      string
 	Tags          []string
+	Icon          string
 	RequiredEnv   []string
 	OneOfEnv      []string
 	OptionalEnv   []string
@@ -36,6 +37,7 @@ type SkillMetadata struct {
 	Description string                    `yaml:"description,omitempty"`
 	Category    string                    `yaml:"category,omitempty"`
 	Tags        []string                  `yaml:"tags,omitempty"`
+	Icon        string                    `yaml:"icon,omitempty"`
 	Metadata    map[string]map[string]any `yaml:"metadata,omitempty"`
 }
 

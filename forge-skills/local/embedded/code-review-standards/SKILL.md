@@ -1,5 +1,6 @@
 ---
 name: code-review-standards
+icon: 📏
 category: developer
 tags:
   - code-review

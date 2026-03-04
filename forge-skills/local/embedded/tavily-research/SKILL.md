@@ -1,5 +1,6 @@
 ---
 name: tavily-research
+icon: 🔬
 description: Deep multi-source research using Tavily Research API
 metadata:
   forge:

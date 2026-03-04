@@ -1,5 +1,6 @@
 ---
 name: github
+icon: 🐙
 description: Create issues, PRs, and query repositories
 metadata:
   forge:

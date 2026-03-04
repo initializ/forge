@@ -1,5 +1,6 @@
 ---
 name: tavily-search
+icon: 🔍
 description: Search the web using Tavily AI search API
 metadata:
   forge:

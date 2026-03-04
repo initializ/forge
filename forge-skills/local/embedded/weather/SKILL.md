@@ -1,5 +1,6 @@
 ---
 name: weather
+icon: 🌤️
 description: Get current weather and forecasts
 metadata:
   forge:

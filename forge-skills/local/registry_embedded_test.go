@@ -81,6 +81,9 @@ func TestEmbeddedRegistry_GitHubDetails(t *testing.T) {
 	if s.Description != "Create issues, PRs, and query repositories" {
 		t.Errorf("Description = %q", s.Description)
 	}
+	if s.Icon != "🐙" {
+		t.Errorf("Icon = %q, want 🐙", s.Icon)
+	}
 	if len(s.RequiredEnv) != 1 || s.RequiredEnv[0] != "GH_TOKEN" {
 		t.Errorf("RequiredEnv = %v", s.RequiredEnv)
 	}
@@ -187,6 +190,24 @@ func TestEmbeddedRegistry_TavilyResearchDetails(t *testing.T) {
 	// Check timeout hint
 	if s.TimeoutHint != 300 {
 		t.Errorf("TimeoutHint = %d, want 300", s.TimeoutHint)
+	}
+}
+
+func TestEmbeddedRegistry_AllSkillsHaveIcons(t *testing.T) {
+	reg, err := NewEmbeddedRegistry()
+	if err != nil {
+		t.Fatalf("NewEmbeddedRegistry error: %v", err)
+	}
+
+	skills, err := reg.List()
+	if err != nil {
+		t.Fatalf("List error: %v", err)
+	}
+
+	for _, s := range skills {
+		if s.Icon == "" {
+			t.Errorf("skill %q has no icon — add 'icon:' to its SKILL.md frontmatter", s.Name)
+		}
 	}
 }
 

@@ -1,5 +1,6 @@
 ---
 name: my-skill
+# icon: 🔧                              # Optional: emoji shown in TUI skill picker
 # category: ops                        # Optional: sre, research, ops, dev, security, etc.
 # tags:                                 # Optional: discovery keywords
 #   - example

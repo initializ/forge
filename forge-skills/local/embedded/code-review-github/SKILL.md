@@ -1,5 +1,6 @@
 ---
 name: code-review-github
+icon: 🐙
 category: developer
 tags:
   - code-review

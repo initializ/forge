@@ -1,5 +1,6 @@
 ---
 name: k8s-pod-rightsizer
+icon: ⚖️
 category: sre
 tags:
   - kubernetes

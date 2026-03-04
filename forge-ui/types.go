@@ -84,6 +84,7 @@ type AgentCreateOptions struct {
 	ModelName         string             `json:"model_name,omitempty"`
 	APIKey            string             `json:"api_key,omitempty"`
 	AuthMethod        string             `json:"auth_method,omitempty"` // "apikey" or "oauth"
+	OrganizationID    string             `json:"organization_id,omitempty"`
 	Channels          []string           `json:"channels,omitempty"`
 	BuiltinTools      []string           `json:"builtin_tools,omitempty"`
 	Skills            []string           `json:"skills,omitempty"`
@@ -147,13 +148,14 @@ type ModelOption struct {
 
 // ProviderModels holds model lists for a specific provider.
 type ProviderModels struct {
-	Default    string        `json:"default"`
-	APIKey     []ModelOption `json:"api_key,omitempty"`
-	OAuth      []ModelOption `json:"oauth,omitempty"`
-	HasOAuth   bool          `json:"has_oauth,omitempty"`
-	NeedsKey   bool          `json:"needs_key"`
-	IsCustom   bool          `json:"is_custom,omitempty"`
-	BaseURLEnv string        `json:"base_url_env,omitempty"` // e.g. "MODEL_BASE_URL"
+	Default       string        `json:"default"`
+	APIKey        []ModelOption `json:"api_key,omitempty"`
+	OAuth         []ModelOption `json:"oauth,omitempty"`
+	HasOAuth      bool          `json:"has_oauth,omitempty"`
+	NeedsKey      bool          `json:"needs_key"`
+	IsCustom      bool          `json:"is_custom,omitempty"`
+	BaseURLEnv    string        `json:"base_url_env,omitempty"` // e.g. "MODEL_BASE_URL"
+	SupportsOrgID bool          `json:"supports_org_id,omitempty"`
 }
 
 // WebSearchProviderOption describes a web search provider.

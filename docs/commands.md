@@ -34,6 +34,7 @@ forge init [name] [flags]
 | `--tools` | | | Builtin tools to enable (e.g., `web_search,http_request`) |
 | `--skills` | | | Registry skills to include (e.g., `github,weather`) |
 | `--api-key` | | | LLM provider API key |
+| `--org-id` | | | OpenAI Organization ID (enterprise) |
 | `--from-skills` | | | Path to a SKILL.md file for auto-configuration |
 | `--non-interactive` | | `false` | Skip interactive prompts |
 
@@ -61,6 +62,13 @@ forge init my-agent \
   --tools web_search,http_request \
   --skills github \
   --api-key sk-... \
+  --non-interactive
+
+# OpenAI enterprise with organization ID
+forge init my-agent \
+  --model-provider openai \
+  --api-key sk-... \
+  --org-id org-xxxxxxxxxxxxxxxxxxxxxxxx \
   --non-interactive
 ```
 

@@ -69,6 +69,12 @@ func (s *ChannelStep) Update(msg tea.Msg) (tui.Step, tea.Cmd) {
 		return s, nil
 	}
 
+	if wsm, ok := msg.(tea.WindowSizeMsg); ok && s.phase == channelSelectPhase {
+		updated, cmd := s.selector.Update(wsm)
+		s.selector = updated
+		return s, cmd
+	}
+
 	switch s.phase {
 	case channelSelectPhase:
 		return s.updateSelectPhase(msg)

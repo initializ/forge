@@ -68,6 +68,10 @@ func ValidateForgeConfig(cfg *types.ForgeConfig) *ValidationResult {
 		r.Warnings = append(r.Warnings, "model.provider is set but model.name is empty")
 	}
 
+	if cfg.Model.OrganizationID != "" && cfg.Model.Provider != "" && cfg.Model.Provider != "openai" {
+		r.Warnings = append(r.Warnings, fmt.Sprintf("model.organization_id is set but provider is %q (only used by openai)", cfg.Model.Provider))
+	}
+
 	if cfg.Framework != "" && !knownFrameworks[cfg.Framework] {
 		r.Warnings = append(r.Warnings, fmt.Sprintf("unknown framework %q (known: forge, crewai, langchain)", cfg.Framework))
 	}

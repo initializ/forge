@@ -16,9 +16,11 @@ entrypoint: "agent.py"              # Required for crewai/langchain, omit for fo
 model:
   provider: "openai"                # openai, anthropic, gemini, ollama, custom
   name: "gpt-4o"                    # Model name
+  organization_id: "org-xxx"        # OpenAI Organization ID (enterprise, optional)
   fallbacks:                        # Fallback providers (optional)
     - provider: "anthropic"
       name: "claude-sonnet-4-20250514"
+      organization_id: ""           # Per-fallback org ID override (optional)
 
 tools:
   - name: "web_search"
@@ -80,6 +82,7 @@ schedules:                          # Recurring scheduled tasks (optional)
 | `FORGE_MEMORY_LONG_TERM` | Set `true` to enable long-term memory |
 | `FORGE_EMBEDDING_PROVIDER` | Override embedding provider |
 | `OPENAI_API_KEY` | OpenAI API key |
+| `OPENAI_ORG_ID` | OpenAI Organization ID (enterprise); overrides `organization_id` in YAML |
 | `ANTHROPIC_API_KEY` | Anthropic API key |
 | `GEMINI_API_KEY` | Google Gemini API key |
 | `TAVILY_API_KEY` | Tavily web search API key |

@@ -73,6 +73,20 @@ hooks.Register(engine.BeforeToolExec, func(ctx context.Context, hctx *engine.Hoo
 })
 ```
 
+## Audit Logging
+
+The runner registers `AfterLLMCall` hooks that emit structured audit events for each LLM interaction. Audit fields include:
+
+| Field | Description |
+|-------|-------------|
+| `provider` | LLM provider name |
+| `model` | Model identifier |
+| `input_tokens` | Prompt token count |
+| `output_tokens` | Completion token count |
+| `organization_id` | OpenAI Organization ID (when set) |
+
+These events are logged via `slog` at Info level and can be consumed by external log aggregators for cost tracking and compliance.
+
 ## Progress Tracking
 
 The runner automatically registers progress hooks that emit real-time status updates during tool execution. Progress events include the tool name, phase (`tool_start` / `tool_end`), and a human-readable status message. These events are streamed to clients via SSE when using the A2A HTTP server, enabling live progress indicators in web and chat UIs.

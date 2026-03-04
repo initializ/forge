@@ -29,9 +29,10 @@ func (s *UIServer) handleGetWizardMeta(w http.ResponseWriter, _ *http.Request) {
 	// Per-provider model lists
 	meta.ProviderModels = map[string]ProviderModels{
 		"openai": {
-			Default:  "gpt-5.2-2025-12-11",
-			NeedsKey: true,
-			HasOAuth: true,
+			Default:       "gpt-5.2-2025-12-11",
+			NeedsKey:      true,
+			HasOAuth:      true,
+			SupportsOrgID: true,
 			APIKey: []ModelOption{
 				{DisplayName: "GPT 5.2", ModelID: "gpt-5.2-2025-12-11"},
 				{DisplayName: "GPT 5 Mini", ModelID: "gpt-5-mini-2025-08-07"},

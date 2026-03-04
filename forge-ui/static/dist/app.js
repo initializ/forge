@@ -1056,6 +1056,7 @@ function CreatePage() {
   const [form, setForm] = useState({
     name: '', framework: 'forge', model_provider: '', model_name: '', api_key: '',
     auth_method: 'apikey', // "apikey" or "oauth"
+    organization_id: '', // OpenAI enterprise org ID
     web_search_provider: '', // "tavily" or "perplexity"
     channels: [], builtin_tools: [], skills: [],
     fallbacks: [], // [{provider, api_key}]
@@ -1357,6 +1358,19 @@ function CreatePage() {
                   onInput=${(e) => updateForm('api_key', e.target.value)} autocomplete="off" />
                 <div style="font-size: 11px; color: var(--text-muted); margin-top: 3px;">
                   Stored in .env as ${keyInfo.envVar}. Leave empty to set later.
+                </div>
+              </div>
+            `}
+
+            ${providerMeta?.supports_org_id && form.auth_method === 'apikey' && html`
+              <div>
+                <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">
+                  Organization ID (optional — enterprise only)
+                </label>
+                <input class="wizard-input" placeholder="org-xxxxxxxxxxxxxxxxxxxxxxxx" value=${form.organization_id}
+                  onInput=${(e) => updateForm('organization_id', e.target.value)} />
+                <div style="font-size: 11px; color: var(--text-muted); margin-top: 3px;">
+                  Stored in .env as OPENAI_ORG_ID. Leave empty if not using an organization.
                 </div>
               </div>
             `}

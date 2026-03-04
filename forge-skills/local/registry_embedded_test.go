@@ -193,6 +193,27 @@ func TestEmbeddedRegistry_TavilyResearchDetails(t *testing.T) {
 	}
 }
 
+func TestEmbeddedRegistry_AllSkillsHaveCategoryAndTags(t *testing.T) {
+	reg, err := NewEmbeddedRegistry()
+	if err != nil {
+		t.Fatalf("NewEmbeddedRegistry error: %v", err)
+	}
+
+	skills, err := reg.List()
+	if err != nil {
+		t.Fatalf("List error: %v", err)
+	}
+
+	for _, s := range skills {
+		if s.Category == "" {
+			t.Errorf("skill %q has no category — add 'category:' to its SKILL.md frontmatter", s.Name)
+		}
+		if len(s.Tags) == 0 {
+			t.Errorf("skill %q has no tags — add 'tags:' to its SKILL.md frontmatter", s.Name)
+		}
+	}
+}
+
 func TestEmbeddedRegistry_AllSkillsHaveIcons(t *testing.T) {
 	reg, err := NewEmbeddedRegistry()
 	if err != nil {

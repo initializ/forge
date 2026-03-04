@@ -1,5 +1,6 @@
 ---
 name: codegen-react
+icon: ⚛️
 category: developer
 tags:
   - code-generation

@@ -838,7 +838,13 @@ func extractLargestFile(msg *a2a.Message) (content, filename string) {
 	}
 	for _, p := range msg.Parts {
 		if p.Kind == a2a.PartKindFile && p.File != nil && len(p.File.Bytes) > len(content) {
-			content = unwrapJSONContent(string(p.File.Bytes))
+			raw := string(p.File.Bytes)
+			// Only unwrap JSON content for markdown files.
+			// Preserve raw content for explicitly typed files (json, yaml, etc.)
+			if strings.HasSuffix(p.File.Name, ".md") {
+				raw = unwrapJSONContent(raw)
+			}
+			content = raw
 			filename = p.File.Name
 		}
 	}

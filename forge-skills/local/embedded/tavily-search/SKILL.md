@@ -1,5 +1,11 @@
 ---
 name: tavily-search
+icon: 🔍
+category: research
+tags:
+  - web-search
+  - tavily
+  - search
 description: Search the web using Tavily AI search API
 metadata:
   forge:

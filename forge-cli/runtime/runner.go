@@ -387,6 +387,7 @@ func (r *Runner) Run(ctx context.Context) error {
 						Logger:       r.logger,
 						ModelName:    mc.Client.Model,
 						CharBudget:   charBudget,
+						FilesDir:     filepath.Join(r.cfg.WorkDir, ".forge", "files"),
 					}
 
 					// Initialize memory persistence (enabled by default).

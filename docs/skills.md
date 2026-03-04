@@ -15,6 +15,12 @@ Skills are defined in a Markdown file (default: `SKILL.md`). The file supports o
 ```markdown
 ---
 name: weather
+icon: 🌤️
+category: utilities
+tags:
+  - weather
+  - forecast
+  - api
 description: Weather data skill
 metadata:
   forge:
@@ -45,13 +51,24 @@ Each `## Tool:` heading defines a tool the agent can call. The frontmatter decla
 
 ### YAML Frontmatter
 
-The `metadata.forge.requires` block declares:
+Top-level fields:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | yes | Skill identifier (kebab-case) |
+| `icon` | yes | Emoji displayed in the TUI skill picker |
+| `category` | yes | Grouping for `forge skills list --category` (e.g., `sre`, `developer`, `research`, `utilities`) |
+| `tags` | yes | Discovery keywords for `forge skills list --tags` (kebab-case) |
+| `description` | yes | One-line summary |
+
+The `metadata.forge.requires` block declares runtime dependencies:
+
 - **`bins`** — Binary dependencies that must be in `$PATH` at runtime
 - **`env.required`** — Environment variables that must be set
 - **`env.one_of`** — At least one of these environment variables must be set
 - **`env.optional`** — Optional environment variables for extended functionality
 
-Frontmatter is parsed by `ParseWithMetadata()` in `forge-core/skills/parser.go` and feeds into the compilation pipeline.
+Frontmatter is parsed by `ParseWithMetadata()` in `forge-skills/parser/parser.go` and feeds into the compilation pipeline.
 
 ### Legacy List Format
 
@@ -118,11 +135,12 @@ Skill scripts run in a restricted environment via `SkillCommandExecutor`:
 
 ## Skill Categories & Tags
 
-Skills can declare a `category` and `tags` in their frontmatter for organization and filtering:
+All embedded skills must declare `category`, `tags`, and `icon` in their frontmatter. Categories and tags must be lowercase kebab-case.
 
 ```markdown
 ---
 name: k8s-incident-triage
+icon: ☸️
 category: sre
 tags:
   - kubernetes
@@ -131,7 +149,7 @@ tags:
 ---
 ```
 
-Categories and tags must be lowercase kebab-case. Use them to filter skills:
+Use categories and tags to filter skills:
 
 ```bash
 # List skills by category
@@ -143,18 +161,19 @@ forge skills list --tags kubernetes,incident-response
 
 ## Built-in Skills
 
-| Skill | Category | Description | Scripts |
-|-------|----------|-------------|---------|
-| `github` | — | Create issues, PRs, and query repositories | — (binary-backed) |
-| `weather` | — | Get weather data for a location | — (binary-backed) |
-| `tavily-search` | — | Search the web using Tavily AI search API | `tavily-search.sh` |
-| `tavily-research` | — | Deep multi-source research via Tavily API | `tavily-research.sh`, `tavily-research-poll.sh` |
-| `k8s-incident-triage` | sre | Read-only Kubernetes incident triage using kubectl | — (binary-backed) |
-| `code-review` | developer | AI-powered code review for diffs and files | `code-review-diff.sh`, `code-review-file.sh` |
-| `code-review-standards` | developer | Initialize and manage code review standards | — (template-based) |
-| `code-review-github` | developer | Post code review results to GitHub PRs | — (binary-backed) |
-| `codegen-react` | developer | Scaffold and iterate on Vite + React apps | `codegen-react-scaffold.sh`, `codegen-react-read.sh`, `codegen-react-write.sh`, `codegen-react-run.sh` |
-| `codegen-html` | developer | Scaffold standalone Preact + HTM apps (zero dependencies) | `codegen-html-scaffold.sh`, `codegen-html-read.sh`, `codegen-html-write.sh` |
+| Skill | Icon | Category | Description | Scripts |
+|-------|------|----------|-------------|---------|
+| `github` | 🐙 | developer | Create issues, PRs, and query repositories | — (binary-backed) |
+| `weather` | 🌤️ | utilities | Get weather data for a location | — (binary-backed) |
+| `tavily-search` | 🔍 | research | Search the web using Tavily AI search API | `tavily-search.sh` |
+| `tavily-research` | 🔬 | research | Deep multi-source research via Tavily API | `tavily-research.sh`, `tavily-research-poll.sh` |
+| `k8s-incident-triage` | ☸️ | sre | Read-only Kubernetes incident triage using kubectl | — (binary-backed) |
+| `k8s-pod-rightsizer` | ⚖️ | sre | Analyze workload metrics and produce CPU/memory rightsizing recommendations | — (binary-backed) |
+| `code-review` | 🔎 | developer | AI-powered code review for diffs and files | `code-review-diff.sh`, `code-review-file.sh` |
+| `code-review-standards` | 📏 | developer | Initialize and manage code review standards | — (template-based) |
+| `code-review-github` | 🐙 | developer | Post code review results to GitHub PRs | — (binary-backed) |
+| `codegen-react` | ⚛️ | developer | Scaffold and iterate on Vite + React apps | `codegen-react-scaffold.sh`, `codegen-react-read.sh`, `codegen-react-write.sh`, `codegen-react-run.sh` |
+| `codegen-html` | 🌐 | developer | Scaffold standalone Preact + HTM apps (zero dependencies) | `codegen-html-scaffold.sh`, `codegen-html-read.sh`, `codegen-html-write.sh` |
 
 ### Tavily Research Skill
 
@@ -217,6 +236,34 @@ The skill accepts two input modes:
 **Safety:** This skill is strictly read-only. It never executes `apply`, `patch`, `delete`, `exec`, `port-forward`, `scale`, or `rollout restart`. It never prints Secret values.
 
 Requires: `kubectl`, optional `KUBECONFIG`, `K8S_API_DOMAIN`, `DEFAULT_NAMESPACE` environment variables.
+
+### Kubernetes Pod Rightsizer Skill
+
+The `k8s-pod-rightsizer` skill analyzes real workload metrics (Prometheus or metrics-server fallback) and produces policy-constrained CPU/memory rightsizing recommendations:
+
+```bash
+forge skills add k8s-pod-rightsizer
+```
+
+This skill operates in three modes:
+
+| Mode | Purpose | Mutates Cluster |
+|------|---------|-----------------|
+| `dry-run` | Report recommendations only (default) | No |
+| `plan` | Generate strategic merge patch YAMLs | No |
+| `apply` | Execute patches with rollback bundle | Yes (requires `i_accept_risk: true`) |
+
+**Key features:**
+
+- Deterministic formulas — no LLM-based guessing for recommendations
+- Policy model with per-namespace and per-workload overrides (safety factors, min/max bounds, step constraints)
+- Prometheus p95 metrics with metrics-server fallback
+- Automatic rollback bundle generation in apply mode
+- Workload classification: over-provisioned, under-provisioned, right-sized, limit-bound, insufficient-data
+
+**Apply workflow:** The skill's built-in `mode=apply` handles rollback bundles, strategic merge patches via `kubectl patch`, and rollout verification. Do not manually run `kubectl apply -f` — use `mode=apply` with `i_accept_risk: true` instead.
+
+Requires: `bash`, `kubectl`, `jq`, `curl`. Optional: `KUBECONFIG`, `K8S_API_DOMAIN`, `PROMETHEUS_URL`, `PROMETHEUS_TOKEN`, `POLICY_FILE`, `DEFAULT_NAMESPACE`.
 
 ### Codegen React Skill
 

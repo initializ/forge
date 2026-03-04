@@ -16,12 +16,12 @@ func TestEmbeddedRegistry_DiscoverAll(t *testing.T) {
 		t.Fatalf("List error: %v", err)
 	}
 
-	if len(skills) != 10 {
+	if len(skills) != 11 {
 		names := make([]string, len(skills))
 		for i, s := range skills {
 			names[i] = s.Name
 		}
-		t.Fatalf("expected 10 skills, got %d: %v", len(skills), names)
+		t.Fatalf("expected 11 skills, got %d: %v", len(skills), names)
 	}
 
 	// Verify all expected skills are present
@@ -41,6 +41,7 @@ func TestEmbeddedRegistry_DiscoverAll(t *testing.T) {
 		"code-review-github":    {displayName: "Code Review Github", hasEnv: true, hasBins: true, hasEgress: true},
 		"codegen-react":         {displayName: "Codegen React", hasEnv: false, hasBins: true, hasEgress: true},
 		"codegen-html":          {displayName: "Codegen Html", hasEnv: false, hasBins: true, hasEgress: true},
+		"k8s-pod-rightsizer":    {displayName: "K8s Pod Rightsizer", hasEnv: false, hasBins: true, hasEgress: false},
 	}
 
 	for _, s := range skills {
@@ -79,6 +80,9 @@ func TestEmbeddedRegistry_GitHubDetails(t *testing.T) {
 	}
 	if s.Description != "Create issues, PRs, and query repositories" {
 		t.Errorf("Description = %q", s.Description)
+	}
+	if s.Icon != "🐙" {
+		t.Errorf("Icon = %q, want 🐙", s.Icon)
 	}
 	if len(s.RequiredEnv) != 1 || s.RequiredEnv[0] != "GH_TOKEN" {
 		t.Errorf("RequiredEnv = %v", s.RequiredEnv)
@@ -186,6 +190,45 @@ func TestEmbeddedRegistry_TavilyResearchDetails(t *testing.T) {
 	// Check timeout hint
 	if s.TimeoutHint != 300 {
 		t.Errorf("TimeoutHint = %d, want 300", s.TimeoutHint)
+	}
+}
+
+func TestEmbeddedRegistry_AllSkillsHaveCategoryAndTags(t *testing.T) {
+	reg, err := NewEmbeddedRegistry()
+	if err != nil {
+		t.Fatalf("NewEmbeddedRegistry error: %v", err)
+	}
+
+	skills, err := reg.List()
+	if err != nil {
+		t.Fatalf("List error: %v", err)
+	}
+
+	for _, s := range skills {
+		if s.Category == "" {
+			t.Errorf("skill %q has no category — add 'category:' to its SKILL.md frontmatter", s.Name)
+		}
+		if len(s.Tags) == 0 {
+			t.Errorf("skill %q has no tags — add 'tags:' to its SKILL.md frontmatter", s.Name)
+		}
+	}
+}
+
+func TestEmbeddedRegistry_AllSkillsHaveIcons(t *testing.T) {
+	reg, err := NewEmbeddedRegistry()
+	if err != nil {
+		t.Fatalf("NewEmbeddedRegistry error: %v", err)
+	}
+
+	skills, err := reg.List()
+	if err != nil {
+		t.Fatalf("List error: %v", err)
+	}
+
+	for _, s := range skills {
+		if s.Icon == "" {
+			t.Errorf("skill %q has no icon — add 'icon:' to its SKILL.md frontmatter", s.Name)
+		}
 	}
 }
 

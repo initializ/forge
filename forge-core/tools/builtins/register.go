@@ -12,6 +12,7 @@ func All() []tools.Tool {
 		&uuidGenerateTool{},
 		&mathCalculateTool{},
 		&webSearchTool{},
+		&fileCreateTool{},
 	}
 }
 

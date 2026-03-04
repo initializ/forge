@@ -73,6 +73,7 @@ func Scan(fsys fs.FS) ([]contract.SkillDescriptor, error) {
 
 			sd.Category = meta.Category
 			sd.Tags = meta.Tags
+			sd.Icon = meta.Icon
 
 			// Extract forge-specific fields
 			if meta.Metadata != nil {

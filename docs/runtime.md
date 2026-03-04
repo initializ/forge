@@ -180,6 +180,20 @@ forge serve logs
 
 The daemon forks `forge run` in the background with `setsid`, writes state to `.forge/serve.json`, and redirects output to `.forge/serve.log`. Passphrase prompting for encrypted secrets happens in the parent process (which has TTY access) before forking.
 
+## File Output Directory
+
+The runtime configures a `FilesDir` for tool-generated files (e.g., from `file_create`). This directory defaults to `<WorkDir>/.forge/files/` and is injected into the execution context so tools can write files that other tools can reference by path.
+
+```
+<WorkDir>/
+  .forge/
+    files/        ← file_create output (patches.yaml, reports, etc.)
+    sessions/     ← conversation persistence
+    memory/       ← long-term memory
+```
+
+The `FilesDir` is set via `LLMExecutorConfig.FilesDir` and made available to tools through `runtime.FilesDirFromContext(ctx)`. See [Tools — File Create](tools.md#file-create) for details.
+
 ## Conversation Memory
 
 For details on session persistence, context window management, compaction, and long-term memory, see [Memory](memory.md).

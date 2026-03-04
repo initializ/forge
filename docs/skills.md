@@ -99,7 +99,7 @@ For skills **without** scripts (binary-backed skills like `k8s-incident-triage`)
 │                LLM Tool Registry                │
 ├─────────────────┬───────────────────────────────┤
 │  Builtins       │  web_search, http_request     │
-│  Skill Tools    │  tavily_research, ...         │  ← auto-registered from scripts
+│  Skill Tools    │  tavily_research, codegen_*   │  ← auto-registered from scripts
 │  read_skill     │  load any SKILL.md on demand  │
 │  cli_execute    │  run approved binaries        │
 ├─────────────────┴───────────────────────────────┤
@@ -143,10 +143,18 @@ forge skills list --tags kubernetes,incident-response
 
 ## Built-in Skills
 
-| Skill | Description | Scripts |
-|-------|-------------|---------|
-| `tavily-research` | Deep multi-source research via Tavily API | `tavily-research.sh`, `tavily-research-poll.sh` |
-| `k8s-incident-triage` | Read-only Kubernetes incident triage using kubectl | — (binary-backed) |
+| Skill | Category | Description | Scripts |
+|-------|----------|-------------|---------|
+| `github` | — | Create issues, PRs, and query repositories | — (binary-backed) |
+| `weather` | — | Get weather data for a location | — (binary-backed) |
+| `tavily-search` | — | Search the web using Tavily AI search API | `tavily-search.sh` |
+| `tavily-research` | — | Deep multi-source research via Tavily API | `tavily-research.sh`, `tavily-research-poll.sh` |
+| `k8s-incident-triage` | sre | Read-only Kubernetes incident triage using kubectl | — (binary-backed) |
+| `code-review` | developer | AI-powered code review for diffs and files | `code-review-diff.sh`, `code-review-file.sh` |
+| `code-review-standards` | developer | Initialize and manage code review standards | — (template-based) |
+| `code-review-github` | developer | Post code review results to GitHub PRs | — (binary-backed) |
+| `codegen-react` | developer | Scaffold and iterate on Vite + React apps | `codegen-react-scaffold.sh`, `codegen-react-read.sh`, `codegen-react-write.sh`, `codegen-react-run.sh` |
+| `codegen-html` | developer | Scaffold standalone Preact + HTM apps (zero dependencies) | `codegen-html-scaffold.sh`, `codegen-html-read.sh`, `codegen-html-write.sh` |
 
 ### Tavily Research Skill
 
@@ -209,6 +217,65 @@ The skill accepts two input modes:
 **Safety:** This skill is strictly read-only. It never executes `apply`, `patch`, `delete`, `exec`, `port-forward`, `scale`, or `rollout restart`. It never prints Secret values.
 
 Requires: `kubectl`, optional `KUBECONFIG`, `K8S_API_DOMAIN`, `DEFAULT_NAMESPACE` environment variables.
+
+### Codegen React Skill
+
+The `codegen-react` skill scaffolds and iterates on **Vite + React** applications with Tailwind CSS:
+
+```bash
+forge skills add codegen-react
+```
+
+This registers four tools:
+
+| Tool | Purpose | Behavior |
+|------|---------|----------|
+| `codegen_react_scaffold` | Create a new project | Generates package.json, Vite config, React components with Tailwind CSS and Forge dark theme |
+| `codegen_react_run` | Start the dev server | Runs `npm install` + `npm run dev`, auto-opens browser, returns server URL and PID |
+| `codegen_react_read` | Read project files | Returns file content or directory listing (excludes `node_modules/`, `.git/`) |
+| `codegen_react_write` | Write/update files | Creates or updates files with path traversal prevention; Vite hot-reloads automatically |
+
+**Iteration workflow:**
+
+1. Scaffold the project with `codegen_react_scaffold`
+2. Start the dev server with `codegen_react_run` — installs deps, opens browser
+3. Read/write files with `codegen_react_read` / `codegen_react_write` — Vite hot-reloads on save
+4. Repeat step 3 to iterate on the UI
+
+**Scaffold output:** `package.json` (React 19, Vite 6), `vite.config.js`, `index.html` (with Tailwind CDN), `src/main.jsx`, `src/App.jsx` (Tailwind utility classes), `src/App.css`, `.gitignore`.
+
+**Safety:** Output directories must be under `$HOME` or `/tmp`. Path traversal (`..`, absolute paths) is rejected. Non-empty directories require `force: true`.
+
+Requires: `node`, `npx`, `jq`. Egress: `registry.npmjs.org`, `cdn.jsdelivr.net`, `cdn.tailwindcss.com`.
+
+### Codegen HTML Skill
+
+The `codegen-html` skill scaffolds standalone **Preact + HTM** applications with zero local dependencies:
+
+```bash
+forge skills add codegen-html
+```
+
+This registers three tools:
+
+| Tool | Purpose | Behavior |
+|------|---------|----------|
+| `codegen_html_scaffold` | Create a new project | Generates HTML with Preact + HTM via CDN and Tailwind CSS; supports single-file and multi-file modes |
+| `codegen_html_read` | Read project files | Returns file content or directory listing |
+| `codegen_html_write` | Write/update files | Creates or updates files with path traversal prevention |
+
+**Two scaffold modes:**
+
+| Mode | Files | Use Case |
+|------|-------|----------|
+| `single-file` | One `index.html` with inline JS | Quick prototypes, shareable demos |
+| `multi-file` | `index.html`, `app.js`, `components/Counter.js` | Larger apps with component separation |
+
+**Key differences from codegen-react:** No Node.js required. No build step. No `npm install`. Just open `index.html` in a browser. Uses `class` (not `className`) since HTM maps directly to DOM attributes.
+
+**Safety:** Same restrictions as codegen-react — output under `$HOME` or `/tmp`, path traversal prevention, `force: true` for non-empty directories.
+
+Requires: `jq`. Egress: `cdn.tailwindcss.com`, `esm.sh`.
 
 ## Skill Instructions in System Prompt
 

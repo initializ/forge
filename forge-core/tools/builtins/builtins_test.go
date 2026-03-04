@@ -6,7 +6,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
+
+	"github.com/initializ/forge/forge-core/runtime"
 	"testing"
 
 	"github.com/initializ/forge/forge-core/tools"
@@ -21,6 +24,7 @@ func TestRegisterAll(t *testing.T) {
 	expected := []string{
 		"http_request", "json_parse", "csv_parse",
 		"datetime_now", "uuid_generate", "math_calculate", "web_search",
+		"file_create",
 	}
 	for _, name := range expected {
 		if reg.Get(name) == nil {
@@ -372,6 +376,195 @@ func TestWebSearchTool_ExplicitPerplexity(t *testing.T) {
 	if provider.name() != "perplexity" {
 		t.Errorf("expected perplexity provider, got %q", provider.name())
 	}
+}
+
+func TestFileCreateTool(t *testing.T) {
+	tool := GetByName("file_create")
+	if tool == nil {
+		t.Fatal("expected file_create tool to exist")
+	}
+
+	// Clean up temp files after all subtests.
+	defer func() { _ = os.RemoveAll(filepath.Join(os.TempDir(), "forge-files")) }()
+
+	t.Run("valid YAML file", func(t *testing.T) {
+		args, _ := json.Marshal(map[string]string{
+			"filename": "patches.yaml",
+			"content":  "---\napiVersion: apps/v1\nkind: Deployment",
+		})
+		result, err := tool.Execute(context.Background(), args)
+		if err != nil {
+			t.Fatalf("Execute error: %v", err)
+		}
+		var out map[string]string
+		if err := json.Unmarshal([]byte(result), &out); err != nil {
+			t.Fatalf("output is not valid JSON: %v", err)
+		}
+		if out["filename"] != "patches.yaml" {
+			t.Errorf("filename: got %q, want %q", out["filename"], "patches.yaml")
+		}
+		if out["mime_type"] != "text/yaml" {
+			t.Errorf("mime_type: got %q, want %q", out["mime_type"], "text/yaml")
+		}
+		if out["content"] != "---\napiVersion: apps/v1\nkind: Deployment" {
+			t.Errorf("content mismatch: got %q", out["content"])
+		}
+		// Verify path field and disk persistence.
+		if out["path"] == "" {
+			t.Fatal("expected non-empty path field")
+		}
+		diskContent, err := os.ReadFile(out["path"])
+		if err != nil {
+			t.Fatalf("file not found at path %q: %v", out["path"], err)
+		}
+		if string(diskContent) != out["content"] {
+			t.Errorf("disk content mismatch: got %q, want %q", string(diskContent), out["content"])
+		}
+	})
+
+	t.Run("valid JSON file", func(t *testing.T) {
+		args, _ := json.Marshal(map[string]string{
+			"filename": "report.json",
+			"content":  `{"key":"value"}`,
+		})
+		result, err := tool.Execute(context.Background(), args)
+		if err != nil {
+			t.Fatalf("Execute error: %v", err)
+		}
+		var out map[string]string
+		if err := json.Unmarshal([]byte(result), &out); err != nil {
+			t.Fatalf("output is not valid JSON: %v", err)
+		}
+		if out["mime_type"] != "application/json" {
+			t.Errorf("mime_type: got %q, want %q", out["mime_type"], "application/json")
+		}
+		if out["path"] == "" {
+			t.Fatal("expected non-empty path field")
+		}
+	})
+
+	t.Run("valid Python file", func(t *testing.T) {
+		args, _ := json.Marshal(map[string]string{
+			"filename": "script.py",
+			"content":  "print('hello')",
+		})
+		result, err := tool.Execute(context.Background(), args)
+		if err != nil {
+			t.Fatalf("Execute error: %v", err)
+		}
+		var out map[string]string
+		if err := json.Unmarshal([]byte(result), &out); err != nil {
+			t.Fatalf("output is not valid JSON: %v", err)
+		}
+		if out["mime_type"] != "text/x-python" {
+			t.Errorf("mime_type: got %q, want %q", out["mime_type"], "text/x-python")
+		}
+	})
+
+	t.Run("valid TypeScript file", func(t *testing.T) {
+		args, _ := json.Marshal(map[string]string{
+			"filename": "index.ts",
+			"content":  "const x: number = 1;",
+		})
+		result, err := tool.Execute(context.Background(), args)
+		if err != nil {
+			t.Fatalf("Execute error: %v", err)
+		}
+		var out map[string]string
+		if err := json.Unmarshal([]byte(result), &out); err != nil {
+			t.Fatalf("output is not valid JSON: %v", err)
+		}
+		if out["mime_type"] != "text/typescript" {
+			t.Errorf("mime_type: got %q, want %q", out["mime_type"], "text/typescript")
+		}
+	})
+
+	t.Run("path traversal rejected", func(t *testing.T) {
+		args, _ := json.Marshal(map[string]string{
+			"filename": "../evil.sh",
+			"content":  "rm -rf /",
+		})
+		_, err := tool.Execute(context.Background(), args)
+		if err == nil {
+			t.Error("expected error for path traversal")
+		}
+	})
+
+	t.Run("unsupported extension rejected", func(t *testing.T) {
+		args, _ := json.Marshal(map[string]string{
+			"filename": "malware.exe",
+			"content":  "bad",
+		})
+		_, err := tool.Execute(context.Background(), args)
+		if err == nil {
+			t.Error("expected error for unsupported extension")
+		}
+	})
+
+	t.Run("empty filename rejected", func(t *testing.T) {
+		args, _ := json.Marshal(map[string]string{
+			"filename": "",
+			"content":  "hello",
+		})
+		_, err := tool.Execute(context.Background(), args)
+		if err == nil {
+			t.Error("expected error for empty filename")
+		}
+	})
+
+	t.Run("empty content succeeds", func(t *testing.T) {
+		args, _ := json.Marshal(map[string]string{
+			"filename": "empty.txt",
+			"content":  "",
+		})
+		result, err := tool.Execute(context.Background(), args)
+		if err != nil {
+			t.Fatalf("Execute error: %v", err)
+		}
+		var out map[string]string
+		if err := json.Unmarshal([]byte(result), &out); err != nil {
+			t.Fatalf("output is not valid JSON: %v", err)
+		}
+		if out["content"] != "" {
+			t.Errorf("expected empty content, got %q", out["content"])
+		}
+		// Verify empty file exists on disk.
+		diskContent, err := os.ReadFile(out["path"])
+		if err != nil {
+			t.Fatalf("file not found at path %q: %v", out["path"], err)
+		}
+		if len(diskContent) != 0 {
+			t.Errorf("expected empty file on disk, got %d bytes", len(diskContent))
+		}
+	})
+
+	t.Run("uses FilesDir from context", func(t *testing.T) {
+		customDir := filepath.Join(t.TempDir(), ".forge", "files")
+		ctx := runtime.WithFilesDir(context.Background(), customDir)
+		args, _ := json.Marshal(map[string]string{
+			"filename": "ctx-test.yaml",
+			"content":  "hello: world",
+		})
+		result, err := tool.Execute(ctx, args)
+		if err != nil {
+			t.Fatalf("Execute error: %v", err)
+		}
+		var out map[string]string
+		if err := json.Unmarshal([]byte(result), &out); err != nil {
+			t.Fatalf("output is not valid JSON: %v", err)
+		}
+		wantPath := filepath.Join(customDir, "ctx-test.yaml")
+		if out["path"] != wantPath {
+			t.Errorf("path: got %q, want %q", out["path"], wantPath)
+		}
+		diskContent, err := os.ReadFile(wantPath)
+		if err != nil {
+			t.Fatalf("file not found at %q: %v", wantPath, err)
+		}
+		if string(diskContent) != "hello: world" {
+			t.Errorf("disk content: got %q, want %q", string(diskContent), "hello: world")
+		}
+	})
 }
 
 func TestAllToolsHaveCategory(t *testing.T) {

@@ -150,6 +150,7 @@ forge skills list --tags kubernetes,incident-response
 | `tavily-search` | — | Search the web using Tavily AI search API | `tavily-search.sh` |
 | `tavily-research` | — | Deep multi-source research via Tavily API | `tavily-research.sh`, `tavily-research-poll.sh` |
 | `k8s-incident-triage` | sre | Read-only Kubernetes incident triage using kubectl | — (binary-backed) |
+| `k8s-pod-rightsizer` | sre | Analyze workload metrics and produce CPU/memory rightsizing recommendations with optional apply | — (binary-backed) |
 | `code-review` | developer | AI-powered code review for diffs and files | `code-review-diff.sh`, `code-review-file.sh` |
 | `code-review-standards` | developer | Initialize and manage code review standards | — (template-based) |
 | `code-review-github` | developer | Post code review results to GitHub PRs | — (binary-backed) |
@@ -217,6 +218,34 @@ The skill accepts two input modes:
 **Safety:** This skill is strictly read-only. It never executes `apply`, `patch`, `delete`, `exec`, `port-forward`, `scale`, or `rollout restart`. It never prints Secret values.
 
 Requires: `kubectl`, optional `KUBECONFIG`, `K8S_API_DOMAIN`, `DEFAULT_NAMESPACE` environment variables.
+
+### Kubernetes Pod Rightsizer Skill
+
+The `k8s-pod-rightsizer` skill analyzes real workload metrics (Prometheus or metrics-server fallback) and produces policy-constrained CPU/memory rightsizing recommendations:
+
+```bash
+forge skills add k8s-pod-rightsizer
+```
+
+This skill operates in three modes:
+
+| Mode | Purpose | Mutates Cluster |
+|------|---------|-----------------|
+| `dry-run` | Report recommendations only (default) | No |
+| `plan` | Generate strategic merge patch YAMLs | No |
+| `apply` | Execute patches with rollback bundle | Yes (requires `i_accept_risk: true`) |
+
+**Key features:**
+
+- Deterministic formulas — no LLM-based guessing for recommendations
+- Policy model with per-namespace and per-workload overrides (safety factors, min/max bounds, step constraints)
+- Prometheus p95 metrics with metrics-server fallback
+- Automatic rollback bundle generation in apply mode
+- Workload classification: over-provisioned, under-provisioned, right-sized, limit-bound, insufficient-data
+
+**Apply workflow:** The skill's built-in `mode=apply` handles rollback bundles, strategic merge patches via `kubectl patch`, and rollout verification. Do not manually run `kubectl apply -f` — use `mode=apply` with `i_accept_risk: true` instead.
+
+Requires: `bash`, `kubectl`, `jq`, `curl`. Optional: `KUBECONFIG`, `K8S_API_DOMAIN`, `PROMETHEUS_URL`, `PROMETHEUS_TOKEN`, `POLICY_FILE`, `DEFAULT_NAMESPACE`.
 
 ### Codegen React Skill
 

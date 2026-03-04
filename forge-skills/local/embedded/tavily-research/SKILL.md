@@ -1,6 +1,12 @@
 ---
 name: tavily-research
 icon: 🔬
+category: research
+tags:
+  - research
+  - web-search
+  - tavily
+  - analysis
 description: Deep multi-source research using Tavily Research API
 metadata:
   forge:

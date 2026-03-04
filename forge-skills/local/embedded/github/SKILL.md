@@ -1,6 +1,12 @@
 ---
 name: github
 icon: 🐙
+category: developer
+tags:
+  - github
+  - issues
+  - pull-requests
+  - repositories
 description: Create issues, PRs, and query repositories
 metadata:
   forge:

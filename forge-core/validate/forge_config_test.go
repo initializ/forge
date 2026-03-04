@@ -103,3 +103,38 @@ func TestValidateForgeConfig_UnknownFramework(t *testing.T) {
 		t.Fatalf("expected 1 warning, got %d: %v", len(r.Warnings), r.Warnings)
 	}
 }
+
+func TestValidateForgeConfig_OrgIDOnNonOpenAI(t *testing.T) {
+	cfg := validConfig()
+	cfg.Model.Provider = "anthropic"
+	cfg.Model.OrganizationID = "org-test-123"
+	r := ValidateForgeConfig(cfg)
+	if !r.IsValid() {
+		t.Fatalf("expected valid, got errors: %v", r.Errors)
+	}
+	found := false
+	for _, w := range r.Warnings {
+		if len(w) > 0 && w[0:5] == "model" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected warning about organization_id on non-openai provider")
+	}
+}
+
+func TestValidateForgeConfig_OrgIDOnOpenAI(t *testing.T) {
+	cfg := validConfig()
+	cfg.Model.Provider = "openai"
+	cfg.Model.OrganizationID = "org-test-123"
+	r := ValidateForgeConfig(cfg)
+	if !r.IsValid() {
+		t.Fatalf("expected valid, got errors: %v", r.Errors)
+	}
+	// Should NOT produce a warning for openai
+	for _, w := range r.Warnings {
+		if len(w) > 18 && w[:18] == "model.organization" {
+			t.Errorf("unexpected warning for openai: %s", w)
+		}
+	}
+}

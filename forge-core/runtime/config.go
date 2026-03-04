@@ -48,6 +48,14 @@ func ResolveModelConfig(cfg *types.ForgeConfig, envVars map[string]string, provi
 	// Resolve API key based on provider
 	resolveAPIKey(mc, envVars)
 
+	// Wire organization ID for OpenAI
+	if mc.Provider == "openai" && cfg.Model.OrganizationID != "" {
+		mc.Client.OrgID = cfg.Model.OrganizationID
+	}
+	if orgID := envVars["OPENAI_ORG_ID"]; orgID != "" && mc.Provider == "openai" {
+		mc.Client.OrgID = orgID
+	}
+
 	// CLI override is highest priority
 	if providerOverride != "" {
 		mc.Provider = providerOverride
@@ -119,7 +127,7 @@ func resolveFallbacks(cfg *types.ForgeConfig, envVars map[string]string, primary
 	seen := map[string]bool{primaryProvider: true}
 	var fallbacks []FallbackModelConfig
 
-	addFallback := func(provider, model string) {
+	addFallback := func(provider, model, orgID string) {
 		if seen[provider] {
 			return
 		}
@@ -143,12 +151,23 @@ func resolveFallbacks(cfg *types.ForgeConfig, envVars map[string]string, primary
 		}
 		// Apply base URL overrides
 		fc.Client.BaseURL = resolveFallbackBaseURL(provider, envVars)
+		// Wire organization ID for OpenAI fallbacks
+		if provider == "openai" {
+			resolvedOrgID := orgID
+			if resolvedOrgID == "" {
+				resolvedOrgID = cfg.Model.OrganizationID
+			}
+			if envOrgID := envVars["OPENAI_ORG_ID"]; envOrgID != "" {
+				resolvedOrgID = envOrgID
+			}
+			fc.Client.OrgID = resolvedOrgID
+		}
 		fallbacks = append(fallbacks, fc)
 	}
 
 	// Source 1: forge.yaml model.fallbacks
 	for _, fb := range cfg.Model.Fallbacks {
-		addFallback(fb.Provider, fb.Name)
+		addFallback(fb.Provider, fb.Name, fb.OrganizationID)
 	}
 
 	// Source 2: FORGE_MODEL_FALLBACKS env var
@@ -159,7 +178,7 @@ func resolveFallbacks(cfg *types.ForgeConfig, envVars map[string]string, primary
 				continue
 			}
 			provider, model, _ := strings.Cut(entry, ":")
-			addFallback(provider, model)
+			addFallback(provider, model, "")
 		}
 	}
 
@@ -171,7 +190,7 @@ func resolveFallbacks(cfg *types.ForgeConfig, envVars map[string]string, primary
 	}
 	for provider, keyName := range providerKeys {
 		if envVars[keyName] != "" {
-			addFallback(provider, "")
+			addFallback(provider, "", "")
 		}
 	}
 

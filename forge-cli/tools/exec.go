@@ -62,6 +62,9 @@ func (e *SkillCommandExecutor) Run(ctx context.Context, command string, args []s
 			env = append(env, name+"="+val)
 		}
 	}
+	if orgID := os.Getenv("OPENAI_ORG_ID"); orgID != "" {
+		env = append(env, "OPENAI_ORG_ID="+orgID)
+	}
 	if e.ProxyURL != "" {
 		env = append(env,
 			"HTTP_PROXY="+e.ProxyURL,

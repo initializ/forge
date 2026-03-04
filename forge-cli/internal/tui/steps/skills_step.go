@@ -145,6 +145,12 @@ func (s *SkillsStep) Update(msg tea.Msg) (tui.Step, tea.Cmd) {
 		return s, nil
 	}
 
+	if msg, ok := msg.(tea.WindowSizeMsg); ok && s.phase == skillsSelectPhase {
+		updated, cmd := s.multiSelect.Update(msg)
+		s.multiSelect = updated
+		return s, cmd
+	}
+
 	switch s.phase {
 	case skillsSelectPhase:
 		updated, cmd := s.multiSelect.Update(msg)

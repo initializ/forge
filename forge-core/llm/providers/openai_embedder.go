@@ -22,6 +22,7 @@ const (
 // OpenAIEmbedder implements llm.Embedder using the OpenAI Embeddings API.
 type OpenAIEmbedder struct {
 	apiKey  string
+	orgID   string
 	baseURL string
 	model   string
 	dims    int
@@ -31,6 +32,7 @@ type OpenAIEmbedder struct {
 // OpenAIEmbedderConfig configures the OpenAI embedder.
 type OpenAIEmbedderConfig struct {
 	APIKey  string
+	OrgID   string
 	BaseURL string
 	Model   string
 	Dims    int
@@ -52,6 +54,7 @@ func NewOpenAIEmbedder(cfg OpenAIEmbedderConfig) *OpenAIEmbedder {
 	}
 	return &OpenAIEmbedder{
 		apiKey:  cfg.APIKey,
+		orgID:   cfg.OrgID,
 		baseURL: strings.TrimRight(baseURL, "/"),
 		model:   model,
 		dims:    dims,
@@ -88,6 +91,9 @@ func (e *OpenAIEmbedder) Embed(ctx context.Context, req *llm.EmbeddingRequest) (
 	httpReq.Header.Set("Content-Type", "application/json")
 	if e.apiKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+e.apiKey)
+	}
+	if e.orgID != "" {
+		httpReq.Header.Set("OpenAI-Organization", e.orgID)
 	}
 
 	resp, err := e.client.Do(httpReq)

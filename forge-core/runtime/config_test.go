@@ -176,6 +176,128 @@ func TestResolveModelConfig_NoFallbacksWhenSingleProvider(t *testing.T) {
 	}
 }
 
+func TestResolveModelConfig_OrgIDFromYAML(t *testing.T) {
+	cfg := &types.ForgeConfig{
+		Model: types.ModelRef{
+			Provider:       "openai",
+			Name:           "gpt-5.2-2025-12-11",
+			OrganizationID: "org-yaml-123",
+		},
+	}
+	envVars := map[string]string{
+		"OPENAI_API_KEY": "sk-test",
+	}
+
+	mc := ResolveModelConfig(cfg, envVars, "")
+	if mc == nil {
+		t.Fatal("expected non-nil ModelConfig")
+	}
+	if mc.Client.OrgID != "org-yaml-123" {
+		t.Errorf("expected OrgID org-yaml-123, got %s", mc.Client.OrgID)
+	}
+}
+
+func TestResolveModelConfig_OrgIDEnvOverridesYAML(t *testing.T) {
+	cfg := &types.ForgeConfig{
+		Model: types.ModelRef{
+			Provider:       "openai",
+			Name:           "gpt-5.2-2025-12-11",
+			OrganizationID: "org-yaml-123",
+		},
+	}
+	envVars := map[string]string{
+		"OPENAI_API_KEY": "sk-test",
+		"OPENAI_ORG_ID":  "org-env-456",
+	}
+
+	mc := ResolveModelConfig(cfg, envVars, "")
+	if mc == nil {
+		t.Fatal("expected non-nil ModelConfig")
+	}
+	if mc.Client.OrgID != "org-env-456" {
+		t.Errorf("expected OrgID org-env-456, got %s", mc.Client.OrgID)
+	}
+}
+
+func TestResolveModelConfig_OrgIDNotSetForNonOpenAI(t *testing.T) {
+	cfg := &types.ForgeConfig{
+		Model: types.ModelRef{
+			Provider: "anthropic",
+			Name:     "claude-sonnet-4-20250514",
+		},
+	}
+	envVars := map[string]string{
+		"ANTHROPIC_API_KEY": "sk-ant-test",
+		"OPENAI_ORG_ID":     "org-env-456",
+	}
+
+	mc := ResolveModelConfig(cfg, envVars, "")
+	if mc == nil {
+		t.Fatal("expected non-nil ModelConfig")
+	}
+	if mc.Client.OrgID != "" {
+		t.Errorf("expected empty OrgID for anthropic, got %s", mc.Client.OrgID)
+	}
+}
+
+func TestResolveModelConfig_FallbackOrgIDInheritance(t *testing.T) {
+	cfg := &types.ForgeConfig{
+		Model: types.ModelRef{
+			Provider:       "anthropic",
+			Name:           "claude-sonnet-4-20250514",
+			OrganizationID: "org-primary-123",
+			Fallbacks: []types.ModelFallback{
+				{Provider: "openai", Name: "gpt-4o"},
+			},
+		},
+	}
+	envVars := map[string]string{
+		"ANTHROPIC_API_KEY": "sk-ant-test",
+		"OPENAI_API_KEY":    "sk-openai-test",
+	}
+
+	mc := ResolveModelConfig(cfg, envVars, "")
+	if mc == nil {
+		t.Fatal("expected non-nil ModelConfig")
+	}
+	if len(mc.Fallbacks) != 1 {
+		t.Fatalf("expected 1 fallback, got %d", len(mc.Fallbacks))
+	}
+	// Fallback should inherit primary org ID
+	if mc.Fallbacks[0].Client.OrgID != "org-primary-123" {
+		t.Errorf("expected fallback OrgID org-primary-123, got %s", mc.Fallbacks[0].Client.OrgID)
+	}
+}
+
+func TestResolveModelConfig_FallbackOrgIDOverride(t *testing.T) {
+	cfg := &types.ForgeConfig{
+		Model: types.ModelRef{
+			Provider:       "anthropic",
+			Name:           "claude-sonnet-4-20250514",
+			OrganizationID: "org-primary-123",
+			Fallbacks: []types.ModelFallback{
+				{Provider: "openai", Name: "gpt-4o", OrganizationID: "org-fallback-789"},
+			},
+		},
+	}
+	envVars := map[string]string{
+		"ANTHROPIC_API_KEY": "sk-ant-test",
+		"OPENAI_API_KEY":    "sk-openai-test",
+	}
+
+	mc := ResolveModelConfig(cfg, envVars, "")
+	if mc == nil {
+		t.Fatal("expected non-nil ModelConfig")
+	}
+	if len(mc.Fallbacks) != 1 {
+		t.Fatalf("expected 1 fallback, got %d", len(mc.Fallbacks))
+	}
+	// Fallback-specific org ID should take precedence over primary
+	if mc.Fallbacks[0].Client.OrgID != "org-fallback-789" {
+		t.Errorf("expected fallback OrgID org-fallback-789, got %s", mc.Fallbacks[0].Client.OrgID)
+	}
+}
+
 func TestDefaultModelForProvider(t *testing.T) {
 	tests := []struct {
 		provider string

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -71,7 +72,11 @@ func (pm *ProcessManager) Start(agentID string, info *AgentInfo, passphrase stri
 	port := pm.ports.Allocate()
 	pm.allocated[agentID] = port
 
-	cmd := exec.Command(pm.exePath, "serve", "start", "--port", strconv.Itoa(port), "--no-auth")
+	args := []string{"serve", "start", "--port", strconv.Itoa(port)}
+	if len(info.Channels) > 0 {
+		args = append(args, "--with", strings.Join(info.Channels, ","))
+	}
+	cmd := exec.Command(pm.exePath, args...)
 	cmd.Dir = info.Directory
 
 	if passphrase != "" {

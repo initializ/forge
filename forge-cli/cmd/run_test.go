@@ -19,8 +19,11 @@ func TestRunCmd_FlagDefaults(t *testing.T) {
 	if runMockTools {
 		t.Error("mock-tools should default to false")
 	}
-	if runEnforceGuardrails {
-		t.Error("enforce-guardrails should default to false")
+	if !runEnforceGuardrails {
+		t.Error("enforce-guardrails should default to true")
+	}
+	if runNoGuardrails {
+		t.Error("no-guardrails should default to false")
 	}
 	if runModel != "" {
 		t.Errorf("model should default to empty, got %q", runModel)

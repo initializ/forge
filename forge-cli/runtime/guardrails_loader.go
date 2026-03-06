@@ -26,3 +26,19 @@ func LoadPolicyScaffold(workDir string) (*agentspec.PolicyScaffold, error) {
 	}
 	return &ps, nil
 }
+
+// DefaultPolicyScaffold returns a scaffold with all built-in guardrails enabled.
+// Used when no policy-scaffold.json exists (e.g. running without forge build).
+func DefaultPolicyScaffold() *agentspec.PolicyScaffold {
+	return &agentspec.PolicyScaffold{
+		Guardrails: []agentspec.Guardrail{
+			{
+				Type:   "content_filter",
+				Config: map[string]any{"enabled": true},
+			},
+			{Type: "no_pii"},
+			{Type: "jailbreak_protection"},
+			{Type: "no_secrets"},
+		},
+	}
+}

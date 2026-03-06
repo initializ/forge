@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -352,5 +354,178 @@ func TestCLIExecute_ParseConfig(t *testing.T) {
 	}
 	if cfgFloat.MaxOutputBytes != 2097152 {
 		t.Errorf("MaxOutputBytes (float64) = %d, want 2097152", cfgFloat.MaxOutputBytes)
+	}
+}
+
+func TestLooksLikePath(t *testing.T) {
+	tests := []struct {
+		arg  string
+		want bool
+	}{
+		{"/etc/passwd", true},
+		{"~/Library/Keychains/", true},
+		{"./data.txt", true},
+		{"../../../.ssh/id_rsa", true},
+		{"~", true},
+		{".", true},
+		{"..", true},
+		// Non-path arguments
+		{"get", false},
+		{"pods", false},
+		{"--namespace=default", false},
+		{"--kubeconfig=~/.kube/config", false},
+		{"-o", false},
+		{"json", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.arg, func(t *testing.T) {
+			if got := looksLikePath(tt.arg); got != tt.want {
+				t.Errorf("looksLikePath(%q) = %v, want %v", tt.arg, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidatePathArg_BlocksHomeTraversal(t *testing.T) {
+	home := os.Getenv("HOME")
+	if home == "" {
+		t.Skip("HOME not set")
+	}
+
+	workDir := filepath.Join(home, "projects", "myagent")
+
+	tool := &CLIExecuteTool{
+		workDir: workDir,
+		homeDir: home,
+	}
+
+	tests := []struct {
+		name    string
+		arg     string
+		wantErr bool
+	}{
+		// Allowed: within workDir
+		{"workdir_file", "./data.txt", false},
+		{"workdir_subdir", "./subdir/file.yaml", false},
+		// Allowed: system paths (outside $HOME)
+		{"system_tmp", "/tmp/data.json", false},
+		{"system_etc", "/etc/hosts", false},
+		// Allowed: non-path arguments
+		{"plain_arg", "get", false},
+		{"flag_arg", "--namespace=default", false},
+		{"flag_with_path", "--kubeconfig=~/.kube/config", false},
+		// Blocked: home traversal
+		{"home_library", "~/Library/Keychains/", true},
+		{"home_downloads", "~/Downloads/", true},
+		{"home_ssh", "~/.ssh/id_rsa", true},
+		{"home_root", "~/", true},
+		// Blocked: relative escape (stays inside $HOME but outside workDir)
+		{"dotdot_escape", "../../.ssh/id_rsa", true},
+		{"dotdot_one_level", "../other_project/secret.key", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tool.validatePathArg(tt.arg)
+			if tt.wantErr && err == nil {
+				t.Errorf("validatePathArg(%q) = nil, want error", tt.arg)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("validatePathArg(%q) = %v, want nil", tt.arg, err)
+			}
+			if tt.wantErr && err != nil && !strings.Contains(err.Error(), "outside the agent working directory") {
+				t.Errorf("error = %q, want it to contain 'outside the agent working directory'", err.Error())
+			}
+		})
+	}
+}
+
+func TestCLIExecute_PathTraversalBlocked(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses Unix paths")
+	}
+
+	home := os.Getenv("HOME")
+	if home == "" {
+		t.Skip("HOME not set")
+	}
+
+	workDir := filepath.Join(home, "projects", "myagent")
+
+	tool := NewCLIExecuteTool(CLIExecuteConfig{
+		AllowedBinaries: []string{"ls"},
+		WorkDir:         workDir,
+	})
+
+	args, _ := json.Marshal(cliExecuteArgs{
+		Binary: "ls",
+		Args:   []string{home},
+	})
+
+	_, err := tool.Execute(context.Background(), args)
+	if err == nil {
+		t.Fatal("Execute() expected error for home directory traversal, got nil")
+	}
+	if !strings.Contains(err.Error(), "outside the agent working directory") {
+		t.Errorf("error = %q, want it to mention 'outside the agent working directory'", err.Error())
+	}
+}
+
+func TestCLIExecute_ShellInterpreterBlocked(t *testing.T) {
+	shells := []string{"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"}
+	for _, shell := range shells {
+		t.Run(shell, func(t *testing.T) {
+			tool := NewCLIExecuteTool(CLIExecuteConfig{
+				AllowedBinaries: []string{shell},
+			})
+
+			args, _ := json.Marshal(cliExecuteArgs{
+				Binary: shell,
+				Args:   []string{"-c", "echo hello"},
+			})
+
+			_, err := tool.Execute(context.Background(), args)
+			if err == nil {
+				t.Fatalf("Execute(%s) expected error, got nil", shell)
+			}
+			if !strings.Contains(err.Error(), "shell interpreter") {
+				t.Errorf("error = %q, want it to mention 'shell interpreter'", err.Error())
+			}
+		})
+	}
+}
+
+func TestCLIExecute_HomeOverriddenToWorkDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("env command differs on Windows")
+	}
+
+	tmpDir := t.TempDir()
+
+	tool := NewCLIExecuteTool(CLIExecuteConfig{
+		AllowedBinaries: []string{"env"},
+		WorkDir:         tmpDir,
+	})
+
+	args, _ := json.Marshal(cliExecuteArgs{
+		Binary: "env",
+	})
+
+	result, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var res cliExecuteResult
+	if err := json.Unmarshal([]byte(result), &res); err != nil {
+		t.Fatalf("failed to unmarshal result: %v", err)
+	}
+
+	// HOME should be overridden to workDir, not the real home
+	expected := "HOME=" + tmpDir
+	if !strings.Contains(res.Stdout, expected) {
+		t.Errorf("expected %q in env output, got:\n%s", expected, res.Stdout)
 	}
 }

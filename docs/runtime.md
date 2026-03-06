@@ -148,7 +148,8 @@ forge run --host 0.0.0.0 --shutdown-timeout 30s
 | `--model` | — | Override model name |
 | `--provider` | — | Override LLM provider |
 | `--env` | `.env` | Path to env file |
-| `--enforce-guardrails` | `false` | Enforce guardrail violations as errors |
+| `--enforce-guardrails` | `true` | Enforce guardrail violations as errors |
+| `--no-guardrails` | `false` | Disable all guardrail enforcement |
 
 ### `forge serve` — Background Daemon
 
@@ -201,6 +202,8 @@ For details on session persistence, context window management, compaction, and l
 ## Hooks
 
 The engine fires hooks at key points in the loop. See [Hooks](hooks.md) for details.
+
+The runner registers four hook groups: logging, audit, progress, and guardrail hooks. The guardrail `AfterToolExec` hook scans tool output for secrets and PII, redacting or blocking before results enter the LLM context. See [Tool Output Scanning](security/guardrails.md#tool-output-scanning).
 
 ## Streaming
 

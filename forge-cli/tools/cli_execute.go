@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -17,8 +18,9 @@ import (
 type CLIExecuteConfig struct {
 	AllowedBinaries []string
 	EnvPassthrough  []string
-	TimeoutSeconds  int // default 120
-	MaxOutputBytes  int // default 1MB
+	TimeoutSeconds  int    // default 120
+	MaxOutputBytes  int    // default 1MB
+	WorkDir         string // confine path arguments to this directory
 }
 
 // CLIExecuteTool is a Category-A builtin tool that executes only pre-approved
@@ -31,6 +33,8 @@ type CLIExecuteTool struct {
 	available   []string
 	missing     []string
 	proxyURL    string // egress proxy URL (e.g., "http://127.0.0.1:54321")
+	workDir     string // resolved absolute workDir for path confinement
+	homeDir     string // resolved $HOME for path confinement
 }
 
 // cliExecuteArgs is the JSON input schema for Execute.
@@ -58,10 +62,21 @@ func NewCLIExecuteTool(config CLIExecuteConfig) *CLIExecuteTool {
 		config.MaxOutputBytes = 1048576 // 1MB
 	}
 
+	// Resolve workDir and homeDir for path confinement.
+	workDir := config.WorkDir
+	if workDir != "" {
+		if abs, err := filepath.Abs(workDir); err == nil {
+			workDir = abs
+		}
+	}
+	homeDir := os.Getenv("HOME")
+
 	t := &CLIExecuteTool{
 		config:      config,
 		allowedSet:  make(map[string]bool, len(config.AllowedBinaries)),
 		binaryPaths: make(map[string]string, len(config.AllowedBinaries)),
+		workDir:     workDir,
+		homeDir:     homeDir,
 	}
 
 	for _, bin := range config.AllowedBinaries {
@@ -133,7 +148,13 @@ func (t *CLIExecuteTool) Execute(ctx context.Context, args json.RawMessage) (str
 		return "", fmt.Errorf("cli_execute: invalid arguments: %w", err)
 	}
 
-	// Security check 1: Binary allowlist
+	// Security check 1a: Block shell interpreters — these defeat the no-shell
+	// exec.Command design and bypass all path argument validation.
+	if deniedShells[input.Binary] {
+		return "", fmt.Errorf("cli_execute: binary %q is a shell interpreter and cannot be used", input.Binary)
+	}
+
+	// Security check 1b: Binary allowlist
 	if !t.allowedSet[input.Binary] {
 		return "", fmt.Errorf("cli_execute: binary %q is not in the allowed list", input.Binary)
 	}
@@ -151,6 +172,16 @@ func (t *CLIExecuteTool) Execute(ctx context.Context, args json.RawMessage) (str
 		}
 	}
 
+	// Security check 3b: Path confinement — block path args that escape workDir
+	// into $HOME (e.g., ~/Library/Keychains/, ../../../.ssh/id_rsa)
+	if t.workDir != "" {
+		for i, arg := range input.Args {
+			if err := t.validatePathArg(arg); err != nil {
+				return "", fmt.Errorf("cli_execute: argument %d: %w", i, err)
+			}
+		}
+	}
+
 	// Security check 4: Timeout
 	timeout := time.Duration(t.config.TimeoutSeconds) * time.Second
 	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -158,6 +189,11 @@ func (t *CLIExecuteTool) Execute(ctx context.Context, args json.RawMessage) (str
 
 	// Security check 5: No shell — exec.CommandContext directly
 	cmd := exec.CommandContext(cmdCtx, absPath, input.Args...)
+
+	// Defense-in-depth: set working directory so relative paths resolve within workDir
+	if t.workDir != "" {
+		cmd.Dir = t.workDir
+	}
 
 	// Security check 6: Env isolation
 	cmd.Env = t.buildEnv()
@@ -213,11 +249,16 @@ func (t *CLIExecuteTool) Availability() (available, missing []string) {
 func (t *CLIExecuteTool) SetProxyURL(url string) { t.proxyURL = url }
 
 // buildEnv constructs an isolated environment with only PATH, HOME, LANG
-// and explicitly configured passthrough variables.
+// and explicitly configured passthrough variables. When workDir is set,
+// HOME is overridden to workDir so subprocess ~ expansion stays confined.
 func (t *CLIExecuteTool) buildEnv() []string {
+	homeVal := os.Getenv("HOME")
+	if t.workDir != "" {
+		homeVal = t.workDir
+	}
 	env := []string{
 		"PATH=" + os.Getenv("PATH"),
-		"HOME=" + os.Getenv("HOME"),
+		"HOME=" + homeVal,
 		"LANG=" + os.Getenv("LANG"),
 	}
 	for _, key := range t.config.EnvPassthrough {
@@ -236,6 +277,15 @@ func (t *CLIExecuteTool) buildEnv() []string {
 	return env
 }
 
+// deniedShells is a hardcoded set of shell interpreters that are never allowed
+// regardless of the allowlist. Shells defeat the security model by
+// reintroducing shell interpretation, bypassing path validation and the
+// no-shell exec.Command design.
+var deniedShells = map[string]bool{
+	"bash": true, "sh": true, "zsh": true, "dash": true,
+	"ksh": true, "csh": true, "tcsh": true, "fish": true,
+}
+
 // validateArg rejects arguments containing shell injection patterns.
 // Since we use exec.Command (no shell), these are defense-in-depth checks
 // against confused upstream processing.
@@ -250,6 +300,48 @@ func validateArg(arg string) error {
 		return fmt.Errorf("argument contains newline: %q", arg)
 	}
 	return nil
+}
+
+// validatePathArg checks whether an argument looks like a filesystem path and,
+// if so, ensures it doesn't resolve to a location inside $HOME but outside
+// workDir. System paths (outside $HOME) and non-path arguments pass through.
+func (t *CLIExecuteTool) validatePathArg(arg string) error {
+	if !looksLikePath(arg) {
+		return nil
+	}
+	resolved := resolveArgPath(arg, t.workDir, t.homeDir)
+
+	// If the resolved path is inside $HOME (or is $HOME itself) but outside workDir → blocked.
+	inHome := resolved == t.homeDir || strings.HasPrefix(resolved, t.homeDir+"/")
+	inWorkDir := resolved == t.workDir || strings.HasPrefix(resolved, t.workDir+"/")
+	if t.homeDir != "" && inHome && !inWorkDir {
+		return fmt.Errorf("path %q resolves outside the agent working directory", arg)
+	}
+	return nil
+}
+
+// looksLikePath returns true for arguments that look like filesystem paths.
+// Only bare path prefixes are matched; flag arguments (--foo=/bar) are not
+// detected so that flags like --kubeconfig=~/.kube/config pass through.
+func looksLikePath(arg string) bool {
+	return strings.HasPrefix(arg, "/") ||
+		strings.HasPrefix(arg, "~/") ||
+		strings.HasPrefix(arg, "./") ||
+		strings.HasPrefix(arg, "../") ||
+		arg == "~" || arg == "." || arg == ".."
+}
+
+// resolveArgPath expands ~ and resolves relative paths against workDir,
+// then cleans the result to eliminate .. components.
+func resolveArgPath(arg, workDir, homeDir string) string {
+	if strings.HasPrefix(arg, "~/") {
+		arg = filepath.Join(homeDir, arg[2:])
+	} else if arg == "~" {
+		arg = homeDir
+	} else if !filepath.IsAbs(arg) {
+		arg = filepath.Join(workDir, arg)
+	}
+	return filepath.Clean(arg)
 }
 
 // ParseCLIExecuteConfig extracts typed config from the map[string]any that

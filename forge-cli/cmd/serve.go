@@ -29,6 +29,7 @@ var (
 	serveHost              string
 	serveShutdownTimeout   time.Duration
 	serveEnforceGuardrails bool
+	serveNoGuardrails      bool
 	serveModel             string
 	serveProvider          string
 	serveEnvFile           string
@@ -87,7 +88,8 @@ func registerServeFlags(cmd *cobra.Command) {
 	cmd.Flags().IntVarP(&servePort, "port", "p", 8080, "HTTP server port")
 	cmd.Flags().StringVar(&serveHost, "host", "127.0.0.1", "bind address (use 0.0.0.0 for containers)")
 	cmd.Flags().DurationVar(&serveShutdownTimeout, "shutdown-timeout", 30*time.Second, "graceful shutdown timeout")
-	cmd.Flags().BoolVar(&serveEnforceGuardrails, "enforce-guardrails", false, "enforce guardrail violations as errors")
+	cmd.Flags().BoolVar(&serveEnforceGuardrails, "enforce-guardrails", true, "enforce guardrail violations as errors")
+	cmd.Flags().BoolVar(&serveNoGuardrails, "no-guardrails", false, "disable all guardrail enforcement")
 	cmd.Flags().StringVar(&serveModel, "model", "", "override model name (sets MODEL_NAME env var)")
 	cmd.Flags().StringVar(&serveProvider, "provider", "", "LLM provider (openai, anthropic, ollama)")
 	cmd.Flags().StringVar(&serveEnvFile, "env", ".env", "path to .env file")
@@ -166,7 +168,9 @@ func serveStartRun(cmd *cobra.Command, args []string) error {
 		"--host", serveHost,
 		"--shutdown-timeout", serveShutdownTimeout.String(),
 	}
-	if serveEnforceGuardrails {
+	if serveNoGuardrails {
+		runArgs = append(runArgs, "--no-guardrails")
+	} else if serveEnforceGuardrails {
 		runArgs = append(runArgs, "--enforce-guardrails")
 	}
 	if serveModel != "" {

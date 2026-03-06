@@ -144,10 +144,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		return err
 	}
 
-	// 2. Load policy scaffold
+	// 2. Load policy scaffold (fall back to built-in defaults)
 	scaffold, err := LoadPolicyScaffold(r.cfg.WorkDir)
 	if err != nil {
 		r.logger.Warn("failed to load policy scaffold", map[string]any{"error": err.Error()})
+	}
+	if scaffold == nil || len(scaffold.Guardrails) == 0 {
+		scaffold = DefaultPolicyScaffold()
 	}
 	guardrails := coreruntime.NewGuardrailEngine(scaffold, r.cfg.EnforceGuardrails, r.logger)
 
@@ -266,6 +269,7 @@ func (r *Runner) Run(ctx context.Context) error {
 				if toolRef.Name == "cli_execute" && toolRef.Config != nil {
 					hasExplicitCLI = true
 					cliCfg := clitools.ParseCLIExecuteConfig(toolRef.Config)
+					cliCfg.WorkDir = r.cfg.WorkDir
 					// Apply timeout hint from skill requirements if larger than explicit config
 					if r.derivedCLIConfig != nil && r.derivedCLIConfig.TimeoutHint > cliCfg.TimeoutSeconds {
 						cliCfg.TimeoutSeconds = r.derivedCLIConfig.TimeoutHint
@@ -290,6 +294,7 @@ func (r *Runner) Run(ctx context.Context) error {
 					AllowedBinaries: r.derivedCLIConfig.AllowedBinaries,
 					EnvPassthrough:  r.derivedCLIConfig.EnvPassthrough,
 					TimeoutSeconds:  r.derivedCLIConfig.TimeoutHint,
+					WorkDir:         r.cfg.WorkDir,
 				}
 				r.cliExecTool = clitools.NewCLIExecuteTool(cliCfg)
 				if regErr := reg.Register(r.cliExecTool); regErr != nil {
@@ -372,6 +377,7 @@ func (r *Runner) Run(ctx context.Context) error {
 					r.registerLoggingHooks(hooks)
 					r.registerAuditHooks(hooks, auditLogger)
 					r.registerProgressHooks(hooks)
+					r.registerGuardrailHooks(hooks, guardrails)
 
 					// Compute model-aware character budget.
 					charBudget := r.cfg.Config.Memory.CharBudget
@@ -426,6 +432,19 @@ func (r *Runner) Run(ctx context.Context) error {
 
 							execCfg.Store = memStore
 							execCfg.Compactor = compactor
+
+							// Session max age: stale sessions are discarded to prevent
+							// poisoned error context from blocking tool retries.
+							if v := os.Getenv("FORGE_SESSION_MAX_AGE"); v != "" {
+								if d, err := time.ParseDuration(v); err == nil {
+									execCfg.SessionMaxAge = d
+								}
+							} else if r.cfg.Config.Memory.SessionMaxAge != "" {
+								if d, err := time.ParseDuration(r.cfg.Config.Memory.SessionMaxAge); err == nil {
+									execCfg.SessionMaxAge = d
+								}
+							}
+
 							r.logger.Info("memory persistence enabled", map[string]any{
 								"sessions_dir": sessDir,
 							})
@@ -1349,6 +1368,22 @@ func (r *Runner) registerProgressHooks(hooks *coreruntime.HookRegistry) {
 				Message: msg,
 			})
 		}
+		return nil
+	})
+}
+
+// registerGuardrailHooks registers an AfterToolExec hook that scans tool output
+// for secrets and PII, redacting or blocking based on guardrail mode.
+func (r *Runner) registerGuardrailHooks(hooks *coreruntime.HookRegistry, guardrails *coreruntime.GuardrailEngine) {
+	hooks.Register(coreruntime.AfterToolExec, func(_ context.Context, hctx *coreruntime.HookContext) error {
+		if hctx.ToolOutput == "" {
+			return nil
+		}
+		redacted, err := guardrails.CheckToolOutput(hctx.ToolOutput)
+		if err != nil {
+			return err
+		}
+		hctx.ToolOutput = redacted
 		return nil
 	})
 }

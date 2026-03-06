@@ -168,6 +168,7 @@ forge skills list --tags kubernetes,incident-response
 | `tavily-search` | 🔍 | research | Search the web using Tavily AI search API | `tavily-search.sh` |
 | `tavily-research` | 🔬 | research | Deep multi-source research via Tavily API | `tavily-research.sh`, `tavily-research-poll.sh` |
 | `k8s-incident-triage` | ☸️ | sre | Read-only Kubernetes incident triage using kubectl | — (binary-backed) |
+| `k8s-cost-visibility` | 💰 | sre | Estimate K8s infrastructure costs (compute, storage, LoadBalancer) with cost attribution reports | `k8s-cost-visibility.sh` |
 | `k8s-pod-rightsizer` | ⚖️ | sre | Analyze workload metrics and produce CPU/memory rightsizing recommendations | — (binary-backed) |
 | `code-review` | 🔎 | developer | AI-powered code review for diffs and files | `code-review-diff.sh`, `code-review-file.sh` |
 | `code-review-standards` | 📏 | developer | Initialize and manage code review standards | — (template-based) |
@@ -264,6 +265,37 @@ This skill operates in three modes:
 **Apply workflow:** The skill's built-in `mode=apply` handles rollback bundles, strategic merge patches via `kubectl patch`, and rollout verification. Do not manually run `kubectl apply -f` — use `mode=apply` with `i_accept_risk: true` instead.
 
 Requires: `bash`, `kubectl`, `jq`, `curl`. Optional: `KUBECONFIG`, `K8S_API_DOMAIN`, `PROMETHEUS_URL`, `PROMETHEUS_TOKEN`, `POLICY_FILE`, `DEFAULT_NAMESPACE`.
+
+### Kubernetes Cost Visibility Skill
+
+The `k8s-cost-visibility` skill estimates Kubernetes infrastructure costs by querying cluster node, pod, PVC/PV, and LoadBalancer data via `kubectl`, applying cloud pricing models, and producing cost attribution reports:
+
+```bash
+forge skills add k8s-cost-visibility
+```
+
+This registers a single tool:
+
+| Tool | Purpose | Behavior |
+|------|---------|----------|
+| `k8s_cost_visibility` | Estimate cluster costs and produce attribution reports | Queries nodes, pods, PVCs, PVs, and services; applies pricing; returns cost breakdown |
+
+**Cost dimensions tracked:**
+
+| Dimension | Source | Default Rate |
+|-----------|--------|-------------|
+| Compute (CPU + memory) | Node instance types, pod resource requests | Auto-detected from cloud CLI or $0.031611/vCPU-hr |
+| Storage (PVC/PV) | PVC capacities, storage classes | $0.10/GiB/month |
+| LoadBalancer | Services with `type: LoadBalancer` | $18.25/month each |
+| Waste | Unbound Persistent Volumes | Flagged with estimated monthly waste |
+
+**Grouping modes:** `namespace` (includes storage + LB columns), `workload`, `node`, `label:<key>`, `annotation:<key>`.
+
+**Pricing modes:** `auto` (detect cloud CLI), `aws`, `gcp`, `azure`, `static` (built-in rates), `custom:<file.json>` (user-provided rates).
+
+**Safety:** This skill is strictly read-only. It only uses `kubectl get` commands (nodes, pods, pvc, pv, svc) — never `apply`, `delete`, `patch`, `exec`, or `scale`.
+
+Requires: `kubectl`, `jq`, `awk`, `bc`. Optional: `KUBECONFIG`, `K8S_API_DOMAIN`, `DEFAULT_NAMESPACE`, `AWS_REGION`, `AZURE_SUBSCRIPTION_ID`, `GCP_PROJECT`.
 
 ### Codegen React Skill
 

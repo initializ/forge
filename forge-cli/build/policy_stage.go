@@ -24,6 +24,9 @@ func (s *PolicyStage) Execute(ctx context.Context, bc *pipeline.BuildContext) er
 					Type:   "content_filter",
 					Config: map[string]any{"enabled": true},
 				},
+				{Type: "no_pii"},
+				{Type: "jailbreak_protection"},
+				{Type: "no_secrets"},
 			},
 		}
 	}

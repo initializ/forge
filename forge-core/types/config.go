@@ -43,10 +43,11 @@ type SecretsConfig struct {
 
 // MemoryConfig configures agent memory persistence and compaction.
 type MemoryConfig struct {
-	Persistence  *bool   `yaml:"persistence,omitempty"` // default: true
-	SessionsDir  string  `yaml:"sessions_dir,omitempty"`
-	TriggerRatio float64 `yaml:"trigger_ratio,omitempty"`
-	CharBudget   int     `yaml:"char_budget,omitempty"`
+	Persistence   *bool   `yaml:"persistence,omitempty"` // default: true
+	SessionsDir   string  `yaml:"sessions_dir,omitempty"`
+	SessionMaxAge string  `yaml:"session_max_age,omitempty"` // e.g. "30m", "1h" (default: 30m)
+	TriggerRatio  float64 `yaml:"trigger_ratio,omitempty"`
+	CharBudget    int     `yaml:"char_budget,omitempty"`
 
 	// Long-term memory (persistent cross-session knowledge).
 	LongTerm          *bool   `yaml:"long_term,omitempty"`            // default: false

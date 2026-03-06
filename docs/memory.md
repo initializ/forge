@@ -17,6 +17,18 @@ memory:
 - Sessions are saved as JSON files with atomic writes (temp file + fsync + rename)
 - Automatic cleanup of sessions older than 7 days at startup
 - Session recovery on subsequent requests (disk snapshot supersedes task history)
+- **Session max age** (default 30 minutes): stale sessions are discarded on recovery to prevent poisoned error context from blocking tool retries. When an LLM accumulates repeated tool failures in a session, it may stop retrying altogether. The max age ensures these poisoned sessions expire, giving the agent a fresh start.
+
+Configure via `forge.yaml` or environment variable:
+
+```yaml
+memory:
+  session_max_age: "30m"   # default; use "1h", "15m", etc.
+```
+
+```bash
+export FORGE_SESSION_MAX_AGE=1h
+```
 
 ## Context Window Management
 
@@ -89,6 +101,7 @@ Full memory configuration in `forge.yaml`:
 memory:
   persistence: true
   sessions_dir: ".forge/sessions"
+  session_max_age: "30m"      # discard sessions idle longer than this
   char_budget: 200000
   trigger_ratio: 0.6
   long_term: false
@@ -105,6 +118,7 @@ Environment variables:
 | Variable | Description |
 |----------|-------------|
 | `FORGE_MEMORY_PERSISTENCE` | Set `false` to disable session persistence |
+| `FORGE_SESSION_MAX_AGE` | Session idle timeout, e.g. `30m`, `1h` (default: `30m`) |
 | `FORGE_MEMORY_LONG_TERM` | Set `true` to enable long-term memory |
 | `FORGE_EMBEDDING_PROVIDER` | Override embedding provider |
 

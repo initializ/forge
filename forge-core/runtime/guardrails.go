@@ -112,7 +112,7 @@ func (g *GuardrailEngine) checkContentFilter(text string, gr agentspec.Guardrail
 
 var piiPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}`), // email
-	regexp.MustCompile(`\b\d{3}[-.]?\d{3}[-.]?\d{4}\b`),                    // phone
+	regexp.MustCompile(`\b\d{3}[-.]\d{3}[-.]\d{4}\b`),                      // phone (require separators to avoid matching byte counts)
 	regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`),                            // SSN
 }
 

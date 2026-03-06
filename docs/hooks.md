@@ -19,7 +19,7 @@ Hooks fire synchronously during the agent loop and can:
 | `BeforeLLMCall` | Before each LLM API call | `Messages`, `TaskID`, `CorrelationID` |
 | `AfterLLMCall` | After each LLM API call | `Messages`, `Response`, `TaskID`, `CorrelationID` |
 | `BeforeToolExec` | Before each tool execution | `ToolName`, `ToolInput`, `TaskID`, `CorrelationID` |
-| `AfterToolExec` | After each tool execution | `ToolName`, `ToolInput`, `ToolOutput`, `Error`, `TaskID`, `CorrelationID` |
+| `AfterToolExec` | After each tool execution | `ToolName`, `ToolInput`, `ToolOutput` (mutable), `Error`, `TaskID`, `CorrelationID` |
 | `OnError` | When an LLM call fails | `Error`, `TaskID`, `CorrelationID` |
 | `OnProgress` | During tool execution | `Phase`, `ToolName`, `StatusMessage` |
 
@@ -69,6 +69,19 @@ hooks.Register(engine.BeforeToolExec, func(ctx context.Context, hctx *engine.Hoo
     if hctx.ToolName == "dangerous_tool" {
         return fmt.Errorf("tool %q is blocked by policy", hctx.ToolName)
     }
+    return nil
+})
+```
+
+## Output Redaction
+
+`AfterToolExec` hooks can modify `hctx.ToolOutput` to redact sensitive content before it enters the LLM context. The agent loop reads back `ToolOutput` from the `HookContext` after all hooks fire.
+
+The runner registers a guardrail hook that scans tool output for secrets and PII patterns. See [Tool Output Scanning](security/guardrails.md#tool-output-scanning) for details.
+
+```go
+hooks.Register(engine.AfterToolExec, func(ctx context.Context, hctx *engine.HookContext) error {
+    hctx.ToolOutput = strings.ReplaceAll(hctx.ToolOutput, secret, "[REDACTED]")
     return nil
 })
 ```

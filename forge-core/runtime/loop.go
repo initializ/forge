@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/initializ/forge/forge-core/a2a"
 	"github.com/initializ/forge/forge-core/llm"
@@ -28,10 +29,11 @@ type LLMExecutor struct {
 	compactor          *Compactor
 	store              *MemoryStore
 	logger             Logger
-	modelName          string // resolved model name for context budget
-	charBudget         int    // resolved character budget
-	maxToolResultChars int    // computed from char budget
-	filesDir           string // directory for file_create output
+	modelName          string        // resolved model name for context budget
+	charBudget         int           // resolved character budget
+	maxToolResultChars int           // computed from char budget
+	filesDir           string        // directory for file_create output
+	sessionMaxAge      time.Duration // max age for session recovery (0 = no limit)
 }
 
 // LLMExecutorConfig configures the LLM executor.
@@ -44,9 +46,10 @@ type LLMExecutorConfig struct {
 	Compactor     *Compactor
 	Store         *MemoryStore
 	Logger        Logger
-	ModelName     string // model name for context-aware budgeting
-	CharBudget    int    // explicit char budget override (0 = auto from model)
-	FilesDir      string // directory for file_create output (default: $TMPDIR/forge-files)
+	ModelName     string        // model name for context-aware budgeting
+	CharBudget    int           // explicit char budget override (0 = auto from model)
+	FilesDir      string        // directory for file_create output (default: $TMPDIR/forge-files)
+	SessionMaxAge time.Duration // max idle time before session recovery is skipped (0 = 30m default)
 }
 
 // NewLLMExecutor creates a new LLMExecutor with the given configuration.
@@ -83,6 +86,11 @@ func NewLLMExecutor(cfg LLMExecutorConfig) *LLMExecutor {
 		toolLimit = 400_000
 	}
 
+	sessionMaxAge := cfg.SessionMaxAge
+	if sessionMaxAge == 0 {
+		sessionMaxAge = 30 * time.Minute
+	}
+
 	return &LLMExecutor{
 		client:             cfg.Client,
 		tools:              cfg.Tools,
@@ -96,6 +104,7 @@ func NewLLMExecutor(cfg LLMExecutorConfig) *LLMExecutor {
 		charBudget:         budget,
 		maxToolResultChars: toolLimit,
 		filesDir:           cfg.FilesDir,
+		sessionMaxAge:      sessionMaxAge,
 	}
 }
 
@@ -109,6 +118,9 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 
 	// Try to recover session from disk. If found, the disk snapshot
 	// supersedes task.History to avoid duplicating messages.
+	// Sessions older than sessionMaxAge are discarded to prevent stale
+	// error context from poisoning the LLM (e.g., repeated tool failures
+	// causing the LLM to stop retrying tools altogether).
 	recovered := false
 	if e.store != nil {
 		saved, err := e.store.Load(task.ID)
@@ -117,12 +129,21 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 				"task_id": task.ID, "error": err.Error(),
 			})
 		} else if saved != nil {
-			mem.LoadFromStore(saved)
-			recovered = true
-			e.logger.Info("session recovered from disk", map[string]any{
-				"task_id":  task.ID,
-				"messages": len(saved.Messages),
-			})
+			if !saved.UpdatedAt.IsZero() && time.Since(saved.UpdatedAt) > e.sessionMaxAge {
+				e.logger.Info("discarding stale session", map[string]any{
+					"task_id":    task.ID,
+					"updated_at": saved.UpdatedAt.Format(time.RFC3339),
+					"max_age":    e.sessionMaxAge.String(),
+				})
+				_ = e.store.Delete(task.ID)
+			} else {
+				mem.LoadFromStore(saved)
+				recovered = true
+				e.logger.Info("session recovered from disk", map[string]any{
+					"task_id":  task.ID,
+					"messages": len(saved.Messages),
+				})
+			}
 		}
 	}
 
@@ -234,17 +255,19 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 				result = result[:e.maxToolResultChars] + "\n\n[OUTPUT TRUNCATED — original length: " + strconv.Itoa(len(result)) + " chars]"
 			}
 
-			// Fire AfterToolExec hook
-			if err := e.hooks.Fire(ctx, AfterToolExec, &HookContext{
+			// Fire AfterToolExec hook — hooks may redact ToolOutput.
+			afterHctx := &HookContext{
 				ToolName:      tc.Function.Name,
 				ToolInput:     tc.Function.Arguments,
 				ToolOutput:    result,
 				Error:         execErr,
 				TaskID:        TaskIDFromContext(ctx),
 				CorrelationID: CorrelationIDFromContext(ctx),
-			}); err != nil {
+			}
+			if err := e.hooks.Fire(ctx, AfterToolExec, afterHctx); err != nil {
 				return nil, fmt.Errorf("after tool exec hook: %w", err)
 			}
+			result = afterHctx.ToolOutput // allow hooks to redact output
 
 			// Handle file_create tool: always create a file part.
 			// For other tools with large output, detect content type.

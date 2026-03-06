@@ -23,6 +23,7 @@ var (
 	runShutdownTimeout   time.Duration
 	runMockTools         bool
 	runEnforceGuardrails bool
+	runNoGuardrails      bool
 	runModel             string
 	runProvider          string
 	runEnvFile           string
@@ -42,7 +43,8 @@ func init() {
 	runCmd.Flags().StringVar(&runHost, "host", "", "bind address (e.g. 0.0.0.0 for containers)")
 	runCmd.Flags().DurationVar(&runShutdownTimeout, "shutdown-timeout", 0, "graceful shutdown timeout (e.g. 30s)")
 	runCmd.Flags().BoolVar(&runMockTools, "mock-tools", false, "use mock runtime instead of subprocess")
-	runCmd.Flags().BoolVar(&runEnforceGuardrails, "enforce-guardrails", false, "enforce guardrail violations as errors")
+	runCmd.Flags().BoolVar(&runEnforceGuardrails, "enforce-guardrails", true, "enforce guardrail violations as errors")
+	runCmd.Flags().BoolVar(&runNoGuardrails, "no-guardrails", false, "disable all guardrail enforcement")
 	runCmd.Flags().StringVar(&runModel, "model", "", "override model name (sets MODEL_NAME env var)")
 	runCmd.Flags().StringVar(&runProvider, "provider", "", "LLM provider (openai, anthropic, ollama)")
 	runCmd.Flags().StringVar(&runEnvFile, "env", ".env", "path to .env file")
@@ -59,6 +61,11 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 	activeChannels := parseChannels(runWithChannels)
 
+	enforceGuardrails := runEnforceGuardrails
+	if runNoGuardrails {
+		enforceGuardrails = false
+	}
+
 	runner, err := runtime.NewRunner(runtime.RunnerConfig{
 		Config:            cfg,
 		WorkDir:           workDir,
@@ -66,7 +73,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		Host:              runHost,
 		ShutdownTimeout:   runShutdownTimeout,
 		MockTools:         runMockTools,
-		EnforceGuardrails: runEnforceGuardrails,
+		EnforceGuardrails: enforceGuardrails,
 		ModelOverride:     runModel,
 		ProviderOverride:  runProvider,
 		EnvFilePath:       resolveEnvPath(workDir, runEnvFile),

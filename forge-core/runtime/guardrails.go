@@ -48,9 +48,17 @@ func (g *GuardrailEngine) check(msg *a2a.Message, direction string) error {
 		case "content_filter":
 			err = g.checkContentFilter(text, gr)
 		case "no_pii":
-			err = g.checkNoPII(text)
+			if direction == "outbound" {
+				err = g.checkNoPII(text)
+			}
 		case "jailbreak_protection":
-			err = g.checkJailbreak(text)
+			if direction == "inbound" {
+				err = g.checkJailbreak(text)
+			}
+		case "no_secrets":
+			if direction == "outbound" {
+				err = g.checkNoSecrets(text)
+			}
 		default:
 			continue
 		}
@@ -134,4 +142,66 @@ func (g *GuardrailEngine) checkJailbreak(text string) error {
 		}
 	}
 	return nil
+}
+
+var secretPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`sk-ant-[A-Za-z0-9\-]{20,}`),                      // Anthropic API keys
+	regexp.MustCompile(`sk-[A-Za-z0-9]{20,}`),                            // OpenAI API keys
+	regexp.MustCompile(`ghp_[A-Za-z0-9]{36}`),                            // GitHub PATs
+	regexp.MustCompile(`gho_[A-Za-z0-9]{36}`),                            // GitHub OAuth tokens
+	regexp.MustCompile(`ghs_[A-Za-z0-9]{36}`),                            // GitHub server tokens
+	regexp.MustCompile(`github_pat_[A-Za-z0-9_]{22,}`),                   // GitHub fine-grained PATs
+	regexp.MustCompile(`AKIA[0-9A-Z]{16}`),                               // AWS access key IDs
+	regexp.MustCompile(`xoxb-[0-9]{10,}-[A-Za-z0-9-]+`),                  // Slack bot tokens
+	regexp.MustCompile(`xoxp-[0-9]{10,}-[A-Za-z0-9-]+`),                  // Slack user tokens
+	regexp.MustCompile(`-----BEGIN (RSA|EC|OPENSSH|PRIVATE) .*KEY-----`), // Private keys
+	regexp.MustCompile(`[0-9]{8,10}:[A-Za-z0-9_-]{35,}`),                 // Telegram bot tokens
+}
+
+func (g *GuardrailEngine) checkNoSecrets(text string) error {
+	for _, re := range secretPatterns {
+		if re.MatchString(text) {
+			return fmt.Errorf("potential secret or credential detected in output")
+		}
+	}
+	return nil
+}
+
+// CheckToolOutput scans tool output text against configured guardrails
+// (no_secrets and no_pii). In enforce mode, returns an error on first match
+// without echoing the match. In warn mode, replaces matches with [REDACTED],
+// logs a warning, and returns the redacted text.
+func (g *GuardrailEngine) CheckToolOutput(text string) (string, error) {
+	if text == "" {
+		return text, nil
+	}
+
+	for _, gr := range g.scaffold.Guardrails {
+		var patterns []*regexp.Regexp
+		switch gr.Type {
+		case "no_secrets":
+			patterns = secretPatterns
+		case "no_pii":
+			patterns = piiPatterns
+		default:
+			continue
+		}
+
+		for _, re := range patterns {
+			if !re.MatchString(text) {
+				continue
+			}
+			if g.enforce {
+				return "", fmt.Errorf("tool output blocked by content policy")
+			}
+			// Warn mode: redact matches
+			text = re.ReplaceAllString(text, "[REDACTED]")
+			g.logger.Warn("guardrail redaction", map[string]any{
+				"guardrail": gr.Type,
+				"direction": "tool_output",
+				"detail":    fmt.Sprintf("pattern %s matched, content redacted", re.String()),
+			})
+		}
+	}
+	return text, nil
 }

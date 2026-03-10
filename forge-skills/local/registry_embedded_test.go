@@ -16,12 +16,12 @@ func TestEmbeddedRegistry_DiscoverAll(t *testing.T) {
 		t.Fatalf("List error: %v", err)
 	}
 
-	if len(skills) != 12 {
+	if len(skills) != 13 {
 		names := make([]string, len(skills))
 		for i, s := range skills {
 			names[i] = s.Name
 		}
-		t.Fatalf("expected 12 skills, got %d: %v", len(skills), names)
+		t.Fatalf("expected 13 skills, got %d: %v", len(skills), names)
 	}
 
 	// Verify all expected skills are present
@@ -31,7 +31,8 @@ func TestEmbeddedRegistry_DiscoverAll(t *testing.T) {
 		hasBins     bool
 		hasEgress   bool
 	}{
-		"github":                {displayName: "Github", hasEnv: true, hasBins: true, hasEgress: true},
+		"code-agent":            {displayName: "Code Agent", hasEnv: false, hasBins: false, hasEgress: false},
+		"github":                {displayName: "Github", hasEnv: false, hasBins: true, hasEgress: true},
 		"weather":               {displayName: "Weather", hasEnv: false, hasBins: true, hasEgress: true},
 		"tavily-search":         {displayName: "Tavily Search", hasEnv: true, hasBins: true, hasEgress: true},
 		"tavily-research":       {displayName: "Tavily Research", hasEnv: true, hasBins: true, hasEgress: true},
@@ -42,7 +43,7 @@ func TestEmbeddedRegistry_DiscoverAll(t *testing.T) {
 		"codegen-react":         {displayName: "Codegen React", hasEnv: false, hasBins: true, hasEgress: true},
 		"codegen-html":          {displayName: "Codegen Html", hasEnv: false, hasBins: true, hasEgress: true},
 		"k8s-pod-rightsizer":    {displayName: "K8s Pod Rightsizer", hasEnv: false, hasBins: true, hasEgress: false},
-		"k8s-cost-visibility":  {displayName: "K8s Cost Visibility", hasEnv: false, hasBins: true, hasEgress: true},
+		"k8s-cost-visibility":   {displayName: "K8s Cost Visibility", hasEnv: false, hasBins: true, hasEgress: true},
 	}
 
 	for _, s := range skills {
@@ -79,17 +80,18 @@ func TestEmbeddedRegistry_GitHubDetails(t *testing.T) {
 	if s == nil {
 		t.Fatal("Get(\"github\") returned nil")
 	}
-	if s.Description != "Create issues, PRs, and query repositories" {
+	if s.Description != "Create issues, PRs, clone repos, and manage git workflows" {
 		t.Errorf("Description = %q", s.Description)
 	}
 	if s.Icon != "🐙" {
 		t.Errorf("Icon = %q, want 🐙", s.Icon)
 	}
-	if len(s.RequiredEnv) != 1 || s.RequiredEnv[0] != "GH_TOKEN" {
-		t.Errorf("RequiredEnv = %v", s.RequiredEnv)
+	if len(s.RequiredEnv) != 0 {
+		t.Errorf("RequiredEnv = %v, want empty (GH_TOKEN is optional)", s.RequiredEnv)
 	}
-	if len(s.RequiredBins) != 1 || s.RequiredBins[0] != "gh" {
-		t.Errorf("RequiredBins = %v", s.RequiredBins)
+	expectedBins := []string{"gh", "git", "jq"}
+	if len(s.RequiredBins) != len(expectedBins) {
+		t.Errorf("RequiredBins = %v, want %v", s.RequiredBins, expectedBins)
 	}
 
 	foundDomain := false

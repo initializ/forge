@@ -29,20 +29,21 @@ func (s *UIServer) handleGetWizardMeta(w http.ResponseWriter, _ *http.Request) {
 	// Per-provider model lists
 	meta.ProviderModels = map[string]ProviderModels{
 		"openai": {
-			Default:       "gpt-5.2-2025-12-11",
+			Default:       "gpt-5.4",
 			NeedsKey:      true,
 			HasOAuth:      true,
 			SupportsOrgID: true,
 			APIKey: []ModelOption{
-				{DisplayName: "GPT 5.2", ModelID: "gpt-5.2-2025-12-11"},
-				{DisplayName: "GPT 5 Mini", ModelID: "gpt-5-mini-2025-08-07"},
-				{DisplayName: "GPT 5 Nano", ModelID: "gpt-5-nano-2025-08-07"},
-				{DisplayName: "GPT 4.1 Mini", ModelID: "gpt-4.1-mini-2025-04-14"},
+				{DisplayName: "GPT 5.4", ModelID: "gpt-5.4"},
+				{DisplayName: "GPT 5 Mini", ModelID: "gpt-5-mini"},
+				{DisplayName: "GPT 5 Nano", ModelID: "gpt-5-nano"},
+				{DisplayName: "GPT 4.1", ModelID: "gpt-4.1"},
 			},
 			OAuth: []ModelOption{
-				{DisplayName: "GPT 5.3 Codex", ModelID: "gpt-5.3-codex"},
-				{DisplayName: "GPT 5.2", ModelID: "gpt-5.2-2025-12-11"},
-				{DisplayName: "GPT 5.2 Codex", ModelID: "gpt-5.2-codex"},
+				{DisplayName: "GPT 5.4", ModelID: "gpt-5.4"},
+				{DisplayName: "GPT 5 Mini", ModelID: "gpt-5-mini"},
+				{DisplayName: "GPT 5 Nano", ModelID: "gpt-5-nano"},
+				{DisplayName: "GPT 4.1", ModelID: "gpt-4.1"},
 			},
 		},
 		"anthropic": {

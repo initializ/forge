@@ -137,6 +137,9 @@ func (m *Memory) Reset() {
 // It first prunes old tool results into compact placeholders (preserving signal),
 // then drops oldest message groups if still over budget.
 //
+// The first user message (the task request) is always preserved so the LLM
+// retains its objective even after aggressive trimming.
+//
 // Messages are removed in structural groups to maintain valid sequences:
 //   - An assistant message with tool_calls is always removed together with its
 //     subsequent tool-result messages (they form one atomic group).
@@ -151,26 +154,36 @@ func (m *Memory) trim() {
 		m.pruneToolResults()
 	}
 
-	// Phase 2: Drop oldest message groups (existing logic).
-	for m.totalChars() > m.maxChars && len(m.messages) > 1 {
-		// Determine the size of the first message group.
-		end := 1
-		if m.messages[0].Role == llm.RoleTool {
+	// Find the first user message to pin (the task request).
+	pinEnd := 0
+	for i, msg := range m.messages {
+		if msg.Role == llm.RoleUser {
+			pinEnd = i + 1
+			break
+		}
+	}
+
+	// Phase 2: Drop oldest message groups after the pinned prefix.
+	for m.totalChars() > m.maxChars && len(m.messages) > pinEnd+1 {
+		// Start trimming from the first non-pinned message.
+		idx := pinEnd
+		end := idx + 1
+		if m.messages[idx].Role == llm.RoleTool {
 			// Orphaned tool results — remove all contiguous tool messages.
 			for end < len(m.messages) && m.messages[end].Role == llm.RoleTool {
 				end++
 			}
-		} else if len(m.messages[0].ToolCalls) > 0 {
+		} else if len(m.messages[idx].ToolCalls) > 0 {
 			// Assistant with tool_calls — include all following tool results.
 			for end < len(m.messages) && m.messages[end].Role == llm.RoleTool {
 				end++
 			}
 		}
-		// Don't remove everything — keep at least one complete group.
+		// Don't remove everything — keep at least one complete group after pin.
 		if end >= len(m.messages) {
 			break
 		}
-		m.messages = m.messages[end:]
+		m.messages = append(m.messages[:idx], m.messages[end:]...)
 	}
 }
 

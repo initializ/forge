@@ -1016,7 +1016,7 @@ func buildTemplateData(opts *initOptions) templateData {
 func defaultModelNameForProvider(provider string) string {
 	switch provider {
 	case "openai":
-		return "gpt-5.2-2025-12-11"
+		return "gpt-5.4"
 	case "anthropic":
 		return "claude-sonnet-4-20250514"
 	case "gemini":

@@ -18,7 +18,7 @@ type WizardContext struct {
 	Provider       string
 	APIKey         string
 	AuthMethod     string // "apikey" or "oauth" — how the user authenticated
-	ModelName      string // selected model ID (e.g. "gpt-5.3-codex")
+	ModelName      string // selected model ID (e.g. "gpt-5.4")
 	OrganizationID string // OpenAI enterprise organization ID
 	Fallbacks      []FallbackProvider
 	Channel        string

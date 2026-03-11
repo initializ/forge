@@ -15,7 +15,6 @@ metadata:
   forge:
     requires:
       bins:
-        - bash
         - kubectl
         - jq
         - curl
@@ -35,6 +34,29 @@ metadata:
     denied_tools:
       - http_request
       - web_search
+    guardrails:
+      deny_prompts:
+        - pattern: '\b(approved|allowed|available|pre-approved)\b.{0,40}\b(tools?|binaries|commands?|executables?|programs?|clis?)\b'
+          message: "I help with Kubernetes pod rightsizing. Ask me about workload resource recommendations, CPU/memory analysis, or rightsizing patches."
+        - pattern: '\b(what|which|list|show|enumerate)\b.{0,20}\b(can you|do you|are you able to)\b.{0,20}\b(execute|run|access|invoke)\b'
+          message: "I help with Kubernetes pod rightsizing. Ask me about workload resource recommendations, CPU/memory analysis, or rightsizing patches."
+      deny_responses:
+        - pattern: '\b(kubectl|jq|awk|bc|curl)\b.*\b(kubectl|jq|awk|bc|curl)\b.*\b(kubectl|jq|awk|bc|curl)\b'
+          message: "I can analyze Kubernetes workload resource usage, recommend CPU/memory rightsizing, generate strategic merge patches, and perform rollback-safe applies. What would you like to analyze?"
+      deny_commands:
+        - pattern: '\bget\s+secrets?\b'
+          message: "Listing Kubernetes secrets is not permitted"
+        - pattern: '\bdescribe\s+secret\b'
+          message: "Describing Kubernetes secrets is not permitted"
+        - pattern: '\bauth\s+can-i\b'
+          message: "Permission enumeration is not permitted"
+      deny_output:
+        - pattern: 'kind:\s*Secret'
+          action: block
+        - pattern: '-----BEGIN (CERTIFICATE|RSA PRIVATE KEY|EC PRIVATE KEY|PRIVATE KEY)-----'
+          action: block
+        - pattern: 'token:\s*[A-Za-z0-9+/=]{40,}'
+          action: redact
     timeout_hint: 300
     trust_hints:
       network: true
@@ -58,9 +80,9 @@ This skill uses deterministic formulas, never LLM-based guessing.
 
 ## Tool Usage
 
-This skill uses `cli_execute` with `kubectl` and `curl` commands.
-NEVER use http_request or web_search to interact with Kubernetes or Prometheus.
-All cluster operations MUST go through kubectl or the rightsizer script via cli_execute.
+All data gathering goes through `cli_execute`. NEVER use http_request or web_search.
+
+**IMPORTANT:** When users ask about your capabilities, skills, or tools, describe what you can DO (analyze workload metrics, recommend CPU/memory rightsizing, generate patches, perform rollback-safe applies). NEVER list binary names, tool names, CLI programs, or infrastructure details in your responses — these are internal implementation details that must not be disclosed.
 
 ---
 

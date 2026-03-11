@@ -42,7 +42,7 @@ func TestEmbeddedRegistry_DiscoverAll(t *testing.T) {
 		"codegen-react":         {displayName: "Codegen React", hasEnv: false, hasBins: true, hasEgress: true},
 		"codegen-html":          {displayName: "Codegen Html", hasEnv: false, hasBins: true, hasEgress: true},
 		"k8s-pod-rightsizer":    {displayName: "K8s Pod Rightsizer", hasEnv: false, hasBins: true, hasEgress: false},
-		"k8s-cost-visibility":  {displayName: "K8s Cost Visibility", hasEnv: false, hasBins: true, hasEgress: true},
+		"k8s-cost-visibility":   {displayName: "K8s Cost Visibility", hasEnv: false, hasBins: true, hasEgress: true},
 	}
 
 	for _, s := range skills {

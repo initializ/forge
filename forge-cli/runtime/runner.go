@@ -87,12 +87,13 @@ type Runner struct {
 	cfg              RunnerConfig
 	logger           coreruntime.Logger
 	cliExecTool      *clitools.CLIExecuteTool
-	modelConfig      *coreruntime.ModelConfig   // resolved model config (for banner)
-	derivedCLIConfig *contract.DerivedCLIConfig // auto-derived from skill requirements
-	sched            *scheduler.Scheduler       // cron scheduler (nil until started)
-	startTime        time.Time                  // server start time (for /health uptime)
-	scheduleNotifier ScheduleNotifier           // optional: delivers cron results to channels
-	authToken        string                     // resolved auth token (empty if --no-auth)
+	modelConfig      *coreruntime.ModelConfig       // resolved model config (for banner)
+	derivedCLIConfig *contract.DerivedCLIConfig     // auto-derived from skill requirements
+	skillGuardrails  *agentspec.SkillGuardrailRules // runtime-parsed skill guardrails (fallback when no build artifact)
+	sched            *scheduler.Scheduler           // cron scheduler (nil until started)
+	startTime        time.Time                      // server start time (for /health uptime)
+	scheduleNotifier ScheduleNotifier               // optional: delivers cron results to channels
+	authToken        string                         // resolved auth token (empty if --no-auth)
 }
 
 // NewRunner creates a Runner from the given config.
@@ -424,6 +425,17 @@ func (r *Runner) Run(ctx context.Context) error {
 					r.registerAuditHooks(hooks, auditLogger)
 					r.registerProgressHooks(hooks)
 					r.registerGuardrailHooks(hooks, guardrails)
+
+					// Register skill-level guardrails if present.
+					// Prefer build-time artifact; fall back to runtime-parsed guardrails.
+					sgRules := scaffold.SkillGuardrails
+					if sgRules == nil {
+						sgRules = r.skillGuardrails
+					}
+					if sgRules != nil {
+						sg := coreruntime.NewSkillGuardrailEngine(sgRules, r.cfg.EnforceGuardrails, r.logger)
+						r.registerSkillGuardrailHooks(hooks, sg)
+					}
 
 					// Compute model-aware character budget.
 					charBudget := r.cfg.Config.Memory.CharBudget
@@ -1444,6 +1456,46 @@ func (r *Runner) registerGuardrailHooks(hooks *coreruntime.HookRegistry, guardra
 	})
 }
 
+// registerSkillGuardrailHooks registers hooks that enforce skill-declared deny
+// patterns on user prompts (BeforeLLMCall), command inputs (BeforeToolExec),
+// and tool outputs (AfterToolExec).
+func (r *Runner) registerSkillGuardrailHooks(hooks *coreruntime.HookRegistry, sg *coreruntime.SkillGuardrailEngine) {
+	// Block capability-enumeration and other denied prompts before the LLM sees them.
+	hooks.Register(coreruntime.BeforeLLMCall, func(_ context.Context, hctx *coreruntime.HookContext) error {
+		if len(hctx.Messages) == 0 {
+			return nil
+		}
+		// Check only the latest user message.
+		last := hctx.Messages[len(hctx.Messages)-1]
+		if last.Role == "user" {
+			return sg.CheckUserInput(last.Content)
+		}
+		return nil
+	})
+	hooks.Register(coreruntime.BeforeToolExec, func(_ context.Context, hctx *coreruntime.HookContext) error {
+		return sg.CheckCommandInput(hctx.ToolName, hctx.ToolInput)
+	})
+	hooks.Register(coreruntime.AfterToolExec, func(_ context.Context, hctx *coreruntime.HookContext) error {
+		redacted, err := sg.CheckCommandOutput(hctx.ToolName, hctx.ToolOutput)
+		if err != nil {
+			return err
+		}
+		hctx.ToolOutput = redacted
+		return nil
+	})
+	// Rewrite LLM responses that enumerate binary names or internal tooling.
+	hooks.Register(coreruntime.AfterLLMCall, func(_ context.Context, hctx *coreruntime.HookContext) error {
+		if hctx.Response == nil {
+			return nil
+		}
+		replaced, changed := sg.CheckLLMResponse(hctx.Response.Message.Content)
+		if changed {
+			hctx.Response.Message.Content = replaced
+		}
+		return nil
+	})
+}
+
 // buildLLMClient creates the LLM client from the resolved model config.
 // If fallback providers are configured, wraps them in a FallbackChain.
 func (r *Runner) buildLLMClient(mc *coreruntime.ModelConfig) (llm.Client, error) {
@@ -1859,9 +1911,12 @@ func (r *Runner) buildSkillCatalog() string {
 
 			if entry.Name != "" && entry.Description != "" {
 				line := fmt.Sprintf("- %s: %s", entry.Name, entry.Description)
-				// Add tool hint when skill requires specific binaries
+				// Note that skill uses cli_execute without listing specific
+				// binary names — the LLM already sees the allowed enum in the
+				// tool schema, and listing names here leaks internal tooling
+				// when users ask "what skills/tools do you have?"
 				if entry.ForgeReqs != nil && len(entry.ForgeReqs.Bins) > 0 {
-					line += fmt.Sprintf(" (use cli_execute with: %s)", strings.Join(entry.ForgeReqs.Bins, ", "))
+					line += " (uses cli_execute)"
 				}
 				catalogEntries = append(catalogEntries, line)
 			}
@@ -1908,6 +1963,13 @@ func (r *Runner) validateSkillRequirements(envVars map[string]string) error {
 	entries := allEntries
 
 	reqs := requirements.AggregateRequirements(entries)
+
+	// Store runtime-parsed skill guardrails early so they are available at
+	// hook registration even when no bins/env requirements exist.
+	if reqs.SkillGuardrails != nil {
+		r.skillGuardrails = convertSkillGuardrails(reqs.SkillGuardrails)
+	}
+
 	if len(reqs.Bins) == 0 && len(reqs.EnvRequired) == 0 && len(reqs.EnvOneOf) == 0 && len(reqs.EnvOptional) == 0 {
 		return nil
 	}
@@ -1961,6 +2023,41 @@ func (r *Runner) validateSkillRequirements(envVars map[string]string) error {
 	r.derivedCLIConfig = derived
 
 	return nil
+}
+
+// convertSkillGuardrails converts skill-contract guardrail config into the
+// agentspec representation used by the guardrail engine. This mirrors the
+// conversion in build/policy_stage.go for the runtime (no-build) path.
+func convertSkillGuardrails(sg *contract.SkillGuardrailConfig) *agentspec.SkillGuardrailRules {
+	rules := &agentspec.SkillGuardrailRules{}
+	for _, c := range sg.DenyCommands {
+		rules.DenyCommands = append(rules.DenyCommands, agentspec.CommandFilter{
+			Pattern: c.Pattern,
+			Message: c.Message,
+		})
+	}
+	for _, o := range sg.DenyOutput {
+		rules.DenyOutput = append(rules.DenyOutput, agentspec.OutputFilter{
+			Pattern: o.Pattern,
+			Action:  o.Action,
+		})
+	}
+	for _, p := range sg.DenyPrompts {
+		rules.DenyPrompts = append(rules.DenyPrompts, agentspec.CommandFilter{
+			Pattern: p.Pattern,
+			Message: p.Message,
+		})
+	}
+	for _, r := range sg.DenyResponses {
+		rules.DenyResponses = append(rules.DenyResponses, agentspec.CommandFilter{
+			Pattern: r.Pattern,
+			Message: r.Message,
+		})
+	}
+	if len(rules.DenyCommands) == 0 && len(rules.DenyOutput) == 0 && len(rules.DenyPrompts) == 0 && len(rules.DenyResponses) == 0 {
+		return nil
+	}
+	return rules
 }
 
 func envFromOS() map[string]string {

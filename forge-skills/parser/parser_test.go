@@ -613,6 +613,59 @@ A simple tool.
 	}
 }
 
+func TestParseWithMetadata_Guardrails(t *testing.T) {
+	input := `---
+name: k8s-cost
+description: K8s cost skill
+metadata:
+  forge:
+    requires:
+      bins:
+        - kubectl
+    guardrails:
+      deny_commands:
+        - pattern: '\bget\s+secrets?\b'
+          message: "Listing secrets is not permitted"
+        - pattern: '\bauth\s+can-i\b'
+          message: "Permission enumeration is not permitted"
+      deny_output:
+        - pattern: 'kind:\s*Secret'
+          action: block
+        - pattern: 'token:\s*[A-Za-z0-9+/=]{40,}'
+          action: redact
+---
+## Tool: k8s_cost
+Estimate K8s costs.
+`
+	entries, meta, err := ParseWithMetadata(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseWithMetadata error: %v", err)
+	}
+	if meta == nil {
+		t.Fatal("expected non-nil metadata")
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+
+	// Guardrails are accessed via raw metadata map (not stored on SkillEntry)
+	forgeMap, ok := meta.Metadata["forge"]
+	if !ok {
+		t.Fatal("expected forge namespace in metadata")
+	}
+	if _, ok := forgeMap["guardrails"]; !ok {
+		t.Error("expected guardrails key in forge metadata")
+	}
+
+	// Verify ForgeReqs still works
+	if entries[0].ForgeReqs == nil {
+		t.Fatal("expected non-nil ForgeReqs")
+	}
+	if !reflect.DeepEqual(entries[0].ForgeReqs.Bins, []string{"kubectl"}) {
+		t.Errorf("Bins = %v, want [kubectl]", entries[0].ForgeReqs.Bins)
+	}
+}
+
 func TestParseWithMetadata_EmptyTagsArray(t *testing.T) {
 	input := `---
 name: myskill

@@ -36,6 +36,51 @@ Tools are capabilities that an LLM agent can invoke during execution. Forge prov
 
 Register all builtins with `builtins.RegisterAll(registry)`.
 
+## Code-Agent Tools
+
+When the `code-agent` skill is active, Forge registers additional tools for autonomous code generation and modification. These tools are **not** registered by default — they are conditionally added when the skill requires them.
+
+All code-agent tools use a `PathValidator` that confines resolved paths within the agent's working directory, preventing directory traversal attacks.
+
+| Tool | Description |
+|------|-------------|
+| `bash_execute` | Execute bash commands with pipes, redirection, and shell features |
+| `file_read` | Read file contents with optional line offset/limit, or list directory entries |
+| `file_write` | Create or overwrite files in the project directory |
+| `file_edit` | Edit files by exact string matching with unified diff output |
+| `file_patch` | Batch file operations (add, update, delete, move) in a single call |
+| `glob_search` | Find files by glob pattern (e.g., `**/*.go`), sorted by modification time |
+| `grep_search` | Search file contents with regex; uses `rg` if available, falls back to Go |
+| `directory_tree` | Display tree-formatted directory listing (default max depth: 3) |
+
+### Registration Groups
+
+Code-agent tools are registered in layered groups, allowing skills to request only the capabilities they need:
+
+| Group | Tools | Purpose |
+|-------|-------|---------|
+| `CodeAgentSearchTools` | `grep_search`, `glob_search`, `directory_tree` | Read-only exploration |
+| `CodeAgentReadTools` | `file_read` + search tools | Safe reading |
+| `CodeAgentWriteTools` | `file_write`, `file_edit`, `file_patch`, `bash_execute` | Modification + execution |
+| `CodeAgentTools` | All read + write tools | Full code-agent capability |
+
+### bash_execute Security
+
+| Layer | Detail |
+|-------|--------|
+| **Dangerous command denylist** | Blocks `rm -rf /`, `mkfs`, `dd`, fork bombs, and similar destructive patterns |
+| **sudo/su blocked** | Privilege escalation prefixes are rejected |
+| **Timeout** | Default 120s, configurable per invocation |
+| **Output cap** | Maximum 1MB output to prevent memory exhaustion |
+
+### Path Validation
+
+All file tools use `PathValidator` (from `pathutil.go`):
+
+- All resolved paths must stay within the configured `workDir`
+- Directory traversal via `..` is caught after symlink resolution
+- Standard directories are excluded from search: `.git`, `node_modules`, `vendor`, `__pycache__`, `.venv`, `dist`, `build`
+
 ## Adapter Tools
 
 | Adapter | Description |

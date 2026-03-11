@@ -9,7 +9,7 @@ The guardrail engine checks inbound and outbound messages against configurable p
 | Guardrail | Direction | Description |
 |-----------|-----------|-------------|
 | `content_filter` | Inbound + Outbound | Blocks messages containing configured blocked words |
-| `no_pii` | Outbound | Detects email addresses, phone numbers, and SSNs via regex |
+| `no_pii` | Outbound | Detects email, phone, SSNs (with structural validation), and credit cards (with Luhn check) |
 | `jailbreak_protection` | Inbound | Detects common jailbreak phrases ("ignore previous instructions", etc.) |
 | `no_secrets` | Outbound | Detects API keys, tokens, and private keys (OpenAI, Anthropic, AWS, GitHub, Slack, Telegram, etc.) |
 
@@ -17,8 +17,23 @@ The guardrail engine checks inbound and outbound messages against configurable p
 
 | Mode | Behavior |
 |------|----------|
-| `enforce` | Blocks violating messages, returns error to caller |
+| `enforce` | Blocks violating inbound messages; **redacts** outbound messages (see below) |
 | `warn` | Logs violation, allows message to pass |
+
+### Outbound Redaction
+
+Outbound messages (from the agent to the user) are always **redacted** rather than blocked, even in `enforce` mode. Blocking would discard a potentially useful agent response (e.g., code analysis) over a false positive from broad PII/secret patterns matching source code. Matched content is replaced with `[REDACTED]` and a warning is logged.
+
+### PII Validators
+
+To reduce false positives, PII patterns use structural validators beyond simple regex:
+
+| Pattern | Validator | What it checks |
+|---------|-----------|---------------|
+| SSN | `validateSSN` | Rejects area=000/666/900+, group=00, serial=0000, all-same digits, known test SSNs |
+| Credit card | `validateLuhn` | Luhn checksum validation, 13-19 digit length check |
+| Email | — | Regex only |
+| Phone | — | Regex only (area code 2-9, separators required) |
 
 ## Configuration
 

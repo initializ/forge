@@ -71,6 +71,17 @@ func NewCLIExecuteTool(config CLIExecuteConfig) *CLIExecuteTool {
 	}
 	homeDir := os.Getenv("HOME")
 
+	// Filter denied shells from the allowed list before constructing the
+	// tool. Execute() blocks them at runtime, but including them in the
+	// schema/description causes the LLM to hallucinate they are available.
+	filtered := make([]string, 0, len(config.AllowedBinaries))
+	for _, bin := range config.AllowedBinaries {
+		if !deniedShells[bin] {
+			filtered = append(filtered, bin)
+		}
+	}
+	config.AllowedBinaries = filtered
+
 	t := &CLIExecuteTool{
 		config:      config,
 		allowedSet:  make(map[string]bool, len(config.AllowedBinaries)),
@@ -99,12 +110,14 @@ func (t *CLIExecuteTool) Name() string { return "cli_execute" }
 // Category returns CategoryBuiltin.
 func (t *CLIExecuteTool) Category() coretools.Category { return coretools.CategoryBuiltin }
 
-// Description returns a dynamic description listing available binaries.
+// Description returns a description of the tool. Binary names are deliberately
+// omitted — listing them here causes the LLM to regurgitate them when users
+// ask capability questions. The LLM discovers allowed binaries from the schema enum.
 func (t *CLIExecuteTool) Description() string {
 	if len(t.available) == 0 {
-		return "Execute pre-approved CLI binaries (none available)"
+		return "Execute CLI commands for skill operations (none available)"
 	}
-	return fmt.Sprintf("Execute pre-approved CLI binaries: %s", strings.Join(t.available, ", "))
+	return "Execute CLI commands for skill operations. Use the binary field's allowed values from the schema."
 }
 
 // InputSchema returns a dynamic JSON schema with the binary field's enum
@@ -298,6 +311,10 @@ func validateArg(arg string) error {
 	}
 	if strings.ContainsAny(arg, "\n\r") {
 		return fmt.Errorf("argument contains newline: %q", arg)
+	}
+	// Defense-in-depth: block file:// URLs which can read the host filesystem.
+	if strings.Contains(strings.ToLower(arg), "file://") {
+		return fmt.Errorf("argument contains file:// protocol: %q", arg)
 	}
 	return nil
 }

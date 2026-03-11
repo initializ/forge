@@ -9,7 +9,7 @@ The guardrail engine checks inbound and outbound messages against configurable p
 | Guardrail | Direction | Description |
 |-----------|-----------|-------------|
 | `content_filter` | Inbound + Outbound | Blocks messages containing configured blocked words |
-| `no_pii` | Outbound | Detects email addresses, phone numbers, and SSNs via regex |
+| `no_pii` | Outbound | Detects email, phone, SSNs (with structural validation), and credit cards (with Luhn check) |
 | `jailbreak_protection` | Inbound | Detects common jailbreak phrases ("ignore previous instructions", etc.) |
 | `no_secrets` | Outbound | Detects API keys, tokens, and private keys (OpenAI, Anthropic, AWS, GitHub, Slack, Telegram, etc.) |
 
@@ -17,8 +17,23 @@ The guardrail engine checks inbound and outbound messages against configurable p
 
 | Mode | Behavior |
 |------|----------|
-| `enforce` | Blocks violating messages, returns error to caller |
+| `enforce` | Blocks violating inbound messages; **redacts** outbound messages (see below) |
 | `warn` | Logs violation, allows message to pass |
+
+### Outbound Redaction
+
+Outbound messages (from the agent to the user) are always **redacted** rather than blocked, even in `enforce` mode. Blocking would discard a potentially useful agent response (e.g., code analysis) over a false positive from broad PII/secret patterns matching source code. Matched content is replaced with `[REDACTED]` and a warning is logged.
+
+### PII Validators
+
+To reduce false positives, PII patterns use structural validators beyond simple regex:
+
+| Pattern | Validator | What it checks |
+|---------|-----------|---------------|
+| SSN | `validateSSN` | Rejects area=000/666/900+, group=00, serial=0000, all-same digits, known test SSNs |
+| Credit card | `validateLuhn` | Luhn checksum validation, 13-19 digit length check |
+| Email | — | Regex only |
+| Phone | — | Regex only (area code 2-9, separators required) |
 
 ## Configuration
 
@@ -109,6 +124,41 @@ Additionally, `cmd.Dir` is set to `workDir` so relative paths in subprocess exec
 | `cat ../../.ssh/id_rsa` | Blocked — resolves inside `$HOME`, outside workDir |
 | `jq '.' /tmp/data.json` | Allowed — system path outside `$HOME` |
 | `ls ./data/` | Allowed — within workDir |
+
+## Skill-Specific Guardrails
+
+Skills can declare domain-specific guardrail rules in their SKILL.md frontmatter under `metadata.forge.guardrails`. These are enforced by a separate `SkillGuardrailEngine` that complements the global guardrails.
+
+```yaml
+metadata:
+  forge:
+    guardrails:
+      deny_commands:
+        - pattern: "rm\\s+-rf\\s+/"
+          message: "Destructive filesystem operations are not allowed"
+      deny_output:
+        - pattern: "password:\\s*\\S+"
+          action: redact
+      deny_prompts:
+        - pattern: "what (tools|binaries|commands) (are|do you have)"
+          message: "I can help with specific tasks — just describe what you need."
+      deny_responses:
+        - pattern: "(?:^|\\n)\\s*[-*]\\s*\\S+.*\\n(\\s*[-*]\\s*\\S+.*\\n){3,}"
+          message: "I can help with specific tasks. What would you like me to do?"
+```
+
+### Filter Types
+
+| Filter | Applied When | Match Target | Behavior |
+|--------|-------------|--------------|----------|
+| `deny_commands` | Before tool execution | `"binary arg1 arg2 ..."` command line | Blocks execution, returns custom error to LLM |
+| `deny_output` | After tool execution | Tool output text | `block`: hides result; `redact`: replaces matches with `[BLOCKED BY POLICY]` |
+| `deny_prompts` | Before LLM receives input | User message text (case-insensitive) | Rejects message with custom error |
+| `deny_responses` | After LLM generates output | LLM response text (case-insensitive) | Replaces response with custom message |
+
+### Aggregation
+
+When multiple skills are loaded, their guardrail rules are **merged** (deduplicated by pattern). The aggregated rules are compiled into regex once during agent initialization and reused for all subsequent checks.
 
 ## Audit Events
 

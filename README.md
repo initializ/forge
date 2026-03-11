@@ -1,4 +1,4 @@
-# Forge — Secure, Portable AI Agent Runtime
+# Forge — OpenClaw for Enterprise: A Secure, Portable AI Agent Runtime
 
 Build, run, and deploy AI agents from a single `SKILL.md` file.
 Secure by default. Runs anywhere — local, container, cloud, air-gapped.

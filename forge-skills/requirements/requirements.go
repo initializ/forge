@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"github.com/initializ/forge/forge-skills/contract"
+	"gopkg.in/yaml.v3"
 )
 
 // AggregateRequirements merges requirements from all entries that have ForgeReqs set.
@@ -21,8 +22,17 @@ func AggregateRequirements(entries []contract.SkillEntry) *contract.AggregatedRe
 	egressSet := make(map[string]bool)
 	var oneOfGroups [][]string
 
+	var denyCommands []contract.SkillCommandFilter
+	var denyOutput []contract.SkillOutputFilter
+	var denyPrompts []contract.SkillCommandFilter
+	var denyResponses []contract.SkillCommandFilter
+	cmdPatternSeen := make(map[string]bool)
+	outPatternSeen := make(map[string]bool)
+	promptPatternSeen := make(map[string]bool)
+	responsePatternSeen := make(map[string]bool)
+
 	for _, e := range entries {
-		// Collect forge-level metadata (denied_tools, egress_domains)
+		// Collect forge-level metadata (denied_tools, egress_domains, guardrails)
 		if e.Metadata != nil && e.Metadata.Metadata != nil {
 			if forgeMap, ok := e.Metadata.Metadata["forge"]; ok {
 				if raw, ok := forgeMap["denied_tools"]; ok {
@@ -39,6 +49,39 @@ func AggregateRequirements(entries []contract.SkillEntry) *contract.AggregatedRe
 						for _, v := range arr {
 							if s, ok := v.(string); ok {
 								egressSet[s] = true
+							}
+						}
+					}
+				}
+				if raw, ok := forgeMap["guardrails"]; ok {
+					// Re-marshal to yaml, unmarshal into SkillGuardrailConfig
+					data, err := yaml.Marshal(raw)
+					if err == nil {
+						var gc contract.SkillGuardrailConfig
+						if err := yaml.Unmarshal(data, &gc); err == nil {
+							for _, c := range gc.DenyCommands {
+								if !cmdPatternSeen[c.Pattern] {
+									cmdPatternSeen[c.Pattern] = true
+									denyCommands = append(denyCommands, c)
+								}
+							}
+							for _, o := range gc.DenyOutput {
+								if !outPatternSeen[o.Pattern] {
+									outPatternSeen[o.Pattern] = true
+									denyOutput = append(denyOutput, o)
+								}
+							}
+							for _, p := range gc.DenyPrompts {
+								if !promptPatternSeen[p.Pattern] {
+									promptPatternSeen[p.Pattern] = true
+									denyPrompts = append(denyPrompts, p)
+								}
+							}
+							for _, r := range gc.DenyResponses {
+								if !responsePatternSeen[r.Pattern] {
+									responsePatternSeen[r.Pattern] = true
+									denyResponses = append(denyResponses, r)
+								}
 							}
 						}
 					}
@@ -80,6 +123,16 @@ func AggregateRequirements(entries []contract.SkillEntry) *contract.AggregatedRe
 	}
 	agg.EnvRequired = sortedKeys(reqSet)
 	agg.EnvOptional = sortedKeys(optSet)
+
+	if len(denyCommands) > 0 || len(denyOutput) > 0 || len(denyPrompts) > 0 || len(denyResponses) > 0 {
+		agg.SkillGuardrails = &contract.SkillGuardrailConfig{
+			DenyCommands:  denyCommands,
+			DenyOutput:    denyOutput,
+			DenyPrompts:   denyPrompts,
+			DenyResponses: denyResponses,
+		}
+	}
+
 	return agg
 }
 

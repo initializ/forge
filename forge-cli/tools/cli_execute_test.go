@@ -147,6 +147,49 @@ func TestCLIExecute_ShellInjection(t *testing.T) {
 	}
 }
 
+func TestCLIExecute_FileProtocolBlocked(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("echo behavior differs on Windows")
+	}
+
+	tool := NewCLIExecuteTool(CLIExecuteConfig{
+		AllowedBinaries: []string{"echo"},
+	})
+
+	tests := []struct {
+		name    string
+		arg     string
+		blocked bool
+	}{
+		{"file_lower", "file:///etc/passwd", true},
+		{"file_upper", "FILE:///etc/shadow", true},
+		{"file_mixed", "File:///etc/hosts", true},
+		{"http_allowed", "http://example.com", false},
+		{"https_allowed", "https://example.com", false},
+		{"plain_arg", "get", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args, _ := json.Marshal(cliExecuteArgs{
+				Binary: "echo",
+				Args:   []string{tt.arg},
+			})
+
+			_, err := tool.Execute(context.Background(), args)
+			if tt.blocked && err == nil {
+				t.Errorf("Execute() expected error for %q, got nil", tt.arg)
+			}
+			if tt.blocked && err != nil && !strings.Contains(err.Error(), "file:// protocol") {
+				t.Errorf("error = %q, want it to mention 'file:// protocol'", err.Error())
+			}
+			if !tt.blocked && err != nil {
+				t.Errorf("Execute() unexpected error for %q: %v", tt.arg, err)
+			}
+		})
+	}
+}
+
 func TestCLIExecute_Timeout(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("sleep not available on Windows")

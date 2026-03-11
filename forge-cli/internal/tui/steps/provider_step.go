@@ -83,7 +83,7 @@ type ProviderStep struct {
 // oauthFn is optional — pass nil to disable OAuth login.
 func NewProviderStep(styles *tui.StyleSet, validateFn ValidateKeyFunc, oauthFn ...OAuthFlowFunc) *ProviderStep {
 	items := []components.SingleSelectItem{
-		{Label: "OpenAI", Value: "openai", Description: "GPT 5.3 Codex, GPT 5.2, GPT 5 Mini", Icon: "🔷"},
+		{Label: "OpenAI", Value: "openai", Description: "GPT 5.4, GPT 5 Mini, GPT 5 Nano", Icon: "🔷"},
 		{Label: "Anthropic", Value: "anthropic", Description: "Claude Sonnet, Haiku, Opus", Icon: "🟠"},
 		{Label: "Google Gemini", Value: "gemini", Description: "Gemini 2.5 Flash, Pro", Icon: "🔵"},
 		{Label: "Ollama (local)", Value: "ollama", Description: "Run models locally, no API key needed", Icon: "🦙"},
@@ -609,7 +609,7 @@ func (s *ProviderStep) Summary() string {
 	}
 	switch s.provider {
 	case "openai":
-		return name + " · GPT 5.2"
+		return name + " · GPT 5.4"
 	case "anthropic":
 		return name + " · Claude Sonnet 4"
 	case "gemini":

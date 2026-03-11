@@ -356,6 +356,54 @@ This registers three tools:
 
 Requires: `jq`. Egress: `cdn.tailwindcss.com`, `esm.sh`.
 
+## Skill Guardrails
+
+Skills can declare domain-specific guardrails in their `SKILL.md` frontmatter to enforce security policies at runtime. These guardrails operate at four interception points in the agent loop, preventing unauthorized commands, data exfiltration, capability enumeration, and binary name disclosure.
+
+### Configuration
+
+Add a `guardrails` block under `metadata.forge` in `SKILL.md`:
+
+```yaml
+metadata:
+  forge:
+    guardrails:
+      deny_commands:
+        - pattern: '\bget\s+secrets?\b'
+          message: "Listing Kubernetes secrets is not permitted"
+      deny_output:
+        - pattern: 'kind:\s*Secret'
+          action: block
+        - pattern: 'token:\s*[A-Za-z0-9+/=]{40,}'
+          action: redact
+      deny_prompts:
+        - pattern: '\b(approved|allowed|available)\b.{0,40}\b(tools?|binaries)\b'
+          message: "I help with K8s cost analysis. Ask about cluster costs."
+      deny_responses:
+        - pattern: '\b(kubectl|jq|awk|bc|curl)\b.*\b(kubectl|jq|awk|bc|curl)\b.*\b(kubectl|jq|awk|bc|curl)\b'
+          message: "I can analyze cluster costs. What would you like to know?"
+```
+
+### Guardrail Types
+
+| Type | Direction | Purpose |
+|------|-----------|---------|
+| `deny_commands` | Input | Block `cli_execute` commands matching patterns (e.g., `kubectl get secrets`) |
+| `deny_output` | Output | Block or redact tool output matching patterns (e.g., Secret manifests, tokens) |
+| `deny_prompts` | Input | Block user messages probing agent capabilities (e.g., "what tools can you run") |
+| `deny_responses` | Output | Replace LLM responses that enumerate internal binary names |
+
+### Capability Enumeration Prevention
+
+The `deny_prompts` and `deny_responses` guardrails form a layered defense against capability enumeration attacks:
+
+1. **Input-side** (`deny_prompts`) — Intercepts user messages that probe for available tools, binaries, or commands and redirects to the skill's functional description
+2. **Output-side** (`deny_responses`) — Catches LLM responses that list 3+ binary names and replaces the entire response with a functional capability description
+
+Additionally, skill `Description()` methods and system prompt catalog entries use generic descriptions instead of listing binary names.
+
+For full details on guardrail types, pattern syntax, and runtime behavior, see [Content Guardrails — Skill Guardrails](security/guardrails.md#skill-guardrails).
+
 ## Skill Instructions in System Prompt
 
 Forge injects the **full body** of each skill's SKILL.md into the LLM system prompt. This means all detailed operational instructions — triage steps, detection heuristics, output structure, safety constraints — are directly available in the LLM's context without requiring an extra `read_skill` tool call.

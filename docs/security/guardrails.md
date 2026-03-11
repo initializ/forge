@@ -110,6 +110,81 @@ Additionally, `cmd.Dir` is set to `workDir` so relative paths in subprocess exec
 | `jq '.' /tmp/data.json` | Allowed — system path outside `$HOME` |
 | `ls ./data/` | Allowed — within workDir |
 
+## Skill Guardrails
+
+Skills can declare domain-specific guardrails in their `SKILL.md` frontmatter under `metadata.forge.guardrails`. These complement the global guardrails with rules authored by skill developers to enforce least-privilege and prevent capability enumeration.
+
+### Guardrail Types
+
+| Type | Hook Point | Direction | Behavior |
+|------|-----------|-----------|----------|
+| `deny_commands` | `BeforeToolExec` | Inbound | Blocks `cli_execute` commands matching a regex pattern |
+| `deny_output` | `AfterToolExec` | Outbound | Blocks or redacts `cli_execute` output matching a regex pattern |
+| `deny_prompts` | `BeforeLLMCall` | Inbound | Blocks user messages matching a regex (capability enumeration probes) |
+| `deny_responses` | `AfterLLMCall` | Outbound | Replaces LLM responses matching a regex (binary name leaks) |
+
+### SKILL.md Configuration
+
+```yaml
+metadata:
+  forge:
+    guardrails:
+      deny_commands:
+        - pattern: '\bget\s+secrets?\b'
+          message: "Listing Kubernetes secrets is not permitted"
+        - pattern: '\bauth\s+can-i\b'
+          message: "Permission enumeration is not permitted"
+      deny_output:
+        - pattern: 'kind:\s*Secret'
+          action: block
+        - pattern: 'token:\s*[A-Za-z0-9+/=]{40,}'
+          action: redact
+      deny_prompts:
+        - pattern: '\b(approved|allowed|available)\b.{0,40}\b(tools?|binaries|commands?)\b'
+          message: "I help with Kubernetes cost analysis. Ask about cluster costs."
+      deny_responses:
+        - pattern: '\b(kubectl|jq|awk|bc|curl)\b.*\b(kubectl|jq|awk|bc|curl)\b.*\b(kubectl|jq|awk|bc|curl)\b'
+          message: "I can analyze cluster costs. What would you like to know?"
+```
+
+### Pattern Details
+
+**`deny_commands`** — Patterns match against the reconstructed command line (`binary arg1 arg2 ...`). Only fires for `cli_execute` tool calls.
+
+**`deny_output`** — Patterns match against tool output text. The `action` field controls behavior:
+
+| Action | Behavior |
+|--------|----------|
+| `block` | Returns an error, preventing the output from entering the LLM context |
+| `redact` | Replaces matched text with `[BLOCKED BY POLICY]` and logs a warning |
+
+**`deny_prompts`** — Patterns are compiled with case-insensitive matching (`(?i)`). Designed to catch capability enumeration probes like "what are the approved tools" or "list available binaries". The `message` field provides a redirect response.
+
+**`deny_responses`** — Patterns are compiled with case-insensitive and dot-matches-newline flags (`(?is)`). Designed to catch LLM responses that enumerate internal binary names. When matched, the entire response is replaced with the `message` text.
+
+### Aggregation
+
+When multiple skills declare guardrails, patterns are aggregated and deduplicated across all active skills. The `SkillGuardrailEngine` runs all patterns from all skills as a single enforcement layer.
+
+### Runtime Fallback
+
+Skill guardrails fire both with and without `forge build`:
+
+- **With build** — Guardrails are serialized into `policy-scaffold.json` during `forge build` and loaded at runtime
+- **Without build** — The runner parses `SKILL.md` files at startup and loads guardrails directly, falling back to runtime-parsed rules when no build artifact exists
+
+This ensures guardrails are always active during development (`forge run`) without requiring a full build cycle.
+
+## File Protocol Blocking
+
+The `cli_execute` tool blocks arguments containing `file://` URLs (case-insensitive). This prevents filesystem traversal attacks via tools like `curl file:///etc/passwd` that bypass path validation since `file://` URLs are not detected as filesystem paths by `looksLikePath()`.
+
+| Input | Result |
+|-------|--------|
+| `curl file:///etc/passwd` | Blocked — `file://` protocol detected |
+| `curl FILE:///etc/shadow` | Blocked — case-insensitive check |
+| `curl http://example.com` | Allowed — only `file://` is blocked |
+
 ## Audit Events
 
 Guardrail evaluations are logged as structured audit events:

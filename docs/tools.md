@@ -59,7 +59,7 @@ Provider selection: `WEB_SEARCH_PROVIDER` env var, or auto-detect from available
 
 ## CLI Execute
 
-The `cli_execute` tool provides security-hardened command execution with 10 security layers:
+The `cli_execute` tool provides security-hardened command execution with 12 security layers:
 
 ```yaml
 tools:
@@ -73,16 +73,18 @@ tools:
 
 | # | Layer | Detail |
 |---|-------|--------|
-| 1 | **Shell denylist** | Shell interpreters (`bash`, `sh`, `zsh`, `dash`, `ksh`, `csh`, `tcsh`, `fish`) are unconditionally blocked — they defeat the no-shell design |
+| 1 | **Shell denylist** | Shell interpreters (`bash`, `sh`, `zsh`, `dash`, `ksh`, `csh`, `tcsh`, `fish`) are filtered out at construction time and unconditionally blocked at execution — they defeat the no-shell design |
 | 2 | **Binary allowlist** | Only pre-approved binaries can execute |
 | 3 | **Binary resolution** | Binaries are resolved to absolute paths via `exec.LookPath` at startup |
-| 4 | **Argument validation** | Rejects arguments containing `$(`, backticks, or newlines |
-| 5 | **Path confinement** | Path arguments inside `$HOME` but outside `workDir` are blocked (see [Path Containment](security/guardrails.md#path-containment)) |
-| 6 | **Timeout** | Configurable per-command timeout (default: 120s) |
-| 7 | **No shell** | Uses `exec.CommandContext` directly — no shell expansion |
-| 8 | **Working directory** | `cmd.Dir` set to `workDir` so relative paths resolve within the agent directory |
-| 9 | **Environment isolation** | Only `PATH`, `HOME`, `LANG`, explicit passthrough vars, proxy vars, and `OPENAI_ORG_ID` (when set). `HOME` is overridden to `workDir` to prevent `~` expansion from reaching the real home directory |
-| 10 | **Output limits** | Configurable max output size (default: 1MB) to prevent memory exhaustion |
+| 4 | **Argument validation** | Rejects arguments containing `$(`, backticks, newlines, or `file://` URLs |
+| 5 | **File protocol blocking** | Arguments containing `file://` (case-insensitive) are blocked to prevent filesystem traversal via `curl file:///etc/passwd` (see [File Protocol Blocking](security/guardrails.md#file-protocol-blocking)) |
+| 6 | **Path confinement** | Path arguments inside `$HOME` but outside `workDir` are blocked (see [Path Containment](security/guardrails.md#path-containment)) |
+| 7 | **Timeout** | Configurable per-command timeout (default: 120s) |
+| 8 | **No shell** | Uses `exec.CommandContext` directly — no shell expansion |
+| 9 | **Working directory** | `cmd.Dir` set to `workDir` so relative paths resolve within the agent directory |
+| 10 | **Environment isolation** | Only `PATH`, `HOME`, `LANG`, explicit passthrough vars, proxy vars, and `OPENAI_ORG_ID` (when set). `HOME` is overridden to `workDir` to prevent `~` expansion from reaching the real home directory |
+| 11 | **Output limits** | Configurable max output size (default: 1MB) to prevent memory exhaustion |
+| 12 | **Skill guardrails** | Skill-declared `deny_commands` and `deny_output` patterns block/redact command inputs and outputs (see [Skill Guardrails](security/guardrails.md#skill-guardrails)) |
 
 ## File Create
 

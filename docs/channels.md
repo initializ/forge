@@ -103,6 +103,16 @@ When the Slack adapter receives a message:
 
 This gives users visual feedback that their message is being processed, especially for long-running research queries.
 
+### Telegram Processing Indicators
+
+The Telegram adapter mirrors Slack's processing feedback:
+
+1. A typing indicator ("typing...") is sent immediately and refreshed every 4 seconds
+2. If the handler takes longer than 15 seconds, an interim message is posted: _"Working on it — I'll send the result when ready."_
+3. The typing indicator stops when the response is ready
+
+**Context isolation:** Each handler goroutine runs with an independent context (10-minute timeout), detached from the polling loop. This prevents in-flight tasks from being cancelled if the polling context is interrupted during server restarts or errors.
+
 ## Configuration
 
 ### Slack (`slack-config.yaml`)

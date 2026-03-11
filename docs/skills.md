@@ -163,7 +163,8 @@ forge skills list --tags kubernetes,incident-response
 
 | Skill | Icon | Category | Description | Scripts |
 |-------|------|----------|-------------|---------|
-| `github` | 🐙 | developer | Create issues, PRs, and query repositories | — (binary-backed) |
+| `github` | 🐙 | developer | Clone repos, create issues/PRs, and manage git workflows | `github-clone.sh`, `github-checkout.sh`, `github-commit.sh`, `github-push.sh`, `github-create-pr.sh`, `github-status.sh` |
+| `code-agent` | 🤖 | developer | Autonomous code generation, modification, and project scaffolding | — (builtin tools) |
 | `weather` | 🌤️ | utilities | Get weather data for a location | — (binary-backed) |
 | `tavily-search` | 🔍 | research | Search the web using Tavily AI search API | `tavily-search.sh` |
 | `tavily-research` | 🔬 | research | Deep multi-source research via Tavily API | `tavily-research.sh`, `tavily-research-poll.sh` |
@@ -355,6 +356,56 @@ This registers three tools:
 **Safety:** Same restrictions as codegen-react — output under `$HOME` or `/tmp`, path traversal prevention, `force: true` for non-empty directories.
 
 Requires: `jq`. Egress: `cdn.tailwindcss.com`, `esm.sh`.
+
+### GitHub Skill
+
+The `github` skill provides a complete git + GitHub workflow through script-backed tools:
+
+```bash
+forge skills add github
+```
+
+This registers eight tools:
+
+| Tool | Purpose |
+|------|---------|
+| `github_clone` | Clone a repository and create a feature branch |
+| `github_checkout` | Switch to or create a branch |
+| `github_status` | Show git status for a cloned project |
+| `github_commit` | Stage and commit changes |
+| `github_push` | Push a feature branch to the remote |
+| `github_create_pr` | Create a pull request |
+| `github_create_issue` | Create a GitHub issue |
+| `github_list_issues` | List open issues for a repository |
+
+**Workflow:** Clone → explore → edit → status → commit → push → create PR. The skill's system prompt enforces this sequence and prevents raw `git` commands via `cli_execute`.
+
+Requires: `gh`, `git`, `jq`. Optional: `GH_TOKEN`. Egress: `api.github.com`, `github.com`.
+
+### Code-Agent Skill
+
+The `code-agent` skill enables autonomous code generation and modification using [builtin code-agent tools](tools.md#code-agent-tools):
+
+```bash
+forge skills add code-agent
+```
+
+This registers eight tools:
+
+| Tool | Purpose |
+|------|---------|
+| `code_agent_scaffold` | Bootstrap a new project (Vite, Express, FastAPI, Go, Spring Boot, etc.) |
+| `code_agent_write` | Create or update files |
+| `code_agent_edit` | Surgical text replacement in existing files |
+| `code_agent_read` | Read a file or list directory contents |
+| `code_agent_run` | Install dependencies, start a server, open a browser |
+| `grep_search` | Search file contents by regex |
+| `glob_search` | Find files by name pattern |
+| `directory_tree` | Show project directory tree |
+
+The skill uses **denied tools** (`bash_execute`, `file_write`, `file_edit`, `file_patch`, `file_read`, `schedule_*`) to ensure the LLM uses the skill's own tool wrappers instead of raw builtins. All file operations are confined to the agent's working directory via `PathValidator`.
+
+Requires: `bash`, `jq`. Egress: `registry.npmjs.org`, `cdn.tailwindcss.com`, `pypi.org`, `files.pythonhosted.org`, `proxy.golang.org`, `sum.golang.org`, `storage.googleapis.com`, `repo.maven.apache.org`, `repo1.maven.org`.
 
 ## Skill Guardrails
 

@@ -33,8 +33,64 @@ func (g *GuardrailEngine) CheckInbound(msg *a2a.Message) error {
 }
 
 // CheckOutbound validates an outbound (agent) message against guardrails.
+// Unlike CheckInbound, outbound violations are always handled by redacting
+// the offending content rather than blocking the entire response. Blocking
+// throws away a potentially useful agent response (e.g., code analysis) over
+// a false positive from broad PII/secret patterns matching source code.
 func (g *GuardrailEngine) CheckOutbound(msg *a2a.Message) error {
-	return g.check(msg, "outbound")
+	for i, p := range msg.Parts {
+		if p.Kind != a2a.PartKindText || p.Text == "" {
+			continue
+		}
+		text := p.Text
+		redacted := false
+
+		for _, gr := range g.scaffold.Guardrails {
+			switch gr.Type {
+			case "no_secrets":
+				for _, re := range secretPatterns {
+					if re.MatchString(text) {
+						text = re.ReplaceAllString(text, "[REDACTED]")
+						redacted = true
+					}
+				}
+			case "no_pii":
+				for _, p := range piiPatterns {
+					matches := p.re.FindAllString(text, -1)
+					for _, m := range matches {
+						if p.validate != nil && !p.validate(m) {
+							continue
+						}
+						text = strings.ReplaceAll(text, m, "[REDACTED]")
+						redacted = true
+					}
+				}
+			case "content_filter":
+				// Content filter: redact blocked words inline.
+				if gr.Config != nil {
+					if words, ok := gr.Config["blocked_words"]; ok {
+						if list, ok := words.([]any); ok {
+							lower := strings.ToLower(text)
+							for _, w := range list {
+								if s, ok := w.(string); ok && strings.Contains(lower, strings.ToLower(s)) {
+									text = strings.ReplaceAll(text, s, "[BLOCKED]")
+									redacted = true
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		if redacted {
+			msg.Parts[i].Text = text
+			g.logger.Warn("outbound guardrail redaction applied", map[string]any{
+				"direction": "outbound",
+			})
+		}
+	}
+	return nil
 }
 
 func (g *GuardrailEngine) check(msg *a2a.Message, direction string) error {
@@ -192,9 +248,10 @@ func (g *GuardrailEngine) checkNoSecrets(text string) error {
 }
 
 // CheckToolOutput scans tool output text against configured guardrails
-// (no_secrets and no_pii). In enforce mode, returns an error on first match
-// without echoing the match. In warn mode, replaces matches with [REDACTED],
-// logs a warning, and returns the redacted text.
+// (no_secrets and no_pii). Matches are always redacted rather than blocked,
+// because tool outputs are internal (sent to the LLM, not the user) and
+// blocking would kill the entire agent session. Search tools routinely find
+// code containing API key patterns in test files, config examples, etc.
 func (g *GuardrailEngine) CheckToolOutput(text string) (string, error) {
 	if text == "" {
 		return text, nil

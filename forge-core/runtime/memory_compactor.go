@@ -13,7 +13,6 @@ import (
 const (
 	defaultCharBudget   = 200_000
 	defaultTriggerRatio = 0.6
-	summaryMaxTokens    = 1024
 	summaryTimeout      = 30 * time.Second
 	maxExtractiveChars  = 2000
 )
@@ -95,6 +94,9 @@ func (c *Compactor) SetMemoryFlusher(f MemoryFlusher) {
 // if so, compacts the oldest 50% of messages into a summary. Returns true
 // if compaction occurred.
 //
+// The first user message (the original task request) is always preserved
+// so the LLM retains the objective across compaction cycles.
+//
 // The method holds mem.mu for its entire duration including any LLM call.
 // This is safe because each Memory is used by a single sequential agent loop.
 func (c *Compactor) MaybeCompact(taskID string, mem *Memory) (bool, error) {
@@ -115,14 +117,34 @@ func (c *Compactor) MaybeCompact(taskID string, mem *Memory) (bool, error) {
 		"messages":  len(mem.messages),
 	})
 
-	// Take oldest 50% of messages, respecting group boundaries.
-	target := len(mem.messages) / 2
-	splitIdx := c.findGroupBoundary(mem.messages, target)
-	if splitIdx <= 0 || splitIdx >= len(mem.messages) {
+	// Find the first user message — this is the task request that must
+	// survive all compaction cycles so the LLM knows its objective.
+	pinIdx := -1
+	for i, msg := range mem.messages {
+		if msg.Role == llm.RoleUser {
+			pinIdx = i
+			break
+		}
+	}
+
+	// Compactable range starts after the pinned message.
+	compactStart := 0
+	if pinIdx >= 0 {
+		compactStart = pinIdx + 1
+	}
+	compactable := mem.messages[compactStart:]
+	if len(compactable) < 2 {
 		return false, nil
 	}
 
-	oldMessages := mem.messages[:splitIdx]
+	// Take oldest 50% of the compactable range, respecting group boundaries.
+	target := len(compactable) / 2
+	splitIdx := c.findGroupBoundary(compactable, target)
+	if splitIdx <= 0 || splitIdx >= len(compactable) {
+		return false, nil
+	}
+
+	oldMessages := compactable[:splitIdx]
 
 	// Flush key observations to long-term memory before discarding.
 	c.flushToLongTermMemory(oldMessages)
@@ -133,14 +155,20 @@ func (c *Compactor) MaybeCompact(taskID string, mem *Memory) (bool, error) {
 		return false, fmt.Errorf("summarization failed: %w", err)
 	}
 
-	// Replace old messages with the summary.
-	mem.messages = mem.messages[splitIdx:]
+	// Rebuild messages: pinned prefix + remaining compactable messages.
+	pinned := mem.messages[:compactStart]
+	remaining := compactable[splitIdx:]
+	rebuilt := make([]llm.ChatMessage, 0, len(pinned)+len(remaining))
+	rebuilt = append(rebuilt, pinned...)
+	rebuilt = append(rebuilt, remaining...)
+	mem.messages = rebuilt
 	mem.existingSummary = summary
 
 	c.logger.Info("compaction complete", map[string]any{
 		"task_id":       taskID,
 		"removed":       splitIdx,
 		"remaining":     len(mem.messages),
+		"preserved":     compactStart,
 		"summary_chars": len(summary),
 	})
 
@@ -170,8 +198,16 @@ func (c *Compactor) summarize(messages []llm.ChatMessage, existingSummary string
 func (c *Compactor) llmSummarize(messages []llm.ChatMessage, existingSummary string) (string, error) {
 	// Build the prompt for summarization.
 	var sb strings.Builder
-	sb.WriteString("Summarize the following conversation concisely. ")
-	sb.WriteString("Preserve key facts, decisions, tool results, and action items. ")
+	sb.WriteString("Summarize the following conversation for an AI agent that will continue this task. ")
+	sb.WriteString("The agent will NOT have access to the original messages after this summary.\n\n")
+	sb.WriteString("You MUST preserve:\n")
+	sb.WriteString("- Identifiers: file paths, resource names, URLs, branches, environment details\n")
+	sb.WriteString("- Technical findings: what was examined, what was discovered, specific names and values\n")
+	sb.WriteString("- The agent's current hypothesis or analysis about the problem\n")
+	sb.WriteString("- Actions taken: what was created, modified, executed, and their outcomes\n")
+	sb.WriteString("- Errors encountered and whether they were resolved\n")
+	sb.WriteString("- What remains to be done\n\n")
+	sb.WriteString("Format: ## State, ## Findings, ## Progress, ## Remaining\n")
 	sb.WriteString("Output only the summary, no preamble.\n\n")
 
 	if existingSummary != "" {
@@ -182,22 +218,29 @@ func (c *Compactor) llmSummarize(messages []llm.ChatMessage, existingSummary str
 
 	sb.WriteString("## Conversation to summarize\n")
 	for _, msg := range messages {
-		fmt.Fprintf(&sb, "[%s]: %s\n", msg.Role, truncateForPrompt(msg.Content, 500))
+		if msg.Role == llm.RoleTool {
+			fmt.Fprintf(&sb, "[%s:%s]: %s\n", msg.Role, msg.Name, truncateForPrompt(msg.Content, 2000))
+		} else {
+			fmt.Fprintf(&sb, "[%s]: %s\n", msg.Role, truncateForPrompt(msg.Content, 500))
+		}
 		for _, tc := range msg.ToolCalls {
 			fmt.Fprintf(&sb, "  -> tool_call: %s(%s)\n", tc.Function.Name, truncateForPrompt(tc.Function.Arguments, 200))
 		}
 	}
 
-	temp := 0.3
 	ctx, cancel := context.WithTimeout(context.Background(), summaryTimeout)
 	defer cancel()
 
 	resp, err := c.client.Chat(ctx, &llm.ChatRequest{
 		Messages: []llm.ChatMessage{
+			{Role: llm.RoleSystem, Content: "You are a summarizer for an AI agent that is working on a task. " +
+				"The agent will lose access to the original conversation after this summary. " +
+				"Preserve specific identifiers (file paths, resource names, URLs, function names, " +
+				"config keys) and technical findings so the agent can continue without re-reading. " +
+				"Use sections: ## State, ## Findings, ## Progress, ## Remaining. " +
+				"Keep under 1200 words."},
 			{Role: llm.RoleUser, Content: sb.String()},
 		},
-		Temperature: &temp,
-		MaxTokens:   summaryMaxTokens,
 	})
 	if err != nil {
 		return "", err

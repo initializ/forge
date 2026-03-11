@@ -36,6 +36,40 @@ func TestDerive_Basic(t *testing.T) {
 	}
 }
 
+func TestDerive_FiltersShellInterpreters(t *testing.T) {
+	reqs := &contract.AggregatedRequirements{
+		Bins: []string{"bash", "curl", "gh", "jq", "sh", "zsh"},
+	}
+
+	cfg := DeriveCLIConfig(reqs)
+
+	// bash, sh, zsh should be filtered out
+	expected := []string{"curl", "gh", "jq"}
+	if len(cfg.AllowedBinaries) != len(expected) {
+		t.Fatalf("AllowedBinaries = %v, want %v", cfg.AllowedBinaries, expected)
+	}
+	for i, v := range expected {
+		if cfg.AllowedBinaries[i] != v {
+			t.Errorf("AllowedBinaries[%d] = %q, want %q", i, cfg.AllowedBinaries[i], v)
+		}
+	}
+}
+
+func TestDerive_WorkflowPhasesPassthrough(t *testing.T) {
+	reqs := &contract.AggregatedRequirements{
+		WorkflowPhases: []string{"edit", "finalize"},
+	}
+
+	cfg := DeriveCLIConfig(reqs)
+
+	if len(cfg.WorkflowPhases) != 2 {
+		t.Fatalf("WorkflowPhases = %v, want 2 items", cfg.WorkflowPhases)
+	}
+	if cfg.WorkflowPhases[0] != "edit" || cfg.WorkflowPhases[1] != "finalize" {
+		t.Errorf("WorkflowPhases = %v, want [edit finalize]", cfg.WorkflowPhases)
+	}
+}
+
 func TestMerge_ExplicitOverrides(t *testing.T) {
 	explicit := &contract.DerivedCLIConfig{
 		AllowedBinaries: []string{"python"},

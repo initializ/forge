@@ -222,7 +222,7 @@ func (c *ResponsesClient) buildRequest(req *llm.ChatRequest, stream bool) respon
 				inputs = append(inputs, responsesInput{
 					Type:      "function_call",
 					CallID:    tc.ID,
-					ID:        tc.ID,
+					ID:        responsesItemID(tc.ID),
 					Name:      tc.Function.Name,
 					Arguments: tc.Function.Arguments,
 				})
@@ -247,6 +247,13 @@ func (c *ResponsesClient) buildRequest(req *llm.ChatRequest, stream bool) respon
 			Description: t.Function.Description,
 			Parameters:  t.Function.Parameters,
 		})
+	}
+
+	// The Responses API requires the instructions field. If no system
+	// message was provided (e.g. summarization calls), use a minimal default
+	// so the request doesn't fail with "Instructions are required".
+	if instructions == "" {
+		instructions = "You are a helpful assistant."
 	}
 
 	r := responsesRequest{
@@ -319,6 +326,15 @@ type streamFnArgsDelta struct {
 
 type streamCompleted struct {
 	Response responsesResponse `json:"response"`
+}
+
+// responsesItemID ensures a tool call ID has the "fc_" prefix required by
+// the Responses API for function_call item IDs.
+func responsesItemID(id string) string {
+	if strings.HasPrefix(id, "fc_") {
+		return id
+	}
+	return "fc_" + strings.TrimPrefix(id, "call_")
 }
 
 func (c *ResponsesClient) readStream(r io.Reader, ch chan<- llm.StreamDelta) {

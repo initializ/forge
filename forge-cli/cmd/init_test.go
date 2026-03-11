@@ -521,7 +521,7 @@ func TestBuildEnvVars(t *testing.T) {
 		ModelProvider: "openai",
 		BuiltinTools:  []string{"web_search"},
 		Skills:        []string{"github"},
-		EnvVars:       map[string]string{"OPENAI_API_KEY": "sk-test"},
+		EnvVars:       map[string]string{"OPENAI_API_KEY": "sk-test", "GH_TOKEN": "ghp-test"},
 	}
 	vars := buildEnvVars(opts)
 
@@ -580,7 +580,7 @@ func TestBuildTemplateData_DefaultModels(t *testing.T) {
 		provider      string
 		expectedModel string
 	}{
-		{"openai", "gpt-5.2-2025-12-11"},
+		{"openai", "gpt-5.4"},
 		{"anthropic", "claude-sonnet-4-20250514"},
 		{"gemini", "gemini-2.5-flash"},
 		{"ollama", "llama3"},

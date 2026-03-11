@@ -54,6 +54,34 @@ type RunnerConfig struct {
 // result to the appropriate channel (e.g. Slack, Telegram).
 type ScheduleNotifier func(ctx context.Context, channel, target string, response *a2a.Message) error
 
+// codeAgentDirective is appended to the system prompt when code-agent skill
+// is active. Forces the LLM to always call tools — never respond with text only.
+const codeAgentDirective = `## Code Agent — MANDATORY RULES
+
+You are a coding agent. Every response MUST include tool calls. NEVER respond with only text.
+
+FORBIDDEN:
+- Respond with "I'll do X now" or "Let me X" without calling tools in the same response
+- Output code in markdown blocks for the user to copy-paste
+- Ask the user for permission or confirmation before acting
+- Describe what you plan to do without simultaneously doing it
+- Read files unrelated to the error path or code you plan to change
+- Edit test files before fixing the source code — always fix source first, then update tests
+
+REQUIRED:
+- New project → code_agent_scaffold → code_agent_write (all files) → code_agent_run
+- Modify existing code → search + trace error origin + read functions to change → code_agent_edit or code_agent_write
+- Any request → ACT IMMEDIATELY with tools. Write ALL files and run in ONE turn.
+
+EXPLORATION RULES:
+Bug fixes: search for the error message → trace to its origin (not just where it surfaces) → read functions you plan to call or replace → edit.
+Features: search for similar patterns (2-3 searches) → read files you plan to modify → edit.
+Both: complete the workflow (commit/push/PR if applicable).
+Do NOT read files unrelated to the error path or code you plan to change. Do NOT replace function calls without reading both the old and new function.
+
+VERIFY BUG FIXES:
+After editing, trace the failing input through your new code. Read the functions your fix calls — confirm they handle the type that was failing. If the codebase has a working path for similar logic (e.g., another provider), your fix must use the same approach. Type annotations alone do not fix runtime bugs.`
+
 // Runner orchestrates the local A2A development server.
 type Runner struct {
 	cfg              RunnerConfig
@@ -258,6 +286,24 @@ func (r *Runner) Run(ctx context.Context) error {
 				r.logger.Warn("failed to register builtin tools", map[string]any{"error": err.Error()})
 			}
 
+			// Register search/exploration tools (grep, glob, tree).
+			// When code-agent skill is active, scope them to workspace/ so searches
+			// default to cloned repos. Otherwise scope to the main working directory.
+			searchRoot := r.cfg.WorkDir
+			if r.hasSkill("code-agent") {
+				codeDir := filepath.Join(r.cfg.WorkDir, "workspace")
+				if mkErr := os.MkdirAll(codeDir, 0o755); mkErr != nil {
+					r.logger.Warn("failed to create code workspace directory", map[string]any{"error": mkErr.Error()})
+				}
+				searchRoot = codeDir
+				r.logger.Info("code-agent skill detected: workspace ready", map[string]any{"workspace": codeDir})
+				// Script tools (code_agent_read, code_agent_write, code_agent_run)
+				// are registered by registerSkillTools() from SKILL.md ## Tool: entries.
+			}
+			if err := builtins.RegisterCodeAgentSearchTools(reg, searchRoot); err != nil {
+				r.logger.Warn("failed to register search tools", map[string]any{"error": err.Error()})
+			}
+
 			// Register read_skill tool for lazy-loading skill instructions
 			readSkill := builtins.NewReadSkillTool(r.cfg.WorkDir)
 			if regErr := reg.Register(readSkill); regErr != nil {
@@ -397,15 +443,25 @@ func (r *Runner) Run(ctx context.Context) error {
 						charBudget = coreruntime.ContextBudgetForModel(mc.Client.Model)
 					}
 
+					// Build system prompt; append code-agent tool directives if those tools are registered.
+					sysPrompt := r.buildSystemPrompt()
+					if r.hasSkill("code-agent") {
+						sysPrompt += "\n\n" + codeAgentDirective
+					}
+
 					execCfg := coreruntime.LLMExecutorConfig{
-						Client:       llmClient,
-						Tools:        reg,
-						Hooks:        hooks,
-						SystemPrompt: r.buildSystemPrompt(),
-						Logger:       r.logger,
-						ModelName:    mc.Client.Model,
-						CharBudget:   charBudget,
-						FilesDir:     filepath.Join(r.cfg.WorkDir, ".forge", "files"),
+						Client:        llmClient,
+						Tools:         reg,
+						Hooks:         hooks,
+						SystemPrompt:  sysPrompt,
+						Logger:        r.logger,
+						ModelName:     mc.Client.Model,
+						MaxIterations: 100,
+						CharBudget:    charBudget,
+						FilesDir:      filepath.Join(r.cfg.WorkDir, ".forge", "files"),
+					}
+					if r.derivedCLIConfig != nil {
+						execCfg.WorkflowPhases = r.derivedCLIConfig.WorkflowPhases
 					}
 
 					// Initialize memory persistence (enabled by default).
@@ -1647,6 +1703,28 @@ func ensureGitignore(workDir string) {
 	os.WriteFile(gitignorePath, []byte(content+entry), 0644) //nolint:errcheck
 }
 
+// hasSkill checks whether a skill with the given name is present in the project's
+// discovered skill files. Checks both ## Tool: entry names and frontmatter name.
+func (r *Runner) hasSkill(name string) bool {
+	for _, sf := range r.discoverSkillFiles() {
+		entries, meta, err := cliskills.ParseFileWithMetadata(sf)
+		if err != nil {
+			continue
+		}
+		// Check frontmatter name (for skills without ## Tool: entries)
+		if meta != nil && meta.Name == name {
+			return true
+		}
+		// Check individual tool entry names
+		for _, e := range entries {
+			if e.Name == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // discoverSkillFiles returns all skill file paths from both flat and subdirectory formats,
 // plus the main SKILL.md (or custom path from forge.yaml).
 func (r *Runner) discoverSkillFiles() []string {
@@ -1788,7 +1866,7 @@ func (r *Runner) buildSkillCatalog() string {
 
 	var catalogEntries []string
 	for _, match := range matches {
-		entries, _, err := cliskills.ParseFileWithMetadata(match)
+		entries, meta, err := cliskills.ParseFileWithMetadata(match)
 		if err != nil {
 			continue
 		}
@@ -1797,6 +1875,16 @@ func (r *Runner) buildSkillCatalog() string {
 		catalogSkillDir := ""
 		if strings.HasSuffix(match, "/SKILL.md") {
 			catalogSkillDir = filepath.Base(filepath.Dir(match))
+		}
+
+		// If no ## Tool: entries were parsed but frontmatter has name+description,
+		// create a synthetic entry so the skill appears in the catalog summary.
+		if len(entries) == 0 && meta != nil && meta.Name != "" && meta.Description != "" {
+			entries = []contract.SkillEntry{{
+				Name:        meta.Name,
+				Description: meta.Description,
+				Metadata:    meta,
+			}}
 		}
 
 		for _, entry := range entries {
@@ -1831,13 +1919,6 @@ func (r *Runner) buildSkillCatalog() string {
 					line += " (uses cli_execute)"
 				}
 				catalogEntries = append(catalogEntries, line)
-
-				// Include full skill instructions when available
-				if entry.Body != "" {
-					catalogEntries = append(catalogEntries, "")
-					catalogEntries = append(catalogEntries, entry.Body)
-					catalogEntries = append(catalogEntries, "")
-				}
 			}
 		}
 	}
@@ -1848,6 +1929,7 @@ func (r *Runner) buildSkillCatalog() string {
 
 	var b strings.Builder
 	b.WriteString("## Available Skills\n\n")
+	b.WriteString("Use `read_skill` to load full instructions for a skill before using it.\n\n")
 	for _, entry := range catalogEntries {
 		b.WriteString(entry)
 		b.WriteString("\n")

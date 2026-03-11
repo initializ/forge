@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/initializ/forge/forge-core/a2a"
@@ -250,7 +251,7 @@ func TestCheckToolOutput_EnforceBlocksValidPII(t *testing.T) {
 
 // --- CheckOutbound message tests ---
 
-func TestCheckOutbound_PIIBlocked(t *testing.T) {
+func TestCheckOutbound_PIIRedacted(t *testing.T) {
 	logger := &testLogger{}
 	g := NewGuardrailEngine(&agentspec.PolicyScaffold{
 		Guardrails: []agentspec.Guardrail{{Type: "no_pii"}},
@@ -263,8 +264,11 @@ func TestCheckOutbound_PIIBlocked(t *testing.T) {
 		},
 	}
 	err := g.CheckOutbound(msg)
-	if err == nil {
-		t.Error("expected PII to be blocked in outbound message")
+	if err != nil {
+		t.Errorf("CheckOutbound should redact, not block: %v", err)
+	}
+	if !strings.Contains(msg.Parts[0].Text, "[REDACTED]") {
+		t.Error("expected PII to be redacted in outbound message")
 	}
 }
 

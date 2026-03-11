@@ -160,6 +160,54 @@ func TestAggregate_DeniedToolsCollected(t *testing.T) {
 	}
 }
 
+func TestAggregate_WorkflowPhaseCollected(t *testing.T) {
+	entries := []contract.SkillEntry{
+		{
+			Name: "code-agent",
+			Metadata: &contract.SkillMetadata{
+				Metadata: map[string]map[string]any{
+					"forge": {
+						"workflow_phase": "edit",
+					},
+				},
+			},
+		},
+		{
+			Name: "github",
+			Metadata: &contract.SkillMetadata{
+				Metadata: map[string]map[string]any{
+					"forge": {
+						"workflow_phase": "finalize",
+					},
+				},
+			},
+		},
+		{
+			Name: "k8s-cost",
+			// No workflow_phase — should not contribute
+			Metadata: &contract.SkillMetadata{
+				Metadata: map[string]map[string]any{
+					"forge": {
+						"requires": map[string]any{},
+					},
+				},
+			},
+		},
+	}
+
+	reqs := AggregateRequirements(entries)
+	// Should be deduplicated and sorted: edit, finalize
+	if len(reqs.WorkflowPhases) != 2 {
+		t.Fatalf("WorkflowPhases = %v, want 2 items", reqs.WorkflowPhases)
+	}
+	expected := []string{"edit", "finalize"}
+	for i, v := range expected {
+		if reqs.WorkflowPhases[i] != v {
+			t.Errorf("WorkflowPhases[%d] = %q, want %q", i, reqs.WorkflowPhases[i], v)
+		}
+	}
+}
+
 func TestAggregate_NoRequirements(t *testing.T) {
 	entries := []contract.SkillEntry{
 		{Name: "a"},

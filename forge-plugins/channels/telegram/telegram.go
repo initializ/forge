@@ -19,10 +19,12 @@ import (
 )
 
 const (
-	defaultWebhookPort = 3001
-	defaultWebhookPath = "/telegram/webhook"
-	telegramAPIBase    = "https://api.telegram.org"
-	pollingTimeout     = 30 // seconds for long polling
+	defaultWebhookPort   = 3001
+	defaultWebhookPath   = "/telegram/webhook"
+	telegramAPIBase      = "https://api.telegram.org"
+	pollingTimeout       = 30 // seconds for long polling
+	handlerTimeout       = 10 * time.Minute
+	longRunningThreshold = 15 * time.Second
 )
 
 // Plugin implements channels.ChannelPlugin for Telegram.
@@ -136,19 +138,7 @@ func (p *Plugin) makeWebhookHandler(handler channels.EventHandler) http.HandlerF
 
 		w.WriteHeader(http.StatusOK)
 
-		go func() {
-			ctx := context.Background()
-			stopTyping := p.startTypingIndicator(ctx, event.WorkspaceID)
-			resp, err := handler(ctx, event)
-			stopTyping()
-			if err != nil {
-				fmt.Printf("telegram: handler error: %v\n", err)
-				return
-			}
-			if err := p.SendResponse(event, resp); err != nil {
-				fmt.Printf("telegram: send response error: %v\n", err)
-			}
-		}()
+		p.handleEvent(event, handler)
 	}
 }
 
@@ -192,20 +182,46 @@ func (p *Plugin) startPolling(ctx context.Context, handler channels.EventHandler
 				continue
 			}
 
-			go func() {
-				stopTyping := p.startTypingIndicator(ctx, event.WorkspaceID)
-				resp, err := handler(ctx, event)
-				stopTyping()
-				if err != nil {
-					fmt.Printf("telegram: handler error: %v\n", err)
-					return
-				}
-				if err := p.SendResponse(event, resp); err != nil {
-					fmt.Printf("telegram: send response error: %v\n", err)
-				}
-			}()
+			p.handleEvent(event, handler)
 		}
 	}
+}
+
+// handleEvent runs the handler in a background goroutine with an independent
+// timeout context, typing indicator, and interim messaging for long-running tasks.
+func (p *Plugin) handleEvent(event *channels.ChannelEvent, handler channels.EventHandler) {
+	go func() {
+		taskCtx, taskCancel := context.WithTimeout(context.Background(), handlerTimeout)
+		defer taskCancel()
+
+		stopTyping := p.startTypingIndicator(taskCtx, event.WorkspaceID)
+
+		// Send an interim message if the task takes longer than the threshold.
+		done := make(chan struct{})
+		go func() {
+			select {
+			case <-time.After(longRunningThreshold):
+				_ = p.sendMessage(map[string]any{
+					"chat_id":             event.WorkspaceID,
+					"text":                "Working on it \u2014 I'll send the result when ready.",
+					"reply_to_message_id": event.MessageID,
+				})
+			case <-done:
+			}
+		}()
+
+		resp, err := handler(taskCtx, event)
+		close(done)
+		stopTyping()
+
+		if err != nil {
+			fmt.Printf("telegram: handler error: %v\n", err)
+			return
+		}
+		if err := p.SendResponse(event, resp); err != nil {
+			fmt.Printf("telegram: send response error: %v\n", err)
+		}
+	}()
 }
 
 func (p *Plugin) getUpdates(ctx context.Context, offset int64) ([]telegramUpdate, error) {

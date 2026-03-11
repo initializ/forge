@@ -8,14 +8,18 @@ Forge's security is organized in layers, each addressing a different threat surf
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                       Guardrails                             │
+│                    Skill Guardrails                           │
+│    (deny commands/output/prompts/responses per skill)         │
+├──────────────────────────────────────────────────────────────┤
+│                    Global Guardrails                          │
 │              (content filtering, PII, jailbreak)             │
 ├──────────────────────────────────────────────────────────────┤
 │                    Egress Enforcement                        │
 │       (EgressEnforcer + EgressProxy + NetworkPolicy)         │
 ├──────────────────────────────────────────────────────────────┤
 │                  Execution Sandboxing                        │
-│    (env isolation, binary allowlists, arg validation)        │
+│  (env isolation, binary allowlists, arg validation,          │
+│   file:// blocking, shell denylist)                          │
 ├──────────────────────────────────────────────────────────────┤
 │                   Secrets Management                         │
 │         (AES-256-GCM, Argon2id, per-agent isolation)         │
@@ -112,17 +116,22 @@ Skill scripts run via `SkillCommandExecutor` (`forge-cli/tools/exec.go`):
 
 ### CLIExecuteTool
 
-The `cli_execute` tool (`forge-cli/tools/cli_execute.go`) provides 7 security layers:
+The `cli_execute` tool (`forge-cli/tools/cli_execute.go`) provides 12 security layers:
 
 | # | Layer | Detail |
 |---|-------|--------|
-| 1 | **Binary allowlist** | Only pre-approved binaries can execute |
-| 2 | **Binary resolution** | Binaries are resolved to absolute paths via `exec.LookPath` at startup |
-| 3 | **Argument validation** | Rejects arguments containing `$(`, backticks, or newlines |
-| 4 | **Timeout** | Configurable per-command timeout (default: 120s) |
-| 5 | **No shell** | Uses `exec.CommandContext` directly — no shell expansion |
-| 6 | **Environment isolation** | Only `PATH`, `HOME`, `LANG`, explicit passthrough vars, and proxy vars |
-| 7 | **Output limits** | Configurable max output size (default: 1MB) to prevent memory exhaustion |
+| 1 | **Shell denylist** | Shell interpreters (`bash`, `sh`, `zsh`, etc.) filtered at construction and blocked at execution |
+| 2 | **Binary allowlist** | Only pre-approved binaries can execute |
+| 3 | **Binary resolution** | Binaries are resolved to absolute paths via `exec.LookPath` at startup |
+| 4 | **Argument validation** | Rejects arguments containing `$(`, backticks, newlines, or `file://` URLs |
+| 5 | **File protocol blocking** | Blocks `file://` URLs (case-insensitive) to prevent filesystem traversal |
+| 6 | **Path confinement** | Path arguments inside `$HOME` but outside `workDir` are blocked |
+| 7 | **Timeout** | Configurable per-command timeout (default: 120s) |
+| 8 | **No shell** | Uses `exec.CommandContext` directly — no shell expansion |
+| 9 | **Working directory** | `cmd.Dir` set to `workDir` for relative path resolution |
+| 10 | **Environment isolation** | Only `PATH`, `HOME`, `LANG`, explicit passthrough vars, and proxy vars |
+| 11 | **Output limits** | Configurable max output size (default: 1MB) to prevent memory exhaustion |
+| 12 | **Skill guardrails** | Skill-declared `deny_commands` and `deny_output` patterns via hooks |
 
 ### Configuration
 
@@ -157,6 +166,10 @@ For full details, see **[Build Signing & Verification](signing.md)**.
 ## Guardrails
 
 The guardrail engine checks inbound and outbound messages against policy rules including content filtering, PII detection, and jailbreak protection. Guardrails run in `enforce` (blocking) or `warn` (logging) mode.
+
+### Skill Guardrails
+
+Skills can declare domain-specific guardrails in their `SKILL.md` frontmatter. These guardrails operate at four hook points — blocking unauthorized commands (`deny_commands`), redacting sensitive output (`deny_output`), intercepting capability enumeration probes (`deny_prompts`), and replacing binary-enumerating LLM responses (`deny_responses`). Skill guardrails fire at runtime without requiring `forge build`.
 
 For full details, see **[Content Guardrails](guardrails.md)**.
 

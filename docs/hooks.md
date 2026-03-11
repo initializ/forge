@@ -86,6 +86,21 @@ hooks.Register(engine.AfterToolExec, func(ctx context.Context, hctx *engine.Hook
 })
 ```
 
+## Skill Guardrail Hooks
+
+When skills declare guardrails in their `SKILL.md` frontmatter, the runner registers four hooks that enforce skill-specific security policies across the entire agent loop:
+
+| Hook Point | Guardrail Type | Behavior |
+|------------|---------------|----------|
+| `BeforeLLMCall` | `deny_prompts` | Blocks user messages that probe agent capabilities (e.g., "what tools can you run") |
+| `AfterLLMCall` | `deny_responses` | Replaces LLM responses that enumerate internal binary names |
+| `BeforeToolExec` | `deny_commands` | Blocks `cli_execute` commands matching deny patterns (e.g., `kubectl get secrets`) |
+| `AfterToolExec` | `deny_output` | Blocks or redacts `cli_execute` output matching deny patterns (e.g., Secret manifests) |
+
+These hooks complement the global guardrail hooks (secrets/PII scanning) and fire in addition to them. Skill guardrails are loaded from build artifacts or parsed at runtime from `SKILL.md` — no `forge build` step is required.
+
+For pattern syntax and configuration, see [Skill Guardrails](security/guardrails.md#skill-guardrails).
+
 ## Audit Logging
 
 The runner registers `AfterLLMCall` hooks that emit structured audit events for each LLM interaction. Audit fields include:

@@ -57,16 +57,6 @@ func RegisterCodeAgentSearchTools(reg *tools.Registry, workDir string) error {
 	return nil
 }
 
-// CodeAgentBashTool returns the bash execution tool.
-func CodeAgentBashTool(workDir string) tools.Tool {
-	return &bashExecuteTool{workDir: workDir}
-}
-
-// RegisterCodeAgentBashTool registers the bash execution tool.
-func RegisterCodeAgentBashTool(reg *tools.Registry, workDir string) error {
-	return reg.Register(CodeAgentBashTool(workDir))
-}
-
 // CodeAgentReadTools returns read-only coding tools (file_read + search).
 func CodeAgentReadTools(workDir string) []tools.Tool {
 	pv := NewPathValidator(workDir)
@@ -85,7 +75,6 @@ func CodeAgentWriteTools(workDir string) []tools.Tool {
 		&fileWriteTool{pathValidator: pv},
 		&fileEditTool{pathValidator: pv},
 		&filePatchTool{pathValidator: pv},
-		&bashExecuteTool{workDir: workDir},
 	}
 }
 

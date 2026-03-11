@@ -180,7 +180,7 @@ func TestResolveModelConfig_OrgIDFromYAML(t *testing.T) {
 	cfg := &types.ForgeConfig{
 		Model: types.ModelRef{
 			Provider:       "openai",
-			Name:           "gpt-5.2-2025-12-11",
+			Name:           "gpt-5.4",
 			OrganizationID: "org-yaml-123",
 		},
 	}
@@ -201,7 +201,7 @@ func TestResolveModelConfig_OrgIDEnvOverridesYAML(t *testing.T) {
 	cfg := &types.ForgeConfig{
 		Model: types.ModelRef{
 			Provider:       "openai",
-			Name:           "gpt-5.2-2025-12-11",
+			Name:           "gpt-5.4",
 			OrganizationID: "org-yaml-123",
 		},
 	}
@@ -303,7 +303,7 @@ func TestDefaultModelForProvider(t *testing.T) {
 		provider string
 		expected string
 	}{
-		{"openai", "gpt-5.2-2025-12-11"},
+		{"openai", "gpt-5.4"},
 		{"anthropic", "claude-sonnet-4-20250514"},
 		{"gemini", "gemini-2.5-flash"},
 		{"ollama", "llama3"},

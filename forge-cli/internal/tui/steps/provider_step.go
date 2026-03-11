@@ -40,17 +40,18 @@ type modelOption struct {
 
 // openAIOAuthModels are available when using browser-based OAuth login.
 var openAIOAuthModels = []modelOption{
-	{DisplayName: "GPT 5.3 Codex", ModelID: "gpt-5.3-codex"},
-	{DisplayName: "GPT 5.2", ModelID: "gpt-5.2-2025-12-11"},
-	{DisplayName: "GPT 5.2 Codex", ModelID: "gpt-5.2-codex"},
+	{DisplayName: "GPT 5.4", ModelID: "gpt-5.4"},
+	{DisplayName: "GPT 5 Mini", ModelID: "gpt-5-mini"},
+	{DisplayName: "GPT 5 Nano", ModelID: "gpt-5-nano"},
+	{DisplayName: "GPT 4.1", ModelID: "gpt-4.1"},
 }
 
 // openAIAPIKeyModels are available when using an API key.
 var openAIAPIKeyModels = []modelOption{
-	{DisplayName: "GPT 5.2", ModelID: "gpt-5.2-2025-12-11"},
-	{DisplayName: "GPT 5 Mini", ModelID: "gpt-5-mini-2025-08-07"},
-	{DisplayName: "GPT 5 Nano", ModelID: "gpt-5-nano-2025-08-07"},
-	{DisplayName: "GPT 4.1 Mini", ModelID: "gpt-4.1-mini-2025-04-14"},
+	{DisplayName: "GPT 5.4", ModelID: "gpt-5.4"},
+	{DisplayName: "GPT 5 Mini", ModelID: "gpt-5-mini"},
+	{DisplayName: "GPT 5 Nano", ModelID: "gpt-5-nano"},
+	{DisplayName: "GPT 4.1", ModelID: "gpt-4.1"},
 }
 
 // ProviderStep handles model provider selection and API key entry.
@@ -82,7 +83,7 @@ type ProviderStep struct {
 // oauthFn is optional — pass nil to disable OAuth login.
 func NewProviderStep(styles *tui.StyleSet, validateFn ValidateKeyFunc, oauthFn ...OAuthFlowFunc) *ProviderStep {
 	items := []components.SingleSelectItem{
-		{Label: "OpenAI", Value: "openai", Description: "GPT 5.3 Codex, GPT 5.2, GPT 5 Mini", Icon: "🔷"},
+		{Label: "OpenAI", Value: "openai", Description: "GPT 5.4, GPT 5 Mini, GPT 5 Nano", Icon: "🔷"},
 		{Label: "Anthropic", Value: "anthropic", Description: "Claude Sonnet, Haiku, Opus", Icon: "🟠"},
 		{Label: "Google Gemini", Value: "gemini", Description: "Gemini 2.5 Flash, Pro", Icon: "🔵"},
 		{Label: "Ollama (local)", Value: "ollama", Description: "Run models locally, no API key needed", Icon: "🦙"},
@@ -608,7 +609,7 @@ func (s *ProviderStep) Summary() string {
 	}
 	switch s.provider {
 	case "openai":
-		return name + " · GPT 5.2"
+		return name + " · GPT 5.4"
 	case "anthropic":
 		return name + " · Claude Sonnet 4"
 	case "gemini":

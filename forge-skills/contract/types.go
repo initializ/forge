@@ -46,6 +46,7 @@ type ForgeSkillMeta struct {
 	Requires      *SkillRequirements    `yaml:"requires,omitempty" json:"requires,omitempty"`
 	EgressDomains []string              `yaml:"egress_domains,omitempty" json:"egress_domains,omitempty"`
 	DeniedTools   []string              `yaml:"denied_tools,omitempty" json:"denied_tools,omitempty"`
+	WorkflowPhase string                `yaml:"workflow_phase,omitempty" json:"workflow_phase,omitempty"`
 	Guardrails    *SkillGuardrailConfig `yaml:"guardrails,omitempty" json:"guardrails,omitempty"`
 }
 
@@ -117,6 +118,7 @@ type AggregatedRequirements struct {
 	MaxTimeoutHint  int                   // maximum timeout_hint across all skills (seconds)
 	DeniedTools     []string              // union of denied tools across skills, deduplicated, sorted
 	EgressDomains   []string              // union of egress domains across skills, deduplicated, sorted
+	WorkflowPhases  []string              // union of workflow_phase values across skills, deduplicated, sorted
 	SkillGuardrails *SkillGuardrailConfig // aggregated guardrails from all skills
 }
 
@@ -127,6 +129,7 @@ type DerivedCLIConfig struct {
 	TimeoutHint     int      // suggested timeout in seconds (0 = use default)
 	DeniedTools     []string // tools to remove from registry before LLM execution
 	EgressDomains   []string // additional egress domains from skills
+	WorkflowPhases  []string // workflow phases from skills (edit, finalize, query)
 }
 
 // TrustLevel indicates the trust classification of a skill.

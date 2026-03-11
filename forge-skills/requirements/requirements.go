@@ -20,6 +20,7 @@ func AggregateRequirements(entries []contract.SkillEntry) *contract.AggregatedRe
 	optSet := make(map[string]bool)
 	deniedSet := make(map[string]bool)
 	egressSet := make(map[string]bool)
+	phaseSet := make(map[string]bool)
 	var oneOfGroups [][]string
 
 	var denyCommands []contract.SkillCommandFilter
@@ -51,6 +52,11 @@ func AggregateRequirements(entries []contract.SkillEntry) *contract.AggregatedRe
 								egressSet[s] = true
 							}
 						}
+					}
+				}
+				if raw, ok := forgeMap["workflow_phase"]; ok {
+					if s, ok := raw.(string); ok && s != "" {
+						phaseSet[s] = true
 					}
 				}
 				if raw, ok := forgeMap["guardrails"]; ok {
@@ -116,10 +122,11 @@ func AggregateRequirements(entries []contract.SkillEntry) *contract.AggregatedRe
 	}
 
 	agg := &contract.AggregatedRequirements{
-		Bins:          sortedKeys(binSet),
-		EnvOneOf:      oneOfGroups,
-		DeniedTools:   sortedKeys(deniedSet),
-		EgressDomains: sortedKeys(egressSet),
+		Bins:           sortedKeys(binSet),
+		EnvOneOf:       oneOfGroups,
+		DeniedTools:    sortedKeys(deniedSet),
+		EgressDomains:  sortedKeys(egressSet),
+		WorkflowPhases: sortedKeys(phaseSet),
 	}
 	agg.EnvRequired = sortedKeys(reqSet)
 	agg.EnvOptional = sortedKeys(optSet)

@@ -34,29 +34,31 @@ type LLMExecutor struct {
 	maxToolResultChars int           // computed from char budget
 	filesDir           string        // directory for file_create output
 	sessionMaxAge      time.Duration // max age for session recovery (0 = no limit)
+	workflowPhases     []string      // workflow phases from skills (edit, finalize, query)
 }
 
 // LLMExecutorConfig configures the LLM executor.
 type LLMExecutorConfig struct {
-	Client        llm.Client
-	Tools         ToolExecutor
-	Hooks         *HookRegistry
-	SystemPrompt  string
-	MaxIterations int
-	Compactor     *Compactor
-	Store         *MemoryStore
-	Logger        Logger
-	ModelName     string        // model name for context-aware budgeting
-	CharBudget    int           // explicit char budget override (0 = auto from model)
-	FilesDir      string        // directory for file_create output (default: $TMPDIR/forge-files)
-	SessionMaxAge time.Duration // max idle time before session recovery is skipped (0 = 30m default)
+	Client         llm.Client
+	Tools          ToolExecutor
+	Hooks          *HookRegistry
+	SystemPrompt   string
+	MaxIterations  int
+	Compactor      *Compactor
+	Store          *MemoryStore
+	Logger         Logger
+	ModelName      string        // model name for context-aware budgeting
+	CharBudget     int           // explicit char budget override (0 = auto from model)
+	FilesDir       string        // directory for file_create output (default: $TMPDIR/forge-files)
+	SessionMaxAge  time.Duration // max idle time before session recovery is skipped (0 = 30m default)
+	WorkflowPhases []string      // workflow phases from skills (edit, finalize, query)
 }
 
 // NewLLMExecutor creates a new LLMExecutor with the given configuration.
 func NewLLMExecutor(cfg LLMExecutorConfig) *LLMExecutor {
 	maxIter := cfg.MaxIterations
 	if maxIter == 0 {
-		maxIter = 10
+		maxIter = 50
 	}
 	hooks := cfg.Hooks
 	if hooks == nil {
@@ -105,6 +107,7 @@ func NewLLMExecutor(cfg LLMExecutorConfig) *LLMExecutor {
 		maxToolResultChars: toolLimit,
 		filesDir:           cfg.FilesDir,
 		sessionMaxAge:      sessionMaxAge,
+		workflowPhases:     cfg.WorkflowPhases,
 	}
 }
 
@@ -168,6 +171,31 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 	const largeToolOutputThreshold = 8000
 	var largeToolOutputs []a2a.Part
 
+	// stopNudgesSent tracks how many consecutive stop-nudges have been sent
+	// since the LLM last made tool calls. Reset to 0 whenever the LLM calls
+	// tools. This prevents infinite nudging while still allowing a second,
+	// more forceful nudge when the workflow is clearly incomplete (e.g.,
+	// commit failed but agent stopped anyway).
+	stopNudgesSent := 0
+
+	// toolsUsed tracks which tools were called during this execution.
+	// Included in the continuation prompt so the LLM cannot hallucinate
+	// actions it never performed.
+	var toolsUsed []string
+
+	// Workflow tracker detects behavioral patterns (exploration loops,
+	// missing git ops) and injects proactive nudges. The agent never
+	// sees iteration counts — nudges fire on consecutive read-only iterations.
+	tracker := newWorkflowTracker(e.workflowPhases)
+
+	// Pre-compute available write tools for nudge messages.
+	var availWriteTools []string
+	for _, td := range toolDefs {
+		if isWriteActionTool(td.Function.Name) {
+			availWriteTools = append(availWriteTools, td.Function.Name)
+		}
+	}
+
 	// Agent loop
 	for i := 0; i < e.maxIter; i++ {
 		// Run compaction before LLM call (best-effort).
@@ -222,17 +250,147 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 
 		// Check if we're done (no tool calls)
 		if resp.FinishReason == "stop" || len(resp.Message.ToolCalls) == 0 {
+			// If the LLM stopped after executing tools, send a continuation
+			// nudge. This catches cases where the LLM reports findings instead
+			// of completing the full workflow (e.g., stops after exploration
+			// without editing/committing/pushing). The maxIter limit prevents
+			// infinite loops.
+			if i > 0 {
+				// Determine if the workflow is incomplete based on required phases.
+				workflowIncomplete := false
+				if tracker.requireEdit && !tracker.phaseOK(phaseEdit) {
+					workflowIncomplete = true
+				}
+				if tracker.requireFinalize && !tracker.phaseOK(phaseGitOps) {
+					workflowIncomplete = true
+				}
+
+				// Determine nudge budget:
+				// - No workflow phases configured → 1 nudge (can't tell if done)
+				// - Workflow phases configured and ALL complete → 0 (agent is done)
+				// - Workflow incomplete, no errors → 1 nudge
+				// - Workflow incomplete with git errors → 2 nudges
+				hasWorkflowRequirements := tracker.requireEdit || tracker.requireFinalize
+				maxNudges := 1 // default for agents without workflow phases
+				if hasWorkflowRequirements && !workflowIncomplete {
+					maxNudges = 0 // workflow is complete — don't nudge
+				} else if workflowIncomplete && tracker.phaseHasError[phaseGitOps] {
+					maxNudges = 2
+				}
+
+				if stopNudgesSent < maxNudges {
+					stopNudgesSent++
+
+					// Workflow-aware stop-point nudge: check what phases
+					// the agent completed successfully before stopping.
+					var nudge string
+					if stopNudgesSent == 2 {
+						// Second nudge: agent stopped again without calling
+						// tools despite knowing the task isn't done. Be very
+						// forceful.
+						nudge = "You stopped AGAIN without calling any tools. " +
+							"Do NOT describe what needs to be done — DO it. " +
+							"Call the required tools NOW: "
+						var steps []string
+						if tracker.requireEdit && !tracker.phaseOK(phaseEdit) {
+							steps = append(steps, strings.Join(availWriteTools, "/")+
+								" to fix the code")
+						}
+						if tracker.requireFinalize && !tracker.phaseOK(phaseGitOps) {
+							if tracker.phaseHasError[phaseGitOps] {
+								steps = append(steps, "github_commit (previous attempt FAILED — check the files parameter is a JSON array)")
+							}
+							steps = append(steps, "github_push -> github_create_pr")
+						}
+						if len(steps) > 0 {
+							nudge += strings.Join(steps, ", then ") + "."
+						} else {
+							nudge += "complete the remaining steps."
+						}
+					} else if tracker.requireEdit && !tracker.phaseSeen[phaseEdit] {
+						// Never wrote anything — stuck in exploration
+						nudge = "You stopped without making any code changes. " +
+							"You called: " + strings.Join(dedup(toolsUsed), ", ") + ". " +
+							"You MUST continue: "
+						if tracker.requireEdit {
+							nudge += "edit the code"
+						}
+						if tracker.requireFinalize {
+							nudge += ", then commit, push, and create PR"
+						}
+						nudge += ". Available write tools: " + strings.Join(availWriteTools, ", ") + "."
+					} else if tracker.requireEdit && tracker.phaseSeen[phaseEdit] && tracker.requireFinalize && !tracker.phaseOK(phaseGitOps) {
+						// Edited but git ops either missing or had errors
+						nudge = "You edited files but "
+						if tracker.phaseHasError[phaseGitOps] {
+							nudge += "some git operations FAILED. Fix the errors and retry: "
+						} else {
+							nudge += "stopped before git operations. Complete NOW: "
+						}
+						nudge += "github_status -> github_commit -> github_push -> github_create_pr."
+					} else {
+						// Standard: completed or no requirements
+						nudge = "You stopped. If the task is complete, summarize what was done. " +
+							"If not, continue with the remaining steps."
+					}
+					e.logger.Info("sending continuation nudge", map[string]any{
+						"task_id":     TaskIDFromContext(ctx),
+						"iteration":   i,
+						"tools_used":  strings.Join(toolsUsed, ", "),
+						"has_edits":   tracker.phaseSeen[phaseEdit],
+						"has_git":     tracker.phaseSeen[phaseGitOps],
+						"git_errors":  tracker.phaseHasError[phaseGitOps],
+						"nudge_count": stopNudgesSent,
+						"max_nudges":  maxNudges,
+					})
+					mem.Append(llm.ChatMessage{
+						Role:    llm.RoleUser,
+						Content: nudge,
+					})
+					continue
+				}
+			}
+
+			// If the LLM returned empty text after executing tools, re-prompt
+			// it once to produce a meaningful summary instead of sending nothing.
+			if strings.TrimSpace(resp.Message.Content) == "" && i > 0 {
+				mem.Append(llm.ChatMessage{
+					Role:    llm.RoleUser,
+					Content: "Your response was empty. Please provide a brief summary of what you found, what you were unable to do, and suggest next steps.",
+				})
+				retryReq := &llm.ChatRequest{
+					Messages: mem.Messages(),
+				}
+				if retryResp, retryErr := e.client.Chat(ctx, retryReq); retryErr == nil && strings.TrimSpace(retryResp.Message.Content) != "" {
+					resp = retryResp
+					mem.Append(resp.Message)
+				}
+			}
+			if strings.TrimSpace(resp.Message.Content) == "" {
+				resp.Message.Content = "I processed your request but wasn't able to produce a response. Please try again."
+			}
 			e.persistSession(task.ID, mem)
 			return llmMessageToA2A(resp.Message, largeToolOutputs...), nil
 		}
 
 		// Execute tool calls
 		if e.tools == nil {
+			if strings.TrimSpace(resp.Message.Content) == "" {
+				resp.Message.Content = "I processed your request but wasn't able to produce a response. Please try again."
+			}
 			e.persistSession(task.ID, mem)
 			return llmMessageToA2A(resp.Message, largeToolOutputs...), nil
 		}
 
+		// The LLM made tool calls -- it's making progress. Allow
+		// another nudge if it stops again after this round.
+		stopNudgesSent = 0
+
+		iterResults := make([]toolIterResult, 0, len(resp.Message.ToolCalls))
+
 		for _, tc := range resp.Message.ToolCalls {
+			toolsUsed = append(toolsUsed, tc.Function.Name)
+
 			// Fire BeforeToolExec hook
 			if err := e.hooks.Fire(ctx, BeforeToolExec, &HookContext{
 				ToolName:      tc.Function.Name,
@@ -248,14 +406,19 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 			if execErr != nil {
 				result = fmt.Sprintf("Error executing tool %s: %s", tc.Function.Name, execErr.Error())
 			}
+			iterResults = append(iterResults, toolIterResult{
+				Name:     tc.Function.Name,
+				Failed:   execErr != nil,
+				FilePath: extractReadFilePath(tc.Function.Name, tc.Function.Arguments),
+			})
 
 			// Truncate oversized tool results to avoid LLM API errors.
 			// Limit is proportional to model context budget (25%, floor 2K, cap 400K).
 			if len(result) > e.maxToolResultChars {
-				result = result[:e.maxToolResultChars] + "\n\n[OUTPUT TRUNCATED — original length: " + strconv.Itoa(len(result)) + " chars]"
+				result = result[:e.maxToolResultChars] + "\n\n[OUTPUT TRUNCATED -- original length: " + strconv.Itoa(len(result)) + " chars]"
 			}
 
-			// Fire AfterToolExec hook — hooks may redact ToolOutput.
+			// Fire AfterToolExec hook -- hooks may redact ToolOutput.
 			afterHctx := &HookContext{
 				ToolName:      tc.Function.Name,
 				ToolInput:     tc.Function.Arguments,
@@ -306,6 +469,19 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 				ToolCallID: tc.ID,
 				Name:       tc.Function.Name,
 			})
+		}
+
+		// Record this iteration's tools for workflow tracking.
+		tracker.recordIteration(iterResults)
+
+		// Proactive mid-loop nudge (fires while agent is still calling tools).
+		if nudgeMsg, shouldNudge := tracker.generateProactiveNudge(availWriteTools); shouldNudge {
+			e.logger.Info("sending proactive workflow nudge", map[string]any{
+				"task_id":           TaskIDFromContext(ctx),
+				"iteration":         i,
+				"consecutive_reads": tracker.consecutiveReads,
+			})
+			mem.Append(llm.ChatMessage{Role: llm.RoleUser, Content: nudgeMsg})
 		}
 	}
 
@@ -407,4 +583,292 @@ func llmMessageToA2A(msg llm.ChatMessage, extraParts ...a2a.Part) *a2a.Message {
 		Role:  role,
 		Parts: parts,
 	}
+}
+
+// isWriteActionTool returns true for tools that modify state (edit, write,
+// commit, push, create PR) as opposed to read-only tools (read, grep, glob,
+// directory_tree, clone, status).
+func isWriteActionTool(name string) bool {
+	switch name {
+	case "code_agent_edit", "code_agent_write", "code_agent_patch",
+		"github_commit", "github_push", "github_create_pr",
+		"github_checkout", "github_create_issue",
+		"file_create", "bash_execute", "code_agent_run":
+		return true
+	}
+	// Catch any tool with "edit", "write", "commit", "push" in the name.
+	lower := strings.ToLower(name)
+	for _, kw := range []string{"edit", "write", "commit", "push", "patch", "create"} {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// ─── Workflow Tracker ────────────────────────────────────────────────
+
+// workflowPhase classifies tools by their role in the coding workflow.
+type workflowPhase int
+
+const (
+	phaseSetup   workflowPhase = iota // clone, scaffold
+	phaseExplore                      // read, grep, glob, tree, read_skill
+	phaseEdit                         // edit, write, patch
+	phaseGitOps                       // status, commit, push, create_pr
+)
+
+// toolIterResult captures a tool call's name, whether it failed, and
+// (for read tools) the file path that was read.
+type toolIterResult struct {
+	Name     string
+	Failed   bool
+	FilePath string // non-empty for file_read / code_agent_read
+}
+
+// workflowTracker monitors agent behavior to detect exploration loops
+// and missing workflow phases. The agent never sees iteration counts.
+type workflowTracker struct {
+	phaseSeen          map[workflowPhase]bool
+	phaseHasError      map[workflowPhase]bool // at least one tool in this phase errored
+	consecutiveReads   int                    // resets when a non-explore tool is called
+	totalReadIters     int
+	itersSinceLastEdit int // iterations since last edit-phase tool
+	planCheckpointDone bool
+	transitionDone     bool
+	urgentDone         bool
+	gitNudgeDone       bool
+	verifyNudgeDone    bool           // post-edit verification nudge (fires once)
+	requireEdit        bool           // skill(s) declared workflow_phase: edit
+	requireFinalize    bool           // skill(s) declared workflow_phase: finalize
+	fileReadCounts     map[string]int // path → read count (for re-read detection)
+	rereadNudgeDone    bool           // fires once per re-read batch
+}
+
+func newWorkflowTracker(phases []string) *workflowTracker {
+	wt := &workflowTracker{
+		phaseSeen:      make(map[workflowPhase]bool),
+		phaseHasError:  make(map[workflowPhase]bool),
+		fileReadCounts: make(map[string]int),
+	}
+	for _, p := range phases {
+		switch p {
+		case "edit":
+			wt.requireEdit = true
+		case "finalize":
+			wt.requireFinalize = true
+		}
+	}
+	return wt
+}
+
+// phaseOK returns true if the phase was seen AND had no errors.
+func (wt *workflowTracker) phaseOK(p workflowPhase) bool {
+	return wt.phaseSeen[p] && !wt.phaseHasError[p]
+}
+
+// toolPhase classifies a tool name into a workflow phase.
+func toolPhase(name string) workflowPhase {
+	switch name {
+	case "github_clone", "code_agent_scaffold", "github_checkout":
+		return phaseSetup
+	case "code_agent_read", "grep_search", "glob_search", "directory_tree", "read_skill", "github_status":
+		return phaseExplore
+	case "code_agent_edit", "code_agent_write", "code_agent_patch", "bash_execute", "file_create", "code_agent_run":
+		return phaseEdit
+	case "github_commit", "github_push", "github_create_pr":
+		return phaseGitOps
+	}
+	// Keyword fallback
+	lower := strings.ToLower(name)
+	for _, kw := range []string{"read", "grep", "glob", "search", "tree", "status"} {
+		if strings.Contains(lower, kw) {
+			return phaseExplore
+		}
+	}
+	for _, kw := range []string{"edit", "write", "patch", "create"} {
+		if strings.Contains(lower, kw) {
+			return phaseEdit
+		}
+	}
+	for _, kw := range []string{"commit", "push"} {
+		if strings.Contains(lower, kw) {
+			return phaseGitOps
+		}
+	}
+	return phaseSetup // default: setup / unknown
+}
+
+// recordIteration updates the tracker based on which tools were called and
+// whether they succeeded or failed. Failed tools mark phaseHasError but still
+// mark phaseSeen (the tool was attempted). The phaseOK() method checks both.
+func (wt *workflowTracker) recordIteration(results []toolIterResult) {
+	allExplore := true
+	for _, r := range results {
+		phase := toolPhase(r.Name)
+		wt.phaseSeen[phase] = true
+		if r.Failed {
+			wt.phaseHasError[phase] = true
+		}
+		if phase != phaseExplore {
+			allExplore = false
+		}
+		// Track file reads for re-read detection.
+		if r.FilePath != "" && !r.Failed {
+			wt.fileReadCounts[r.FilePath]++
+		}
+	}
+
+	if allExplore && len(results) > 0 {
+		wt.consecutiveReads++
+		wt.totalReadIters++
+	} else {
+		wt.consecutiveReads = 0
+	}
+
+	// Track iterations since last edit
+	hasEdit := false
+	for _, r := range results {
+		if toolPhase(r.Name) == phaseEdit && !r.Failed {
+			hasEdit = true
+			break
+		}
+	}
+	if hasEdit {
+		wt.itersSinceLastEdit = 0
+	} else {
+		wt.itersSinceLastEdit++
+	}
+}
+
+// generateProactiveNudge returns a behavioral nudge if the agent is stuck in
+// an exploration loop. Nudges escalate monotonically — each tier fires once.
+func (wt *workflowTracker) generateProactiveNudge(availWriteTools []string) (string, bool) {
+	// Re-read detection nudge: highest priority — fires once when any file
+	// has been read 2+ times, which wastes context and triggers compaction.
+	if !wt.rereadNudgeDone {
+		var rereadFiles []string
+		for path, count := range wt.fileReadCounts {
+			if count >= 2 {
+				rereadFiles = append(rereadFiles, path)
+			}
+		}
+		if len(rereadFiles) > 0 {
+			wt.rereadNudgeDone = true
+			return "STOP RE-READING FILES: You have already read " +
+				strings.Join(rereadFiles, ", ") + " earlier in this session. " +
+				"The content was lost to compaction. Do NOT read the entire file again — " +
+				"that will trigger more compaction and lose context again. Instead: " +
+				"1) State your hypothesis based on what you learned. " +
+				"2) If you need specific lines, use offset/limit parameters. " +
+				"3) Proceed to edit based on your current knowledge.", true
+		}
+	}
+
+	// Git workflow nudge: only if finalize is required
+	if wt.requireFinalize && wt.phaseOK(phaseEdit) && !wt.phaseOK(phaseGitOps) && wt.itersSinceLastEdit >= 4 && !wt.gitNudgeDone {
+		wt.gitNudgeDone = true
+		nudge := "You edited files but haven't committed. "
+		if wt.requireEdit && wt.verifyNudgeDone {
+			nudge += "BEFORE committing: does your edit change RUNTIME behavior, not just types or tests? " +
+				"Does the failing input now reach a code path that handles it correctly? " +
+				"If your edit only modifies test files, it does NOT fix the bug — edit source code first. "
+		}
+		nudge += "Complete the git workflow: " +
+			"github_status -> github_commit -> github_push -> github_create_pr."
+		return nudge, true
+	}
+
+	// Post-edit verification nudge: fires once immediately after first edit in bug-fix workflows.
+	if wt.requireEdit && wt.phaseOK(phaseEdit) && (!wt.requireFinalize || !wt.phaseOK(phaseGitOps)) && !wt.verifyNudgeDone && wt.itersSinceLastEdit == 1 {
+		wt.verifyNudgeDone = true
+		return "VERIFY YOUR FIX: You just edited code. Before committing, trace the failing input through your new code: " +
+			"1) What value was causing the bug (e.g., an object, null, wrong type)? " +
+			"2) Does that value now reach a code path that handles it correctly? " +
+			"3) Read the functions your new code calls — do they accept that input type? " +
+			"If the fix only adds types or annotations without changing runtime behavior, it is wrong. " +
+			"If correct, proceed to commit.", true
+	}
+
+	// Exploration loop nudges: only if edit is required
+	if wt.requireEdit {
+		if wt.phaseOK(phaseEdit) {
+			return "", false
+		}
+
+		if wt.consecutiveReads >= 8 && !wt.urgentDone {
+			wt.urgentDone = true
+			return "STOP READING. You have explored " + fmt.Sprintf("%d", wt.consecutiveReads) +
+				" consecutive iterations without a single edit. Act on what you know NOW. " +
+				"Call " + strings.Join(availWriteTools, "/") + " immediately. An imperfect fix is better than endless exploration.", true
+		}
+
+		if wt.consecutiveReads >= 6 && !wt.transitionDone {
+			wt.transitionDone = true
+			return "You have been exploring for " + fmt.Sprintf("%d", wt.consecutiveReads) +
+				" consecutive iterations without making changes. " +
+				"If fixing a bug, have you traced it to its origin? Have you read the functions you plan to change? " +
+				"If not, do those reads now. Otherwise, Start editing with " + strings.Join(availWriteTools, ", ") + ". " +
+				"An imperfect edit you can iterate on is better than more reading.", true
+		}
+
+		if wt.consecutiveReads >= 4 && !wt.planCheckpointDone {
+			wt.planCheckpointDone = true
+			return "PLANNING CHECKPOINT: You've read " + fmt.Sprintf("%d", wt.totalReadIters) +
+				" files without editing. Before reading more: " +
+				"1) If fixing a bug: have you traced the error to its origin, not just where it surfaces? " +
+				"2) Have you read the implementation of every function you plan to call or replace? " +
+				"3) If yes, state your fix and call " + strings.Join(availWriteTools, "/") + ". " +
+				"If no, do those reads next — then edit.", true
+		}
+
+		return "", false
+	}
+
+	// Query-only: gentle nudge at 8 consecutive reads
+	if !wt.requireEdit && !wt.requireFinalize {
+		if wt.consecutiveReads >= 8 && !wt.urgentDone {
+			wt.urgentDone = true
+			return "You have been reading for " + fmt.Sprintf("%d", wt.consecutiveReads) +
+				" consecutive iterations. If you have enough information, provide your analysis. " +
+				"If not, focus your remaining searches.", true
+		}
+	}
+
+	return "", false
+}
+
+// extractReadFilePath extracts the file path from tool arguments for
+// file_read and code_agent_read tools. Returns "" for other tools or
+// if the path cannot be extracted.
+func extractReadFilePath(toolName, argsJSON string) string {
+	switch toolName {
+	case "file_read", "code_agent_read":
+	default:
+		return ""
+	}
+	var args struct {
+		Path     string `json:"path"`
+		FilePath string `json:"file_path"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return ""
+	}
+	if args.FilePath != "" {
+		return args.FilePath
+	}
+	return args.Path
+}
+
+// dedup returns unique tool names in first-seen order.
+func dedup(names []string) []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, n := range names {
+		if !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	return out
 }

@@ -384,6 +384,113 @@ func TestFindGroupBoundary(t *testing.T) {
 	}
 }
 
+func TestCompactorStructuredSummaryPrompt(t *testing.T) {
+	var capturedPrompt string
+	client := &mockLLMClient{
+		chatFunc: func(ctx context.Context, req *llm.ChatRequest) (*llm.ChatResponse, error) {
+			// Capture the user message (which contains the summarization prompt)
+			for _, msg := range req.Messages {
+				if msg.Role == llm.RoleUser {
+					capturedPrompt = msg.Content
+				}
+			}
+			// Also verify the system prompt
+			for _, msg := range req.Messages {
+				if msg.Role == llm.RoleSystem {
+					if !strings.Contains(msg.Content, "## State") {
+						t.Errorf("system prompt should mention structured sections, got: %s", msg.Content)
+					}
+					if !strings.Contains(msg.Content, "1200 words") {
+						t.Errorf("system prompt should mention 1200 word limit, got: %s", msg.Content)
+					}
+				}
+			}
+			return &llm.ChatResponse{
+				Message: llm.ChatMessage{
+					Role:    llm.RoleAssistant,
+					Content: "## State\nWorking on bug fix\n## Findings\nFound issue in main.go:42",
+				},
+				FinishReason: "stop",
+			}, nil
+		},
+	}
+
+	c := NewCompactor(CompactorConfig{Client: client})
+
+	messages := []llm.ChatMessage{
+		{Role: llm.RoleUser, Content: "Fix the bug in /src/main.go"},
+		{Role: llm.RoleAssistant, Content: "I'll investigate the issue."},
+	}
+
+	_, err := c.llmSummarize(messages, "")
+	if err != nil {
+		t.Fatalf("llmSummarize: %v", err)
+	}
+
+	// Verify the structured prompt contains required elements
+	for _, want := range []string{"## State", "## Findings", "Identifiers", "Technical findings"} {
+		if !strings.Contains(capturedPrompt, want) {
+			t.Errorf("summarization prompt should contain %q, got: %s", want, capturedPrompt)
+		}
+	}
+}
+
+func TestCompactorToolResultTruncation2000(t *testing.T) {
+	var capturedPrompt string
+	client := &mockLLMClient{
+		chatFunc: func(ctx context.Context, req *llm.ChatRequest) (*llm.ChatResponse, error) {
+			for _, msg := range req.Messages {
+				if msg.Role == llm.RoleUser {
+					capturedPrompt = msg.Content
+				}
+			}
+			return &llm.ChatResponse{
+				Message:      llm.ChatMessage{Role: llm.RoleAssistant, Content: "Summary"},
+				FinishReason: "stop",
+			}, nil
+		},
+	}
+
+	c := NewCompactor(CompactorConfig{Client: client})
+
+	// Create a tool result that is >500 but <2000 chars — should NOT be truncated
+	toolContent := strings.Repeat("x", 1500)
+	messages := []llm.ChatMessage{
+		{Role: llm.RoleUser, Content: "Do something"},
+		{Role: llm.RoleAssistant, Content: "", ToolCalls: []llm.ToolCall{
+			{ID: "c1", Type: "function", Function: llm.FunctionCall{Name: "code_agent_read", Arguments: `{"path":"/src/main.go"}`}},
+		}},
+		{Role: llm.RoleTool, Content: toolContent, ToolCallID: "c1", Name: "code_agent_read"},
+	}
+
+	_, err := c.llmSummarize(messages, "")
+	if err != nil {
+		t.Fatalf("llmSummarize: %v", err)
+	}
+
+	// Tool result (1500 chars) should NOT be truncated since limit is 2000
+	if !strings.Contains(capturedPrompt, toolContent) {
+		t.Error("tool result under 2000 chars should not be truncated in summarization prompt")
+	}
+
+	// Now test with a result >2000 chars — should be truncated
+	longToolContent := strings.Repeat("y", 2500)
+	messages[2].Content = longToolContent
+
+	_, err = c.llmSummarize(messages, "")
+	if err != nil {
+		t.Fatalf("llmSummarize: %v", err)
+	}
+
+	// Should be truncated to 2000 chars + "..."
+	if strings.Contains(capturedPrompt, longToolContent) {
+		t.Error("tool result over 2000 chars should be truncated in summarization prompt")
+	}
+	if !strings.Contains(capturedPrompt, "...") {
+		t.Error("truncated tool result should end with '...'")
+	}
+}
+
 func TestTruncateForPrompt(t *testing.T) {
 	short := "hello"
 	if got := truncateForPrompt(short, 10); got != short {

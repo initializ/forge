@@ -43,9 +43,30 @@ type SkillMetadata struct {
 
 // ForgeSkillMeta holds Forge-specific metadata from the "forge" namespace.
 type ForgeSkillMeta struct {
-	Requires      *SkillRequirements `yaml:"requires,omitempty" json:"requires,omitempty"`
-	EgressDomains []string           `yaml:"egress_domains,omitempty" json:"egress_domains,omitempty"`
-	DeniedTools   []string           `yaml:"denied_tools,omitempty" json:"denied_tools,omitempty"`
+	Requires      *SkillRequirements    `yaml:"requires,omitempty" json:"requires,omitempty"`
+	EgressDomains []string              `yaml:"egress_domains,omitempty" json:"egress_domains,omitempty"`
+	DeniedTools   []string              `yaml:"denied_tools,omitempty" json:"denied_tools,omitempty"`
+	Guardrails    *SkillGuardrailConfig `yaml:"guardrails,omitempty" json:"guardrails,omitempty"`
+}
+
+// SkillGuardrailConfig declares domain-specific guardrails for a skill.
+type SkillGuardrailConfig struct {
+	DenyCommands  []SkillCommandFilter `yaml:"deny_commands,omitempty" json:"deny_commands,omitempty"`
+	DenyOutput    []SkillOutputFilter  `yaml:"deny_output,omitempty" json:"deny_output,omitempty"`
+	DenyPrompts   []SkillCommandFilter `yaml:"deny_prompts,omitempty" json:"deny_prompts,omitempty"`
+	DenyResponses []SkillCommandFilter `yaml:"deny_responses,omitempty" json:"deny_responses,omitempty"`
+}
+
+// SkillCommandFilter blocks tool execution when the command matches.
+type SkillCommandFilter struct {
+	Pattern string `yaml:"pattern" json:"pattern"` // regex matched against "binary arg1 arg2 ..."
+	Message string `yaml:"message" json:"message"` // error returned to LLM
+}
+
+// SkillOutputFilter blocks or redacts tool output matching a pattern.
+type SkillOutputFilter struct {
+	Pattern string `yaml:"pattern" json:"pattern"` // regex matched against tool output
+	Action  string `yaml:"action" json:"action"`   // "block" or "redact"
 }
 
 // SkillRequirements declares CLI binaries and environment variables a skill needs.
@@ -89,13 +110,14 @@ type SkillFilter struct {
 
 // AggregatedRequirements is the union of all skill requirements.
 type AggregatedRequirements struct {
-	Bins           []string   // union of all bins, deduplicated, sorted
-	EnvRequired    []string   // union of required vars (promoted from optional if needed)
-	EnvOneOf       [][]string // separate groups per skill (not merged across skills)
-	EnvOptional    []string   // union of optional vars minus those promoted to required
-	MaxTimeoutHint int        // maximum timeout_hint across all skills (seconds)
-	DeniedTools    []string   // union of denied tools across skills, deduplicated, sorted
-	EgressDomains  []string   // union of egress domains across skills, deduplicated, sorted
+	Bins            []string              // union of all bins, deduplicated, sorted
+	EnvRequired     []string              // union of required vars (promoted from optional if needed)
+	EnvOneOf        [][]string            // separate groups per skill (not merged across skills)
+	EnvOptional     []string              // union of optional vars minus those promoted to required
+	MaxTimeoutHint  int                   // maximum timeout_hint across all skills (seconds)
+	DeniedTools     []string              // union of denied tools across skills, deduplicated, sorted
+	EgressDomains   []string              // union of egress domains across skills, deduplicated, sorted
+	SkillGuardrails *SkillGuardrailConfig // aggregated guardrails from all skills
 }
 
 // DerivedCLIConfig holds auto-derived cli_execute configuration from skill requirements.

@@ -118,7 +118,7 @@ func ParseWithMetadata(r io.Reader) ([]contract.SkillEntry, *contract.SkillMetad
 	var forgeReqs *contract.SkillRequirements
 	var egressDomains []string
 	if meta != nil {
-		forgeReqs, egressDomains = extractForgeReqs(meta)
+		forgeReqs, egressDomains, _ = extractForgeReqs(meta)
 	}
 
 	bodyStr := strings.TrimSpace(string(body))
@@ -216,27 +216,27 @@ func validateCategoryAndTags(meta *contract.SkillMetadata) error {
 	return nil
 }
 
-// extractForgeReqs extracts SkillRequirements and egress_domains from the generic metadata map
-// by re-marshaling metadata["forge"] through yaml round-trip into ForgeSkillMeta.
-func extractForgeReqs(meta *contract.SkillMetadata) (*contract.SkillRequirements, []string) {
+// extractForgeReqs extracts SkillRequirements, egress_domains, and guardrails from the generic
+// metadata map by re-marshaling metadata["forge"] through yaml round-trip into ForgeSkillMeta.
+func extractForgeReqs(meta *contract.SkillMetadata) (*contract.SkillRequirements, []string, *contract.SkillGuardrailConfig) {
 	if meta == nil || meta.Metadata == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	forgeMap, ok := meta.Metadata["forge"]
 	if !ok || forgeMap == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	// Re-marshal the forge map to YAML, then unmarshal into ForgeSkillMeta
 	data, err := yaml.Marshal(forgeMap)
 	if err != nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	var forgeMeta contract.ForgeSkillMeta
 	if err := yaml.Unmarshal(data, &forgeMeta); err != nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
-	return forgeMeta.Requires, forgeMeta.EgressDomains
+	return forgeMeta.Requires, forgeMeta.EgressDomains, forgeMeta.Guardrails
 }

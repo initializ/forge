@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/initializ/forge/forge-core/a2a"
 	"github.com/initializ/forge/forge-core/agentspec"
@@ -110,16 +111,39 @@ func (g *GuardrailEngine) checkContentFilter(text string, gr agentspec.Guardrail
 	return nil
 }
 
-var piiPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}`), // email
-	regexp.MustCompile(`\b\d{3}[-.]?\d{3}[-.]?\d{4}\b`),                    // phone
-	regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`),                            // SSN
+// piiCheckerPattern pairs a regex with an optional validator function.
+// When a validator is present, regex matches are only considered true positives
+// if the validator confirms the matched text (e.g., Luhn check for credit cards,
+// structure validation for SSNs). This follows the pattern from the reference
+// guardrails library to reduce false positives.
+type piiCheckerPattern struct {
+	re       *regexp.Regexp
+	validate func(string) bool // nil means regex match alone is sufficient
+}
+
+// Credit card regex: Visa, Mastercard, Amex, Discover with optional separators.
+var ccRegex = `\b(?:` +
+	`4[0-9]{3}[\s-]?[0-9]{4}[\s-]?[0-9]{4}[\s-]?[0-9]{1,4}|` + // Visa
+	`(?:5[1-5][0-9]{2}|222[1-9]|22[3-9][0-9]|2[3-6][0-9]{2}|27[01][0-9]|2720)[\s-]?[0-9]{4}[\s-]?[0-9]{4}[\s-]?[0-9]{4}|` + // Mastercard
+	`3[47][0-9]{2}[\s-]?[0-9]{6}[\s-]?[0-9]{5}|` + // Amex
+	`(?:6011|65[0-9]{2}|64[4-9][0-9])[\s-]?[0-9]{4}[\s-]?[0-9]{4}[\s-]?[0-9]{4}` + // Discover
+	`)\b`
+
+var piiPatterns = []piiCheckerPattern{
+	{re: regexp.MustCompile(`[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}`)},          // email
+	{re: regexp.MustCompile(`\b(?:\+?1[-.\s])?\(?[2-9]\d{2}\)?[-.\s]\d{3}[-.\s]\d{4}\b`)}, // phone (area code 2-9, separators required)
+	{re: regexp.MustCompile(`\b\d{3}[-.\s]?\d{2}[-.\s]?\d{4}\b`), validate: validateSSN},  // SSN with structural validation
+	{re: regexp.MustCompile(ccRegex), validate: validateLuhn},                             // credit card with Luhn check
 }
 
 func (g *GuardrailEngine) checkNoPII(text string) error {
-	for _, re := range piiPatterns {
-		if re.MatchString(text) {
-			return fmt.Errorf("PII pattern detected: %s", re.String())
+	for _, p := range piiPatterns {
+		matches := p.re.FindAllString(text, -1)
+		for _, m := range matches {
+			if p.validate != nil && !p.validate(m) {
+				continue
+			}
+			return fmt.Errorf("PII pattern detected: %s", p.re.String())
 		}
 	}
 	return nil
@@ -177,31 +201,146 @@ func (g *GuardrailEngine) CheckToolOutput(text string) (string, error) {
 	}
 
 	for _, gr := range g.scaffold.Guardrails {
-		var patterns []*regexp.Regexp
 		switch gr.Type {
 		case "no_secrets":
-			patterns = secretPatterns
+			for _, re := range secretPatterns {
+				if !re.MatchString(text) {
+					continue
+				}
+				if g.enforce {
+					return "", fmt.Errorf("tool output blocked by content policy")
+				}
+				text = re.ReplaceAllString(text, "[REDACTED]")
+				g.logger.Warn("guardrail redaction", map[string]any{
+					"guardrail": gr.Type,
+					"direction": "tool_output",
+					"detail":    fmt.Sprintf("pattern %s matched, content redacted", re.String()),
+				})
+			}
 		case "no_pii":
-			patterns = piiPatterns
+			for _, p := range piiPatterns {
+				if !p.re.MatchString(text) {
+					continue
+				}
+				// Check if any match passes validation
+				hasValidMatch := false
+				if p.validate == nil {
+					hasValidMatch = true
+				} else {
+					for _, m := range p.re.FindAllString(text, -1) {
+						if p.validate(m) {
+							hasValidMatch = true
+							break
+						}
+					}
+				}
+				if !hasValidMatch {
+					continue
+				}
+				if g.enforce {
+					return "", fmt.Errorf("tool output blocked by content policy")
+				}
+				// Warn mode: redact only validated matches
+				if p.validate != nil {
+					v := p.validate // capture for closure
+					text = p.re.ReplaceAllStringFunc(text, func(s string) string {
+						if v(s) {
+							return "[REDACTED]"
+						}
+						return s
+					})
+				} else {
+					text = p.re.ReplaceAllString(text, "[REDACTED]")
+				}
+				g.logger.Warn("guardrail redaction", map[string]any{
+					"guardrail": gr.Type,
+					"direction": "tool_output",
+					"detail":    fmt.Sprintf("pattern %s matched, content redacted", p.re.String()),
+				})
+			}
 		default:
 			continue
 		}
-
-		for _, re := range patterns {
-			if !re.MatchString(text) {
-				continue
-			}
-			if g.enforce {
-				return "", fmt.Errorf("tool output blocked by content policy")
-			}
-			// Warn mode: redact matches
-			text = re.ReplaceAllString(text, "[REDACTED]")
-			g.logger.Warn("guardrail redaction", map[string]any{
-				"guardrail": gr.Type,
-				"direction": "tool_output",
-				"detail":    fmt.Sprintf("pattern %s matched, content redacted", re.String()),
-			})
-		}
 	}
 	return text, nil
+}
+
+// --- PII Validators ---
+// Ported from the reference guardrails library to reduce false positives.
+
+// validateSSN validates a US Social Security Number structure.
+// Rejects area=000/666/900+, group=00, serial=0000, all-same digits, and known test SSNs.
+func validateSSN(s string) bool {
+	cleaned := strings.NewReplacer("-", "", " ", "", ".", "").Replace(s)
+	if len(cleaned) != 9 {
+		return false
+	}
+	for _, r := range cleaned {
+		if !unicode.IsDigit(r) {
+			return false
+		}
+	}
+
+	area := cleaned[0:3]
+	group := cleaned[3:5]
+	serial := cleaned[5:9]
+
+	if area == "000" || area == "666" || area[0] == '9' {
+		return false
+	}
+	if group == "00" {
+		return false
+	}
+	if serial == "0000" {
+		return false
+	}
+
+	// All same digits
+	allSame := true
+	for i := 1; i < len(cleaned); i++ {
+		if cleaned[i] != cleaned[0] {
+			allSame = false
+			break
+		}
+	}
+	if allSame {
+		return false
+	}
+
+	// Known test/advertising SSNs
+	testSSNs := map[string]bool{
+		"078051120": true,
+		"219099999": true,
+		"123456789": true,
+	}
+	return !testSSNs[cleaned]
+}
+
+// validateLuhn performs Luhn checksum validation on a credit card number.
+// Strips separators (spaces, dashes) before validating.
+func validateLuhn(s string) bool {
+	cleaned := strings.NewReplacer(" ", "", "-", "").Replace(s)
+	if len(cleaned) < 13 || len(cleaned) > 19 {
+		return false
+	}
+	for _, r := range cleaned {
+		if !unicode.IsDigit(r) {
+			return false
+		}
+	}
+
+	sum := 0
+	double := false
+	for i := len(cleaned) - 1; i >= 0; i-- {
+		digit := int(cleaned[i] - '0')
+		if double {
+			digit *= 2
+			if digit > 9 {
+				digit -= 9
+			}
+		}
+		sum += digit
+		double = !double
+	}
+	return sum%10 == 0
 }

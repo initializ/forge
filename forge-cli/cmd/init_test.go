@@ -521,7 +521,7 @@ func TestBuildEnvVars(t *testing.T) {
 		ModelProvider: "openai",
 		BuiltinTools:  []string{"web_search"},
 		Skills:        []string{"github"},
-		EnvVars:       map[string]string{"OPENAI_API_KEY": "sk-test"},
+		EnvVars:       map[string]string{"OPENAI_API_KEY": "sk-test", "GH_TOKEN": "ghp-test"},
 	}
 	vars := buildEnvVars(opts)
 

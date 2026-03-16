@@ -593,7 +593,7 @@ func isWriteActionTool(name string) bool {
 	case "code_agent_edit", "code_agent_write", "code_agent_patch",
 		"github_commit", "github_push", "github_create_pr",
 		"github_checkout", "github_create_issue",
-		"file_create", "bash_execute", "code_agent_run":
+		"file_create", "code_agent_run":
 		return true
 	}
 	// Catch any tool with "edit", "write", "commit", "push" in the name.
@@ -674,7 +674,7 @@ func toolPhase(name string) workflowPhase {
 		return phaseSetup
 	case "code_agent_read", "grep_search", "glob_search", "directory_tree", "read_skill", "github_status":
 		return phaseExplore
-	case "code_agent_edit", "code_agent_write", "code_agent_patch", "bash_execute", "file_create", "code_agent_run":
+	case "code_agent_edit", "code_agent_write", "code_agent_patch", "file_create", "code_agent_run":
 		return phaseEdit
 	case "github_commit", "github_push", "github_create_pr":
 		return phaseGitOps

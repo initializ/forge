@@ -26,7 +26,6 @@ func TestRegisterCodeAgentTools(t *testing.T) {
 		"file_write",
 		"file_edit",
 		"file_patch",
-		"bash_execute",
 		"grep_search",
 		"glob_search",
 		"directory_tree",
@@ -41,8 +40,8 @@ func TestRegisterCodeAgentTools(t *testing.T) {
 
 func TestCodeAgentToolsCount(t *testing.T) {
 	toolList := CodeAgentTools(t.TempDir())
-	if len(toolList) != 8 {
-		t.Errorf("expected 8 tools, got %d", len(toolList))
+	if len(toolList) != 7 {
+		t.Errorf("expected 7 tools, got %d", len(toolList))
 	}
 }
 
@@ -318,120 +317,6 @@ func TestFilePatch_PathTraversal(t *testing.T) {
 	}))
 	if err == nil {
 		t.Fatal("expected error for path traversal")
-	}
-}
-
-// --- bash_execute tests ---
-
-func TestBashExecute_HappyPath(t *testing.T) {
-	workDir := t.TempDir()
-	tool := &bashExecuteTool{workDir: workDir}
-
-	result, err := tool.Execute(context.Background(), toJSON(t, map[string]any{
-		"command": "echo hello",
-	}))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	var out map[string]any
-	if err := json.Unmarshal([]byte(result), &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if out["stdout"] != "hello" {
-		t.Errorf("expected stdout 'hello', got %q", out["stdout"])
-	}
-	if out["exit_code"] != float64(0) {
-		t.Errorf("expected exit_code 0, got %v", out["exit_code"])
-	}
-}
-
-func TestBashExecute_ExitCode(t *testing.T) {
-	workDir := t.TempDir()
-	tool := &bashExecuteTool{workDir: workDir}
-
-	result, err := tool.Execute(context.Background(), toJSON(t, map[string]any{
-		"command": "exit 42",
-	}))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	var out map[string]any
-	if err := json.Unmarshal([]byte(result), &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if out["exit_code"] != float64(42) {
-		t.Errorf("expected exit_code 42, got %v", out["exit_code"])
-	}
-}
-
-func TestBashExecute_DangerousCommandBlocked(t *testing.T) {
-	workDir := t.TempDir()
-	tool := &bashExecuteTool{workDir: workDir}
-
-	tests := []struct {
-		name    string
-		command string
-	}{
-		{"sudo", "sudo rm -rf /"},
-		{"rm_rf_root", "rm -rf /"},
-		{"fork_bomb", ":(){ :|:& };:"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := tool.Execute(context.Background(), toJSON(t, map[string]any{
-				"command": tt.command,
-			}))
-			if err == nil {
-				t.Fatal("expected error for dangerous command")
-			}
-		})
-	}
-}
-
-func TestBashExecute_Timeout(t *testing.T) {
-	workDir := t.TempDir()
-	tool := &bashExecuteTool{workDir: workDir}
-
-	result, err := tool.Execute(context.Background(), toJSON(t, map[string]any{
-		"command": "sleep 10",
-		"timeout": 1,
-	}))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	var out map[string]any
-	if err := json.Unmarshal([]byte(result), &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if out["exit_code"] != float64(124) {
-		// Process may be killed with different exit codes, just verify it's non-zero
-		if out["exit_code"] == float64(0) {
-			t.Error("expected non-zero exit code for timed out command")
-		}
-	}
-}
-
-func TestBashExecute_Pipes(t *testing.T) {
-	workDir := t.TempDir()
-	tool := &bashExecuteTool{workDir: workDir}
-
-	result, err := tool.Execute(context.Background(), toJSON(t, map[string]any{
-		"command": "echo 'hello world' | tr ' ' '\\n' | wc -l",
-	}))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	var out map[string]any
-	if err := json.Unmarshal([]byte(result), &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if out["exit_code"] != float64(0) {
-		t.Errorf("expected exit_code 0, got %v", out["exit_code"])
 	}
 }
 

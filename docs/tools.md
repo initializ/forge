@@ -44,7 +44,6 @@ All code-agent tools use a `PathValidator` that confines resolved paths within t
 
 | Tool | Description |
 |------|-------------|
-| `bash_execute` | Execute bash commands with pipes, redirection, and shell features |
 | `file_read` | Read file contents with optional line offset/limit, or list directory entries |
 | `file_write` | Create or overwrite files in the project directory |
 | `file_edit` | Edit files by exact string matching with unified diff output |
@@ -61,17 +60,8 @@ Code-agent tools are registered in layered groups, allowing skills to request on
 |-------|-------|---------|
 | `CodeAgentSearchTools` | `grep_search`, `glob_search`, `directory_tree` | Read-only exploration |
 | `CodeAgentReadTools` | `file_read` + search tools | Safe reading |
-| `CodeAgentWriteTools` | `file_write`, `file_edit`, `file_patch`, `bash_execute` | Modification + execution |
+| `CodeAgentWriteTools` | `file_write`, `file_edit`, `file_patch` | Modification |
 | `CodeAgentTools` | All read + write tools | Full code-agent capability |
-
-### bash_execute Security
-
-| Layer | Detail |
-|-------|--------|
-| **Dangerous command denylist** | Blocks `rm -rf /`, `mkfs`, `dd`, fork bombs, and similar destructive patterns |
-| **sudo/su blocked** | Privilege escalation prefixes are rejected |
-| **Timeout** | Default 120s, configurable per invocation |
-| **Output cap** | Maximum 1MB output to prevent memory exhaustion |
 
 ### Path Validation
 

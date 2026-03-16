@@ -35,7 +35,6 @@ metadata:
       - repo.maven.apache.org
       - repo1.maven.org
     denied_tools:
-      - bash_execute
       - file_write
       - file_edit
       - file_patch

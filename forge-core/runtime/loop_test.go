@@ -371,7 +371,6 @@ func TestToolPhaseClassification(t *testing.T) {
 		{"code_agent_edit", phaseEdit},
 		{"code_agent_write", phaseEdit},
 		{"code_agent_patch", phaseEdit},
-		{"bash_execute", phaseEdit},
 		{"file_create", phaseEdit},
 		{"code_agent_run", phaseEdit},
 		{"github_commit", phaseGitOps},

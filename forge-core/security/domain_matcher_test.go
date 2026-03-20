@@ -95,6 +95,12 @@ func TestIsLocalhostExported(t *testing.T) {
 		{"example.com", false},
 		{"192.168.1.1", false},
 		{"10.0.0.1", false},
+		// SSRF bypass vectors — must NOT be recognized as localhost
+		{"0177.0.0.1", false}, // octal
+		{"0x7f.0.0.1", false}, // hex
+		{"0x7f000001", false}, // hex packed
+		{"2130706433", false}, // decimal packed
+		{"127.0.0.01", false}, // leading zero
 	}
 
 	for _, tt := range tests {

@@ -23,6 +23,7 @@ type ForgeConfig struct {
 	Memory       MemoryConfig     `yaml:"memory,omitempty"`
 	Secrets      SecretsConfig    `yaml:"secrets,omitempty"`
 	Schedules    []ScheduleConfig `yaml:"schedules,omitempty"`
+	CORSOrigins  []string         `yaml:"cors_origins,omitempty"`
 }
 
 // ScheduleConfig defines a recurring scheduled task in forge.yaml.
@@ -61,10 +62,11 @@ type MemoryConfig struct {
 
 // EgressRef configures egress security controls.
 type EgressRef struct {
-	Profile        string   `yaml:"profile,omitempty"` // strict, standard, permissive
-	Mode           string   `yaml:"mode,omitempty"`    // deny-all, allowlist, dev-open
-	AllowedDomains []string `yaml:"allowed_domains,omitempty"`
-	Capabilities   []string `yaml:"capabilities,omitempty"` // capability bundles (e.g., "slack", "telegram")
+	Profile         string   `yaml:"profile,omitempty"` // strict, standard, permissive
+	Mode            string   `yaml:"mode,omitempty"`    // deny-all, allowlist, dev-open
+	AllowedDomains  []string `yaml:"allowed_domains,omitempty"`
+	Capabilities    []string `yaml:"capabilities,omitempty"` // capability bundles (e.g., "slack", "telegram")
+	AllowPrivateIPs *bool    `yaml:"allow_private_ips,omitempty"`
 }
 
 // SkillsRef references a skills definition file.

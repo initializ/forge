@@ -68,8 +68,9 @@ func (t *httpRequestTool) Execute(ctx context.Context, args json.RawMessage) (st
 	}
 
 	client := &http.Client{
-		Transport: security.EgressTransportFromContext(ctx),
-		Timeout:   timeout,
+		Transport:     security.EgressTransportFromContext(ctx),
+		Timeout:       timeout,
+		CheckRedirect: security.SafeRedirectPolicy(10),
 	}
 	resp, err := client.Do(req)
 	if err != nil {

@@ -92,7 +92,7 @@ func TestEgressEnforcerAllowlist(t *testing.T) {
 			}))
 			defer ts.Close()
 
-			enforcer := NewEgressEnforcer(http.DefaultTransport, ModeAllowlist, tt.domains)
+			enforcer := NewEgressEnforcer(http.DefaultTransport, ModeAllowlist, tt.domains, false)
 
 			req, err := http.NewRequest("GET", tt.url, nil)
 			if err != nil {
@@ -119,7 +119,7 @@ func TestEgressEnforcerAllowlist(t *testing.T) {
 }
 
 func TestEgressEnforcerDenyAll(t *testing.T) {
-	enforcer := NewEgressEnforcer(http.DefaultTransport, ModeDenyAll, nil)
+	enforcer := NewEgressEnforcer(http.DefaultTransport, ModeDenyAll, nil, false)
 
 	req, _ := http.NewRequest("GET", "https://api.openai.com/v1/chat", nil)
 	_, err := enforcer.RoundTrip(req)
@@ -134,7 +134,7 @@ func TestEgressEnforcerDenyAllAllowsLocalhost(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	enforcer := NewEgressEnforcer(http.DefaultTransport, ModeDenyAll, nil)
+	enforcer := NewEgressEnforcer(http.DefaultTransport, ModeDenyAll, nil, false)
 
 	req, _ := http.NewRequest("GET", ts.URL+"/test", nil)
 	resp, err := enforcer.RoundTrip(req)
@@ -150,7 +150,7 @@ func TestEgressEnforcerDevOpen(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	enforcer := NewEgressEnforcer(http.DefaultTransport, ModeDevOpen, nil)
+	enforcer := NewEgressEnforcer(http.DefaultTransport, ModeDevOpen, nil, false)
 
 	req, _ := http.NewRequest("GET", ts.URL+"/test", nil)
 	resp, err := enforcer.RoundTrip(req)
@@ -167,7 +167,7 @@ func TestEgressEnforcerOnAttemptCallback(t *testing.T) {
 		allowed bool
 	}
 
-	enforcer := NewEgressEnforcer(http.DefaultTransport, ModeAllowlist, []string{"api.openai.com"})
+	enforcer := NewEgressEnforcer(http.DefaultTransport, ModeAllowlist, []string{"api.openai.com"}, false)
 	enforcer.OnAttempt = func(_ context.Context, domain string, allowed bool) {
 		mu.Lock()
 		calls = append(calls, struct {
@@ -201,7 +201,7 @@ func TestEgressEnforcerOnAttemptCallback(t *testing.T) {
 
 func TestEgressEnforcerDevOpenCallback(t *testing.T) {
 	var called bool
-	enforcer := NewEgressEnforcer(http.DefaultTransport, ModeDevOpen, nil)
+	enforcer := NewEgressEnforcer(http.DefaultTransport, ModeDevOpen, nil, false)
 	enforcer.OnAttempt = func(_ context.Context, domain string, allowed bool) {
 		called = true
 		if !allowed {
@@ -256,9 +256,9 @@ func TestEgressContextMissing(t *testing.T) {
 }
 
 func TestEgressEnforcerNilBase(t *testing.T) {
-	enforcer := NewEgressEnforcer(nil, ModeAllowlist, []string{"example.com"})
+	enforcer := NewEgressEnforcer(nil, ModeAllowlist, []string{"example.com"}, false)
 	if enforcer.base == nil {
-		t.Error("nil base should be replaced with http.DefaultTransport")
+		t.Error("nil base should be replaced with SafeTransport")
 	}
 }
 
@@ -278,6 +278,34 @@ func TestIsLocalhost(t *testing.T) {
 		t.Run(tt.host, func(t *testing.T) {
 			if got := IsLocalhost(tt.host); got != tt.expected {
 				t.Errorf("IsLocalhost(%q) = %v, want %v", tt.host, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestEgressEnforcerSSRFBypass(t *testing.T) {
+	// Non-standard IP formats should be blocked by ValidateHostIP
+	enforcer := NewEgressEnforcer(http.DefaultTransport, ModeAllowlist, []string{"example.com"}, false)
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"octal loopback", "http://0177.0.0.1/secret"},
+		{"hex loopback", "http://0x7f000001/secret"},
+		{"packed decimal", "http://2130706433/secret"},
+		{"leading zero", "http://127.0.0.01/secret"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, _ := http.NewRequest("GET", tt.url, nil)
+			_, err := enforcer.RoundTrip(req)
+			if err == nil {
+				t.Error("expected SSRF bypass to be blocked")
+			}
+			if err != nil && !strings.Contains(err.Error(), "egress blocked") {
+				t.Errorf("expected 'egress blocked' error, got: %v", err)
 			}
 		})
 	}

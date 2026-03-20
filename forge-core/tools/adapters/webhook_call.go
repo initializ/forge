@@ -55,8 +55,9 @@ func (t *webhookCallTool) Execute(ctx context.Context, args json.RawMessage) (st
 	}
 
 	client := &http.Client{
-		Transport: security.EgressTransportFromContext(ctx),
-		Timeout:   30 * time.Second,
+		Transport:     security.EgressTransportFromContext(ctx),
+		Timeout:       30 * time.Second,
+		CheckRedirect: security.SafeRedirectPolicy(10),
 	}
 	resp, err := client.Do(req)
 	if err != nil {

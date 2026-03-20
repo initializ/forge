@@ -40,3 +40,4 @@ profile.cov
 
 # OS files
 .DS_Store
+forge-supervisor-bin

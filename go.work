@@ -6,4 +6,5 @@ use (
 	./forge-plugins
 	./forge-skills
 	./forge-ui
+	./forge-supervisor
 )

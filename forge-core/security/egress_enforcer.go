@@ -13,22 +13,24 @@ type egressClientKey struct{}
 // EgressEnforcer is an http.RoundTripper that validates outbound requests
 // against a domain allowlist before forwarding them to the base transport.
 type EgressEnforcer struct {
-	base      http.RoundTripper
-	matcher   *DomainMatcher
-	OnAttempt func(ctx context.Context, domain string, allowed bool)
+	base            http.RoundTripper
+	matcher         *DomainMatcher
+	AllowPrivateIPs bool
+	OnAttempt       func(ctx context.Context, domain string, allowed bool)
 }
 
 // NewEgressEnforcer creates a new EgressEnforcer wrapping the given base transport.
-// If base is nil, http.DefaultTransport is used. Domains may include wildcard
-// prefixes (e.g. "*.github.com") which match any subdomain.
-func NewEgressEnforcer(base http.RoundTripper, mode EgressMode, domains []string) *EgressEnforcer {
+// If base is nil, a SafeTransport is used instead of http.DefaultTransport.
+// Domains may include wildcard prefixes (e.g. "*.github.com") which match any subdomain.
+func NewEgressEnforcer(base http.RoundTripper, mode EgressMode, domains []string, allowPrivateIPs bool) *EgressEnforcer {
 	if base == nil {
-		base = http.DefaultTransport
+		base = NewSafeTransport(nil, allowPrivateIPs)
 	}
 
 	return &EgressEnforcer{
-		base:    base,
-		matcher: NewDomainMatcher(mode, domains),
+		base:            base,
+		matcher:         NewDomainMatcher(mode, domains),
+		AllowPrivateIPs: allowPrivateIPs,
 	}
 }
 
@@ -39,12 +41,21 @@ func (e *EgressEnforcer) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	ctx := req.Context()
 
-	// Localhost is always allowed.
+	// Reject non-standard IP formats (octal, hex, packed decimal) early.
+	if err := ValidateHostIP(host); err != nil {
+		if e.OnAttempt != nil {
+			e.OnAttempt(ctx, host, false)
+		}
+		return nil, fmt.Errorf("egress blocked: %w", err)
+	}
+
+	// Localhost is always allowed. Use http.DefaultTransport to bypass the
+	// safe dialer (which blocks loopback IPs for DNS rebinding protection).
 	if IsLocalhost(host) {
 		if e.OnAttempt != nil {
 			e.OnAttempt(ctx, host, true)
 		}
-		return e.base.RoundTrip(req)
+		return http.DefaultTransport.RoundTrip(req)
 	}
 
 	allowed := e.matcher.IsAllowed(host)

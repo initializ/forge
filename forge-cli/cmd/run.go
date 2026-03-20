@@ -30,6 +30,7 @@ var (
 	runWithChannels      string
 	runNoAuth            bool
 	runAuthToken         string
+	runCORSOrigins       string
 )
 
 var runCmd = &cobra.Command{
@@ -51,6 +52,7 @@ func init() {
 	runCmd.Flags().StringVar(&runWithChannels, "with", "", "comma-separated channel adapters to start (e.g. slack,telegram)")
 	runCmd.Flags().BoolVar(&runNoAuth, "no-auth", false, "disable bearer token authentication (localhost only)")
 	runCmd.Flags().StringVar(&runAuthToken, "auth-token", "", "explicit bearer token (default: auto-generated)")
+	runCmd.Flags().StringVar(&runCORSOrigins, "cors-origins", "", "comma-separated CORS allowed origins (default: localhost only, use '*' for wildcard)")
 }
 
 func runRun(cmd *cobra.Command, args []string) error {
@@ -64,6 +66,15 @@ func runRun(cmd *cobra.Command, args []string) error {
 	enforceGuardrails := runEnforceGuardrails
 	if runNoGuardrails {
 		enforceGuardrails = false
+	}
+
+	var corsOrigins []string
+	if runCORSOrigins != "" {
+		for _, o := range strings.Split(runCORSOrigins, ",") {
+			if o = strings.TrimSpace(o); o != "" {
+				corsOrigins = append(corsOrigins, o)
+			}
+		}
 	}
 
 	runner, err := runtime.NewRunner(runtime.RunnerConfig{
@@ -81,6 +92,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		Channels:          activeChannels,
 		NoAuth:            runNoAuth,
 		AuthToken:         runAuthToken,
+		CORSOrigins:       corsOrigins,
 	})
 	if err != nil {
 		return fmt.Errorf("creating runner: %w", err)

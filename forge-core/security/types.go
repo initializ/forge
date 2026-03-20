@@ -21,9 +21,10 @@ const (
 
 // EgressConfig holds the resolved egress configuration.
 type EgressConfig struct {
-	Profile        EgressProfile `json:"profile"`
-	Mode           EgressMode    `json:"mode"`
-	AllowedDomains []string      `json:"allowed_domains,omitempty"` // explicit user domains
-	ToolDomains    []string      `json:"tool_domains,omitempty"`    // inferred from tools
-	AllDomains     []string      `json:"all_domains,omitempty"`     // deduplicated union
+	Profile         EgressProfile `json:"profile"`
+	Mode            EgressMode    `json:"mode"`
+	AllowedDomains  []string      `json:"allowed_domains,omitempty"` // explicit user domains
+	ToolDomains     []string      `json:"tool_domains,omitempty"`    // inferred from tools
+	AllDomains      []string      `json:"all_domains,omitempty"`     // deduplicated union
+	AllowPrivateIPs bool          `json:"allow_private_ips,omitempty"`
 }

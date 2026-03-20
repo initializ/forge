@@ -147,6 +147,7 @@ forge run [flags]
 | `--provider` | | LLM provider: `openai`, `anthropic`, or `ollama` |
 | `--env` | `.env` | Path to .env file |
 | `--with` | | Comma-separated channel adapters (e.g., `slack,telegram`) |
+| `--cors-origins` | localhost | Comma-separated CORS allowed origins (e.g., `https://app.example.com,https://admin.example.com`). Use `*` to allow all origins |
 
 ### Examples
 
@@ -165,6 +166,9 @@ forge run --host 0.0.0.0 --shutdown-timeout 30s
 
 # Run with guardrails enforced
 forge run --enforce-guardrails --env .env.production
+
+# Run with custom CORS origins (for K8s ingress)
+forge run --cors-origins 'https://app.example.com,https://admin.example.com'
 ```
 
 ---
@@ -193,6 +197,7 @@ forge serve [start|stop|status|logs] [flags]
 | `--port` | `8080` | HTTP server port |
 | `--host` | `127.0.0.1` | Bind address (secure default) |
 | `--with` | | Channel adapters |
+| `--cors-origins` | localhost | Comma-separated CORS allowed origins |
 
 ### Examples
 

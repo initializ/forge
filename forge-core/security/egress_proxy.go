@@ -15,18 +15,23 @@ import (
 // It is used to enforce egress rules on subprocesses (skill scripts) that
 // cannot use the Go-level EgressEnforcer RoundTripper.
 type EgressProxy struct {
-	matcher   *DomainMatcher
-	listener  net.Listener
-	srv       *http.Server
-	addr      string // "127.0.0.1:<port>"
-	OnAttempt func(domain string, allowed bool)
+	matcher       *DomainMatcher
+	safeDialer    *SafeDialer
+	safeTransport *http.Transport
+	listener      net.Listener
+	srv           *http.Server
+	addr          string // "127.0.0.1:<port>"
+	OnAttempt     func(domain string, allowed bool)
 }
 
 // NewEgressProxy creates a new EgressProxy that validates domains using the
 // given DomainMatcher. Call Start to bind and begin serving.
-func NewEgressProxy(matcher *DomainMatcher) *EgressProxy {
+func NewEgressProxy(matcher *DomainMatcher, allowPrivateIPs bool) *EgressProxy {
+	sd := NewSafeDialer(nil, allowPrivateIPs)
 	return &EgressProxy{
-		matcher: matcher,
+		matcher:       matcher,
+		safeDialer:    sd,
+		safeTransport: NewSafeTransport(nil, allowPrivateIPs),
 	}
 }
 
@@ -101,7 +106,12 @@ func (p *EgressProxy) handleHTTP(w http.ResponseWriter, req *http.Request) {
 	outReq.Header.Del("Proxy-Connection")
 	outReq.Header.Del("Proxy-Authorization")
 
-	resp, err := http.DefaultTransport.RoundTrip(outReq)
+	// Use http.DefaultTransport for localhost (safe dialer blocks loopback).
+	var transport http.RoundTripper = p.safeTransport
+	if IsLocalhost(host) {
+		transport = http.DefaultTransport
+	}
+	resp, err := transport.RoundTrip(outReq)
 	if err != nil {
 		http.Error(w, "egress proxy: upstream error", http.StatusBadGateway)
 		return
@@ -128,8 +138,16 @@ func (p *EgressProxy) handleConnect(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Dial the upstream
-	upstream, err := net.DialTimeout("tcp", req.Host, 10*time.Second)
+	// Dial the upstream. Use safe dialer for non-localhost, standard dial for localhost
+	// (safe dialer blocks loopback IPs for DNS rebinding protection).
+	var upstream net.Conn
+	var err error
+	if IsLocalhost(host) {
+		upstream, err = net.DialTimeout("tcp", req.Host, 10*time.Second)
+	} else {
+		ctx := req.Context()
+		upstream, err = p.safeDialer.SafeDialContext(ctx, "tcp", req.Host)
+	}
 	if err != nil {
 		http.Error(w, "egress proxy: failed to connect upstream", http.StatusBadGateway)
 		return
@@ -165,6 +183,12 @@ func (p *EgressProxy) handleConnect(w http.ResponseWriter, req *http.Request) {
 
 // checkDomain validates a host against the matcher, allowing localhost always.
 func (p *EgressProxy) checkDomain(host string) bool {
+	// Reject non-standard IP formats early
+	if err := ValidateHostIP(host); err != nil {
+		p.fireCallback(host, false)
+		return false
+	}
+
 	// Localhost is always allowed
 	if IsLocalhost(host) {
 		p.fireCallback(host, true)

@@ -48,6 +48,7 @@ type RunnerConfig struct {
 	Channels          []string // active channel adapters from --with flag
 	NoAuth            bool     // disable bearer token authentication
 	AuthToken         string   // explicit bearer token (empty = auto-generate)
+	CORSOrigins       []string // CORS allowed origins (from --cors-origins flag)
 }
 
 // ScheduleNotifier is called after a scheduled task completes to deliver the
@@ -223,7 +224,15 @@ func (r *Runner) Run(ctx context.Context) error {
 		r.logger.Warn("failed to resolve egress config, using default", map[string]any{"error": egressErr.Error()})
 		egressClient = http.DefaultClient
 	} else {
-		enforcer := security.NewEgressEnforcer(nil, egressCfg.Mode, egressCfg.AllDomains)
+		// Resolve allowPrivateIPs: explicit config > container auto-detect > false
+		allowPrivateIPs := false
+		if r.cfg.Config.Egress.AllowPrivateIPs != nil {
+			allowPrivateIPs = *r.cfg.Config.Egress.AllowPrivateIPs
+		} else if security.InContainer() {
+			allowPrivateIPs = true
+		}
+
+		enforcer := security.NewEgressEnforcer(nil, egressCfg.Mode, egressCfg.AllDomains, allowPrivateIPs)
 		enforcer.OnAttempt = func(ctx context.Context, domain string, allowed bool) {
 			event := coreruntime.AuditEgressAllowed
 			if !allowed {
@@ -241,7 +250,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		// Start local proxy for subprocess egress enforcement
 		if !security.InContainer() && egressCfg.Mode != security.ModeDevOpen {
 			matcher := security.NewDomainMatcher(egressCfg.Mode, egressCfg.AllDomains)
-			egressProxy = security.NewEgressProxy(matcher)
+			egressProxy = security.NewEgressProxy(matcher, allowPrivateIPs)
 			egressProxy.OnAttempt = func(domain string, allowed bool) {
 				event := coreruntime.AuditEgressAllowed
 				if !allowed {
@@ -583,6 +592,23 @@ func (r *Runner) Run(ctx context.Context) error {
 		return fmt.Errorf("resolving auth: %w", err)
 	}
 
+	// 6b. Resolve CORS origins: CLI flag > env var > forge.yaml > defaults
+	corsOrigins := r.cfg.CORSOrigins
+	if len(corsOrigins) == 0 {
+		if envCORS := os.Getenv("FORGE_CORS_ORIGINS"); envCORS != "" {
+			corsOrigins = strings.Split(envCORS, ",")
+			for i := range corsOrigins {
+				corsOrigins[i] = strings.TrimSpace(corsOrigins[i])
+			}
+		}
+	}
+	if len(corsOrigins) == 0 && len(r.cfg.Config.CORSOrigins) > 0 {
+		corsOrigins = r.cfg.Config.CORSOrigins
+	}
+	if len(corsOrigins) == 0 {
+		corsOrigins = server.DefaultAllowedOrigins()
+	}
+
 	// 6. Create A2A server
 	r.startTime = time.Now()
 	srv := server.NewServer(server.ServerConfig{
@@ -591,6 +617,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		ShutdownTimeout: r.cfg.ShutdownTimeout,
 		AgentCard:       card,
 		AuthMiddleware:  auth.Middleware(authCfg),
+		AllowedOrigins:  corsOrigins,
 	})
 
 	// 7. Register JSON-RPC handlers

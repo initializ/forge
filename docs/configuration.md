@@ -41,6 +41,10 @@ egress:
     - "*.github.com"
   capabilities:                     # Capability bundles
     - "slack"
+  allow_private_ips: false          # Allow RFC 1918 IPs (auto: true in containers)
+
+cors_origins:                       # CORS allowed origins for A2A server
+  - "https://app.example.com"      # (default: localhost variants)
 
 skills:
   path: "SKILL.md"
@@ -91,6 +95,7 @@ schedules:                          # Recurring scheduled tasks (optional)
 | `OPENAI_BASE_URL` | Override OpenAI base URL |
 | `ANTHROPIC_BASE_URL` | Override Anthropic base URL |
 | `OLLAMA_BASE_URL` | Override Ollama base URL (default: `http://localhost:11434`) |
+| `FORGE_CORS_ORIGINS` | Comma-separated CORS allowed origins for A2A server |
 | `FORGE_PASSPHRASE` | Passphrase for encrypted secrets file |
 
 ---

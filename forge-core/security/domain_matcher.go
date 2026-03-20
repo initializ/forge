@@ -70,10 +70,16 @@ func (m *DomainMatcher) Mode() EgressMode {
 }
 
 // IsLocalhost returns true for loopback addresses.
+// It uses strict IPv4 parsing to prevent octal/hex bypass (e.g. 0177.0.0.1).
 func IsLocalhost(host string) bool {
 	if host == "localhost" {
 		return true
 	}
+	// Strict IPv4 check prevents octal/hex bypass
+	if ip4 := ParseStrictIPv4(host); ip4 != nil {
+		return ip4.IsLoopback()
+	}
+	// IPv6 only (To4() == nil ensures we don't re-check IPv4)
 	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return ip != nil && ip.To4() == nil && ip.IsLoopback()
 }

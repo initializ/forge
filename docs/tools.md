@@ -17,7 +17,7 @@ Tools are capabilities that an LLM agent can invoke during execution. Forge prov
 
 | Tool | Description |
 |------|-------------|
-| `http_request` | Make HTTP requests (GET, POST, PUT, DELETE) |
+| `http_request` | Make HTTP requests (GET, POST, PUT, DELETE). Strips credentials on cross-origin redirects |
 | `json_parse` | Parse and query JSON data |
 | `csv_parse` | Parse CSV data into structured records |
 | `datetime_now` | Get current date and time |
@@ -76,7 +76,7 @@ All file tools use `PathValidator` (from `pathutil.go`):
 | Adapter | Description |
 |---------|-------------|
 | `mcp_call` | Call tools on MCP servers via JSON-RPC |
-| `webhook_call` | POST JSON payloads to webhook URLs |
+| `webhook_call` | POST JSON payloads to webhook URLs. Strips credentials on cross-origin redirects |
 | `openapi_call` | Call OpenAPI-described endpoints |
 
 Adapter tools bridge external services into the agent's tool set.

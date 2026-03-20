@@ -15,7 +15,7 @@ Forge's security is organized in layers, each addressing a different threat surf
 │              (content filtering, PII, jailbreak)             │
 ├──────────────────────────────────────────────────────────────┤
 │                    Egress Enforcement                        │
-│       (EgressEnforcer + EgressProxy + NetworkPolicy)         │
+│  (EgressEnforcer + EgressProxy + SafeDialer + NetworkPolicy) │
 ├──────────────────────────────────────────────────────────────┤
 │                  Execution Sandboxing                        │
 │  (env isolation, binary allowlists, arg validation,          │
@@ -55,6 +55,8 @@ Forge agents are designed to never expose inbound listeners to the public intern
   - Slack: Socket Mode (outbound WebSocket via `apps.connections.open`)
   - Telegram: Long-polling via `getUpdates`
 - **Local-only HTTP server** — The A2A dev server binds to `localhost` by default
+- **CORS restriction** — The A2A server restricts `Access-Control-Allow-Origin` to localhost by default; configurable via `--cors-origins` flag, `FORGE_CORS_ORIGINS` env var, or `cors_origins` in `forge.yaml`
+- **Security response headers** — All A2A responses include `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, and `Content-Security-Policy: default-src 'none'`
 - **No hidden listeners** — Every network binding is explicit and logged
 
 This means a running Forge agent has zero inbound attack surface by default.
@@ -63,17 +65,25 @@ This means a running Forge agent has zero inbound attack surface by default.
 
 ## Egress Enforcement
 
-Forge restricts outbound network access at three levels:
+Forge restricts outbound network access at multiple levels:
 
-### 1. In-Process Enforcer
+### 1. IP Validation
 
-The `EgressEnforcer` is a Go `http.RoundTripper` that wraps every outbound HTTP request from in-process tools (`http_request`, `web_search`, LLM API calls). It validates the destination domain against a resolved allowlist before forwarding.
+All egress paths reject non-standard IP formats (octal, hex, packed decimal, leading zeros) that could bypass allowlist checks. IPv6 transition addresses (NAT64, 6to4, Teredo) embedding private IPv4 addresses are also blocked.
 
-### 2. Subprocess Proxy
+### 2. In-Process Enforcer
 
-Skill scripts and `cli_execute` subprocesses bypass Go-level enforcement. A local `EgressProxy` on `127.0.0.1:<random-port>` validates domains for subprocess HTTP traffic via `HTTP_PROXY`/`HTTPS_PROXY` env var injection.
+The `EgressEnforcer` is a Go `http.RoundTripper` backed by a `SafeTransport` that validates resolved IPs post-DNS. Every outbound HTTP request from in-process tools (`http_request`, `web_search`, LLM API calls) is checked against IP validation, domain allowlist, and post-resolution CIDR blocking.
 
-### 3. Kubernetes NetworkPolicy
+### 3. Subprocess Proxy
+
+Skill scripts and `cli_execute` subprocesses bypass Go-level enforcement. A local `EgressProxy` on `127.0.0.1:<random-port>` validates domains and resolved IPs for subprocess HTTP traffic via `HTTP_PROXY`/`HTTPS_PROXY` env var injection.
+
+### 4. Redirect Credential Stripping
+
+HTTP clients used by `http_request` and `webhook_call` tools strip `Authorization`, `Cookie`, and `Proxy-Authorization` headers when a redirect crosses origin boundaries (different scheme, host, or port).
+
+### 5. Kubernetes NetworkPolicy
 
 In containerized deployments, generated Kubernetes `NetworkPolicy` manifests enforce egress at the pod level, restricting traffic to allowed domains on ports 80/443.
 
@@ -244,7 +254,7 @@ Production builds enforce:
 
 | Document | Description |
 |----------|-------------|
-| [Egress Security](egress.md) | Deep dive into egress enforcement: profiles, modes, domain matching, proxy architecture, NetworkPolicy |
+| [Egress Security](egress.md) | Deep dive into egress enforcement: IP validation, SafeDialer, profiles, modes, domain matching, proxy architecture, NetworkPolicy |
 | [Secrets Management](secrets.md) | Encrypted storage, per-agent secrets, passphrase handling |
 | [Build Signing & Verification](signing.md) | Key management, build signing, runtime verification |
 | [Content Guardrails](guardrails.md) | PII detection, jailbreak protection, custom rules |

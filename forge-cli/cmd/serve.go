@@ -36,6 +36,7 @@ var (
 	serveWithChannels      string
 	serveNoAuth            bool
 	serveAuthToken         string
+	serveCORSOrigins       string
 )
 
 var serveCmd = &cobra.Command{
@@ -96,6 +97,7 @@ func registerServeFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&serveWithChannels, "with", "", "comma-separated channel adapters to start (e.g. slack,telegram)")
 	cmd.Flags().BoolVar(&serveNoAuth, "no-auth", false, "disable bearer token authentication (localhost only)")
 	cmd.Flags().StringVar(&serveAuthToken, "auth-token", "", "explicit bearer token (default: auto-generated)")
+	cmd.Flags().StringVar(&serveCORSOrigins, "cors-origins", "", "comma-separated CORS allowed origins (default: localhost only, use '*' for wildcard)")
 }
 
 func init() {
@@ -190,6 +192,9 @@ func serveStartRun(cmd *cobra.Command, args []string) error {
 	}
 	if serveAuthToken != "" {
 		runArgs = append(runArgs, "--auth-token", serveAuthToken)
+	}
+	if serveCORSOrigins != "" {
+		runArgs = append(runArgs, "--cors-origins", serveCORSOrigins)
 	}
 
 	// Ensure .forge directory exists

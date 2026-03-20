@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -28,6 +29,7 @@ type ServerConfig struct {
 	ShutdownTimeout time.Duration // graceful shutdown timeout (0 = immediate)
 	AgentCard       *a2a.AgentCard
 	AuthMiddleware  func(http.Handler) http.Handler // optional auth middleware
+	AllowedOrigins  []string                        // CORS allowed origins
 }
 
 type httpRoute struct {
@@ -47,11 +49,16 @@ type Server struct {
 	sseHandlers     map[string]SSEHandler
 	httpHandlers    []httpRoute
 	authMiddleware  func(http.Handler) http.Handler
+	allowedOrigins  []string
 	srv             *http.Server
 }
 
 // NewServer creates a new A2A server.
 func NewServer(cfg ServerConfig) *Server {
+	allowedOrigins := cfg.AllowedOrigins
+	if len(allowedOrigins) == 0 {
+		allowedOrigins = DefaultAllowedOrigins()
+	}
 	s := &Server{
 		port:            cfg.Port,
 		host:            cfg.Host,
@@ -61,6 +68,7 @@ func NewServer(cfg ServerConfig) *Server {
 		handlers:        make(map[string]Handler),
 		sseHandlers:     make(map[string]SSEHandler),
 		authMiddleware:  cfg.AuthMiddleware,
+		allowedOrigins:  allowedOrigins,
 	}
 	return s
 }
@@ -121,13 +129,14 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("POST /", s.handleJSONRPC)
 	mux.HandleFunc("GET /", s.handleAgentCard)
 
-	// Build handler chain: CORS → Auth → Mux
+	// Build handler chain: CORS → Security Headers → Auth → Mux
 	// CORS is outermost so OPTIONS preflight is handled before auth.
 	var handler http.Handler = mux
 	if s.authMiddleware != nil {
 		handler = s.authMiddleware(handler)
 	}
-	handler = corsMiddleware(handler)
+	handler = securityHeadersMiddleware(handler)
+	handler = newCORSMiddleware(s.allowedOrigins)(handler)
 
 	s.srv = &http.Server{
 		Handler:      handler,
@@ -233,15 +242,84 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	json.NewEncoder(w).Encode(v) //nolint:errcheck
 }
 
-func corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
+// DefaultAllowedOrigins returns the default CORS origins for local development.
+func DefaultAllowedOrigins() []string {
+	return []string{
+		"http://localhost",
+		"https://localhost",
+		"http://127.0.0.1",
+		"https://127.0.0.1",
+		"http://[::1]",
+		"https://[::1]",
+	}
+}
+
+// isOriginAllowed checks if the given origin matches the allowlist.
+// Supports exact match and prefix+port matching (e.g. "http://localhost" matches
+// "http://localhost:3000"). If the allowed list contains "*", all origins pass.
+func isOriginAllowed(origin string, allowed []string) bool {
+	if origin == "" {
+		return false
+	}
+	for _, a := range allowed {
+		if a == "*" {
+			return true
 		}
+		if strings.EqualFold(origin, a) {
+			return true
+		}
+		// Prefix+colon match for port variants: "http://localhost" matches "http://localhost:3000"
+		if strings.HasPrefix(strings.ToLower(origin), strings.ToLower(a)+":") {
+			return true
+		}
+	}
+	return false
+}
+
+// newCORSMiddleware returns CORS middleware that restricts origins to the allowlist.
+// When the allowlist contains "*", it behaves as a wildcard (Access-Control-Allow-Origin: *).
+// Otherwise it echoes the matched origin and adds Vary: Origin.
+func newCORSMiddleware(allowed []string) func(http.Handler) http.Handler {
+	hasWildcard := false
+	for _, a := range allowed {
+		if a == "*" {
+			hasWildcard = true
+			break
+		}
+	}
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			origin := r.Header.Get("Origin")
+
+			if hasWildcard {
+				w.Header().Set("Access-Control-Allow-Origin", "*")
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			} else if isOriginAllowed(origin, allowed) {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+				w.Header().Set("Vary", "Origin")
+			}
+			// Non-matching origins: no CORS headers added
+
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// securityHeadersMiddleware adds security headers to every response.
+func securityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'")
 		next.ServeHTTP(w, r)
 	})
 }

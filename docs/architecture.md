@@ -344,7 +344,19 @@ AgentSpec JSON is validated against `schemas/agentspec.v1.0.schema.json` (JSON S
 
 ## Egress Security
 
-Egress controls operate at both build time and runtime. Build-time controls generate allowlist artifacts and Kubernetes NetworkPolicy manifests. Runtime controls include an in-process `EgressEnforcer` (Go `http.RoundTripper`) and a local `EgressProxy` for subprocess HTTP traffic. See [Egress Security](security/egress.md) for details.
+Egress controls operate at both build time and runtime. Build-time controls generate allowlist artifacts and Kubernetes NetworkPolicy manifests. Runtime controls include:
+
+- **IP Validation** — Rejects non-standard IP formats (octal, hex, packed decimal) and IPv6 transition addresses embedding private IPs
+- **SafeDialer** — Validates resolved IPs post-DNS against blocked CIDR ranges before connecting (prevents DNS rebinding)
+- **EgressEnforcer** — In-process `http.RoundTripper` backed by `SafeTransport` for domain allowlist enforcement
+- **EgressProxy** — Local HTTP/HTTPS forward proxy for subprocess traffic, also backed by `SafeDialer`
+- **Redirect credential stripping** — `http_request` and `webhook_call` strip `Authorization`/`Cookie` headers on cross-origin redirects
+
+The A2A server adds:
+- **CORS restriction** — Origin allowlist (localhost by default), configurable via flag/env/YAML
+- **Security headers** — `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options`, `Content-Security-Policy`
+
+See [Egress Security](security/egress.md) for details.
 
 ---
 ← [Installation](installation.md) | [Back to README](../README.md) | [Skills](skills.md) →

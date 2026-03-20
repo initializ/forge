@@ -24,7 +24,7 @@ func TestEgressProxyAllowedHTTP(t *testing.T) {
 	upstreamURL, _ := url.Parse(upstream.URL)
 
 	matcher := NewDomainMatcher(ModeAllowlist, []string{upstreamURL.Hostname()})
-	proxy := NewEgressProxy(matcher)
+	proxy := NewEgressProxy(matcher, false)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -57,7 +57,7 @@ func TestEgressProxyAllowedHTTP(t *testing.T) {
 
 func TestEgressProxyBlockedHTTP(t *testing.T) {
 	matcher := NewDomainMatcher(ModeAllowlist, []string{"allowed.com"})
-	proxy := NewEgressProxy(matcher)
+	proxy := NewEgressProxy(matcher, false)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -90,7 +90,7 @@ func TestEgressProxyBlockedHTTP(t *testing.T) {
 func TestEgressProxyLocalhostAlwaysAllowed(t *testing.T) {
 	// Even with deny-all, localhost should pass
 	matcher := NewDomainMatcher(ModeDenyAll, nil)
-	proxy := NewEgressProxy(matcher)
+	proxy := NewEgressProxy(matcher, false)
 
 	// Start a local test server
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -128,7 +128,7 @@ func TestEgressProxyLocalhostAlwaysAllowed(t *testing.T) {
 
 func TestEgressProxyCONNECTBlocked(t *testing.T) {
 	matcher := NewDomainMatcher(ModeAllowlist, []string{"allowed.com"})
-	proxy := NewEgressProxy(matcher)
+	proxy := NewEgressProxy(matcher, false)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -167,7 +167,7 @@ func TestEgressProxyCONNECTAllowed(t *testing.T) {
 	host, port, _ := net.SplitHostPort(upstreamURL.Host)
 
 	matcher := NewDomainMatcher(ModeAllowlist, []string{host})
-	proxy := NewEgressProxy(matcher)
+	proxy := NewEgressProxy(matcher, false)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -209,7 +209,7 @@ func TestEgressProxyDevOpenPassthrough(t *testing.T) {
 
 	// dev-open should allow everything
 	matcher := NewDomainMatcher(ModeDevOpen, nil)
-	proxy := NewEgressProxy(matcher)
+	proxy := NewEgressProxy(matcher, false)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -248,7 +248,7 @@ func TestEgressProxyOnAttemptCallback(t *testing.T) {
 	upstreamURL, _ := url.Parse(upstream.URL)
 
 	matcher := NewDomainMatcher(ModeAllowlist, []string{upstreamURL.Hostname()})
-	proxy := NewEgressProxy(matcher)
+	proxy := NewEgressProxy(matcher, false)
 
 	var mu sync.Mutex
 	var calls []struct {
@@ -304,7 +304,7 @@ func TestEgressProxyOnAttemptCallback(t *testing.T) {
 
 func TestEgressProxyStop(t *testing.T) {
 	matcher := NewDomainMatcher(ModeDevOpen, nil)
-	proxy := NewEgressProxy(matcher)
+	proxy := NewEgressProxy(matcher, false)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -326,7 +326,7 @@ func TestEgressProxyStop(t *testing.T) {
 }
 
 func TestEgressProxyURL(t *testing.T) {
-	proxy := NewEgressProxy(NewDomainMatcher(ModeDevOpen, nil))
+	proxy := NewEgressProxy(NewDomainMatcher(ModeDevOpen, nil), false)
 	if proxy.ProxyURL() != "" {
 		t.Error("ProxyURL should be empty before Start")
 	}

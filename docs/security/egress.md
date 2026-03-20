@@ -45,14 +45,80 @@ Domain matching is handled by `DomainMatcher` (`forge-core/security/domain_match
 - **Case insensitive**: `API.OpenAI.COM` matches `api.openai.com`
 - **Localhost bypass**: `127.0.0.1`, `::1`, and `localhost` are always allowed in all modes
 
+## IP Validation
+
+All egress paths validate hostnames against non-standard IP formats before domain matching. The IP validator (`forge-core/security/ip_validator.go`) rejects SSRF bypass vectors:
+
+| Blocked Format | Example | Reason |
+|---------------|---------|--------|
+| Octal | `0177.0.0.1` | Resolves to `127.0.0.1` in some parsers |
+| Hexadecimal | `0x7f000001` | Resolves to `127.0.0.1` in some parsers |
+| Packed decimal | `2130706433` | Resolves to `127.0.0.1` in some parsers |
+| Leading zeros | `127.0.0.01` | Ambiguous parsing across languages |
+| IPv6 transition (NAT64) | `64:ff9b::10.0.0.1` | Embeds private IPv4 in IPv6 |
+| IPv6 transition (6to4) | `2002:0a00:0001::` | Embeds private IPv4 in IPv6 |
+| IPv6 transition (Teredo) | `2001:0000:...` | Embeds XOR'd IPv4 in IPv6 |
+
+The `ValidateHostIP()` function is called early in both the EgressEnforcer and EgressProxy before any domain matching occurs.
+
+## Safe Dialer (DNS Rebinding Protection)
+
+The `SafeDialer` (`forge-core/security/safe_dialer.go`) prevents DNS rebinding and TOCTOU attacks by validating resolved IPs before connecting:
+
+1. Resolves hostname to IP addresses via DNS
+2. Validates **all** resolved IPs against blocked CIDR ranges
+3. Dials the first safe IP directly (bypasses re-resolution)
+
+Blocked IP ranges depend on the `allowPrivateIPs` setting:
+
+| CIDR | Always Blocked | Blocked when `allowPrivateIPs=false` |
+|------|---------------|--------------------------------------|
+| `169.254.169.254/32` (cloud metadata) | Yes | Yes |
+| `127.0.0.0/8` (loopback) | Yes | Yes |
+| `::1/128` (IPv6 loopback) | Yes | Yes |
+| `0.0.0.0/8` | Yes | Yes |
+| `10.0.0.0/8` (RFC 1918) | — | Yes |
+| `172.16.0.0/12` (RFC 1918) | — | Yes |
+| `192.168.0.0/16` (RFC 1918) | — | Yes |
+| `169.254.0.0/16` (link-local) | — | Yes |
+| `100.64.0.0/10` (CGNAT) | — | Yes |
+| `fc00::/7` (IPv6 ULA) | — | Yes |
+| `fe80::/10` (IPv6 link-local) | — | Yes |
+
+Both the EgressEnforcer and EgressProxy use `SafeTransport` (an `http.Transport` wired to the SafeDialer) for non-localhost connections.
+
+## Container-Aware Private IP Handling
+
+In container and Kubernetes environments, pods communicate via service DNS names that resolve to RFC 1918 addresses (e.g., `10.96.x.x`). Blocking these would break inter-service communication.
+
+The `allowPrivateIPs` setting is resolved with this precedence:
+
+1. **Explicit config** — `egress.allow_private_ips` in `forge.yaml`
+2. **Auto-detect** — `true` if `InContainer()` detects Docker/Kubernetes
+3. **Default** — `false` (block all private IPs)
+
+| Scenario | `allowPrivateIPs` | RFC 1918 | Cloud Metadata | Loopback |
+|----------|-------------------|----------|----------------|----------|
+| Local dev | `false` | Blocked | Blocked | Allowed (localhost bypass) |
+| Docker Desktop | `true` (auto) | Allowed | **Blocked** | Allowed (localhost bypass) |
+| Kubernetes | `true` (auto) | Allowed | **Blocked** | Allowed (localhost bypass) |
+
+Cloud metadata (`169.254.169.254`) is **always** blocked regardless of the `allowPrivateIPs` setting.
+
 ## Runtime Egress Enforcer
 
-The `EgressEnforcer` (`forge-core/security/egress_enforcer.go`) is an `http.RoundTripper` that wraps the default HTTP transport. Every outbound HTTP request from in-process Go code (builtins like `http_request`, `web_search`, LLM API calls) passes through it.
+The `EgressEnforcer` (`forge-core/security/egress_enforcer.go`) is an `http.RoundTripper` that wraps a `SafeTransport`. Every outbound HTTP request from in-process Go code (builtins like `http_request`, `web_search`, LLM API calls) passes through it.
 
 ```go
-enforcer := security.NewEgressEnforcer(nil, security.ModeAllowlist, allowedDomains)
+enforcer := security.NewEgressEnforcer(nil, security.ModeAllowlist, allowedDomains, false)
 client := &http.Client{Transport: enforcer}
 ```
+
+Request validation order:
+1. Reject non-standard IP formats (`ValidateHostIP`)
+2. Allow localhost (bypass SafeTransport, use `http.DefaultTransport`)
+3. Check domain against allowlist (`DomainMatcher.IsAllowed`)
+4. Forward via `SafeTransport` (post-DNS IP validation)
 
 Blocked requests return: `egress blocked: domain "X" not in allowlist (mode=allowlist)`
 
@@ -187,7 +253,10 @@ egress:
   capabilities:
     - slack
     - telegram
+  allow_private_ips: false          # default: auto-detect from container env
 ```
+
+The `allow_private_ips` field controls whether RFC 1918 addresses are allowed through the SafeDialer. When omitted, it defaults to `true` inside containers (detected via `KUBERNETES_SERVICE_HOST` or `/.dockerenv`) and `false` otherwise. Cloud metadata (`169.254.169.254`) is always blocked.
 
 ## Production vs Development
 
@@ -217,9 +286,12 @@ Events without `"source"` come from the in-process enforcer; events with `"sourc
 | File | Purpose |
 |------|---------|
 | `forge-core/security/types.go` | Profile and mode types, `EgressConfig` |
+| `forge-core/security/ip_validator.go` | Strict IP parsing, CIDR blocking, IPv6 transition detection |
+| `forge-core/security/safe_dialer.go` | Post-DNS-resolution IP validation, `SafeTransport` |
 | `forge-core/security/domain_matcher.go` | `DomainMatcher` — shared exact/wildcard matching logic |
 | `forge-core/security/egress_enforcer.go` | `EgressEnforcer` — in-process `http.RoundTripper` |
 | `forge-core/security/egress_proxy.go` | `EgressProxy` — localhost HTTP/HTTPS forward proxy |
+| `forge-core/security/redirect.go` | Cross-origin redirect credential stripping |
 | `forge-core/security/container.go` | `InContainer()` — Docker/Kubernetes detection |
 | `forge-core/security/resolver.go` | Allowlist resolution logic |
 | `forge-core/security/capabilities.go` | Capability bundle definitions |

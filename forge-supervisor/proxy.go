@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
@@ -16,12 +17,12 @@ import (
 	"github.com/initializ/forge/forge-core/security"
 )
 
-// TransparentProxy is a transparent TCP proxy that intercepts redirected traffic,
-// extracts the target hostname (via SNI or HTTP Host header), checks against
-// the domain matcher, and either forwards or denies the connection.
+// TransparentProxy intercepts redirected TCP traffic, extracts the target hostname
+// via SNI or HTTP Host header, checks against the domain matcher, and either
+// forwards or denies the connection.
 type TransparentProxy struct {
 	listener      net.Listener
-	matcher       *security.DomainMatcher
+	matcher      *security.DomainMatcher
 	denialTracker *DenialTracker
 	audit         *AuditLogger
 	ctx           context.Context
@@ -33,7 +34,7 @@ type TransparentProxy struct {
 func NewTransparentProxy(matcher *security.DomainMatcher, denialTracker *DenialTracker, audit *AuditLogger) *TransparentProxy {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &TransparentProxy{
-		matcher:       matcher,
+		matcher:      matcher,
 		denialTracker: denialTracker,
 		audit:         audit,
 		ctx:           ctx,
@@ -91,7 +92,7 @@ func (p *TransparentProxy) handleConnection(client net.Conn) {
 	defer p.wg.Done()
 	defer client.Close()
 
-	// Get the original destination from the redirected connection
+	// Get original destination from redirected connection
 	origAddr, err := getOriginalDst(client)
 	if err != nil {
 		log.Printf("ERROR: get original dst: %v", err)
@@ -104,8 +105,8 @@ func (p *TransparentProxy) handleConnection(client net.Conn) {
 		return
 	}
 
-	// Extract the target host from the connection
-	host, allowed := p.extractAndCheck(client, origTCPAddr)
+	// Extract host and any consumed bytes (for replay)
+	host, consumed, allowed := p.extractAndCheck(client, origTCPAddr)
 
 	if !allowed {
 		p.denialTracker.Add(DenialEvent{
@@ -121,12 +122,11 @@ func (p *TransparentProxy) handleConnection(client net.Conn) {
 			Port:      origTCPAddr.Port,
 		})
 
-		// Send a simple "connection denied" message and close
 		fmt.Fprintf(client, "HTTP/1.1 403 Forbidden\r\n\r\n")
 		return
 	}
 
-	// Log the allowed connection
+	// Log allowed connection
 	p.audit.Log(&AuditEvent{
 		Timestamp: time.Now().UTC(),
 		Action:    "allowed",
@@ -134,7 +134,7 @@ func (p *TransparentProxy) handleConnection(client net.Conn) {
 		Port:      origTCPAddr.Port,
 	})
 
-	// Dial the original destination
+	// Dial original destination
 	upstream, err := net.DialTimeout("tcp", origTCPAddr.String(), 10*time.Second)
 	if err != nil {
 		log.Printf("ERROR: dial upstream %s: %v", origTCPAddr, err)
@@ -142,74 +142,105 @@ func (p *TransparentProxy) handleConnection(client net.Conn) {
 	}
 	defer upstream.Close()
 
-	// Relay data between client and upstream
-	p.relay(client, upstream)
+	// Replay consumed bytes to upstream, then relay the rest
+	p.relay(client, upstream, consumed)
 }
 
-// extractAndCheck reads the initial bytes from the connection to extract the
-// target hostname and checks it against the matcher.
-func (p *TransparentProxy) extractAndCheck(conn net.Conn, addr *net.TCPAddr) (string, bool) {
-	// Peek at the first few bytes to determine if this is TLS or HTTP
+// extractAndCheck peeks at the first bytes to determine TLS vs HTTP,
+// extracts the hostname, and checks against the allowlist.
+// Returns host, consumed bytes (for replay), and whether it's allowed.
+func (p *TransparentProxy) extractAndCheck(conn net.Conn, addr *net.TCPAddr) (string, []byte, bool) {
+	// Peek at first 5 bytes (TLS record header max)
 	firstBytes := make([]byte, 5)
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 
 	n, err := conn.Read(firstBytes)
 	if err != nil && err != io.EOF {
 		log.Printf("ERROR: peek bytes: %v", err)
-		return fmt.Sprintf("%s:%d", addr.IP, addr.Port), false
+		return fmt.Sprintf("%s:%d", addr.IP, addr.Port), nil, false
 	}
 
 	var host string
+	var consumed []byte
 
 	if n >= 3 && firstBytes[0] == 0x16 && firstBytes[1] == 0x03 {
 		// TLS ClientHello
-		host = ExtractSNIFromClientHello(firstBytes[:n], conn)
-		if host == "" {
+		sniBytes, sniHost := ExtractSNIFromClientHello(firstBytes[:n], conn)
+		if sniHost != "" {
+			host = sniHost
+			consumed = append(consumed, sniBytes...)
+		} else {
 			host = fmt.Sprintf("%s:%d", addr.IP, addr.Port)
 		}
 	} else {
-		// HTTP request - read the Host header
-		host = ExtractHTTPHost(conn, firstBytes[:n])
-		if host == "" {
+		// HTTP — read Host header, replaying consumed bytes first
+		httpBytes, httpHost := ExtractHTTPHost(firstBytes[:n], conn)
+		if httpHost != "" {
+			host = httpHost
+			consumed = httpBytes
+		} else {
 			host = fmt.Sprintf("%s:%d", addr.IP, addr.Port)
 		}
 	}
 
-	// Validate the host before checking
+	// Validate host against SSRF bypass patterns
 	if err := security.ValidateHostIP(host); err != nil {
 		log.Printf("WARN: invalid host format %q: %v", host, err)
-		return host, false
+		return host, consumed, false
 	}
 
-	// Check if the host is allowed
 	allowed := p.matcher.IsAllowed(host)
-	return host, allowed
+	return host, consumed, allowed
 }
 
 // relay copies data between client and upstream bidirectionally.
-func (p *TransparentProxy) relay(client, upstream net.Conn) {
-	buf := make([]byte, 32*1024)
-
+// consumed bytes are written to upstream first (they were peeked during extraction).
+func (p *TransparentProxy) relay(client, upstream net.Conn, consumed []byte) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
+	// upstream <- client (plain copy)
 	go func() {
 		defer wg.Done()
-		io.CopyBuffer(upstream, client, buf)
+		io.Copy(upstream, client)
 		upstream.Close()
 	}()
 
+	// client <- upstream, but first write consumed bytes
 	go func() {
 		defer wg.Done()
-		io.CopyBuffer(client, upstream, buf)
+		// Send consumed bytes first (TLS ClientHello or HTTP request line+headers)
+		if len(consumed) > 0 {
+			upstreamCopy := &peekReader{r: upstream, peeked: consumed}
+			io.Copy(client, upstreamCopy)
+			// Then continue with remaining upstream data
+			io.Copy(client, upstream)
+		} else {
+			io.Copy(client, upstream)
+		}
 		client.Close()
 	}()
 
 	wg.Wait()
 }
 
-// getOriginalDst retrieves the original destination address for a
-// connection that was redirected via iptables REDIRECT.
+// peekReader wraps a reader and returns embedded bytes first, then reads from underlying.
+type peekReader struct {
+	r       net.Conn
+	peeked  []byte
+	peekIdx int
+}
+
+func (p *peekReader) Read(b []byte) (int, error) {
+	if p.peekIdx < len(p.peeked) {
+		n := copy(b, p.peeked[p.peekIdx:])
+		p.peekIdx += n
+		return n, nil
+	}
+	return p.r.Read(b)
+}
+
+// getOriginalDst retrieves the original destination for an iptables-redirected connection.
 func getOriginalDst(conn net.Conn) (net.Addr, error) {
 	sc, ok := conn.(syscall.Conn)
 	if !ok {
@@ -243,15 +274,18 @@ func getOriginalDst(conn net.Conn) (net.Addr, error) {
 
 	if origAddr.Addr.Family == unix.AF_INET {
 		ptr4 := (*unix.RawSockaddrInet4)(unsafe.Pointer(&origAddr))
+		// Port is stored in network byte order — convert to host byte order
+		port := int(binary.BigEndian.Uint16((*[2]byte)(unsafe.Pointer(&ptr4.Port))[:]))
 		return &net.TCPAddr{
 			IP:   net.IP(ptr4.Addr[:]),
-			Port: int(ptr4.Port),
+			Port: port,
 		}, nil
 	} else if origAddr.Addr.Family == unix.AF_INET6 {
 		ptr6 := (*unix.RawSockaddrInet6)(unsafe.Pointer(&origAddr))
+		port := int(binary.BigEndian.Uint16((*[2]byte)(unsafe.Pointer(&ptr6.Port))[:]))
 		return &net.TCPAddr{
 			IP:   net.IP(ptr6.Addr[:]),
-			Port: int(ptr6.Port),
+			Port: port,
 		}, nil
 	}
 

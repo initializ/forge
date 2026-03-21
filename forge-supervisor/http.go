@@ -7,26 +7,26 @@ import (
 	"strings"
 )
 
-// ExtractHTTPHost extracts the Host header from an HTTP request.
-// It reads just enough to find the Host header without consuming the body.
-func ExtractHTTPHost(conn net.Conn, initialBytes []byte) string {
-	// We have the first few bytes from the TLS detection
-	// If it's HTTP, we need to read lines until we find Host
-
-	// Combine initial bytes with a buffered reader
+// ExtractHTTPHost reads an HTTP request from the connection (using initialBytes
+// as the start) to find the Host header. Returns consumed bytes (for replay)
+// and the hostname.
+func ExtractHTTPHost(initialBytes []byte, conn net.Conn) ([]byte, string) {
 	reader := bufio.NewReader(io.MultiReader(
 		strings.NewReader(string(initialBytes)),
 		conn,
 	))
 
-	// Read request line (we don't need it, but we must consume it)
-	_, _ = reader.ReadString('\n')
+	// Read and consume request line
+	_, err := reader.ReadString('\n')
+	if err != nil {
+		return initialBytes, ""
+	}
 
 	// Read headers
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
-			return ""
+			return initialBytes, ""
 		}
 
 		// End of headers
@@ -34,19 +34,21 @@ func ExtractHTTPHost(conn net.Conn, initialBytes []byte) string {
 			break
 		}
 
-		// Check for Host header
+		// Host: header — line is "Host: value\r\n"
+		// "Host:" is 5 characters
 		if strings.HasPrefix(strings.ToLower(line), "host:") {
-			host := strings.TrimSpace(line[4:]) // Remove "host:" prefix
-			// Remove trailing \r\n
+			host := strings.TrimSpace(line[5:]) // Skip "Host:" (5 chars)
 			host = strings.TrimSuffix(host, "\r")
-			host = strings.TrimSuffix(host, "\n")
+			host = strings.ToLower(host)
 			// Remove port if present
 			if idx := strings.Index(host, ":"); idx != -1 {
 				host = host[:idx]
 			}
-			return strings.ToLower(host)
+			// Consume all bytes up to and including headers
+			consumed := append([]byte(line), []byte("\r\n")...)
+			return consumed, host
 		}
 	}
 
-	return ""
+	return initialBytes, ""
 }

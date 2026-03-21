@@ -15,53 +15,53 @@ const (
 	waitTimeout  = 5 * time.Second
 )
 
-// SetupIPTables configures iptables to redirect outgoing TCP traffic from UID 1000
-// to the local proxy on redirectPort. It logs a warning and continues if iptables
-// is not available (e.g., cap_net_admin denied).
+// SetupIPTables configures iptables (nat table) to redirect outgoing TCP traffic
+// from UID 1000 to the local proxy on redirectPort. Runs as UID 0 (supervisor),
+// so its own traffic is NOT redirected — only the agent's UID 1000 traffic is.
+// Logs a warning and continues if iptables is not available.
 func SetupIPTables(ctx context.Context, uid int, proxyPort int) error {
-	// Check if iptables is available
 	if !isIPTablesAvailable() {
 		log.Printf("WARN: iptables not available, skipping redirect setup (cap_net_admin may be denied)")
 		return nil
 	}
 
-	// Clean up any existing rules first
 	cleanupIPTables(ctx)
 
 	chain := "FORGE_SUPERVISOR"
+	uidStr := fmt.Sprintf("%d", uid)
+	portStr := fmt.Sprintf("%d", proxyPort)
 
+	// REDIRECT target is only valid in the nat table
 	cmds := []struct {
 		name string
 		args []string
 	}{
-		// Create custom chain
-		{"iptables", []string{"-N", chain}},
-		// Match owner UID
-		{"iptables", []string{"-A", "OUTPUT", "-m", "owner", "--uid-owner", fmt.Sprintf("%d", uid), "-p", "tcp", "-j", chain}},
-		// Redirect to proxy port in the custom chain
-		{"iptables", []string{"-A", chain, "-p", "tcp", "-j", "REDIRECT", "--to-port", fmt.Sprintf("%d", proxyPort)}},
+		// Create custom chain in nat table
+		{"iptables", []string{"-t", "nat", "-N", chain}},
+		// Match outgoing TCP from UID 1000, jump to custom chain
+		{"iptables", []string{"-t", "nat", "-A", "OUTPUT", "-m", "owner", "--uid-owner", uidStr, "-p", "tcp", "-j", chain}},
+		// Redirect to proxy port
+		{"iptables", []string{"-t", "nat", "-A", chain, "-p", "tcp", "-j", "REDIRECT", "--to-port", portStr}},
 	}
 
 	for _, cmd := range cmds {
 		if err := runIPTables(ctx, cmd.name, cmd.args...); err != nil {
-			// If chain already exists, that's OK
 			if strings.Contains(err.Error(), "Chain already exists") {
 				continue
 			}
 			log.Printf("WARN: iptables setup failed: %v", err)
-			return nil // Don't fail, just warn
+			return nil
 		}
 	}
 
-	log.Printf("INFO: iptables redirect configured for UID %d -> port %d", uid, proxyPort)
+	log.Printf("INFO: iptables nat redirect configured: UID %d -> port %d", uid, proxyPort)
 	return nil
 }
 
-// isIPTablesAvailable checks if iptables command exists and is executable.
+// isIPTablesAvailable checks if iptables exists and is executable.
 func isIPTablesAvailable() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
 	defer cancel()
-
 	cmd := exec.CommandContext(ctx, "iptables", "--version")
 	return cmd.Run() == nil
 }
@@ -69,15 +69,11 @@ func isIPTablesAvailable() bool {
 // cleanupIPTables removes any existing FORGE_SUPERVISOR chain rules.
 func cleanupIPTables(ctx context.Context) {
 	chain := "FORGE_SUPERVISOR"
+	uidStr := targetUID
 
-	// Try to flush the chain
-	runIPTables(ctx, "iptables", "-F", chain)
-
-	// Try to delete the chain reference from OUTPUT
-	runIPTables(ctx, "iptables", "-D", "OUTPUT", "-m", "owner", "--uid-owner", targetUID, "-p", "tcp", "-j", chain)
-
-	// Try to delete the chain itself
-	runIPTables(ctx, "iptables", "-X", chain)
+	runIPTables(ctx, "iptables", "-t", "nat", "-F", chain)
+	runIPTables(ctx, "iptables", "-t", "nat", "-D", "OUTPUT", "-m", "owner", "--uid-owner", uidStr, "-p", "tcp", "-j", chain)
+	runIPTables(ctx, "iptables", "-t", "nat", "-X", chain)
 }
 
 // runIPTables executes an iptables command with the given arguments.

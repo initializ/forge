@@ -8,6 +8,9 @@ tags:
   - pull-requests
   - repositories
   - git
+  - stargazers
+  - forks
+  - users
 description: Create issues, PRs, clone repos, and manage git workflows
 metadata:
   forge:
@@ -84,6 +87,9 @@ When asked to fix a bug or make changes, you must: explore → understand → ed
 - `github_commit`, `github_push`, and `github_checkout` refuse to operate on main/master.
 - Always use `github_status` before committing to review what changed.
 
+**Pagination:**
+For tools that return lists (`github_list_prs`, `github_list_stargazers`, `github_list_forks`, `github_pr_author_profiles`, `github_stargazer_profiles`), use `page` (1-based) and `per_page` (default 30, max 100) parameters. The response includes a `pagination` object with `has_next_page` — if true, increment `page` to fetch the next batch.
+
 ## Tool: github_clone
 
 Clone a GitHub repository and create a feature branch.
@@ -139,3 +145,45 @@ Create a pull request.
 
 **Input:** repo (string), title (string), body (string), head (string), base (string)
 **Output:** Pull request URL
+
+## Tool: github_list_prs
+
+List pull requests for a repository with pagination.
+
+**Input:** repo (string: owner/repo, SSH URL, or HTTPS URL), state (string: open/closed/all, default: open), page (int, default: 1), per_page (int, default: 30, max: 100)
+**Output:** `{repo, state, pull_requests: [{number, title, state, user, created_at, updated_at, head_ref, base_ref, url}], pagination: {page, per_page, count, has_next_page}}`
+
+## Tool: github_get_user
+
+Get a GitHub user's public profile information.
+
+**Input:** username (string: GitHub username)
+**Output:** `{login, name, email, bio, company, location, blog, public_repos, followers, following, created_at, url}`
+
+## Tool: github_list_stargazers
+
+List stargazers (users who starred) for a repository with pagination.
+
+**Input:** repo (string: owner/repo, SSH URL, or HTTPS URL), page (int, default: 1), per_page (int, default: 30, max: 100)
+**Output:** `{repo, stargazers: [{login, url}], pagination: {page, per_page, count, has_next_page}}`
+
+## Tool: github_list_forks
+
+List forks of a repository with pagination.
+
+**Input:** repo (string: owner/repo, SSH URL, or HTTPS URL), sort (string: newest/oldest/stargazers, default: newest), page (int, default: 1), per_page (int, default: 30, max: 100)
+**Output:** `{repo, forks: [{full_name, owner, created_at, updated_at, stargazers_count, url}], pagination: {page, per_page, count, has_next_page}}`
+
+## Tool: github_pr_author_profiles
+
+List PR authors and fetch their full profiles (compound 2-step tool). First fetches PRs, then fetches the profile of each unique author.
+
+**Input:** repo (string: owner/repo, SSH URL, or HTTPS URL), state (string: open/closed/all, default: open), page (int, default: 1), per_page (int, default: 30, max: 100)
+**Output:** `{repo, state, profiles: [{login, name, email, bio, company, location, blog, public_repos, followers, following, created_at, url, pr_count}], total_prs_scanned, unique_authors, pagination: {page, per_page, count, has_next_page}}`
+
+## Tool: github_stargazer_profiles
+
+List stargazers and fetch their full profiles (compound 2-step tool). First fetches stargazers, then fetches the profile of each unique user.
+
+**Input:** repo (string: owner/repo, SSH URL, or HTTPS URL), page (int, default: 1), per_page (int, default: 30, max: 100)
+**Output:** `{repo, profiles: [{login, name, email, bio, company, location, blog, public_repos, followers, following, created_at, url}], total_stargazers_scanned, unique_users, pagination: {page, per_page, count, has_next_page}}`

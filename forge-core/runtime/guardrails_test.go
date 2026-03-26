@@ -202,7 +202,7 @@ func TestCheckToolOutput_RedactsWithValidation(t *testing.T) {
 	}, false, logger) // warn mode
 
 	// Valid SSN should be redacted
-	out, err := g.CheckToolOutput("SSN is 456-78-9012")
+	out, err := g.CheckToolOutput("some_tool", "SSN is 456-78-9012")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestCheckToolOutput_RedactsWithValidation(t *testing.T) {
 	}
 
 	// Invalid SSN (area 000) should NOT be redacted
-	out, err = g.CheckToolOutput("code 000-12-3456 here")
+	out, err = g.CheckToolOutput("some_tool", "code 000-12-3456 here")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestCheckToolOutput_K8sBytesNotBlocked(t *testing.T) {
 
 	// K8s memory byte counts should not trigger PII detection
 	k8sOutput := `{"memory": "4294967296", "cpu": "2000m", "pods": "110", "allocatable_memory": "3221225472"}`
-	out, err := g.CheckToolOutput(k8sOutput)
+	out, err := g.CheckToolOutput("some_tool", k8sOutput)
 	if err != nil {
 		t.Fatalf("k8s output blocked as PII: %v", err)
 	}
@@ -243,9 +243,93 @@ func TestCheckToolOutput_EnforceBlocksValidPII(t *testing.T) {
 		Guardrails: []agentspec.Guardrail{{Type: "no_pii"}},
 	}, true, logger) // enforce mode
 
-	_, err := g.CheckToolOutput("SSN: 456-78-9012")
+	_, err := g.CheckToolOutput("some_tool", "SSN: 456-78-9012")
 	if err == nil {
 		t.Error("expected enforce mode to block valid SSN")
+	}
+	if !strings.Contains(err.Error(), "no_pii") {
+		t.Errorf("expected error to mention no_pii guardrail, got: %v", err)
+	}
+}
+
+func TestCheckToolOutput_AllowToolsBypassesPII(t *testing.T) {
+	logger := &testLogger{}
+	g := NewGuardrailEngine(&agentspec.PolicyScaffold{
+		Guardrails: []agentspec.Guardrail{
+			{
+				Type: "no_pii",
+				Config: map[string]any{
+					"allow_tools": []any{"github_get_user", "github_pr_author_profiles"},
+				},
+			},
+		},
+	}, true, logger) // enforce mode
+
+	// Allowed tool should pass through with PII
+	out, err := g.CheckToolOutput("github_get_user", `{"email": "user@example.com"}`)
+	if err != nil {
+		t.Fatalf("allowed tool should not be blocked: %v", err)
+	}
+	if !strings.Contains(out, "user@example.com") {
+		t.Error("expected email to pass through for allowed tool")
+	}
+
+	// Non-allowed tool should still be blocked
+	_, err = g.CheckToolOutput("some_other_tool", `{"email": "user@example.com"}`)
+	if err == nil {
+		t.Error("expected non-allowed tool to be blocked for PII")
+	}
+}
+
+func TestCheckToolOutput_AllowToolsOnlyAffectsConfiguredGuardrail(t *testing.T) {
+	logger := &testLogger{}
+	g := NewGuardrailEngine(&agentspec.PolicyScaffold{
+		Guardrails: []agentspec.Guardrail{
+			{Type: "no_secrets"}, // no allow_tools — applies to all tools
+			{
+				Type: "no_pii",
+				Config: map[string]any{
+					"allow_tools": []any{"github_get_user"},
+				},
+			},
+		},
+	}, true, logger)
+
+	// Allowed tool bypasses PII but NOT secrets
+	_, err := g.CheckToolOutput("github_get_user", "token: ghp_abcdefghijklmnopqrstuvwxyz0123456789")
+	if err == nil {
+		t.Error("allow_tools for no_pii should not bypass no_secrets")
+	}
+	if !strings.Contains(err.Error(), "no_secrets") {
+		t.Errorf("expected error to mention no_secrets, got: %v", err)
+	}
+}
+
+func TestCheckToolOutput_ErrorMessageMentionsGuardrailType(t *testing.T) {
+	logger := &testLogger{}
+
+	// Test no_secrets error message
+	g := NewGuardrailEngine(&agentspec.PolicyScaffold{
+		Guardrails: []agentspec.Guardrail{{Type: "no_secrets"}},
+	}, true, logger)
+	_, err := g.CheckToolOutput("some_tool", "key: sk-ant-abcdefghijklmnopqrstuv")
+	if err == nil {
+		t.Fatal("expected error for secret")
+	}
+	if !strings.Contains(err.Error(), "no_secrets") {
+		t.Errorf("expected error to mention no_secrets, got: %v", err)
+	}
+
+	// Test no_pii error message
+	g2 := NewGuardrailEngine(&agentspec.PolicyScaffold{
+		Guardrails: []agentspec.Guardrail{{Type: "no_pii"}},
+	}, true, logger)
+	_, err = g2.CheckToolOutput("some_tool", "email: test@example.com")
+	if err == nil {
+		t.Fatal("expected error for PII")
+	}
+	if !strings.Contains(err.Error(), "no_pii") {
+		t.Errorf("expected error to mention no_pii, got: %v", err)
 	}
 }
 

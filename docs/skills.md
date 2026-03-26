@@ -163,7 +163,7 @@ forge skills list --tags kubernetes,incident-response
 
 | Skill | Icon | Category | Description | Scripts |
 |-------|------|----------|-------------|---------|
-| `github` | 🐙 | developer | Clone repos, create issues/PRs, and manage git workflows | `github-clone.sh`, `github-checkout.sh`, `github-commit.sh`, `github-push.sh`, `github-create-pr.sh`, `github-status.sh` |
+| `github` | 🐙 | developer | Clone repos, create issues/PRs, query GitHub API, and manage git workflows | `github-clone.sh`, `github-checkout.sh`, `github-commit.sh`, `github-push.sh`, `github-create-pr.sh`, `github-status.sh`, `github-list-prs.sh`, `github-get-user.sh`, `github-list-stargazers.sh`, `github-list-forks.sh`, `github-pr-author-profiles.sh`, `github-stargazer-profiles.sh` |
 | `code-agent` | 🤖 | developer | Autonomous code generation, modification, and project scaffolding | — (builtin tools) |
 | `weather` | 🌤️ | utilities | Get weather data for a location | — (binary-backed) |
 | `tavily-search` | 🔍 | research | Search the web using Tavily AI search API | `tavily-search.sh` |
@@ -365,7 +365,7 @@ The `github` skill provides a complete git + GitHub workflow through script-back
 forge skills add github
 ```
 
-This registers eight tools:
+This registers fourteen tools:
 
 | Tool | Purpose |
 |------|---------|
@@ -377,8 +377,18 @@ This registers eight tools:
 | `github_create_pr` | Create a pull request |
 | `github_create_issue` | Create a GitHub issue |
 | `github_list_issues` | List open issues for a repository |
+| `github_list_prs` | List pull requests with state filter and pagination |
+| `github_get_user` | Get a GitHub user's public profile |
+| `github_list_stargazers` | List stargazers for a repository with pagination |
+| `github_list_forks` | List forks of a repository with pagination |
+| `github_pr_author_profiles` | List PR authors and fetch their full profiles (compound 2-step) |
+| `github_stargazer_profiles` | List stargazers and fetch their full profiles (compound 2-step) |
 
 **Workflow:** Clone → explore → edit → status → commit → push → create PR. The skill's system prompt enforces this sequence and prevents raw `git` commands via `cli_execute`.
+
+**Pagination:** List tools (`github_list_prs`, `github_list_stargazers`, `github_list_forks`, `github_pr_author_profiles`, `github_stargazer_profiles`) support `page` (1-based) and `per_page` (default 30, max 100) parameters. Responses include `pagination.has_next_page` to indicate more results are available.
+
+**PII exemption:** Profile-returning tools (`github_get_user`, `github_pr_author_profiles`, `github_stargazer_profiles`) are pre-configured in the default policy scaffold's `no_pii` `allow_tools` list, so they can return public profile data (emails, bios) without triggering PII guardrails. See [Per-Tool PII Exemptions](security/guardrails.md#per-tool-pii-exemptions).
 
 Requires: `gh`, `git`, `jq`. Optional: `GH_TOKEN`. Egress: `api.github.com`, `github.com`.
 

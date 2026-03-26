@@ -75,7 +75,7 @@ All four built-in guardrails (`content_filter`, `no_pii`, `jailbreak_protection`
 
 ## Tool Output Scanning
 
-The guardrail engine scans tool output via an `AfterToolExec` hook, catching secrets and PII before they enter the LLM context or outbound messages.
+The guardrail engine scans tool output via an `AfterToolExec` hook, catching secrets and PII before they enter the LLM context or outbound messages. The hook passes the tool name to enable per-tool exemptions (see [Per-Tool PII Exemptions](#per-tool-pii-exemptions) below).
 
 | Guardrail | What it detects in tool output |
 |-----------|-------------------------------|
@@ -86,10 +86,43 @@ The guardrail engine scans tool output via an `AfterToolExec` hook, catching sec
 
 | Mode | Behavior |
 |------|----------|
-| `enforce` | Returns a generic error (`"tool output blocked by content policy"`), blocking the result from entering the LLM context. The error message intentionally omits which guardrail matched to avoid leaking security internals to the LLM or channel. |
+| `enforce` | Returns an error identifying the guardrail that triggered (e.g., `"tool output blocked by no_pii guardrail (PII detected in output)"`), blocking the result from entering the LLM context. |
 | `warn` | Replaces matched patterns with `[REDACTED]`, logs a warning, and allows the redacted output through |
 
 The hook writes the redacted text back to `HookContext.ToolOutput`, which the agent loop reads after all hooks fire. This is backwards-compatible — existing hooks that don't modify `ToolOutput` leave it unchanged.
+
+### Per-Tool PII Exemptions
+
+Some tools legitimately return PII as part of their function (e.g., `github_get_user` returning public email addresses). The `allow_tools` config option lets specific tools bypass a guardrail entirely.
+
+```json
+{
+  "guardrails": [
+    {
+      "type": "no_pii",
+      "config": {
+        "allow_tools": [
+          "github_get_user",
+          "github_pr_author_profiles",
+          "github_stargazer_profiles",
+          "file_create",
+          "code_agent_write",
+          "code_agent_edit"
+        ]
+      }
+    }
+  ]
+}
+```
+
+**Key behaviors:**
+
+| Behavior | Detail |
+|----------|--------|
+| Per-guardrail scope | `allow_tools` on `no_pii` does **not** bypass `no_secrets` — each guardrail has its own allowlist |
+| Write tools included | `file_create`, `code_agent_write`, and `code_agent_edit` are included because they echo back content the LLM already has — blocking the echo is redundant |
+| Default config | The default policy scaffold pre-configures `allow_tools` for GitHub profile tools and write tools |
+| Custom overrides | Override via `policy-scaffold.json` to add or remove tools from the allowlist |
 
 ## Path Containment
 

@@ -672,7 +672,9 @@ func toolPhase(name string) workflowPhase {
 	switch name {
 	case "github_clone", "code_agent_scaffold", "github_checkout":
 		return phaseSetup
-	case "code_agent_read", "grep_search", "glob_search", "directory_tree", "read_skill", "github_status":
+	case "code_agent_read", "grep_search", "glob_search", "directory_tree", "read_skill", "github_status",
+		"github_list_prs", "github_get_user", "github_list_stargazers", "github_list_forks",
+		"github_pr_author_profiles", "github_stargazer_profiles":
 		return phaseExplore
 	case "code_agent_edit", "code_agent_write", "code_agent_patch", "file_create", "code_agent_run":
 		return phaseEdit

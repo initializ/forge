@@ -252,12 +252,22 @@ func (g *GuardrailEngine) checkNoSecrets(text string) error {
 // because tool outputs are internal (sent to the LLM, not the user) and
 // blocking would kill the entire agent session. Search tools routinely find
 // code containing API key patterns in test files, config examples, etc.
-func (g *GuardrailEngine) CheckToolOutput(text string) (string, error) {
+//
+// The toolName parameter enables per-tool PII exemptions: if a guardrail's
+// config contains "allow_tools" (a list of tool names), tools in that list
+// skip the corresponding check. This lets tools like github_get_user return
+// public profile data (emails, bios) without triggering PII blocks.
+func (g *GuardrailEngine) CheckToolOutput(toolName, text string) (string, error) {
 	if text == "" {
 		return text, nil
 	}
 
 	for _, gr := range g.scaffold.Guardrails {
+		// Check if this tool is in the guardrail's allow_tools list.
+		if g.toolAllowed(toolName, gr) {
+			continue
+		}
+
 		switch gr.Type {
 		case "no_secrets":
 			for _, re := range secretPatterns {
@@ -265,7 +275,7 @@ func (g *GuardrailEngine) CheckToolOutput(text string) (string, error) {
 					continue
 				}
 				if g.enforce {
-					return "", fmt.Errorf("tool output blocked by content policy")
+					return "", fmt.Errorf("tool output blocked by no_secrets guardrail (secret/credential detected in output)")
 				}
 				text = re.ReplaceAllString(text, "[REDACTED]")
 				g.logger.Warn("guardrail redaction", map[string]any{
@@ -295,7 +305,7 @@ func (g *GuardrailEngine) CheckToolOutput(text string) (string, error) {
 					continue
 				}
 				if g.enforce {
-					return "", fmt.Errorf("tool output blocked by content policy")
+					return "", fmt.Errorf("tool output blocked by no_pii guardrail (PII detected in output)")
 				}
 				// Warn mode: redact only validated matches
 				if p.validate != nil {
@@ -320,6 +330,27 @@ func (g *GuardrailEngine) CheckToolOutput(text string) (string, error) {
 		}
 	}
 	return text, nil
+}
+
+// toolAllowed checks whether toolName is in the guardrail's "allow_tools" config list.
+func (g *GuardrailEngine) toolAllowed(toolName string, gr agentspec.Guardrail) bool {
+	if toolName == "" || gr.Config == nil {
+		return false
+	}
+	allowRaw, ok := gr.Config["allow_tools"]
+	if !ok {
+		return false
+	}
+	list, ok := allowRaw.([]any)
+	if !ok {
+		return false
+	}
+	for _, v := range list {
+		if s, ok := v.(string); ok && s == toolName {
+			return true
+		}
+	}
+	return false
 }
 
 // --- PII Validators ---

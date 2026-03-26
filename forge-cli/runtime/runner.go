@@ -1474,7 +1474,7 @@ func (r *Runner) registerGuardrailHooks(hooks *coreruntime.HookRegistry, guardra
 		if hctx.ToolOutput == "" {
 			return nil
 		}
-		redacted, err := guardrails.CheckToolOutput(hctx.ToolOutput)
+		redacted, err := guardrails.CheckToolOutput(hctx.ToolName, hctx.ToolOutput)
 		if err != nil {
 			return err
 		}

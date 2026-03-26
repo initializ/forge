@@ -36,7 +36,19 @@ func DefaultPolicyScaffold() *agentspec.PolicyScaffold {
 				Type:   "content_filter",
 				Config: map[string]any{"enabled": true},
 			},
-			{Type: "no_pii"},
+			{
+				Type: "no_pii",
+				Config: map[string]any{
+					"allow_tools": []any{
+						"github_get_user",
+						"github_pr_author_profiles",
+						"github_stargazer_profiles",
+						"file_create",
+						"code_agent_write",
+						"code_agent_edit",
+					},
+				},
+			},
 			{Type: "jailbreak_protection"},
 			{Type: "no_secrets"},
 		},

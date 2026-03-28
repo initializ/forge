@@ -143,7 +143,7 @@ The `cli_execute` tool (`forge-cli/tools/cli_execute.go`) provides 13 security l
 | 7 | **Timeout** | Configurable per-command timeout (default: 120s) |
 | 8 | **No shell** | Uses `exec.CommandContext` directly — no shell expansion |
 | 9 | **Working directory** | `cmd.Dir` set to `workDir` for relative path resolution |
-| 10 | **Environment isolation** | Only `PATH`, `HOME`, `LANG`, explicit passthrough vars, proxy vars, and `GH_CONFIG_DIR` (auto-set when HOME is overridden) |
+| 10 | **Environment isolation** | Only `PATH`, `HOME`, `LANG`, explicit passthrough vars, proxy vars, and `GH_CONFIG_DIR` (auto-set **only for `gh` binary** when HOME is overridden) |
 | 11 | **Output limits** | Configurable max output size (default: 1MB) to prevent memory exhaustion |
 | 12 | **Skill guardrails** | Skill-declared `deny_commands` and `deny_output` patterns via hooks |
 | 13 | **Custom tool entrypoint validation** | Custom tool entrypoints are validated against path traversal, symlink escape, absolute paths, and non-regular files |

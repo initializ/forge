@@ -129,9 +129,18 @@ For skills **without** scripts (binary-backed skills like `k8s-incident-triage`)
 Skill scripts run in a restricted environment via `SkillCommandExecutor`:
 
 - **Isolated environment**: Only `PATH`, `HOME`, and explicitly declared env vars are passed through
+- **OAuth token resolution**: When `OPENAI_API_KEY` is set to `__oauth__`, the executor resolves OAuth credentials and injects the access token, `OPENAI_BASE_URL`, and the configured model as `REVIEW_MODEL`
 - **Configurable timeout**: Each skill declares a `timeout_hint` in its YAML frontmatter (e.g., 300s for research)
 - **No shell execution**: Scripts run via `bash <script> <json-input>`, not through a shell interpreter
 - **Egress proxy enforcement**: When egress mode is `allowlist` or `deny-all`, a local HTTP/HTTPS proxy is started and `HTTP_PROXY`/`HTTPS_PROXY` env vars are injected into subprocess environments, ensuring `curl`, `wget`, Python `requests`, and other HTTP clients route through the same domain allowlist used by in-process tools (see [Egress Security](security/egress.md))
+
+### Symlink Escape Detection
+
+The skill scanner validates symlinks when a filesystem root path is available. Symlinks that resolve outside the root directory are skipped with a warning log. This prevents malicious symlinks in skill directories from escaping the project boundary. The scanner exposes `ScanWithRoot(fsys, rootPath)` for callers that need symlink validation, while the original `Scan(fsys)` remains backward-compatible.
+
+### Trust Policy Defaults
+
+The default trust policy requires checksum verification (`RequireChecksum: true`). Skills loaded without a signature emit a warning log at scan time. Signature verification remains opt-in (`RequireSignature: false`).
 
 ## Skill Categories & Tags
 
@@ -171,7 +180,7 @@ forge skills list --tags kubernetes,incident-response
 | `k8s-incident-triage` | ☸️ | sre | Read-only Kubernetes incident triage using kubectl | — (binary-backed) |
 | `k8s-cost-visibility` | 💰 | sre | Estimate K8s infrastructure costs (compute, storage, LoadBalancer) with cost attribution reports | `k8s-cost-visibility.sh` |
 | `k8s-pod-rightsizer` | ⚖️ | sre | Analyze workload metrics and produce CPU/memory rightsizing recommendations | — (binary-backed) |
-| `code-review` | 🔎 | developer | AI-powered code review for diffs and files | `code-review-diff.sh`, `code-review-file.sh` |
+| `code-review` | 🔎 | developer | AI-powered code review for diffs and files (supports Anthropic API, OpenAI Chat Completions, and OpenAI Responses/Codex API with streaming) | `code-review-diff.sh`, `code-review-file.sh` |
 | `code-review-standards` | 📏 | developer | Initialize and manage code review standards | — (template-based) |
 | `code-review-github` | 🐙 | developer | Post code review results to GitHub PRs | — (binary-backed) |
 | `codegen-react` | ⚛️ | developer | Scaffold and iterate on Vite + React apps | `codegen-react-scaffold.sh`, `codegen-react-read.sh`, `codegen-react-write.sh`, `codegen-react-run.sh` |

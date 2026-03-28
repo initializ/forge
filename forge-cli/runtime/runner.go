@@ -162,7 +162,9 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	// Overlay secrets from configured providers
-	r.overlaySecrets(envVars)
+	if err := r.overlaySecrets(envVars); err != nil {
+		return fmt.Errorf("secret validation failed: %w", err)
+	}
 
 	// Apply model override
 	if r.cfg.ModelOverride != "" {
@@ -373,6 +375,12 @@ func (r *Runner) Run(ctx context.Context) error {
 				dtCopy := dt
 				dtCopy.Entrypoint = filepath.Join("tools", dt.Entrypoint)
 				ct := tools.NewCustomTool(dtCopy, cmdExec)
+				if valErr := ct.ValidateEntrypoint(r.cfg.WorkDir); valErr != nil {
+					r.logger.Warn("skipping custom tool with invalid entrypoint", map[string]any{
+						"tool": dt.Name, "error": valErr.Error(),
+					})
+					continue
+				}
 				if regErr := reg.Register(ct); regErr != nil {
 					r.logger.Warn("failed to register custom tool", map[string]any{
 						"tool": dt.Name, "error": regErr.Error(),
@@ -1843,11 +1851,16 @@ func (r *Runner) registerSkillTools(reg *tools.Registry, proxyURL string) {
 				envVars = append(envVars, entry.ForgeReqs.Env.Optional...)
 			}
 
+			var modelName string
+			if r.modelConfig != nil {
+				modelName = r.modelConfig.Client.Model
+			}
 			skillExec := &clitools.SkillCommandExecutor{
 				Timeout:  timeout,
 				WorkDir:  r.cfg.WorkDir,
 				EnvVars:  envVars,
 				ProxyURL: proxyURL,
+				Model:    modelName,
 			}
 
 			st := tools.NewSkillTool(entry.Name, entry.Description, entry.InputSpec, scriptPath, skillExec)
@@ -2273,10 +2286,11 @@ func (r *Runner) resolveEmbedder(mc *coreruntime.ModelConfig) llm.Embedder {
 
 // overlaySecrets reads secrets from the configured provider chain and overlays
 // them into envVars for known API key variables. Existing values are not overwritten.
-func (r *Runner) overlaySecrets(envVars map[string]string) {
+// Returns an error if the same secret value is reused across different purpose categories.
+func (r *Runner) overlaySecrets(envVars map[string]string) error {
 	provider := r.buildSecretProvider()
 	if provider == nil {
-		return
+		return nil
 	}
 
 	// Known secret keys to overlay into env for model resolution.
@@ -2302,6 +2316,52 @@ func (r *Runner) overlaySecrets(envVars map[string]string) {
 			envVars[key] = val
 			r.logger.Info("secret loaded", map[string]any{"key": key, "provider": provider.Name()})
 		}
+	}
+
+	// Check for cross-category secret reuse.
+	valueToKeys := make(map[string][]string)
+	for _, key := range knownKeys {
+		val := envVars[key]
+		if val == "" {
+			continue
+		}
+		valueToKeys[val] = append(valueToKeys[val], key)
+	}
+
+	for val, keys := range valueToKeys {
+		if len(keys) < 2 {
+			continue
+		}
+		categories := make(map[string]bool)
+		for _, k := range keys {
+			cat := secretCategory(k)
+			if cat != "" {
+				categories[cat] = true
+			}
+		}
+		if len(categories) > 1 {
+			_ = val // avoid logging the actual secret value
+			r.logger.Warn("cross-category secret reuse detected", map[string]any{"keys": keys})
+			return fmt.Errorf("secret reuse: keys %v share the same value across different categories", keys)
+		}
+	}
+
+	return nil
+}
+
+// secretCategory returns the purpose category for a known secret key.
+func secretCategory(key string) string {
+	switch key {
+	case "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "LLM_API_KEY", "MODEL_API_KEY":
+		return "llm"
+	case "TAVILY_API_KEY", "PERPLEXITY_API_KEY":
+		return "search"
+	case "TELEGRAM_BOT_TOKEN":
+		return "telegram"
+	case "SLACK_APP_TOKEN", "SLACK_BOT_TOKEN":
+		return "slack"
+	default:
+		return ""
 	}
 }
 

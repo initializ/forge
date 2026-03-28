@@ -57,7 +57,7 @@ FILE_CONTENT=""
 
 if [ -n "$PR_URL" ]; then
   # Extract owner/repo and PR number from GitHub URL
-  PR_PATH=$(echo "$PR_URL" | sed -E 's|^https?://github\.com/||' | sed -E 's|/(files|commits|checks)$||')
+  PR_PATH=$(echo "$PR_URL" | sed -E 's|^https?://github\.com/||' | sed -E 's#/(files|commits|checks)$##')
   OWNER_REPO=$(echo "$PR_PATH" | sed -E 's|/pull/[0-9]+.*$||')
   PR_NUMBER=$(echo "$PR_PATH" | sed -E 's|.*/pull/([0-9]+).*$|\1|')
 
@@ -224,7 +224,9 @@ if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   REVIEW_TEXT=$(echo "$BODY" | jq -r '.content[0].text // empty')
 
 elif [ -n "${OPENAI_API_KEY:-}" ]; then
-  MODEL="${REVIEW_MODEL:-gpt-4o}"
+  # OpenAI API — supports both Chat Completions and Responses API (OAuth)
+  MODEL="${REVIEW_MODEL:-gpt-5.4}"
+  OPENAI_BASE="${OPENAI_BASE_URL:-https://api.openai.com/v1}"
 
   TEMP_SYSTEM=$(mktemp)
   TEMP_USER=$(mktemp)
@@ -232,35 +234,77 @@ elif [ -n "${OPENAI_API_KEY:-}" ]; then
   printf '%s' "$SYSTEM_PROMPT" > "$TEMP_SYSTEM"
   printf '%s' "$USER_PROMPT" > "$TEMP_USER"
 
-  API_PAYLOAD=$(jq -n \
-    --arg model "$MODEL" \
-    --rawfile system "$TEMP_SYSTEM" \
-    --rawfile user "$TEMP_USER" \
-    '{
-      model: $model,
-      max_tokens: 4096,
-      messages: [
-        {role: "system", content: $system},
-        {role: "user", content: $user}
-      ]
-    }')
+  if [ -n "${OPENAI_BASE_URL:-}" ]; then
+    # Responses API (OAuth/Codex flow) — requires streaming
+    API_PAYLOAD=$(jq -n \
+      --arg model "$MODEL" \
+      --rawfile instructions "$TEMP_SYSTEM" \
+      --rawfile user "$TEMP_USER" \
+      '{
+        model: $model,
+        instructions: $instructions,
+        input: [
+          {role: "user", content: $user}
+        ],
+        store: false,
+        stream: true
+      }')
 
-  RESPONSE=$(curl -s --max-time 90 \
-    -w "\n%{http_code}" \
-    -X POST "https://api.openai.com/v1/chat/completions" \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer ${OPENAI_API_KEY}" \
-    -d "$API_PAYLOAD")
+    STREAM_TMPFILE=$(mktemp)
+    HTTP_CODE=$(curl -s --max-time 180 \
+      -w "%{http_code}" \
+      -o "$STREAM_TMPFILE" \
+      -X POST "${OPENAI_BASE}/responses" \
+      -H "Content-Type: application/json" \
+      -H "Authorization: Bearer ${OPENAI_API_KEY}" \
+      -d "$API_PAYLOAD")
 
-  HTTP_CODE=$(echo "$RESPONSE" | tail -1)
-  BODY=$(echo "$RESPONSE" | sed '$d')
+    if [ "$HTTP_CODE" -ne 200 ]; then
+      BODY=$(cat "$STREAM_TMPFILE")
+      rm -f "$STREAM_TMPFILE"
+      echo "{\"error\": \"OpenAI Responses API returned status $HTTP_CODE\", \"details\": $(echo "$BODY" | jq -c '.' 2>/dev/null || echo '""')}" >&2
+      exit 1
+    fi
 
-  if [ "$HTTP_CODE" -ne 200 ]; then
-    echo "{\"error\": \"OpenAI API returned status $HTTP_CODE\", \"details\": $(echo "$BODY" | jq -c '.' 2>/dev/null || echo '""')}" >&2
-    exit 1
+    # Parse SSE stream: collect text deltas from response.output_text.delta events.
+    # Use jq -j (join) to concatenate without adding extra newlines between deltas.
+    REVIEW_TEXT=$(grep '^data: ' "$STREAM_TMPFILE" \
+      | sed 's/^data: //' \
+      | grep -v '^\[DONE\]$' \
+      | jq -j 'select(.type == "response.output_text.delta") | .delta // empty' 2>/dev/null)
+    rm -f "$STREAM_TMPFILE"
+  else
+    # Standard Chat Completions API
+    API_PAYLOAD=$(jq -n \
+      --arg model "$MODEL" \
+      --rawfile system "$TEMP_SYSTEM" \
+      --rawfile user "$TEMP_USER" \
+      '{
+        model: $model,
+        max_tokens: 4096,
+        messages: [
+          {role: "system", content: $system},
+          {role: "user", content: $user}
+        ]
+      }')
+
+    RESPONSE=$(curl -s --max-time 90 \
+      -w "\n%{http_code}" \
+      -X POST "${OPENAI_BASE}/chat/completions" \
+      -H "Content-Type: application/json" \
+      -H "Authorization: Bearer ${OPENAI_API_KEY}" \
+      -d "$API_PAYLOAD")
+
+    HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+    BODY=$(echo "$RESPONSE" | sed '$d')
+
+    if [ "$HTTP_CODE" -ne 200 ]; then
+      echo "{\"error\": \"OpenAI API returned status $HTTP_CODE\", \"details\": $(echo "$BODY" | jq -c '.' 2>/dev/null || echo '""')}" >&2
+      exit 1
+    fi
+
+    REVIEW_TEXT=$(echo "$BODY" | jq -r '.choices[0].message.content // empty')
   fi
-
-  REVIEW_TEXT=$(echo "$BODY" | jq -r '.choices[0].message.content // empty')
 fi
 
 if [ -z "${REVIEW_TEXT:-}" ]; then
@@ -271,14 +315,59 @@ fi
 # --- Parse and validate JSON output ---
 REVIEW_TEXT=$(echo "$REVIEW_TEXT" | sed -E 's/^```(json)?//; s/```$//' | sed '/^$/d')
 
+REVIEW_JSON=""
 if echo "$REVIEW_TEXT" | jq empty 2>/dev/null; then
-  echo "$REVIEW_TEXT" | jq .
+  REVIEW_JSON=$(echo "$REVIEW_TEXT" | jq .)
 else
-  jq -n --arg text "$REVIEW_TEXT" '{
+  REVIEW_JSON=$(jq -n --arg text "$REVIEW_TEXT" '{
     "summary": $text,
     "risk_level": "unknown",
     "findings": [],
     "stats": {"files_reviewed": 1, "total_findings": 0, "by_severity": {}},
     "parse_warning": "LLM response was not valid JSON; raw text returned as summary"
-  }'
+  }')
 fi
+
+# --- Render markdown summary for human consumption ---
+render_markdown() {
+  local json="$1"
+  local summary risk total errors warnings infos nitpicks
+
+  summary=$(echo "$json" | jq -r '.summary // "No summary"')
+  risk=$(echo "$json" | jq -r '.risk_level // "unknown"')
+  total=$(echo "$json" | jq -r '.stats.total_findings // 0')
+  errors=$(echo "$json" | jq -r '.stats.by_severity.error // 0')
+  warnings=$(echo "$json" | jq -r '.stats.by_severity.warning // 0')
+  infos=$(echo "$json" | jq -r '.stats.by_severity.info // 0')
+  nitpicks=$(echo "$json" | jq -r '.stats.by_severity.nitpick // 0')
+
+  echo "## Code Review Summary"
+  echo ""
+  echo "**Risk Level:** ${risk}"
+  echo ""
+  echo "${summary}"
+  echo ""
+  echo "**Findings:** ${total} total — ${errors} errors, ${warnings} warnings, ${infos} info, ${nitpicks} nitpicks"
+  echo ""
+
+  # Render each finding
+  local count
+  count=$(echo "$json" | jq '.findings | length')
+  if [ "$count" -gt 0 ]; then
+    echo "### Findings"
+    echo ""
+    echo "$json" | jq -r '.findings[] | "#### [\(.severity | ascii_upcase)] \(.title)\n**File:** `\(.file)`\(.line | if . then " (line \(.))" else "" end) | **Category:** \(.category)\n\n\(.description)\n\n**Suggestion:** \(.suggestion)\n\n---\n"'
+  fi
+}
+
+MARKDOWN=$(render_markdown "$REVIEW_JSON")
+
+# Output markdown (primary) followed by raw JSON for structured access
+echo "$MARKDOWN"
+echo ""
+echo '<details><summary>Raw JSON</summary>'
+echo ""
+echo '```json'
+echo "$REVIEW_JSON"
+echo '```'
+echo '</details>'

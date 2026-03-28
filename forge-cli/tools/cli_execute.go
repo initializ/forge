@@ -209,7 +209,7 @@ func (t *CLIExecuteTool) Execute(ctx context.Context, args json.RawMessage) (str
 	}
 
 	// Security check 6: Env isolation
-	cmd.Env = t.buildEnv()
+	cmd.Env = t.buildEnv(input.Binary)
 
 	// Stdin
 	if input.Stdin != "" {
@@ -264,8 +264,10 @@ func (t *CLIExecuteTool) SetProxyURL(url string) { t.proxyURL = url }
 // buildEnv constructs an isolated environment with only PATH, HOME, LANG
 // and explicitly configured passthrough variables. When workDir is set,
 // HOME is overridden to workDir so subprocess ~ expansion stays confined.
-func (t *CLIExecuteTool) buildEnv() []string {
-	homeVal := os.Getenv("HOME")
+// The binary parameter scopes credential env vars to only the binaries that need them.
+func (t *CLIExecuteTool) buildEnv(binary string) []string {
+	realHome := os.Getenv("HOME")
+	homeVal := realHome
 	if t.workDir != "" {
 		homeVal = t.workDir
 	}
@@ -273,6 +275,13 @@ func (t *CLIExecuteTool) buildEnv() []string {
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + homeVal,
 		"LANG=" + os.Getenv("LANG"),
+	}
+	// When HOME is overridden, preserve GH_CONFIG_DIR ONLY for the gh binary.
+	// Scoping to gh prevents other binaries from accessing GitHub credentials.
+	if binary == "gh" && t.workDir != "" && realHome != "" {
+		if _, ok := os.LookupEnv("GH_CONFIG_DIR"); !ok {
+			env = append(env, "GH_CONFIG_DIR="+filepath.Join(realHome, ".config", "gh"))
+		}
 	}
 	for _, key := range t.config.EnvPassthrough {
 		if val, ok := os.LookupEnv(key); ok {

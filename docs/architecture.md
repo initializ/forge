@@ -355,6 +355,8 @@ Egress controls operate at both build time and runtime. Build-time controls gene
 The A2A server adds:
 - **CORS restriction** — Origin allowlist (localhost by default), configurable via flag/env/YAML
 - **Security headers** — `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options`, `Content-Security-Policy`
+- **Rate limiting** — Per-IP token bucket middleware (read: 60 req/min burst 10, write: 10 req/min burst 3) with 429 responses and `Retry-After` headers; stale visitors evicted automatically
+- **Request size limits** — `MaxHeaderBytes` (1 MiB) and `http.MaxBytesReader` (2 MiB) on request bodies; returns 413 on excess
 
 See [Egress Security](security/egress.md) for details.
 

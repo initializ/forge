@@ -377,7 +377,7 @@ func runSkillsAudit(cmd *cobra.Command, args []string) error {
 		report = r
 
 	case auditDir != "":
-		reg, err := local.NewLocalRegistry(os.DirFS(auditDir))
+		reg, err := local.NewLocalRegistryWithRoot(os.DirFS(auditDir), auditDir)
 		if err != nil {
 			return fmt.Errorf("loading directory registry %q: %w", auditDir, err)
 		}
@@ -543,7 +543,7 @@ func runSkillsList(_ *cobra.Command, _ []string) error {
 	wd, _ := os.Getwd()
 	skillsDir := filepath.Join(wd, "skills")
 	if info, statErr := os.Stat(skillsDir); statErr == nil && info.IsDir() {
-		localReg, localErr := local.NewLocalRegistry(os.DirFS(skillsDir))
+		localReg, localErr := local.NewLocalRegistryWithRoot(os.DirFS(skillsDir), skillsDir)
 		if localErr == nil {
 			ls, _ := localReg.List()
 			localSkills = ls
@@ -600,7 +600,7 @@ func runSkillsTrustReport(_ *cobra.Command, args []string) error {
 		wd, _ := os.Getwd()
 		skillsDir := filepath.Join(wd, "skills")
 		if info, statErr := os.Stat(skillsDir); statErr == nil && info.IsDir() {
-			localReg, localErr := local.NewLocalRegistry(os.DirFS(skillsDir))
+			localReg, localErr := local.NewLocalRegistryWithRoot(os.DirFS(skillsDir), skillsDir)
 			if localErr == nil {
 				sd = localReg.Get(name)
 			}

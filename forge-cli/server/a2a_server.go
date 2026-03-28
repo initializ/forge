@@ -6,14 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/initializ/forge/forge-core/a2a"
+	"golang.org/x/time/rate"
 )
 
 // Handler processes a JSON-RPC request and returns a response.
@@ -21,6 +24,14 @@ type Handler func(ctx context.Context, id any, rawParams json.RawMessage) *a2a.J
 
 // SSEHandler streams SSE events for a JSON-RPC request.
 type SSEHandler func(ctx context.Context, id any, rawParams json.RawMessage, w http.ResponseWriter, flusher http.Flusher)
+
+// RateLimitConfig controls per-IP rate limiting.
+type RateLimitConfig struct {
+	ReadRPS    float64 // requests per second for read operations (GET/HEAD/OPTIONS)
+	ReadBurst  int     // burst size for reads
+	WriteRPS   float64 // requests per second for write operations (POST/PUT/DELETE)
+	WriteBurst int     // burst size for writes
+}
 
 // ServerConfig configures the A2A HTTP server.
 type ServerConfig struct {
@@ -30,6 +41,7 @@ type ServerConfig struct {
 	AgentCard       *a2a.AgentCard
 	AuthMiddleware  func(http.Handler) http.Handler // optional auth middleware
 	AllowedOrigins  []string                        // CORS allowed origins
+	RateLimit       *RateLimitConfig                // optional rate limit config
 }
 
 type httpRoute struct {
@@ -50,6 +62,7 @@ type Server struct {
 	httpHandlers    []httpRoute
 	authMiddleware  func(http.Handler) http.Handler
 	allowedOrigins  []string
+	rateLimit       *RateLimitConfig
 	srv             *http.Server
 }
 
@@ -69,6 +82,10 @@ func NewServer(cfg ServerConfig) *Server {
 		sseHandlers:     make(map[string]SSEHandler),
 		authMiddleware:  cfg.AuthMiddleware,
 		allowedOrigins:  allowedOrigins,
+		rateLimit:       cfg.RateLimit,
+	}
+	if s.rateLimit == nil {
+		s.rateLimit = defaultRateLimitConfig()
 	}
 	return s
 }
@@ -129,9 +146,10 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("POST /", s.handleJSONRPC)
 	mux.HandleFunc("GET /", s.handleAgentCard)
 
-	// Build handler chain: CORS → Security Headers → Auth → Mux
+	// Build handler chain: CORS → Security Headers → Auth → Rate Limit → Mux
 	// CORS is outermost so OPTIONS preflight is handled before auth.
 	var handler http.Handler = mux
+	handler = rateLimitMiddleware(s.rateLimit)(handler)
 	if s.authMiddleware != nil {
 		handler = s.authMiddleware(handler)
 	}
@@ -139,9 +157,10 @@ func (s *Server) Start(ctx context.Context) error {
 	handler = newCORSMiddleware(s.allowedOrigins)(handler)
 
 	s.srv = &http.Server{
-		Handler:      handler,
-		WriteTimeout: 0, // SSE-safe: no write deadline
-		IdleTimeout:  120 * time.Second,
+		Handler:        handler,
+		WriteTimeout:   0, // SSE-safe: no write deadline
+		IdleTimeout:    120 * time.Second,
+		MaxHeaderBytes: 1 << 20, // 1 MiB max header size
 	}
 
 	// Try specified port, then auto-increment up to 10 times on conflict.
@@ -201,8 +220,16 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 2<<20) // 2 MiB
+
 	var req a2a.JSONRPCRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) || isMaxBytesError(err) {
+			writeJSON(w, http.StatusRequestEntityTooLarge,
+				a2a.NewErrorResponse(nil, a2a.ErrCodeParseError, "request body too large"))
+			return
+		}
 		writeJSON(w, http.StatusOK, a2a.NewErrorResponse(nil, a2a.ErrCodeParseError, "parse error: "+err.Error()))
 		return
 	}
@@ -335,6 +362,16 @@ func WriteSSEEvent(w http.ResponseWriter, flusher http.Flusher, event string, da
 	return nil
 }
 
+// isMaxBytesError checks if the error chain contains an http.MaxBytesError
+// or the canonical "http: request body too large" message. This handles cases
+// where json.Decoder wraps the MaxBytesError.
+func isMaxBytesError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "http: request body too large")
+}
+
 // isAddrInUse returns true if the error indicates the address is already in use.
 func isAddrInUse(err error) bool {
 	var opErr *net.OpError
@@ -345,6 +382,89 @@ func isAddrInUse(err error) bool {
 		}
 	}
 	return false
+}
+
+// defaultRateLimitConfig returns sensible defaults for the A2A server.
+func defaultRateLimitConfig() *RateLimitConfig {
+	return &RateLimitConfig{
+		ReadRPS:    1.0,         // ~60/min
+		ReadBurst:  10,          //
+		WriteRPS:   10.0 / 60.0, // ~10/min
+		WriteBurst: 3,           //
+	}
+}
+
+// visitor tracks per-IP rate limiters.
+type visitor struct {
+	readLimiter  *rate.Limiter
+	writeLimiter *rate.Limiter
+	lastSeen     time.Time
+}
+
+// rateLimitMiddleware returns middleware that enforces per-IP rate limits.
+// GET/HEAD/OPTIONS use the read limiter; POST/PUT/DELETE use the write limiter.
+// Returns 429 with Retry-After header when the limit is exceeded.
+func rateLimitMiddleware(cfg *RateLimitConfig) func(http.Handler) http.Handler {
+	var mu sync.Mutex
+	visitors := make(map[string]*visitor)
+
+	// Background goroutine to evict stale visitors every 3 minutes.
+	go func() {
+		ticker := time.NewTicker(3 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			mu.Lock()
+			for ip, v := range visitors {
+				if time.Since(v.lastSeen) > 5*time.Minute {
+					delete(visitors, ip)
+				}
+			}
+			mu.Unlock()
+		}
+	}()
+
+	getVisitor := func(ip string) *visitor {
+		mu.Lock()
+		defer mu.Unlock()
+		v, ok := visitors[ip]
+		if !ok {
+			v = &visitor{
+				readLimiter:  rate.NewLimiter(rate.Limit(cfg.ReadRPS), cfg.ReadBurst),
+				writeLimiter: rate.NewLimiter(rate.Limit(cfg.WriteRPS), cfg.WriteBurst),
+			}
+			visitors[ip] = v
+		}
+		v.lastSeen = time.Now()
+		return v
+	}
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Extract IP from RemoteAddr (host:port).
+			ip := r.RemoteAddr
+			if host, _, err := net.SplitHostPort(ip); err == nil {
+				ip = host
+			}
+
+			v := getVisitor(ip)
+			var limiter *rate.Limiter
+			switch r.Method {
+			case http.MethodGet, http.MethodHead, http.MethodOptions:
+				limiter = v.readLimiter
+			default:
+				limiter = v.writeLimiter
+			}
+
+			if !limiter.Allow() {
+				retryAfter := math.Ceil(1.0 / float64(limiter.Limit()))
+				w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter)))
+				writeJSON(w, http.StatusTooManyRequests,
+					a2a.NewErrorResponse(nil, a2a.ErrCodeInternal, "rate limit exceeded"))
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 func init() {

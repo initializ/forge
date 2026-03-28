@@ -29,6 +29,10 @@ metadata:
     egress_domains:
       - api.anthropic.com
       - api.openai.com
+      - chatgpt.com
+      - api.github.com
+      - patch-diff.githubusercontent.com
+      - raw.githubusercontent.com
     timeout_hint: 120
 ---
 

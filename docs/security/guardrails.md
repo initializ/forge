@@ -107,7 +107,8 @@ Some tools legitimately return PII as part of their function (e.g., `github_get_
           "github_stargazer_profiles",
           "file_create",
           "code_agent_write",
-          "code_agent_edit"
+          "code_agent_edit",
+          "cli_execute"
         ]
       }
     }
@@ -120,7 +121,7 @@ Some tools legitimately return PII as part of their function (e.g., `github_get_
 | Behavior | Detail |
 |----------|--------|
 | Per-guardrail scope | `allow_tools` on `no_pii` does **not** bypass `no_secrets` — each guardrail has its own allowlist |
-| Write tools included | `file_create`, `code_agent_write`, and `code_agent_edit` are included because they echo back content the LLM already has — blocking the echo is redundant |
+| Write tools included | `file_create`, `code_agent_write`, `code_agent_edit`, and `cli_execute` are included because they echo back content the LLM already has or return operational output that may contain incidental PII (e.g., git log author emails) |
 | Default config | The default policy scaffold pre-configures `allow_tools` for GitHub profile tools and write tools |
 | Custom overrides | Override via `policy-scaffold.json` to add or remove tools from the allowlist |
 
@@ -134,7 +135,7 @@ Shell interpreters (`bash`, `sh`, `zsh`, `dash`, `ksh`, `csh`, `tcsh`, `fish`) a
 
 ### HOME Override
 
-When `workDir` is configured, `$HOME` in the subprocess environment is overridden to `workDir`. This prevents `~` expansion inside subprocesses from reaching the real home directory.
+When `workDir` is configured, `$HOME` in the subprocess environment is overridden to `workDir`. This prevents `~` expansion inside subprocesses from reaching the real home directory. To preserve `gh` CLI authentication, `GH_CONFIG_DIR` is automatically set to the real `~/.config/gh` when HOME is overridden.
 
 ### Path Argument Validation
 

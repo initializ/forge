@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io/fs"
+	"log"
+	"path/filepath"
 	"strings"
 
 	"github.com/initializ/forge/forge-skills/contract"
@@ -14,6 +16,23 @@ import (
 // It parses frontmatter to extract SkillDescriptor fields.
 // Hidden directories (starting with ".") and "_template/" are skipped.
 func Scan(fsys fs.FS) ([]contract.SkillDescriptor, error) {
+	return ScanWithRoot(fsys, "")
+}
+
+// ScanWithRoot works like Scan but, when rootPath is non-empty, resolves
+// symlinks and verifies each entry stays within rootPath. Entries that
+// resolve outside the root are skipped with a log warning.
+func ScanWithRoot(fsys fs.FS, rootPath string) ([]contract.SkillDescriptor, error) {
+	// Pre-resolve the real root path for symlink checks.
+	var realRoot string
+	if rootPath != "" {
+		var err error
+		realRoot, err = filepath.EvalSymlinks(rootPath)
+		if err != nil {
+			return nil, fmt.Errorf("resolving root path: %w", err)
+		}
+	}
+
 	entries, err := fs.ReadDir(fsys, ".")
 	if err != nil {
 		return nil, err
@@ -27,6 +46,19 @@ func Scan(fsys fs.FS) ([]contract.SkillDescriptor, error) {
 		name := entry.Name()
 		if strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") {
 			continue
+		}
+
+		// Symlink escape check when rootPath is provided.
+		if realRoot != "" {
+			resolved, symErr := filepath.EvalSymlinks(filepath.Join(realRoot, name))
+			if symErr != nil {
+				log.Printf("[trust] warning: cannot resolve symlink for skill %q: %v", name, symErr)
+				continue
+			}
+			if !strings.HasPrefix(resolved, realRoot+string(filepath.Separator)) && resolved != realRoot {
+				log.Printf("[trust] warning: skill %q symlink resolves outside root, skipping", name)
+				continue
+			}
 		}
 
 		// Check for SKILL.md
@@ -92,6 +124,12 @@ func Scan(fsys fs.FS) ([]contract.SkillDescriptor, error) {
 					}
 				}
 			}
+		}
+
+		// Warn about unsigned local skills (skip for embedded/builtin which
+		// go through Scan with empty rootPath before their trust is upgraded).
+		if realRoot != "" && sd.Provenance != nil && sd.Provenance.SignedBy == "" {
+			log.Printf("[trust] warning: skill %q loaded without signature", sd.Name)
 		}
 
 		// Derive display name from skill name if not set

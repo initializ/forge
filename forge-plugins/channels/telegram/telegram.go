@@ -4,6 +4,8 @@ package telegram
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +13,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/initializ/forge/forge-core/a2a"
@@ -29,14 +32,15 @@ const (
 
 // Plugin implements channels.ChannelPlugin for Telegram.
 type Plugin struct {
-	botToken    string
-	mode        string // "polling" or "webhook"
-	webhookPort int
-	webhookPath string
-	srv         *http.Server
-	client      *http.Client
-	apiBase     string // overridable for tests
-	stopCh      chan struct{}
+	botToken      string
+	mode          string // "polling" or "webhook"
+	webhookPort   int
+	webhookPath   string
+	webhookSecret string // random secret for webhook auth
+	srv           *http.Server
+	client        *http.Client
+	apiBase       string // overridable for tests
+	stopCh        chan struct{}
 }
 
 // New creates an uninitialised Telegram plugin.
@@ -75,6 +79,15 @@ func (p *Plugin) Init(cfg channels.ChannelConfig) error {
 		p.webhookPath = defaultWebhookPath
 	}
 
+	// Generate a random secret for webhook authentication.
+	if p.mode == "webhook" {
+		secret := make([]byte, 32)
+		if _, err := rand.Read(secret); err != nil {
+			return fmt.Errorf("telegram: generating webhook secret: %w", err)
+		}
+		p.webhookSecret = hex.EncodeToString(secret)
+	}
+
 	return nil
 }
 
@@ -106,7 +119,7 @@ func (p *Plugin) startWebhook(ctx context.Context, handler channels.EventHandler
 	mux.HandleFunc(p.webhookPath, p.makeWebhookHandler(handler))
 
 	p.srv = &http.Server{
-		Addr:    fmt.Sprintf(":%d", p.webhookPort),
+		Addr:    fmt.Sprintf("127.0.0.1:%d", p.webhookPort),
 		Handler: mux,
 	}
 
@@ -124,9 +137,26 @@ func (p *Plugin) startWebhook(ctx context.Context, handler channels.EventHandler
 
 func (p *Plugin) makeWebhookHandler(handler channels.EventHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Verify webhook secret token.
+		if p.webhookSecret != "" {
+			if r.Header.Get("X-Telegram-Bot-Api-Secret-Token") != p.webhookSecret {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+		}
+
+		// Enforce JSON content type.
+		ct := r.Header.Get("Content-Type")
+		if !strings.HasPrefix(ct, "application/json") {
+			http.Error(w, "unsupported content type", http.StatusUnsupportedMediaType)
+			return
+		}
+
+		// Limit body size to 1 MiB.
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			http.Error(w, "failed to read body", http.StatusBadRequest)
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 			return
 		}
 

@@ -15,7 +15,7 @@ type TrustPolicy struct {
 func DefaultTrustPolicy() TrustPolicy {
 	return TrustPolicy{
 		MinTrustLevel:    contract.TrustLocal,
-		RequireChecksum:  false,
+		RequireChecksum:  true,
 		RequireSignature: false,
 	}
 }

@@ -265,7 +265,8 @@ func (t *CLIExecuteTool) SetProxyURL(url string) { t.proxyURL = url }
 // and explicitly configured passthrough variables. When workDir is set,
 // HOME is overridden to workDir so subprocess ~ expansion stays confined.
 func (t *CLIExecuteTool) buildEnv() []string {
-	homeVal := os.Getenv("HOME")
+	realHome := os.Getenv("HOME")
+	homeVal := realHome
 	if t.workDir != "" {
 		homeVal = t.workDir
 	}
@@ -273,6 +274,13 @@ func (t *CLIExecuteTool) buildEnv() []string {
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + homeVal,
 		"LANG=" + os.Getenv("LANG"),
+	}
+	// When HOME is overridden, preserve GH_CONFIG_DIR so the gh CLI can
+	// still find its auth credentials stored under the real ~/.config/gh.
+	if t.workDir != "" && realHome != "" {
+		if _, ok := os.LookupEnv("GH_CONFIG_DIR"); !ok {
+			env = append(env, "GH_CONFIG_DIR="+filepath.Join(realHome, ".config", "gh"))
+		}
 	}
 	for _, key := range t.config.EnvPassthrough {
 		if val, ok := os.LookupEnv(key); ok {

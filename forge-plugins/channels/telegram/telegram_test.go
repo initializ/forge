@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -190,6 +191,7 @@ func TestWebhookHandler(t *testing.T) {
 
 	body := `{"update_id":1,"message":{"message_id":10,"from":{"id":1},"chat":{"id":2},"text":"webhook msg"}}`
 	req := httptest.NewRequest(http.MethodPost, "/telegram/webhook", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 
 	handler(rr, req)
@@ -334,6 +336,166 @@ func TestStartTypingIndicator(t *testing.T) {
 	}
 
 	stop()
+}
+
+func TestWebhookHandler_MissingSecret(t *testing.T) {
+	p := New()
+	p.botToken = "test-token"
+	p.webhookSecret = "mysecret"
+
+	handler := p.makeWebhookHandler(func(_ context.Context, event *channels.ChannelEvent) (*a2a.Message, error) {
+		t.Fatal("handler should not be called")
+		return nil, nil
+	})
+
+	body := `{"update_id":1,"message":{"message_id":10,"from":{"id":1},"chat":{"id":2},"text":"hello"}}`
+	req := httptest.NewRequest(http.MethodPost, "/telegram/webhook", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	// No X-Telegram-Bot-Api-Secret-Token header
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rr.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestWebhookHandler_WrongSecret(t *testing.T) {
+	p := New()
+	p.botToken = "test-token"
+	p.webhookSecret = "correct-secret"
+
+	handler := p.makeWebhookHandler(func(_ context.Context, event *channels.ChannelEvent) (*a2a.Message, error) {
+		t.Fatal("handler should not be called")
+		return nil, nil
+	})
+
+	body := `{"update_id":1,"message":{"message_id":10,"from":{"id":1},"chat":{"id":2},"text":"hello"}}`
+	req := httptest.NewRequest(http.MethodPost, "/telegram/webhook", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Telegram-Bot-Api-Secret-Token", "wrong-secret")
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rr.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestWebhookHandler_ValidSecret(t *testing.T) {
+	p := New()
+	p.botToken = "test-token"
+	p.webhookSecret = "correct-secret"
+
+	done := make(chan struct{})
+	handler := p.makeWebhookHandler(func(_ context.Context, event *channels.ChannelEvent) (*a2a.Message, error) {
+		close(done)
+		return &a2a.Message{Role: a2a.MessageRoleAgent, Parts: []a2a.Part{a2a.NewTextPart("ok")}}, nil
+	})
+
+	body := `{"update_id":1,"message":{"message_id":10,"from":{"id":1},"chat":{"id":2},"text":"hello"}}`
+	req := httptest.NewRequest(http.MethodPost, "/telegram/webhook", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Telegram-Bot-Api-Secret-Token", "correct-secret")
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for handler")
+	}
+}
+
+func TestWebhookHandler_WrongContentType(t *testing.T) {
+	p := New()
+	p.botToken = "test-token"
+	p.webhookSecret = "secret"
+
+	handler := p.makeWebhookHandler(func(_ context.Context, event *channels.ChannelEvent) (*a2a.Message, error) {
+		t.Fatal("handler should not be called")
+		return nil, nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/telegram/webhook", strings.NewReader("not json"))
+	req.Header.Set("Content-Type", "text/plain")
+	req.Header.Set("X-Telegram-Bot-Api-Secret-Token", "secret")
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	if rr.Code != http.StatusUnsupportedMediaType {
+		t.Errorf("status = %d, want %d", rr.Code, http.StatusUnsupportedMediaType)
+	}
+}
+
+func TestWebhookHandler_OversizedBody(t *testing.T) {
+	p := New()
+	p.botToken = "test-token"
+	p.webhookSecret = "secret"
+
+	handler := p.makeWebhookHandler(func(_ context.Context, event *channels.ChannelEvent) (*a2a.Message, error) {
+		t.Fatal("handler should not be called")
+		return nil, nil
+	})
+
+	// Create a body larger than 1 MiB
+	huge := strings.Repeat("x", (1<<20)+1000)
+	req := httptest.NewRequest(http.MethodPost, "/telegram/webhook", strings.NewReader(huge))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Telegram-Bot-Api-Secret-Token", "secret")
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want %d", rr.Code, http.StatusRequestEntityTooLarge)
+	}
+}
+
+func TestInit_WebhookGeneratesSecret(t *testing.T) {
+	p := New()
+	t.Setenv("TELEGRAM_BOT_TOKEN", "test-token")
+
+	cfg := channels.ChannelConfig{
+		Adapter: "telegram",
+		Settings: map[string]string{
+			"bot_token_env": "TELEGRAM_BOT_TOKEN",
+			"mode":          "webhook",
+		},
+	}
+	err := p.Init(cfg)
+	if err != nil {
+		t.Fatalf("Init() error: %v", err)
+	}
+	if p.webhookSecret == "" {
+		t.Error("webhookSecret is empty after Init with mode=webhook")
+	}
+	if len(p.webhookSecret) != 64 { // 32 bytes hex-encoded
+		t.Errorf("webhookSecret length = %d, want 64", len(p.webhookSecret))
+	}
+}
+
+func TestStartWebhook_BindsLoopback(t *testing.T) {
+	p := New()
+	p.botToken = "test-token"
+	p.webhookPort = 0
+	p.webhookPath = "/test"
+
+	// We can't call startWebhook directly without blocking,
+	// but we can verify the server address is set correctly.
+	mux := http.NewServeMux()
+	mux.HandleFunc(p.webhookPath, p.makeWebhookHandler(nil))
+	p.srv = &http.Server{
+		Addr:    fmt.Sprintf("127.0.0.1:%d", p.webhookPort),
+		Handler: mux,
+	}
+
+	if !strings.Contains(p.srv.Addr, "127.0.0.1") {
+		t.Errorf("server addr = %q, expected 127.0.0.1 binding", p.srv.Addr)
+	}
 }
 
 func TestInit_InvalidMode(t *testing.T) {

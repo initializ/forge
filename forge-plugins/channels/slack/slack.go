@@ -29,21 +29,24 @@ const longRunningThreshold = 15 * time.Second
 
 // Plugin implements channels.ChannelPlugin for Slack using Socket Mode.
 type Plugin struct {
-	appToken  string
-	botToken  string
-	botUserID string // resolved at startup via auth.test
-	wsConn    *websocket.Conn
-	connMu    sync.Mutex
-	stopCh    chan struct{}
-	client    *http.Client
-	apiBase   string // overridable for tests
+	appToken   string
+	botToken   string
+	botUserID  string // resolved at startup via auth.test
+	wsConn     *websocket.Conn
+	connMu     sync.Mutex
+	stopCh     chan struct{}
+	client     *http.Client
+	apiBase    string // overridable for tests
+	dedupMu    sync.Mutex
+	dedupCache map[string]time.Time
 }
 
 // New creates an uninitialised Slack plugin.
 func New() *Plugin {
 	return &Plugin{
-		client:  &http.Client{Timeout: 30 * time.Second},
-		apiBase: slackAPIBase,
+		client:     &http.Client{Timeout: 30 * time.Second},
+		apiBase:    slackAPIBase,
+		dedupCache: make(map[string]time.Time),
 	}
 }
 
@@ -188,6 +191,22 @@ func (p *Plugin) openConnection() (string, error) {
 func (p *Plugin) Start(ctx context.Context, handler channels.EventHandler) error {
 	p.stopCh = make(chan struct{})
 
+	// Start background eviction of expired dedup entries.
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				p.evictExpiredDedup()
+			case <-ctx.Done():
+				return
+			case <-p.stopCh:
+				return
+			}
+		}
+	}()
+
 	// Resolve the bot's own user ID so we can filter mentions.
 	if err := p.resolveBotID(); err != nil {
 		fmt.Printf("  slack: warning: could not resolve bot user ID: %v (will respond to all messages)\n", err)
@@ -282,6 +301,11 @@ func (p *Plugin) readLoop(ctx context.Context, conn *websocket.Conn, handler cha
 			if err := conn.WriteJSON(ack); err != nil {
 				return fmt.Errorf("sending ack: %w", err)
 			}
+		}
+
+		// Deduplicate events by envelope ID.
+		if p.isDuplicate(envelope.EnvelopeID) {
+			continue
 		}
 
 		// Handle disconnect requests from Slack.
@@ -405,6 +429,33 @@ func (p *Plugin) Stop() error {
 		return p.wsConn.Close()
 	}
 	return nil
+}
+
+// isDuplicate returns true if the envelopeID has been seen before.
+// Empty envelope IDs are never considered duplicates.
+func (p *Plugin) isDuplicate(envelopeID string) bool {
+	if envelopeID == "" {
+		return false
+	}
+	p.dedupMu.Lock()
+	defer p.dedupMu.Unlock()
+	if _, ok := p.dedupCache[envelopeID]; ok {
+		return true
+	}
+	p.dedupCache[envelopeID] = time.Now()
+	return false
+}
+
+// evictExpiredDedup removes entries older than 5 minutes from the dedup cache.
+func (p *Plugin) evictExpiredDedup() {
+	p.dedupMu.Lock()
+	defer p.dedupMu.Unlock()
+	cutoff := time.Now().Add(-5 * time.Minute)
+	for id, seen := range p.dedupCache {
+		if seen.Before(cutoff) {
+			delete(p.dedupCache, id)
+		}
+	}
 }
 
 // NormalizeEvent parses raw Slack event JSON into a ChannelEvent.

@@ -33,6 +33,27 @@ func NewLocalRegistry(fsys fs.FS) (*LocalRegistry, error) {
 	}, nil
 }
 
+// NewLocalRegistryWithRoot creates a LocalRegistry that validates symlinks
+// against the given rootPath. This prevents skill directories that are symlinks
+// pointing outside the project root from being loaded.
+func NewLocalRegistryWithRoot(fsys fs.FS, rootPath string) (*LocalRegistry, error) {
+	skills, err := ScanWithRoot(fsys, rootPath)
+	if err != nil {
+		return nil, fmt.Errorf("scanning skills: %w", err)
+	}
+
+	byName := make(map[string]*contract.SkillDescriptor, len(skills))
+	for i := range skills {
+		byName[skills[i].Name] = &skills[i]
+	}
+
+	return &LocalRegistry{
+		fsys:   fsys,
+		skills: skills,
+		byName: byName,
+	}, nil
+}
+
 // NewEmbeddedRegistry creates a LocalRegistry backed by the compile-time embedded skills.
 // Embedded skills are assigned TrustBuiltin provenance.
 func NewEmbeddedRegistry() (*LocalRegistry, error) {

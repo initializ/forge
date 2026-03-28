@@ -53,8 +53,10 @@ Forge agents are designed to never expose inbound listeners to the public intern
 - **No public tunnels** — Forge does not create ngrok, Cloudflare, or similar tunnels
 - **No inbound webhooks** — Channels use outbound-only connections
   - Slack: Socket Mode (outbound WebSocket via `apps.connections.open`)
-  - Telegram: Long-polling via `getUpdates`
+  - Telegram: Long-polling via `getUpdates`; webhook mode binds to `127.0.0.1` only
 - **Local-only HTTP server** — The A2A dev server binds to `localhost` by default
+- **Rate limiting** — Per-IP token bucket rate limiting on the A2A server (read: 60 req/min, write: 10 req/min) with automatic 429 responses and `Retry-After` headers
+- **Request size limits** — A2A server enforces `MaxHeaderBytes` (1 MiB) and request body limits (2 MiB via `http.MaxBytesReader`) to prevent denial-of-service via oversized payloads
 - **CORS restriction** — The A2A server restricts `Access-Control-Allow-Origin` to localhost by default; configurable via `--cors-origins` flag, `FORGE_CORS_ORIGINS` env var, or `cors_origins` in `forge.yaml`
 - **Security response headers** — All A2A responses include `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, and `Content-Security-Policy: default-src 'none'`
 - **No hidden listeners** — Every network binding is explicit and logged
@@ -120,13 +122,15 @@ Skill scripts run via `SkillCommandExecutor` (`forge-cli/tools/exec.go`):
 |---------|--------|
 | **Environment isolation** | Only `PATH`, `HOME`, and explicitly declared env vars are passed through |
 | **Egress proxy injection** | `HTTP_PROXY`/`HTTPS_PROXY` env vars route subprocess HTTP through the egress proxy |
+| **OAuth token resolution** | When `OPENAI_API_KEY` is set to the sentinel `__oauth__`, the executor resolves OAuth credentials and injects the access token and `OPENAI_BASE_URL` |
+| **Model passthrough** | The configured LLM model name is injected as `REVIEW_MODEL` so skill scripts use the correct model |
 | **Configurable timeout** | Per-skill `timeout_hint` in YAML frontmatter (default: 120s) |
 | **No shell** | Runs `bash <script> <json-input>`, not through a shell interpreter |
 | **Scoped env vars** | Only env vars declared in the skill's `requires.env` section are passed |
 
 ### CLIExecuteTool
 
-The `cli_execute` tool (`forge-cli/tools/cli_execute.go`) provides 12 security layers:
+The `cli_execute` tool (`forge-cli/tools/cli_execute.go`) provides 13 security layers:
 
 | # | Layer | Detail |
 |---|-------|--------|
@@ -139,9 +143,10 @@ The `cli_execute` tool (`forge-cli/tools/cli_execute.go`) provides 12 security l
 | 7 | **Timeout** | Configurable per-command timeout (default: 120s) |
 | 8 | **No shell** | Uses `exec.CommandContext` directly — no shell expansion |
 | 9 | **Working directory** | `cmd.Dir` set to `workDir` for relative path resolution |
-| 10 | **Environment isolation** | Only `PATH`, `HOME`, `LANG`, explicit passthrough vars, and proxy vars |
+| 10 | **Environment isolation** | Only `PATH`, `HOME`, `LANG`, explicit passthrough vars, proxy vars, and `GH_CONFIG_DIR` (auto-set when HOME is overridden) |
 | 11 | **Output limits** | Configurable max output size (default: 1MB) to prevent memory exhaustion |
 | 12 | **Skill guardrails** | Skill-declared `deny_commands` and `deny_output` patterns via hooks |
+| 13 | **Custom tool entrypoint validation** | Custom tool entrypoints are validated against path traversal, symlink escape, absolute paths, and non-regular files |
 
 ### Configuration
 
@@ -160,6 +165,10 @@ tools:
 ## Secrets Management
 
 Forge provides AES-256-GCM encrypted secret storage with Argon2id key derivation, per-agent isolation, and a three-tier resolution hierarchy (agent-local -> global -> environment). Secrets are managed via `forge secret set|get|list|delete`.
+
+### Cross-Category Secret Reuse Detection
+
+At startup, the runtime detects when the same secret value is shared across different purpose categories (e.g., `OPENAI_API_KEY` and `TELEGRAM_BOT_TOKEN` having the same value). This prevents credential reuse mistakes that could escalate the impact of a single token compromise. Categories: `llm`, `search`, `telegram`, `slack`.
 
 For full details, see **[Secrets Management](secrets.md)**.
 

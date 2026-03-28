@@ -135,7 +135,7 @@ Shell interpreters (`bash`, `sh`, `zsh`, `dash`, `ksh`, `csh`, `tcsh`, `fish`) a
 
 ### HOME Override
 
-When `workDir` is configured, `$HOME` in the subprocess environment is overridden to `workDir`. This prevents `~` expansion inside subprocesses from reaching the real home directory. To preserve `gh` CLI authentication, `GH_CONFIG_DIR` is automatically set to the real `~/.config/gh` when HOME is overridden.
+When `workDir` is configured, `$HOME` in the subprocess environment is overridden to `workDir`. This prevents `~` expansion inside subprocesses from reaching the real home directory. To preserve `gh` CLI authentication, `GH_CONFIG_DIR` is automatically set to the real `~/.config/gh` — but **only** when the binary being executed is `gh`. Other binaries do not receive this env var, preventing them from accessing GitHub credentials.
 
 ### Path Argument Validation
 

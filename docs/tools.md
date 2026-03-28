@@ -94,7 +94,7 @@ Provider selection: `WEB_SEARCH_PROVIDER` env var, or auto-detect from available
 
 ## CLI Execute
 
-The `cli_execute` tool provides security-hardened command execution with 12 security layers:
+The `cli_execute` tool provides security-hardened command execution with 13 security layers:
 
 ```yaml
 tools:
@@ -117,9 +117,10 @@ tools:
 | 7 | **Timeout** | Configurable per-command timeout (default: 120s) |
 | 8 | **No shell** | Uses `exec.CommandContext` directly — no shell expansion |
 | 9 | **Working directory** | `cmd.Dir` set to `workDir` so relative paths resolve within the agent directory |
-| 10 | **Environment isolation** | Only `PATH`, `HOME`, `LANG`, explicit passthrough vars, proxy vars, and `OPENAI_ORG_ID` (when set). `HOME` is overridden to `workDir` to prevent `~` expansion from reaching the real home directory |
+| 10 | **Environment isolation** | Only `PATH`, `HOME`, `LANG`, explicit passthrough vars, proxy vars, `OPENAI_ORG_ID` (when set), and `GH_CONFIG_DIR` (auto-set to real `~/.config/gh` **only for the `gh` binary** when HOME is overridden). `HOME` is overridden to `workDir` to prevent `~` expansion from reaching the real home directory |
 | 11 | **Output limits** | Configurable max output size (default: 1MB) to prevent memory exhaustion |
 | 12 | **Skill guardrails** | Skill-declared `deny_commands` and `deny_output` patterns block/redact command inputs and outputs (see [Skill Guardrails](security/guardrails.md#skill-guardrails)) |
+| 13 | **Custom tool entrypoint validation** | Custom tool entrypoints are validated: rejects empty, absolute, or `..`-containing paths; resolves symlinks and verifies the target stays within the project directory and is a regular file |
 
 ## File Create
 
@@ -207,7 +208,16 @@ if __name__ == "__main__":
     print(execute(input_data))
 ```
 
-Custom tools can also be added by placing scripts in a `tools/` directory in your project.
+Custom tools can also be added by placing scripts in a `tools/` directory in your project. TypeScript tools run via `npx --no-install ts-node` to prevent automatic package downloads.
+
+### Custom Tool Entrypoint Validation
+
+Custom tool entrypoints are validated at registration time:
+
+- Empty or absolute paths are rejected
+- Paths containing `..` after `filepath.Clean` are rejected
+- Symlinks are resolved and the target must remain within the project directory
+- The entrypoint must be a regular file (not a directory or device)
 
 ## Tool Commands
 

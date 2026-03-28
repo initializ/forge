@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/initializ/forge/forge-core/a2a"
 	"github.com/initializ/forge/forge-core/channels"
@@ -728,5 +729,62 @@ func TestSendResponse_WithFilePart(t *testing.T) {
 	}
 	if !strings.Contains(lastPostText, "attached") {
 		t.Errorf("expected 'attached' note in post, got %q", lastPostText)
+	}
+}
+
+func TestDedupCache_FirstSeen(t *testing.T) {
+	p := New()
+	if p.isDuplicate("env-1") {
+		t.Error("first call should return false")
+	}
+}
+
+func TestDedupCache_SecondSeen(t *testing.T) {
+	p := New()
+	p.isDuplicate("env-2")
+	if !p.isDuplicate("env-2") {
+		t.Error("second call with same ID should return true")
+	}
+}
+
+func TestDedupCache_DifferentIDs(t *testing.T) {
+	p := New()
+	if p.isDuplicate("env-a") {
+		t.Error("env-a first call should return false")
+	}
+	if p.isDuplicate("env-b") {
+		t.Error("env-b first call should return false")
+	}
+}
+
+func TestDedupCache_EmptyID(t *testing.T) {
+	p := New()
+	if p.isDuplicate("") {
+		t.Error("empty ID should never be duplicate")
+	}
+	if p.isDuplicate("") {
+		t.Error("empty ID should never be duplicate on second call")
+	}
+}
+
+func TestEvictExpiredDedup(t *testing.T) {
+	p := New()
+
+	// Manually insert an old entry
+	p.dedupMu.Lock()
+	p.dedupCache["old-env"] = time.Now().Add(-10 * time.Minute)
+	p.dedupCache["recent-env"] = time.Now()
+	p.dedupMu.Unlock()
+
+	p.evictExpiredDedup()
+
+	p.dedupMu.Lock()
+	defer p.dedupMu.Unlock()
+
+	if _, ok := p.dedupCache["old-env"]; ok {
+		t.Error("old-env should have been evicted")
+	}
+	if _, ok := p.dedupCache["recent-env"]; !ok {
+		t.Error("recent-env should still be present")
 	}
 }

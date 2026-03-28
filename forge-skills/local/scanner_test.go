@@ -1,6 +1,8 @@
 package local
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"testing/fstest"
 )
@@ -258,5 +260,79 @@ Search.
 	}
 	if skills[0].DisplayName != "Tavily Search" {
 		t.Errorf("DisplayName = %q, want 'Tavily Search'", skills[0].DisplayName)
+	}
+}
+
+// writeSkillMD creates a minimal SKILL.md in dir/name/SKILL.md.
+func writeSkillMD(t *testing.T, dir, name string) {
+	t.Helper()
+	skillDir := filepath.Join(dir, name)
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: " + name + "\ndescription: test\n---\n## Tool: " + name + "\nTest.\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestScanWithRoot_SymlinkInsideRoot(t *testing.T) {
+	root := t.TempDir()
+	// Create a real skill directory
+	writeSkillMD(t, root, "real-skill")
+
+	// Create a second real skill directory, then put a symlink to a file
+	// inside root. The key is that the real-skill directory itself resolves
+	// inside root, so it should be accepted.
+	skills, err := ScanWithRoot(os.DirFS(root), root)
+	if err != nil {
+		t.Fatalf("ScanWithRoot error: %v", err)
+	}
+	names := map[string]bool{}
+	for _, s := range skills {
+		names[s.Name] = true
+	}
+	if !names["real-skill"] {
+		t.Error("expected real-skill to be present")
+	}
+}
+
+func TestScanWithRoot_SymlinkOutsideRoot(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+
+	// Create a real skill outside root
+	writeSkillMD(t, outside, "evil-skill")
+	// Create a symlink in root pointing outside
+	link := filepath.Join(root, "evil-skill")
+	if err := os.Symlink(filepath.Join(outside, "evil-skill"), link); err != nil {
+		t.Skip("symlinks not supported on this platform")
+	}
+
+	skills, err := ScanWithRoot(os.DirFS(root), root)
+	if err != nil {
+		t.Fatalf("ScanWithRoot error: %v", err)
+	}
+	for _, s := range skills {
+		if s.Name == "evil-skill" {
+			t.Error("symlink escaping root should have been skipped")
+		}
+	}
+}
+
+func TestScanWithRoot_EmptyRoot_NoValidation(t *testing.T) {
+	fsys := fstest.MapFS{
+		"myskill/SKILL.md": &fstest.MapFile{
+			Data: []byte("---\nname: myskill\ndescription: test\n---\n## Tool: myskill\nTest.\n"),
+		},
+	}
+
+	// Empty root = no symlink validation (backward compat)
+	skills, err := ScanWithRoot(fsys, "")
+	if err != nil {
+		t.Fatalf("ScanWithRoot error: %v", err)
+	}
+	if len(skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d", len(skills))
 	}
 }

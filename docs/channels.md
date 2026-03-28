@@ -10,7 +10,7 @@ Channel adapters bridge messaging platforms (Slack, Telegram) to your A2A-compli
        └──────────────── SendResponse ←────────────────────────┘
 ```
 
-Both channels use **outbound-only connections** — no public URLs, no ngrok, no inbound webhooks.
+Both channels use **outbound-only connections** — no public URLs, no ngrok, no inbound webhooks. Telegram webhook mode binds to `127.0.0.1` only with secret token verification.
 
 ## Supported Channels
 
@@ -144,7 +144,27 @@ Environment variables:
 
 Mode options:
 - `polling` (default) — Long-polling via `getUpdates`
-- `webhook` — Receives updates via HTTP webhook
+- `webhook` — Receives updates via HTTP webhook (loopback-only binding with secret token verification)
+
+### Telegram Webhook Security
+
+When running in webhook mode, the Telegram adapter applies multiple security controls:
+
+| Control | Detail |
+|---------|--------|
+| **Loopback binding** | Webhook server binds to `127.0.0.1:<port>` instead of `0.0.0.0`, preventing direct internet exposure |
+| **Secret token verification** | A 32-byte random secret is generated at startup and registered with Telegram's `setWebhook` API. Incoming requests must include the matching `X-Telegram-Bot-Api-Secret-Token` header; mismatches return 401 |
+| **Content-Type enforcement** | Only `application/json` requests are accepted; others return 415 |
+| **Request body limit** | Bodies are limited to 1 MiB via `http.MaxBytesReader`; oversized payloads return 413 |
+
+### Slack Event Deduplication
+
+The Slack adapter deduplicates events by envelope ID to prevent processing the same message multiple times (common during reconnections or network retries):
+
+- Each envelope ID is recorded in an in-memory cache on first receipt
+- Subsequent envelopes with the same ID are silently skipped after acknowledgment
+- Cache entries older than 5 minutes are evicted automatically every 60 seconds
+- Empty envelope IDs are never considered duplicates
 
 ## Large Response Handling
 

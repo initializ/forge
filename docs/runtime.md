@@ -67,6 +67,21 @@ forge init my-agent
 
 OAuth tokens are stored in `~/.forge/credentials/openai.json` and automatically refreshed.
 
+#### OAuth for Skill Scripts
+
+When `OPENAI_API_KEY` is set to the sentinel value `__oauth__`, the `SkillCommandExecutor` resolves OAuth credentials at execution time and injects:
+- The real access token as `OPENAI_API_KEY`
+- The Codex base URL as `OPENAI_BASE_URL`
+- The configured model name as `REVIEW_MODEL`
+
+Skill scripts (e.g., `code-review-diff.sh`) detect `OPENAI_BASE_URL` and automatically use the OpenAI Responses API with streaming instead of the standard Chat Completions API.
+
+### Secret Reuse Detection
+
+At startup, the runtime validates that secret values are not reused across different purpose categories. Sharing the same token between unrelated services (e.g., using an OpenAI API key as a Telegram bot token) is blocked with an error.
+
+Categories: `llm` (OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, etc.), `search` (TAVILY_API_KEY, PERPLEXITY_API_KEY), `telegram` (TELEGRAM_BOT_TOKEN), `slack` (SLACK_APP_TOKEN, SLACK_BOT_TOKEN). Same-category reuse (e.g., two LLM keys with the same value) is allowed.
+
 ### Organization ID (OpenAI Enterprise)
 
 Enterprise OpenAI accounts can set an Organization ID to route API requests to the correct org:

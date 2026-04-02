@@ -276,13 +276,27 @@ func (t *CLIExecuteTool) buildEnv(binary string) []string {
 		"HOME=" + homeVal,
 		"LANG=" + os.Getenv("LANG"),
 	}
-	// When HOME is overridden, preserve GH_CONFIG_DIR ONLY for the gh binary.
-	// Scoping to gh prevents other binaries from accessing GitHub credentials.
-	if binary == "gh" && t.workDir != "" && realHome != "" {
-		if _, ok := os.LookupEnv("GH_CONFIG_DIR"); !ok {
-			env = append(env, "GH_CONFIG_DIR="+filepath.Join(realHome, ".config", "gh"))
+
+	// Per-binary credential scoping: only the binary that needs credentials gets them.
+	if t.workDir != "" && realHome != "" {
+		switch binary {
+		case "gh":
+			// Preserve GH_CONFIG_DIR so gh CLI finds auth at real ~/.config/gh.
+			if _, ok := os.LookupEnv("GH_CONFIG_DIR"); !ok {
+				env = append(env, "GH_CONFIG_DIR="+filepath.Join(realHome, ".config", "gh"))
+			}
+		case "kubectl", "helm":
+			// Preserve KUBECONFIG so kubectl/helm find cluster credentials at
+			// the real ~/.kube/config when HOME has been overridden.
+			if _, ok := os.LookupEnv("KUBECONFIG"); !ok {
+				defaultKubeconfig := filepath.Join(realHome, ".kube", "config")
+				if _, err := os.Stat(defaultKubeconfig); err == nil {
+					env = append(env, "KUBECONFIG="+defaultKubeconfig)
+				}
+			}
 		}
 	}
+
 	for _, key := range t.config.EnvPassthrough {
 		if val, ok := os.LookupEnv(key); ok {
 			env = append(env, key+"="+val)
@@ -296,7 +310,81 @@ func (t *CLIExecuteTool) buildEnv(binary string) []string {
 			"https_proxy="+t.proxyURL,
 		)
 	}
+
+	// kubectl/helm manage their own TLS (mTLS client certs, bearer tokens).
+	// Routing through the egress proxy breaks K8s API auth. Set NO_PROXY to
+	// bypass the proxy for addresses kubectl commonly connects to.
+	if t.proxyURL != "" && (binary == "kubectl" || binary == "helm") {
+		noProxy := buildK8sNoProxy(env)
+		if noProxy != "" {
+			env = append(env,
+				"NO_PROXY="+noProxy,
+				"no_proxy="+noProxy,
+			)
+		}
+	}
+
 	return env
+}
+
+// buildK8sNoProxy extracts the K8s API server address from the KUBECONFIG
+// file (if available) and returns a NO_PROXY value that includes it along
+// with standard local addresses. This prevents the egress proxy from
+// intercepting kubectl's mTLS/bearer-token auth to the API server.
+func buildK8sNoProxy(env []string) string {
+	// Always bypass proxy for loopback and common K8s local addresses.
+	entries := []string{"localhost", "127.0.0.1", "::1", "*.local", "kubernetes.docker.internal", "host.docker.internal"}
+
+	// Try to extract the API server host from KUBECONFIG env we just set.
+	var kubeconfigPath string
+	for _, e := range env {
+		if strings.HasPrefix(e, "KUBECONFIG=") {
+			kubeconfigPath = strings.TrimPrefix(e, "KUBECONFIG=")
+			break
+		}
+	}
+	if kubeconfigPath == "" {
+		// Check the real env (user may have set KUBECONFIG explicitly).
+		kubeconfigPath = os.Getenv("KUBECONFIG")
+	}
+	if kubeconfigPath != "" {
+		if host := extractK8sAPIHost(kubeconfigPath); host != "" {
+			entries = append(entries, host)
+		}
+	}
+	return strings.Join(entries, ",")
+}
+
+// extractK8sAPIHost reads the kubeconfig and extracts the server hostname
+// of the current context. Returns just the hostname (no port, no scheme).
+func extractK8sAPIHost(kubeconfigPath string) string {
+	data, err := os.ReadFile(kubeconfigPath)
+	if err != nil {
+		return ""
+	}
+	// Lightweight extraction: find "server:" lines and parse the hostname.
+	// Full YAML parsing would require a dependency; a simple scan suffices.
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "server:") {
+			serverURL := strings.TrimSpace(strings.TrimPrefix(trimmed, "server:"))
+			// Strip scheme
+			serverURL = strings.TrimPrefix(serverURL, "https://")
+			serverURL = strings.TrimPrefix(serverURL, "http://")
+			// Strip port
+			if idx := strings.LastIndex(serverURL, ":"); idx > 0 {
+				serverURL = serverURL[:idx]
+			}
+			// Strip trailing path
+			if idx := strings.Index(serverURL, "/"); idx > 0 {
+				serverURL = serverURL[:idx]
+			}
+			if serverURL != "" {
+				return serverURL
+			}
+		}
+	}
+	return ""
 }
 
 // deniedShells is a hardcoded set of shell interpreters that are never allowed

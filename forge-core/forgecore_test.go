@@ -794,15 +794,6 @@ func TestNewRuntime_WithToolCalling(t *testing.T) {
 				},
 				FinishReason: "stop",
 			},
-			// The agent loop sends a continuation nudge after the first stop.
-			// Without workflow phases configured, only 1 nudge fires.
-			{
-				Message: llm.ChatMessage{
-					Role:    llm.RoleAssistant,
-					Content: "I fetched the URL and got: ok",
-				},
-				FinishReason: "stop",
-			},
 		},
 	}
 
@@ -834,9 +825,10 @@ func TestNewRuntime_WithToolCalling(t *testing.T) {
 		t.Errorf("response text = %q, want 'I fetched the URL and got: ok'", resp.Parts[0].Text)
 	}
 
-	// Should have made 3 LLM calls (tool call + stop + 1 continuation nudge)
-	if toolCallClient.callIdx != 3 {
-		t.Errorf("LLM was called %d times, want 3", toolCallClient.callIdx)
+	// Should have made 2 LLM calls (tool call + stop). No continuation
+	// nudge because no workflow phases and no edit/git tools were used.
+	if toolCallClient.callIdx != 2 {
+		t.Errorf("LLM was called %d times, want 2", toolCallClient.callIdx)
 	}
 }
 
@@ -1334,14 +1326,6 @@ func TestIntegration_CompileWithToolCallLoop(t *testing.T) {
 				},
 				FinishReason: "stop",
 			},
-			// Continuation nudge: without workflow phases, only 1 nudge fires.
-			{
-				Message: llm.ChatMessage{
-					Role:    llm.RoleAssistant,
-					Content: "Found and fetched the result",
-				},
-				FinishReason: "stop",
-			},
 		},
 	}
 
@@ -1371,8 +1355,10 @@ func TestIntegration_CompileWithToolCallLoop(t *testing.T) {
 	if resp.Parts[0].Text != "Found and fetched the result" {
 		t.Errorf("response text = %q", resp.Parts[0].Text)
 	}
-	if toolCallClient.callIdx != 4 {
-		t.Errorf("LLM was called %d times, want 4", toolCallClient.callIdx)
+	// 3 calls: web_search tool call + http_request tool call + stop.
+	// No continuation nudge because no workflow phases and no edit/git tools.
+	if toolCallClient.callIdx != 3 {
+		t.Errorf("LLM was called %d times, want 3", toolCallClient.callIdx)
 	}
 }
 

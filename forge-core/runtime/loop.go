@@ -276,6 +276,12 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 					maxNudges = 0 // workflow is complete — don't nudge
 				} else if workflowIncomplete && tracker.phaseHasError[phaseGitOps] {
 					maxNudges = 2
+				} else if !hasWorkflowRequirements && !tracker.phaseSeen[phaseEdit] && !tracker.phaseSeen[phaseGitOps] {
+					// Informational / Q&A conversation — agent only used
+					// explore-phase tools (web_search, file_read, etc.) and
+					// gave a text response. No code changes were attempted,
+					// so there's nothing to "continue" with.
+					maxNudges = 0
 				}
 
 				if stopNudgesSent < maxNudges {

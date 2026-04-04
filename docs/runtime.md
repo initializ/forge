@@ -21,6 +21,10 @@ User message → Memory → LLM → tool_calls? → Execute tools → LLM → ..
 
 The loop terminates when `FinishReason == "stop"` or `len(ToolCalls) == 0`.
 
+### Q&A Nudge Suppression
+
+When the agent finishes with `stop` and no workflow phases are configured, the loop checks whether edit or git tools were used. If only explore-phase tools were invoked (e.g., `web_search`, `file_read`), the conversation is classified as informational/Q&A — the agent's text response is the final answer and no continuation nudge ("You stopped…") is sent. This prevents the agent from re-summarizing answers to simple questions.
+
 ## LLM Providers
 
 Forge supports multiple LLM providers with automatic fallback:
@@ -222,7 +226,7 @@ The runner registers five hook groups: logging, audit, progress, global guardrai
 
 ## Streaming
 
-The current implementation (v1) runs the full tool-calling loop non-streaming. `ExecuteStream` calls `Execute` internally and emits the final response as a single message on a channel. True word-by-word streaming during tool loops is planned for v2.
+The LLM tool-calling loop runs non-streaming internally. `ExecuteStream` calls `Execute` and emits the final response on a channel. However, the **UI chat proxy** (`forge-ui/chat.go`) streams A2A SSE events to the browser in real-time — `status` events carry incremental text, `progress` events carry tool execution updates, and `result` events carry the final response. The frontend renders text and tool progress as each event arrives.
 
 ---
 ← [Tools](tools.md) | [Back to README](../README.md) | [Memory](memory.md) →

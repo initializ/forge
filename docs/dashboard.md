@@ -30,6 +30,7 @@ The main view discovers all agents in the workspace directory and shows their st
 | Daemon processes | Agents run as background daemons via `forge serve` — they survive UI shutdown |
 | Live status | Real-time state updates (stopped, starting, running, errored) |
 | Passphrase unlock | Prompts for `FORGE_PASSPHRASE` when agents have encrypted secrets |
+| Startup error display | Shows actual error messages (e.g., missing env vars) in the agent card when startup fails, extracted from `.forge/serve.log` |
 | Auto-rescan | Detects new agents after creation |
 | Unified management | All agents (UI-started or CLI-started) get identical Start/Stop controls |
 
@@ -39,6 +40,7 @@ The UI manages agents as daemon processes using `forge serve start` / `forge ser
 
 - **Agents survive UI shutdown** — closing the dashboard does not kill running agents.
 - **Restart detection** — restarting the UI auto-discovers running agents via `.forge/serve.json` and TCP probing.
+- **PID liveness verification** — after `forge serve start` returns, the UI verifies the child process is still alive via PID probing and TCP port check. If the child crashed (e.g., missing env vars), the error is extracted from `.forge/serve.log` and displayed in the agent card.
 - **Unified view** — agents started from the CLI (`forge serve start`) and agents started from the UI appear identically. There is no distinction between "UI-managed" and "CLI-managed" agents.
 
 ## Interactive Chat
@@ -102,7 +104,7 @@ An AI-powered conversational tool for creating custom skills. Access it via the 
 
 ### How It Works
 
-The Skill Builder uses the agent's own LLM provider to power a chat conversation that generates valid SKILL.md files and optional helper scripts. It automatically selects a stronger code-generation model when available (e.g. `gpt-4.1` for OpenAI, `claude-opus-4-6` for Anthropic).
+The Skill Builder uses the agent's own LLM provider to power a chat conversation that generates valid SKILL.md files and optional helper scripts. It automatically selects a stronger code-generation model when available (e.g. `gpt-4.1` for OpenAI, `claude-opus-4-6` for Anthropic). API key detection loads the agent's `.env` file and encrypted secrets (if unlocked) in addition to system environment variables.
 
 ### Features
 

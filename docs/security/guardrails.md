@@ -108,7 +108,8 @@ Some tools legitimately return PII as part of their function (e.g., `github_get_
           "file_create",
           "code_agent_write",
           "code_agent_edit",
-          "cli_execute"
+          "cli_execute",
+          "web_search"
         ]
       }
     }
@@ -122,6 +123,7 @@ Some tools legitimately return PII as part of their function (e.g., `github_get_
 |----------|--------|
 | Per-guardrail scope | `allow_tools` on `no_pii` does **not** bypass `no_secrets` — each guardrail has its own allowlist |
 | Write tools included | `file_create`, `code_agent_write`, `code_agent_edit`, and `cli_execute` are included because they echo back content the LLM already has or return operational output that may contain incidental PII (e.g., git log author emails) |
+| Web search included | `web_search` is included because search results routinely contain names, emails, and other PII that is public web content — blocking these results would make Q&A conversations unusable |
 | Default config | The default policy scaffold pre-configures `allow_tools` for GitHub profile tools and write tools |
 | Custom overrides | Override via `policy-scaffold.json` to add or remove tools from the allowlist |
 

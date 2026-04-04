@@ -572,3 +572,126 @@ func TestCLIExecute_HomeOverriddenToWorkDir(t *testing.T) {
 		t.Errorf("expected %q in env output, got:\n%s", expected, res.Stdout)
 	}
 }
+
+func TestBuildEnv_GHConfigDirScopedToGh(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", "/Users/testuser")
+
+	tool := NewCLIExecuteTool(CLIExecuteConfig{
+		AllowedBinaries: []string{"env", "gh", "curl"},
+		WorkDir:         tmpDir,
+	})
+
+	// gh binary should get GH_CONFIG_DIR
+	ghEnv := tool.buildEnv("gh")
+	found := false
+	for _, e := range ghEnv {
+		if strings.HasPrefix(e, "GH_CONFIG_DIR=") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected GH_CONFIG_DIR for gh binary")
+	}
+
+	// curl binary should NOT get GH_CONFIG_DIR
+	curlEnv := tool.buildEnv("curl")
+	for _, e := range curlEnv {
+		if strings.HasPrefix(e, "GH_CONFIG_DIR=") {
+			t.Error("GH_CONFIG_DIR should not be set for curl binary")
+		}
+	}
+}
+
+func TestBuildEnv_KubeconfigScopedToKubectl(t *testing.T) {
+	tmpDir := t.TempDir()
+	realHome := t.TempDir()
+	t.Setenv("HOME", realHome)
+
+	// Create a fake kubeconfig
+	kubeDir := filepath.Join(realHome, ".kube")
+	if err := os.MkdirAll(kubeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(kubeDir, "config"), []byte("apiVersion: v1\nclusters:\n- cluster:\n    server: https://192.168.1.100:6443\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := NewCLIExecuteTool(CLIExecuteConfig{
+		AllowedBinaries: []string{"env", "kubectl", "curl"},
+		WorkDir:         tmpDir,
+	})
+
+	// kubectl should get KUBECONFIG
+	kubectlEnv := tool.buildEnv("kubectl")
+	found := false
+	for _, e := range kubectlEnv {
+		if strings.HasPrefix(e, "KUBECONFIG=") {
+			found = true
+			if !strings.Contains(e, filepath.Join(realHome, ".kube", "config")) {
+				t.Errorf("expected KUBECONFIG to point to real home, got: %s", e)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected KUBECONFIG for kubectl binary")
+	}
+
+	// curl should NOT get KUBECONFIG
+	curlEnv := tool.buildEnv("curl")
+	for _, e := range curlEnv {
+		if strings.HasPrefix(e, "KUBECONFIG=") {
+			t.Error("KUBECONFIG should not be set for curl binary")
+		}
+	}
+}
+
+func TestBuildEnv_KubectlNoProxy(t *testing.T) {
+	tmpDir := t.TempDir()
+	realHome := t.TempDir()
+	t.Setenv("HOME", realHome)
+
+	// Create kubeconfig with a server address
+	kubeDir := filepath.Join(realHome, ".kube")
+	if err := os.MkdirAll(kubeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(kubeDir, "config"), []byte("apiVersion: v1\nclusters:\n- cluster:\n    server: https://my-k8s.example.com:6443\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := NewCLIExecuteTool(CLIExecuteConfig{
+		AllowedBinaries: []string{"kubectl", "curl"},
+		WorkDir:         tmpDir,
+	})
+	tool.proxyURL = "http://127.0.0.1:54321"
+
+	// kubectl should get NO_PROXY with the K8s API server host
+	kubectlEnv := tool.buildEnv("kubectl")
+	var noProxy string
+	for _, e := range kubectlEnv {
+		if strings.HasPrefix(e, "NO_PROXY=") {
+			noProxy = strings.TrimPrefix(e, "NO_PROXY=")
+			break
+		}
+	}
+	if noProxy == "" {
+		t.Fatal("expected NO_PROXY for kubectl binary")
+	}
+	if !strings.Contains(noProxy, "my-k8s.example.com") {
+		t.Errorf("expected NO_PROXY to contain K8s API host, got: %s", noProxy)
+	}
+	if !strings.Contains(noProxy, "localhost") {
+		t.Errorf("expected NO_PROXY to contain localhost, got: %s", noProxy)
+	}
+
+	// curl should NOT get NO_PROXY
+	curlEnv := tool.buildEnv("curl")
+	for _, e := range curlEnv {
+		if strings.HasPrefix(e, "NO_PROXY=") {
+			t.Error("NO_PROXY should not be set for curl binary")
+		}
+	}
+}

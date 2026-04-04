@@ -276,6 +276,12 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 					maxNudges = 0 // workflow is complete — don't nudge
 				} else if workflowIncomplete && tracker.phaseHasError[phaseGitOps] {
 					maxNudges = 2
+				} else if !hasWorkflowRequirements && !tracker.phaseSeen[phaseEdit] && !tracker.phaseSeen[phaseGitOps] {
+					// Informational / Q&A conversation — agent only used
+					// explore-phase tools (web_search, file_read, etc.) and
+					// gave a text response. No code changes were attempted,
+					// so there's nothing to "continue" with.
+					maxNudges = 0
 				}
 
 				if stopNudgesSent < maxNudges {
@@ -434,6 +440,10 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 
 			// Handle file_create tool: always create a file part.
 			// For other tools with large output, detect content type.
+			// Skip cli_execute: it's an intermediate tool — the LLM should
+			// analyze its output and produce a human-readable response, not
+			// forward raw JSON. Attaching cli_execute output as a file causes
+			// the LLM to say "see attached" instead of writing a report.
 			if tc.Function.Name == "file_create" {
 				var fc struct {
 					Filename string `json:"filename"`
@@ -450,7 +460,7 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 						},
 					})
 				}
-			} else if len(result) > largeToolOutputThreshold {
+			} else if tc.Function.Name != "cli_execute" && len(result) > largeToolOutputThreshold {
 				name, mime := detectFileType(result, tc.Function.Name)
 				largeToolOutputs = append(largeToolOutputs, a2a.Part{
 					Kind: a2a.PartKindFile,

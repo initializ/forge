@@ -1190,3 +1190,93 @@ func TestGitNudgeNoVerifyReminderWithoutEditPhase(t *testing.T) {
 		t.Errorf("git nudge should still include git workflow steps, got: %s", msg)
 	}
 }
+
+func TestNoStopNudgeForQAConversation(t *testing.T) {
+	// When no workflow phases are configured and the agent only uses
+	// explore-phase tools (e.g. web_search), it's a Q&A conversation.
+	// The stop nudge should NOT fire — the agent's text response is the answer.
+	makeToolDefs := func(names ...string) []llm.ToolDefinition {
+		var defs []llm.ToolDefinition
+		for _, n := range names {
+			defs = append(defs, llm.ToolDefinition{
+				Type:     "function",
+				Function: llm.FunctionSchema{Name: n},
+			})
+		}
+		return defs
+	}
+
+	callIdx := 0
+	var capturedMessages []llm.ChatMessage
+
+	client := &mockLLMClient{
+		chatFunc: func(ctx context.Context, req *llm.ChatRequest) (*llm.ChatResponse, error) {
+			callIdx++
+			capturedMessages = append([]llm.ChatMessage{}, req.Messages...)
+			if callIdx == 1 {
+				// First call: LLM calls web_search
+				return &llm.ChatResponse{
+					Message: llm.ChatMessage{
+						Role: llm.RoleAssistant,
+						ToolCalls: []llm.ToolCall{
+							{
+								ID:   "call_1",
+								Type: "function",
+								Function: llm.FunctionCall{
+									Name:      "web_search",
+									Arguments: `{"query":"top news today"}`,
+								},
+							},
+						},
+					},
+					FinishReason: "tool_calls",
+				}, nil
+			}
+			// Second call: LLM provides answer
+			return &llm.ChatResponse{
+				Message:      llm.ChatMessage{Role: llm.RoleAssistant, Content: "Here are the top headlines..."},
+				FinishReason: "stop",
+			}, nil
+		},
+	}
+
+	tools := &mockToolExecutor{
+		executeFunc: func(ctx context.Context, name string, arguments json.RawMessage) (string, error) {
+			return `{"results":[{"title":"News headline"}]}`, nil
+		},
+		toolDefs: makeToolDefs("web_search"),
+	}
+
+	// No workflow phases — this is a general-purpose agent
+	executor := NewLLMExecutor(LLMExecutorConfig{
+		Client:        client,
+		Tools:         tools,
+		MaxIterations: 20,
+	})
+
+	task := &a2a.Task{ID: "qa-no-nudge"}
+	msg := &a2a.Message{
+		Role:  a2a.MessageRoleUser,
+		Parts: []a2a.Part{a2a.NewTextPart("what are the top news?")},
+	}
+
+	resp, err := executor.Execute(context.Background(), task, msg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+
+	// Verify no "You stopped" nudge was injected
+	for _, m := range capturedMessages {
+		if m.Role == "user" && strings.Contains(m.Content, "You stopped") {
+			t.Errorf("Q&A conversation should not get stop nudge, but got: %s", m.Content)
+		}
+	}
+
+	// Should have exactly 2 LLM calls (tool call + answer), not 3 (+ nudge response)
+	if callIdx != 2 {
+		t.Errorf("expected 2 LLM calls for Q&A, got %d", callIdx)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/initializ/forge/forge-cli/runtime"
 	"github.com/initializ/forge/forge-core/types"
 )
 
@@ -71,6 +72,17 @@ func (s *UIServer) handleSkillBuilderProvider(w http.ResponseWriter, r *http.Req
 
 	provider := cfg.Model.Provider
 	model := SkillBuilderCodegenModel(provider, cfg.Model.Name)
+
+	// Load the agent's .env and encrypted secrets so we can check for API keys
+	// that aren't in the UI process's own environment.
+	envPath := filepath.Join(agentDir, ".env")
+	envVars, _ := runtime.LoadEnvFile(envPath)
+	for k, v := range envVars {
+		if os.Getenv(k) == "" {
+			_ = os.Setenv(k, v)
+		}
+	}
+	runtime.OverlaySecretsToEnv(cfg, agentDir)
 
 	// Check if the provider's API key env var is set
 	hasKey := false

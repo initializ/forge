@@ -556,6 +556,16 @@ function useChatStream(agentId) {
                   }
                 }
               }
+              // Update messages in real-time to show text as it arrives
+              setMessages(prev => {
+                const last = prev[prev.length - 1];
+                if (last && last.role === 'agent' && last.isStreaming) {
+                  const updated = [...prev];
+                  updated[updated.length - 1] = { ...last, content: agentText, tools: [...currentTools] };
+                  return updated;
+                }
+                return [...prev, { role: 'agent', content: agentText, tools: [...currentTools], isStreaming: true }];
+              });
             } else if (eventType === 'progress') {
               // Tool execution progress
               const status = parsed.status || parsed;
@@ -574,10 +584,10 @@ function useChatStream(agentId) {
                 const last = prev[prev.length - 1];
                 if (last && last.role === 'agent' && last.isStreaming) {
                   const updated = [...prev];
-                  updated[updated.length - 1] = { ...last, tools: [...currentTools] };
+                  updated[updated.length - 1] = { ...last, content: agentText, tools: [...currentTools] };
                   return updated;
                 }
-                return [...prev, { role: 'agent', content: '', tools: [...currentTools], isStreaming: true }];
+                return [...prev, { role: 'agent', content: agentText, tools: [...currentTools], isStreaming: true }];
               });
             } else if (eventType === 'result') {
               // Final result
@@ -590,6 +600,16 @@ function useChatStream(agentId) {
                   }
                 }
               }
+              // Show final text immediately
+              setMessages(prev => {
+                const last = prev[prev.length - 1];
+                if (last && last.role === 'agent' && last.isStreaming) {
+                  const updated = [...prev];
+                  updated[updated.length - 1] = { ...last, content: agentText, tools: [...currentTools] };
+                  return updated;
+                }
+                return [...prev, { role: 'agent', content: agentText, tools: [...currentTools], isStreaming: true }];
+              });
             } else if (eventType === 'done') {
               if (parsed.session_id) {
                 receivedSessionId = parsed.session_id;
@@ -2445,6 +2465,10 @@ function App() {
         return;
       }
       console.error('Failed to start agent:', err);
+      // Update agent state so the error is visible in the UI card.
+      setAgents(prev => prev.map(a =>
+        a.id === id ? { ...a, status: 'errored', error: err.message } : a
+      ));
     }
   }, [agents]);
 

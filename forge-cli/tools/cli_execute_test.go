@@ -611,8 +611,12 @@ func TestBuildEnv_KubeconfigScopedToKubectl(t *testing.T) {
 
 	// Create a fake kubeconfig
 	kubeDir := filepath.Join(realHome, ".kube")
-	os.MkdirAll(kubeDir, 0o700)
-	os.WriteFile(filepath.Join(kubeDir, "config"), []byte("apiVersion: v1\nclusters:\n- cluster:\n    server: https://192.168.1.100:6443\n"), 0o600)
+	if err := os.MkdirAll(kubeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(kubeDir, "config"), []byte("apiVersion: v1\nclusters:\n- cluster:\n    server: https://192.168.1.100:6443\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	tool := NewCLIExecuteTool(CLIExecuteConfig{
 		AllowedBinaries: []string{"env", "kubectl", "curl"},
@@ -651,8 +655,12 @@ func TestBuildEnv_KubectlNoProxy(t *testing.T) {
 
 	// Create kubeconfig with a server address
 	kubeDir := filepath.Join(realHome, ".kube")
-	os.MkdirAll(kubeDir, 0o700)
-	os.WriteFile(filepath.Join(kubeDir, "config"), []byte("apiVersion: v1\nclusters:\n- cluster:\n    server: https://my-k8s.example.com:6443\n"), 0o600)
+	if err := os.MkdirAll(kubeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(kubeDir, "config"), []byte("apiVersion: v1\nclusters:\n- cluster:\n    server: https://my-k8s.example.com:6443\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	tool := NewCLIExecuteTool(CLIExecuteConfig{
 		AllowedBinaries: []string{"kubectl", "curl"},

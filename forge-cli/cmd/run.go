@@ -34,9 +34,10 @@ var (
 )
 
 var runCmd = &cobra.Command{
-	Use:   "run",
-	Short: "Run the agent locally with an A2A-compliant dev server",
-	RunE:  runRun,
+	Use:          "run",
+	Short:        "Run the agent locally with an A2A-compliant dev server",
+	SilenceUsage: true,
+	RunE:         runRun,
 }
 
 func init() {

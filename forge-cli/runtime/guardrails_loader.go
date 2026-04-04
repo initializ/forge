@@ -47,6 +47,7 @@ func DefaultPolicyScaffold() *agentspec.PolicyScaffold {
 						"code_agent_write",
 						"code_agent_edit",
 						"cli_execute",
+						"web_search",
 					},
 				},
 			},

@@ -150,12 +150,29 @@ func defaultSecretsPath() string {
 	return filepath.Join(home, ".forge", "secrets.enc")
 }
 
-// secretsPathForDisplay returns the path being operated on for user-facing messages.
-func secretsPathForDisplay() string {
+// resolveSecretsPath returns the actual secrets file path that will be used,
+// accounting for the --local flag and any secrets.path override in forge.yaml.
+func resolveSecretsPath() string {
 	if secretLocal {
 		return localSecretsPath()
 	}
-	return defaultSecretsPath()
+	path := defaultSecretsPath()
+	cfgPath := cfgFile
+	if !filepath.IsAbs(cfgPath) {
+		wd, _ := os.Getwd()
+		cfgPath = filepath.Join(wd, cfgPath)
+	}
+	if data, err := os.ReadFile(cfgPath); err == nil {
+		if cfg, err := parseSecretsPath(data); err == nil && cfg != "" {
+			path = cfg
+		}
+	}
+	return path
+}
+
+// secretsPathForDisplay returns the path being operated on for user-facing messages.
+func secretsPathForDisplay() string {
+	return resolveSecretsPath()
 }
 
 // resolvePassphrase returns the passphrase from FORGE_PASSPHRASE env or terminal prompt.
@@ -176,35 +193,25 @@ func resolvePassphrase() (string, error) {
 
 // buildEncryptedProvider builds an EncryptedFileProvider using defaults or config.
 func buildEncryptedProvider() (*secrets.EncryptedFileProvider, error) {
-	var path string
-	if secretLocal {
-		path = localSecretsPath()
-	} else {
-		path = defaultSecretsPath()
-
-		// Try loading config to get custom path
-		cfgPath := cfgFile
-		if !filepath.IsAbs(cfgPath) {
-			wd, _ := os.Getwd()
-			cfgPath = filepath.Join(wd, cfgPath)
-		}
-		if data, err := os.ReadFile(cfgPath); err == nil {
-			if cfg, err := parseSecretsPath(data); err == nil && cfg != "" {
-				path = cfg
-			}
-		}
-	}
-
-	return secrets.NewEncryptedFileProvider(path, resolvePassphrase), nil
+	return secrets.NewEncryptedFileProvider(resolveSecretsPath(), resolvePassphrase), nil
 }
 
 // parseSecretsPath extracts secrets.path from raw YAML config bytes.
+// It only looks for path: within the secrets: top-level block to avoid
+// matching path: keys from other sections (e.g. skills.path).
 func parseSecretsPath(data []byte) (string, error) {
-	// Minimal parse to avoid importing config package
+	inSecrets := false
 	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "path:") && len(line) > 5 {
-			return strings.TrimSpace(line[5:]), nil
+		// A top-level key has no leading whitespace
+		if len(line) > 0 && line[0] != ' ' && line[0] != '\t' {
+			trimmed := strings.TrimSpace(line)
+			inSecrets = strings.HasPrefix(trimmed, "secrets:")
+		}
+		if inSecrets {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "path:") && len(trimmed) > 5 {
+				return strings.TrimSpace(trimmed[5:]), nil
+			}
 		}
 	}
 	return "", nil

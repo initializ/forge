@@ -58,13 +58,15 @@ Examples:
   forge serve stop                    # Stop the daemon
   forge serve status                  # Show running status
   forge serve logs                    # View recent logs`,
-	RunE: serveStartRun, // bare "forge serve" acts as "forge serve start"
+	SilenceUsage: true,
+	RunE:         serveStartRun, // bare "forge serve" acts as "forge serve start"
 }
 
 var serveStartCmd = &cobra.Command{
-	Use:   "start",
-	Short: "Start the agent daemon",
-	RunE:  serveStartRun,
+	Use:          "start",
+	Short:        "Start the agent daemon",
+	SilenceUsage: true,
+	RunE:         serveStartRun,
 }
 
 var serveStopCmd = &cobra.Command{

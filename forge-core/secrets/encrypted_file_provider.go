@@ -114,7 +114,6 @@ func (p *EncryptedFileProvider) SetBatch(pairs map[string]string) error {
 func (p *EncryptedFileProvider) Delete(key string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
 	if err := p.ensureLoaded(); err != nil {
 		return err
 	}
@@ -132,7 +131,6 @@ func (p *EncryptedFileProvider) ensureLoaded() error {
 	if p.loaded {
 		return nil
 	}
-
 	data, err := os.ReadFile(p.path)
 	if os.IsNotExist(err) {
 		// No file yet — start with an empty cache.

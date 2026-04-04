@@ -117,10 +117,21 @@ tools:
 | 7 | **Timeout** | Configurable per-command timeout (default: 120s) |
 | 8 | **No shell** | Uses `exec.CommandContext` directly — no shell expansion |
 | 9 | **Working directory** | `cmd.Dir` set to `workDir` so relative paths resolve within the agent directory |
-| 10 | **Environment isolation** | Only `PATH`, `HOME`, `LANG`, explicit passthrough vars, proxy vars, `OPENAI_ORG_ID` (when set), and `GH_CONFIG_DIR` (auto-set to real `~/.config/gh` **only for the `gh` binary** when HOME is overridden). `HOME` is overridden to `workDir` to prevent `~` expansion from reaching the real home directory |
+| 10 | **Environment isolation** | Only `PATH`, `HOME`, `LANG`, explicit passthrough vars, proxy vars, `OPENAI_ORG_ID` (when set), `GH_CONFIG_DIR` (auto-set to real `~/.config/gh` **only for `gh`**), and `KUBECONFIG`/`NO_PROXY` (**only for `kubectl`/`helm`** — see below). `HOME` is overridden to `workDir` to prevent `~` expansion from reaching the real home directory |
 | 11 | **Output limits** | Configurable max output size (default: 1MB) to prevent memory exhaustion |
 | 12 | **Skill guardrails** | Skill-declared `deny_commands` and `deny_output` patterns block/redact command inputs and outputs (see [Skill Guardrails](security/guardrails.md#skill-guardrails)) |
 | 13 | **Custom tool entrypoint validation** | Custom tool entrypoints are validated: rejects empty, absolute, or `..`-containing paths; resolves symlinks and verifies the target stays within the project directory and is a regular file |
+
+### KUBECONFIG and NO_PROXY Scoping
+
+When `HOME` is overridden to `workDir`, `kubectl` and `helm` lose access to `~/.kube/config`. For these two binaries only, `cli_execute` auto-sets:
+
+| Env Var | Value | Purpose |
+|---------|-------|---------|
+| `KUBECONFIG` | `<real-home>/.kube/config` | Restores access to the real kubeconfig |
+| `NO_PROXY` | K8s API server hostname(s) | Bypasses the egress proxy for cluster connections |
+
+`NO_PROXY` is extracted from the kubeconfig's `clusters[].cluster.server` field. Other binaries do not receive these variables.
 
 ## File Create
 

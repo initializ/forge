@@ -140,7 +140,7 @@ func (s *DockerfileStage) copyProjectSources(bc *pipeline.BuildContext) error {
 	outDir := bc.Opts.OutputDir
 
 	// Individual files to copy
-	filesToCopy := []string{"forge.yaml"}
+	filesToCopy := []string{"forge.yaml", "guardrails.json"}
 	// Include channel config files (e.g. slack-config.yaml, telegram-config.yaml)
 	if bc.Config != nil {
 		for _, ch := range bc.Config.Channels {

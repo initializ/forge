@@ -50,6 +50,7 @@ Every `forge build` generates container-ready artifacts:
 
 | Artifact | Purpose |
 |----------|---------|
+| `guardrails.json` | Guardrail policy config (copied from project root if present) |
 | `Dockerfile` | Container image with minimal attack surface |
 | `deployment.yaml` | Kubernetes Deployment manifest |
 | `service.yaml` | Kubernetes Service manifest |

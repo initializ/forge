@@ -30,6 +30,8 @@ var (
 	runWithChannels      string
 	runNoAuth            bool
 	runAuthToken         string
+	runAuthURL           string
+	runAuthOrgID         string
 	runCORSOrigins       string
 )
 
@@ -53,6 +55,8 @@ func init() {
 	runCmd.Flags().StringVar(&runWithChannels, "with", "", "comma-separated channel adapters to start (e.g. slack,telegram)")
 	runCmd.Flags().BoolVar(&runNoAuth, "no-auth", false, "disable bearer token authentication (localhost only)")
 	runCmd.Flags().StringVar(&runAuthToken, "auth-token", "", "explicit bearer token (default: auto-generated)")
+	runCmd.Flags().StringVar(&runAuthURL, "auth-url", "", "external auth provider URL for token validation (e.g. https://auth.example.com/verify)")
+	runCmd.Flags().StringVar(&runAuthOrgID, "auth-org-id", "", "org_id sent to the external auth provider")
 	runCmd.Flags().StringVar(&runCORSOrigins, "cors-origins", "", "comma-separated CORS allowed origins (default: localhost only, use '*' for wildcard)")
 }
 
@@ -93,6 +97,8 @@ func runRun(cmd *cobra.Command, args []string) error {
 		Channels:          activeChannels,
 		NoAuth:            runNoAuth,
 		AuthToken:         runAuthToken,
+		AuthURL:           runAuthURL,
+		AuthOrgID:         runAuthOrgID,
 		CORSOrigins:       corsOrigins,
 	})
 	if err != nil {

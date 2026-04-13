@@ -881,7 +881,6 @@ func writeEnvFile(dir string, vars []envVarEntry) error {
 func getFileManifest(opts *initOptions) []fileToRender {
 	files := []fileToRender{
 		{TemplatePath: "forge.yaml.tmpl", OutputPath: "forge.yaml"},
-		{TemplatePath: "SKILL.md.tmpl", OutputPath: "SKILL.md"},
 		{TemplatePath: "env.example.tmpl", OutputPath: ".env.example"},
 		{TemplatePath: "gitignore.tmpl", OutputPath: ".gitignore"},
 	}

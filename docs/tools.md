@@ -128,10 +128,10 @@ When `HOME` is overridden to `workDir`, `kubectl` and `helm` lose access to `~/.
 
 | Env Var | Value | Purpose |
 |---------|-------|---------|
-| `KUBECONFIG` | `<real-home>/.kube/config` | Restores access to the real kubeconfig |
+| `KUBECONFIG` | Explicit `KUBECONFIG` if set, else `<real-home>/.kube/config` | Passes through the active kubeconfig |
 | `NO_PROXY` | K8s API server hostname(s) | Bypasses the egress proxy for cluster connections |
 
-`NO_PROXY` is extracted from the kubeconfig's `clusters[].cluster.server` field. Other binaries do not receive these variables.
+If `KUBECONFIG` is explicitly set in the environment (e.g., via `docker run -e KUBECONFIG=...` or after [KUBECONFIG materialization](runtime.md#kubeconfig-materialization)), that value is passed through directly. Otherwise, `cli_execute` falls back to the real `~/.kube/config`. `NO_PROXY` is extracted from the kubeconfig's `clusters[].cluster.server` field. Other binaries do not receive these variables.
 
 ## File Create
 

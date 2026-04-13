@@ -45,12 +45,33 @@ ENV {{$key}}="{{$val}}"
 ARG FORGE_DEV=false
 
 WORKDIR /app
+{{- if .HasBinStage}}
+COPY --from=bins /usr/local/bin/ /usr/local/bin/
+{{- end}}
 
 {{- if .Runtime.DepsFile}}
 COPY --from=deps /app/ .
 {{- end}}
 
 COPY . .
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+{{- if .ForgeFramework}}
+{{- if eq .ForgeVersion "latest"}}
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
+    ARCH=$(uname -m | sed 's/aarch64/arm64/;s/x86_64/x86_64/') && \
+    curl -fsSL -o /tmp/forge.tar.gz "https://github.com/initializ/forge/releases/latest/download/forge-Linux-${ARCH}.tar.gz" && \
+    tar xz -C /usr/local/bin forge -f /tmp/forge.tar.gz && rm /tmp/forge.tar.gz && \
+    chmod +x /usr/local/bin/forge && \
+    apt-get purge -y curl && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+{{- else}}
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
+    ARCH=$(uname -m | sed 's/aarch64/arm64/;s/x86_64/x86_64/') && \
+    curl -fsSL -o /tmp/forge.tar.gz "https://github.com/initializ/forge/releases/download/{{.ForgeVersion}}/forge-Linux-${ARCH}.tar.gz" && \
+    tar xz -C /usr/local/bin forge -f /tmp/forge.tar.gz && rm /tmp/forge.tar.gz && \
+    chmod +x /usr/local/bin/forge && \
+    apt-get purge -y curl && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+{{- end}}
+{{- end}}
 
 {{- if .HasSkills}}
 COPY compiled/skills/ /app/skills/

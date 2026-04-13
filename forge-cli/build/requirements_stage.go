@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/initializ/forge/forge-core/agentspec"
+	"github.com/initializ/forge/forge-core/packaging"
 	"github.com/initializ/forge/forge-core/pipeline"
 	"github.com/initializ/forge/forge-skills/contract"
 	"github.com/initializ/forge/forge-skills/requirements"
@@ -74,6 +75,29 @@ func (s *RequirementsStage) Execute(ctx context.Context, bc *pipeline.BuildConte
 				})
 			}
 		}
+	}
+
+	// Build BinManifest from rich requirements for smart Dockerfile generation
+	if len(reqs.BinRequirements) > 0 {
+		manifest := &packaging.BinManifest{
+			Requirements: reqs.BinRequirements,
+			SkillOrigin:  make(map[string]string),
+		}
+		// Populate skill origins from entries if available
+		if bc.SkillEntries != nil {
+			if entries, ok := bc.SkillEntries.([]contract.SkillEntry); ok {
+				for _, e := range entries {
+					if e.ForgeReqs != nil {
+						for _, b := range e.ForgeReqs.Bins {
+							if _, exists := manifest.SkillOrigin[b.Name]; !exists {
+								manifest.SkillOrigin[b.Name] = e.Name
+							}
+						}
+					}
+				}
+			}
+		}
+		bc.BinManifest = manifest
 	}
 
 	return nil

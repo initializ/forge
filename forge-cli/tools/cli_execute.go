@@ -286,9 +286,13 @@ func (t *CLIExecuteTool) buildEnv(binary string) []string {
 				env = append(env, "GH_CONFIG_DIR="+filepath.Join(realHome, ".config", "gh"))
 			}
 		case "kubectl", "helm":
-			// Preserve KUBECONFIG so kubectl/helm find cluster credentials at
+			// Preserve KUBECONFIG so kubectl/helm find cluster credentials.
+			// If KUBECONFIG is explicitly set (e.g. via env or materialized
+			// from inline content), pass it through. Otherwise fall back to
 			// the real ~/.kube/config when HOME has been overridden.
-			if _, ok := os.LookupEnv("KUBECONFIG"); !ok {
+			if kubecfg, ok := os.LookupEnv("KUBECONFIG"); ok {
+				env = append(env, "KUBECONFIG="+kubecfg)
+			} else {
 				defaultKubeconfig := filepath.Join(realHome, ".kube", "config")
 				if _, err := os.Stat(defaultKubeconfig); err == nil {
 					env = append(env, "KUBECONFIG="+defaultKubeconfig)

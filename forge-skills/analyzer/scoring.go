@@ -74,7 +74,9 @@ func AnalyzeSkillEntry(entry *contract.SkillEntry, hasScript bool) SkillRiskAsse
 	var reqEnv, oneOfEnv, optEnv []string
 
 	if entry.ForgeReqs != nil {
-		bins = entry.ForgeReqs.Bins
+		for _, b := range entry.ForgeReqs.Bins {
+			bins = append(bins, b.Name)
+		}
 		if entry.ForgeReqs.Env != nil {
 			reqEnv = entry.ForgeReqs.Env.Required
 			oneOfEnv = entry.ForgeReqs.Env.OneOf

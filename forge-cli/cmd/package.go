@@ -28,6 +28,9 @@ var (
 	builderArg   string
 	skipBuild    bool
 	withChannels bool
+	pkgSlim      bool
+	pkgAlpine    bool
+	pkgLocalBins []string
 )
 
 var packageCmd = &cobra.Command{
@@ -48,6 +51,9 @@ func init() {
 	packageCmd.Flags().StringVar(&builderArg, "builder", "", "force specific builder (docker, podman, buildah)")
 	packageCmd.Flags().BoolVar(&skipBuild, "skip-build", false, "skip re-running forge build")
 	packageCmd.Flags().BoolVar(&withChannels, "with-channels", false, "generate docker-compose.yaml with channel adapters")
+	packageCmd.Flags().BoolVar(&pkgSlim, "slim", false, "minimize image size (skip heavy/optional binaries)")
+	packageCmd.Flags().BoolVar(&pkgAlpine, "alpine", false, "prefer Alpine base image")
+	packageCmd.Flags().StringArrayVar(&pkgLocalBins, "local-bin", nil, "local binary override as name=/path/to/file (repeatable)")
 }
 
 func runPackage(cmd *cobra.Command, args []string) error {
@@ -86,6 +92,17 @@ func runPackage(cmd *cobra.Command, args []string) error {
 	reg := registry
 	if reg == "" {
 		reg = cfg.Registry
+	}
+
+	// Forward package flags to the build step
+	if len(pkgLocalBins) > 0 {
+		localBins = pkgLocalBins
+	}
+	if pkgSlim {
+		buildSlim = true
+	}
+	if pkgAlpine {
+		buildAlpine = true
 	}
 
 	// Check if build output exists and is fresh

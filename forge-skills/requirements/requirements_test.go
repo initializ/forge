@@ -11,7 +11,7 @@ func TestAggregate_SingleSkill(t *testing.T) {
 		{
 			Name: "github",
 			ForgeReqs: &contract.SkillRequirements{
-				Bins: []string{"curl", "jq"},
+				Bins: []contract.BinRequirement{{Name: "curl"}, {Name: "jq"}},
 				Env: &contract.EnvRequirements{
 					Required: []string{"API_KEY"},
 					Optional: []string{"TIMEOUT"},
@@ -39,11 +39,11 @@ func TestAggregate_MultiSkill_BinsUnion(t *testing.T) {
 	entries := []contract.SkillEntry{
 		{
 			Name:      "a",
-			ForgeReqs: &contract.SkillRequirements{Bins: []string{"curl", "jq"}},
+			ForgeReqs: &contract.SkillRequirements{Bins: []contract.BinRequirement{{Name: "curl"}, {Name: "jq"}}},
 		},
 		{
 			Name:      "b",
-			ForgeReqs: &contract.SkillRequirements{Bins: []string{"jq", "python"}},
+			ForgeReqs: &contract.SkillRequirements{Bins: []contract.BinRequirement{{Name: "jq"}, {Name: "python"}}},
 		},
 	}
 
@@ -132,7 +132,7 @@ func TestAggregate_DeniedToolsCollected(t *testing.T) {
 				},
 			},
 			ForgeReqs: &contract.SkillRequirements{
-				Bins: []string{"kubectl"},
+				Bins: []contract.BinRequirement{{Name: "kubectl"}},
 			},
 		},
 		{

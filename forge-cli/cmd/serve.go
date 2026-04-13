@@ -36,6 +36,8 @@ var (
 	serveWithChannels      string
 	serveNoAuth            bool
 	serveAuthToken         string
+	serveAuthURL           string
+	serveAuthOrgID         string
 	serveCORSOrigins       string
 )
 
@@ -99,6 +101,8 @@ func registerServeFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&serveWithChannels, "with", "", "comma-separated channel adapters to start (e.g. slack,telegram)")
 	cmd.Flags().BoolVar(&serveNoAuth, "no-auth", false, "disable bearer token authentication (localhost only)")
 	cmd.Flags().StringVar(&serveAuthToken, "auth-token", "", "explicit bearer token (default: auto-generated)")
+	cmd.Flags().StringVar(&serveAuthURL, "auth-url", "", "external auth provider URL for token validation (e.g. https://auth.example.com/verify)")
+	cmd.Flags().StringVar(&serveAuthOrgID, "auth-org-id", "", "org_id sent to the external auth provider")
 	cmd.Flags().StringVar(&serveCORSOrigins, "cors-origins", "", "comma-separated CORS allowed origins (default: localhost only, use '*' for wildcard)")
 }
 
@@ -194,6 +198,12 @@ func serveStartRun(cmd *cobra.Command, args []string) error {
 	}
 	if serveAuthToken != "" {
 		runArgs = append(runArgs, "--auth-token", serveAuthToken)
+	}
+	if serveAuthURL != "" {
+		runArgs = append(runArgs, "--auth-url", serveAuthURL)
+	}
+	if serveAuthOrgID != "" {
+		runArgs = append(runArgs, "--auth-org-id", serveAuthOrgID)
 	}
 	if serveCORSOrigins != "" {
 		runArgs = append(runArgs, "--cors-origins", serveCORSOrigins)

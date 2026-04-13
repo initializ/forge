@@ -169,6 +169,7 @@ forge run --host 0.0.0.0 --shutdown-timeout 30s
 | `--env` | `.env` | Path to env file |
 | `--enforce-guardrails` | `true` | Enforce guardrail violations as errors |
 | `--no-guardrails` | `false` | Disable all guardrail enforcement |
+| `--auth-url` | — | External auth provider URL for token validation |
 
 ### `forge serve` — Background Daemon
 
@@ -199,6 +200,28 @@ forge serve logs
 | `logs` | Tail `.forge/serve.log` |
 
 The daemon forks `forge run` in the background with `setsid`, writes state to `.forge/serve.json`, and redirects output to `.forge/serve.log`. Passphrase prompting for encrypted secrets happens in the parent process (which has TTY access) before forking.
+
+## External Authentication
+
+When `--auth-url` is set (or `FORGE_AUTH_URL` env var), the runtime delegates token validation to an external auth provider instead of generating local tokens. On each request, the bearer token is forwarded to the external URL for verification.
+
+```bash
+# Via CLI flag
+forge run --auth-url https://auth.example.com/verify
+
+# Via environment variable (useful in containers)
+docker run -e FORGE_AUTH_URL=https://auth.example.com/verify my-agent
+```
+
+When using external auth, local token generation is skipped entirely.
+
+## KUBECONFIG Materialization
+
+The runtime supports passing kubeconfig content directly via the `KUBECONFIG` environment variable. If `KUBECONFIG` contains inline YAML (detected by newlines or `apiVersion:` markers), the runtime automatically writes it to a file and updates `KUBECONFIG` to point to that file. This is useful for container deployments where mounting files is inconvenient:
+
+```bash
+docker run -e KUBECONFIG="$(cat ~/.kube/config)" my-agent
+```
 
 ## File Output Directory
 

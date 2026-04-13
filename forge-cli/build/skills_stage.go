@@ -9,6 +9,7 @@ import (
 	cliskills "github.com/initializ/forge/forge-cli/skills"
 	"github.com/initializ/forge/forge-core/pipeline"
 	skillcompiler "github.com/initializ/forge/forge-skills/compiler"
+	"github.com/initializ/forge/forge-skills/contract"
 	"github.com/initializ/forge/forge-skills/requirements"
 )
 
@@ -35,6 +36,16 @@ func (s *SkillsStage) Execute(ctx context.Context, bc *pipeline.BuildContext) er
 	entries, _, err := cliskills.ParseFileWithMetadata(skillsPath)
 	if err != nil {
 		return fmt.Errorf("parsing skills file: %w", err)
+	}
+
+	// Scan skills/ subdirectory for additional SKILL.md files
+	skillsSubDir := filepath.Join(bc.Opts.WorkDir, "skills")
+	subEntries, subErr := scanSkillsSubDir(skillsSubDir)
+	if subErr != nil {
+		fmt.Fprintf(os.Stderr, "  [skills] warning: scanning skills/ subdirectory: %v\n", subErr)
+	}
+	if len(subEntries) > 0 {
+		entries = append(entries, subEntries...)
 	}
 
 	if len(entries) == 0 {
@@ -68,4 +79,37 @@ func (s *SkillsStage) Execute(ctx context.Context, bc *pipeline.BuildContext) er
 	bc.AddFile("compiled/skills/skills.json", filepath.Join(bc.Opts.OutputDir, "compiled", "skills", "skills.json"))
 	bc.AddFile("compiled/prompt.txt", filepath.Join(bc.Opts.OutputDir, "compiled", "prompt.txt"))
 	return nil
+}
+
+// scanSkillsSubDir scans the skills/ subdirectory for SKILL.md files in each
+// child directory and returns parsed entries merged from all discovered skills.
+func scanSkillsSubDir(skillsDir string) ([]contract.SkillEntry, error) {
+	info, err := os.Stat(skillsDir)
+	if err != nil || !info.IsDir() {
+		return nil, nil // skills/ directory does not exist, nothing to scan
+	}
+
+	dirEntries, err := os.ReadDir(skillsDir)
+	if err != nil {
+		return nil, fmt.Errorf("reading skills directory: %w", err)
+	}
+
+	var allEntries []contract.SkillEntry
+	for _, de := range dirEntries {
+		if !de.IsDir() {
+			continue
+		}
+		skillPath := filepath.Join(skillsDir, de.Name(), "SKILL.md")
+		if _, statErr := os.Stat(skillPath); os.IsNotExist(statErr) {
+			continue
+		}
+
+		entries, _, parseErr := cliskills.ParseFileWithMetadata(skillPath)
+		if parseErr != nil {
+			fmt.Fprintf(os.Stderr, "  [skills] warning: parsing %s: %v\n", skillPath, parseErr)
+			continue
+		}
+		allEntries = append(allEntries, entries...)
+	}
+	return allEntries, nil
 }

@@ -24,6 +24,7 @@ type ForgeConfig struct {
 	Secrets      SecretsConfig    `yaml:"secrets,omitempty"`
 	Schedules    []ScheduleConfig `yaml:"schedules,omitempty"`
 	CORSOrigins  []string         `yaml:"cors_origins,omitempty"`
+	Package      PackageConfig    `yaml:"package,omitempty"`
 }
 
 // ScheduleConfig defines a recurring scheduled task in forge.yaml.
@@ -95,6 +96,25 @@ type ToolRef struct {
 	Name   string         `yaml:"name"`
 	Type   string         `yaml:"type,omitempty"`
 	Config map[string]any `yaml:"config,omitempty"`
+}
+
+// PackageConfig controls container packaging behavior.
+type PackageConfig struct {
+	BaseImage    string                 `yaml:"base_image,omitempty"`
+	Alpine       bool                   `yaml:"alpine,omitempty"`
+	Slim         bool                   `yaml:"slim,omitempty"`
+	BinOverrides map[string]BinOverride `yaml:"bin_overrides,omitempty"`
+}
+
+// BinOverride provides explicit install instructions for a binary in the container.
+type BinOverride struct {
+	AptPackage  string   `yaml:"apt,omitempty"`
+	ApkPackage  string   `yaml:"apk,omitempty"`
+	DirectURL   string   `yaml:"url,omitempty"`
+	Dest        string   `yaml:"dest,omitempty"`
+	Chmod       string   `yaml:"chmod,omitempty"`
+	CustomLines []string `yaml:"run,omitempty"`
+	LocalPath   string   `yaml:"local,omitempty"` // host path to local binary file
 }
 
 // ParseForgeConfig parses raw YAML bytes into a ForgeConfig and validates required fields.

@@ -48,6 +48,8 @@ type RunnerConfig struct {
 	Channels          []string // active channel adapters from --with flag
 	NoAuth            bool     // disable bearer token authentication
 	AuthToken         string   // explicit bearer token (empty = auto-generate)
+	AuthURL           string   // external auth provider URL for token validation
+	AuthOrgID         string   // org_id sent to external auth provider
 	CORSOrigins       []string // CORS allowed origins (from --cors-origins flag)
 }
 
@@ -122,6 +124,19 @@ func (r *Runner) ResolveAuth() error {
 	if r.authToken != "" || r.cfg.NoAuth {
 		return nil // already resolved
 	}
+	// Fall back to env vars for external auth configuration.
+	if r.cfg.AuthURL == "" {
+		r.cfg.AuthURL = os.Getenv("FORGE_AUTH_URL")
+	}
+	if r.cfg.AuthOrgID == "" {
+		r.cfg.AuthOrgID = os.Getenv("FORGE_AUTH_ORG_ID")
+	}
+	// When using an external auth URL, skip local token generation —
+	// the external provider validates tokens on every request.
+	if r.cfg.AuthURL != "" {
+		r.authToken = "external" // sentinel so subsequent calls are no-ops
+		return nil
+	}
 	local := isLocalhost(r.cfg.Host)
 	if r.cfg.NoAuth && !local {
 		return fmt.Errorf("--no-auth is only allowed when binding to localhost (current host: %s)", r.cfg.Host)
@@ -149,7 +164,16 @@ func (r *Runner) AuthToken() string {
 
 // Run starts the development server. It blocks until ctx is cancelled.
 func (r *Runner) Run(ctx context.Context) error {
-	// 0. Verify build output integrity if checksums.json exists.
+	// 0. Materialize inline KUBECONFIG content to a file.
+	if materialized, err := materializeKubeconfig(r.cfg.WorkDir); err != nil {
+		r.logger.Warn("failed to materialize KUBECONFIG", map[string]any{"error": err.Error()})
+	} else if materialized {
+		r.logger.Info("materialized inline KUBECONFIG to file", map[string]any{
+			"path": os.Getenv("KUBECONFIG"),
+		})
+	}
+
+	// 0b. Verify build output integrity if checksums.json exists.
 	outputDir := filepath.Join(r.cfg.WorkDir, ".forge-output")
 	if err := VerifyBuildOutput(outputDir); err != nil {
 		r.logger.Warn("build output verification failed", map[string]any{"error": err.Error()})
@@ -1657,6 +1681,8 @@ func (r *Runner) printBanner(proxyURL string) {
 	// Auth
 	if r.cfg.NoAuth {
 		fmt.Fprintf(os.Stderr, "  Auth:       disabled (--no-auth)\n")
+	} else if r.cfg.AuthURL != "" {
+		fmt.Fprintf(os.Stderr, "  Auth:       external (%s)\n", r.cfg.AuthURL)
 	} else if r.authToken != "" {
 		fmt.Fprintf(os.Stderr, "  Auth:       enabled (token in .forge/runtime.token)\n")
 	}
@@ -1693,6 +1719,8 @@ func (r *Runner) resolveAuth(auditLogger *coreruntime.AuditLogger) (auth.Config,
 	cfg := auth.Config{
 		Enabled:   true,
 		Token:     r.authToken,
+		AuthURL:   r.cfg.AuthURL,
+		AuthOrgID: r.cfg.AuthOrgID,
 		SkipPaths: auth.DefaultSkipPaths(),
 		OnAuth: func(req *http.Request, success bool) {
 			if auditLogger == nil {
@@ -2501,6 +2529,43 @@ func defaultStr(s, def string) string {
 // isLocalhost returns true if the host string refers to a localhost address.
 func isLocalhost(host string) bool {
 	return host == "" || host == "127.0.0.1" || host == "localhost" || host == "::1"
+}
+
+// materializeKubeconfig checks whether the KUBECONFIG env var contains inline
+// YAML content (rather than a file path). If so, it writes the content to a
+// file and updates KUBECONFIG to point to that file. This allows users to pass
+// kubeconfig content directly via `-e KUBECONFIG="<yaml>"`.
+// materializeKubeconfig checks whether the KUBECONFIG env var contains inline
+// YAML content (rather than a file path). If so, it writes the content to a
+// file and updates KUBECONFIG to point to that file. Returns true if content
+// was materialized.
+func materializeKubeconfig(workDir string) (bool, error) {
+	val := os.Getenv("KUBECONFIG")
+	if val == "" {
+		return false, nil
+	}
+	// Heuristic: if the value contains a newline or starts with typical
+	// kubeconfig YAML markers, treat it as inline content rather than a path.
+	isInline := strings.Contains(val, "\n") ||
+		strings.HasPrefix(strings.TrimSpace(val), "apiVersion:") ||
+		strings.Contains(val, "certificate-authority-data:") ||
+		strings.Contains(val, "clusters:")
+	if !isInline {
+		return false, nil // looks like a file path
+	}
+
+	kubeDir := filepath.Join(workDir, ".kube")
+	if err := os.MkdirAll(kubeDir, 0700); err != nil {
+		return false, fmt.Errorf("creating .kube directory: %w", err)
+	}
+	kubePath := filepath.Join(kubeDir, "config")
+	if err := os.WriteFile(kubePath, []byte(val), 0600); err != nil {
+		return false, fmt.Errorf("writing kubeconfig file: %w", err)
+	}
+	if err := os.Setenv("KUBECONFIG", kubePath); err != nil {
+		return false, fmt.Errorf("updating KUBECONFIG env: %w", err)
+	}
+	return true, nil
 }
 
 // initScheduler creates the schedule store and registers schedule tools.

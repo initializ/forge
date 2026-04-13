@@ -1,0 +1,267 @@
+# Image Registry — maps binary names to install methods for container packaging.
+#
+# Fields:
+#   apt:            Debian/Ubuntu package name (default: same as bin name)
+#   apk:            Alpine package name
+#   url:            Direct download URL (supports {{.Version}} template)
+#   default_version: Version used when skill doesn't specify one
+#   dest:           Install destination (default: /usr/local/bin/<name>)
+#   chmod:          Permission bits (default: "0755")
+#   heavy:          If true, pulled from a companion Docker image instead of apt/url
+#   image:          Companion image for heavy binaries (used with heavy: true)
+#   requires_ubuntu: If true, forces Ubuntu/Debian base image (incompatible with Alpine)
+#   requires_first:  List of bins that must be installed before this one
+#   run:            Custom RUN lines (replaces apt/url logic entirely)
+
+bins:
+  # ── Core CLI tools ───────────────────────────────────────────────
+  jq:
+    apt: jq
+    apk: jq
+  yq:
+    url: "https://github.com/mikefarah/yq/releases/download/v{{.Version}}/yq_linux_amd64"
+    default_version: "4.44.1"
+  curl:
+    apt: curl
+    apk: curl
+  wget:
+    apt: wget
+    apk: wget
+  git:
+    apt: git
+    apk: git
+  unzip:
+    apt: unzip
+    apk: unzip
+  zip:
+    apt: zip
+    apk: zip
+  tar:
+    apt: tar
+    apk: tar
+  gzip:
+    apt: gzip
+    apk: gzip
+  make:
+    apt: make
+    apk: make
+  gcc:
+    apt: gcc
+    apk: gcc
+  g++:
+    apt: g++
+    apk: g++
+  openssh-client:
+    apt: openssh-client
+    apk: openssh-client
+  rsync:
+    apt: rsync
+    apk: rsync
+  tree:
+    apt: tree
+    apk: tree
+  file:
+    apt: file
+    apk: file
+  bc:
+    apt: bc
+    apk: bc
+  envsubst:
+    apt: gettext-base
+    apk: gettext
+  xargs:
+    apt: findutils
+    apk: findutils
+  sed:
+    apt: sed
+    apk: sed
+  awk:
+    apt: gawk
+    apk: gawk
+  grep:
+    apt: grep
+    apk: grep
+  diffutils:
+    apt: diffutils
+    apk: diffutils
+
+  # ── Cloud CLIs ───────────────────────────────────────────────────
+  kubectl:
+    url: "https://dl.k8s.io/release/v{{.Version}}/bin/linux/amd64/kubectl"
+    default_version: "1.31.0"
+  helm:
+    url: "https://get.helm.sh/helm-v{{.Version}}-linux-amd64.tar.gz"
+    default_version: "3.16.0"
+    run:
+      - "curl -fsSL https://get.helm.sh/helm-v{{.Version}}-linux-amd64.tar.gz | tar xz -C /tmp"
+      - "mv /tmp/linux-amd64/helm /usr/local/bin/helm"
+      - "chmod 0755 /usr/local/bin/helm"
+  gh:
+    url: "https://github.com/cli/cli/releases/download/v{{.Version}}/gh_{{.Version}}_linux_amd64.tar.gz"
+    default_version: "2.60.0"
+    run:
+      - "curl -fsSL https://github.com/cli/cli/releases/download/v{{.Version}}/gh_{{.Version}}_linux_amd64.tar.gz | tar xz -C /tmp"
+      - "mv /tmp/gh_{{.Version}}_linux_amd64/bin/gh /usr/local/bin/gh"
+      - "chmod 0755 /usr/local/bin/gh"
+  aws:
+    run:
+      - "curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip"
+      - "unzip -q /tmp/awscliv2.zip -d /tmp"
+      - "/tmp/aws/install"
+      - "rm -rf /tmp/awscliv2.zip /tmp/aws"
+    requires_first: [unzip]
+    requires_ubuntu: true
+  gcloud:
+    run:
+      - "curl -fsSL https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-x86_64.tar.gz | tar xz -C /opt"
+      - "/opt/google-cloud-sdk/install.sh --quiet --path-update true"
+    requires_ubuntu: true
+  az:
+    run:
+      - "curl -sL https://aka.ms/InstallAzureCLIDeb | bash"
+    requires_ubuntu: true
+  terraform:
+    url: "https://releases.hashicorp.com/terraform/{{.Version}}/terraform_{{.Version}}_linux_amd64.zip"
+    default_version: "1.9.0"
+    run:
+      - "curl -fsSL https://releases.hashicorp.com/terraform/{{.Version}}/terraform_{{.Version}}_linux_amd64.zip -o /tmp/terraform.zip"
+      - "unzip -q /tmp/terraform.zip -d /usr/local/bin"
+      - "rm /tmp/terraform.zip"
+    requires_first: [unzip]
+  pulumi:
+    url: "https://get.pulumi.com/releases/sdk/pulumi-v{{.Version}}-linux-x64.tar.gz"
+    default_version: "3.130.0"
+    run:
+      - "curl -fsSL https://get.pulumi.com/releases/sdk/pulumi-v{{.Version}}-linux-x64.tar.gz | tar xz -C /usr/local/bin --strip-components=1"
+
+  # ── Databases ────────────────────────────────────────────────────
+  psql:
+    apt: postgresql-client
+    apk: postgresql-client
+  mysql:
+    apt: default-mysql-client
+    apk: mysql-client
+  redis-cli:
+    apt: redis-tools
+    apk: redis
+  mongosh:
+    run:
+      - "curl -fsSL https://downloads.mongodb.com/compass/mongosh-{{.Version}}-linux-x64.tgz | tar xz -C /tmp"
+      - "mv /tmp/mongosh-*/bin/mongosh /usr/local/bin/"
+      - "chmod 0755 /usr/local/bin/mongosh"
+    default_version: "2.3.0"
+  sqlite3:
+    apt: sqlite3
+    apk: sqlite
+
+  # ── Languages & runtimes ─────────────────────────────────────────
+  python3:
+    apt: python3
+    apk: python3
+  pip:
+    apt: python3-pip
+    apk: py3-pip
+  node:
+    url: "https://nodejs.org/dist/v{{.Version}}/node-v{{.Version}}-linux-x64.tar.xz"
+    default_version: "22.9.0"
+    run:
+      - "curl -fsSL https://nodejs.org/dist/v{{.Version}}/node-v{{.Version}}-linux-x64.tar.xz | tar xJ -C /usr/local --strip-components=1"
+  npm:
+    requires_first: [node]
+  npx:
+    requires_first: [node]
+  ruby:
+    apt: ruby-full
+    apk: ruby
+  go:
+    url: "https://go.dev/dl/go{{.Version}}.linux-amd64.tar.gz"
+    default_version: "1.23.0"
+    run:
+      - "curl -fsSL https://go.dev/dl/go{{.Version}}.linux-amd64.tar.gz | tar xz -C /usr/local"
+    dest: /usr/local/go/bin/go
+  rustup:
+    run:
+      - "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
+  java:
+    apt: default-jdk-headless
+    apk: openjdk17-jre-headless
+  deno:
+    url: "https://github.com/denoland/deno/releases/download/v{{.Version}}/deno-x86_64-unknown-linux-gnu.zip"
+    default_version: "1.46.0"
+    run:
+      - "curl -fsSL https://github.com/denoland/deno/releases/download/v{{.Version}}/deno-x86_64-unknown-linux-gnu.zip -o /tmp/deno.zip"
+      - "unzip -q /tmp/deno.zip -d /usr/local/bin"
+      - "rm /tmp/deno.zip"
+    requires_first: [unzip]
+  bun:
+    url: "https://github.com/oven-sh/bun/releases/download/bun-v{{.Version}}/bun-linux-x64.zip"
+    default_version: "1.1.30"
+    run:
+      - "curl -fsSL https://github.com/oven-sh/bun/releases/download/bun-v{{.Version}}/bun-linux-x64.zip -o /tmp/bun.zip"
+      - "unzip -q /tmp/bun.zip -d /tmp"
+      - "mv /tmp/bun-linux-x64/bun /usr/local/bin/bun"
+      - "chmod 0755 /usr/local/bin/bun"
+      - "rm -rf /tmp/bun.zip /tmp/bun-linux-x64"
+    requires_first: [unzip]
+
+  # ── Networking & HTTP ────────────────────────────────────────────
+  httpie:
+    apt: httpie
+    apk: httpie
+  nmap:
+    apt: nmap
+    apk: nmap
+  dig:
+    apt: dnsutils
+    apk: bind-tools
+  nslookup:
+    apt: dnsutils
+    apk: bind-tools
+  ping:
+    apt: iputils-ping
+    apk: iputils
+  traceroute:
+    apt: traceroute
+    apk: traceroute
+  netcat:
+    apt: netcat-openbsd
+    apk: netcat-openbsd
+  socat:
+    apt: socat
+    apk: socat
+  openssl:
+    apt: openssl
+    apk: openssl
+  ssh:
+    apt: openssh-client
+    apk: openssh-client
+
+  # ── Heavy / companion-image binaries ─────────────────────────────
+  playwright:
+    heavy: true
+    image: "mcr.microsoft.com/playwright:v{{.Version}}-jammy"
+    default_version: "1.48.0"
+    requires_ubuntu: true
+  chromium:
+    apt: chromium-browser
+    apk: chromium
+  ffmpeg:
+    apt: ffmpeg
+    apk: ffmpeg
+  imagemagick:
+    apt: imagemagick
+    apk: imagemagick
+  pandoc:
+    apt: pandoc
+    apk: pandoc
+  wkhtmltopdf:
+    apt: wkhtmltopdf
+  graphviz:
+    apt: graphviz
+    apk: graphviz
+  poppler-utils:
+    apt: poppler-utils
+    apk: poppler-utils
+  tesseract:
+    apt: tesseract-ocr
+    apk: tesseract-ocr

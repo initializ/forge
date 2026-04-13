@@ -28,6 +28,13 @@ type TemplateSpecData struct {
 	RequiredEnvVars []string
 	OptionalEnvVars []string
 	RequiredBins    []string
+
+	// Framework
+	ForgeFramework bool
+	ForgeVersion   string // forge CLI version for GitHub release download (e.g. "v0.9.0")
+
+	// Multi-stage build
+	HasBinStage bool // true when a bins stage exists with installed binaries
 }
 
 // TemplateRuntimeData holds runtime-specific template data.
@@ -111,6 +118,27 @@ func BuildTemplateDataFromContext(spec *agentspec.AgentSpec, bc *pipeline.BuildC
 		d.RequiredEnvVars = spec.Requirements.EnvRequired
 		d.OptionalEnvVars = spec.Requirements.EnvOptional
 		d.RequiredBins = spec.Requirements.Bins
+	}
+
+	// Set forge framework flag and version.
+	// Skip the remote download when a local binary override for "forge" is provided
+	// (--local-bin forge=... or forge.yaml bin_overrides.forge.local), since the
+	// local binary is already installed via the bins stage.
+	if bc.Config != nil && bc.Config.Framework == "forge" {
+		hasLocalForge := false
+		if override, ok := bc.Config.Package.BinOverrides["forge"]; ok && override.LocalPath != "" {
+			hasLocalForge = true
+		}
+		if !hasLocalForge {
+			d.ForgeFramework = true
+			v := bc.ForgeCLIVersion
+			if v == "" || v == "dev" {
+				v = "latest"
+			} else if v[0] != 'v' {
+				v = "v" + v
+			}
+			d.ForgeVersion = v
+		}
 	}
 
 	return d

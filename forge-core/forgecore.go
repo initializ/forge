@@ -120,7 +120,7 @@ type RuntimeConfig struct {
 	Hooks         *runtime.HookRegistry
 	SystemPrompt  string
 	MaxIterations int
-	Guardrails    *runtime.GuardrailEngine // optional
+	Guardrails    runtime.GuardrailChecker // optional
 	Logger        runtime.Logger           // optional
 }
 

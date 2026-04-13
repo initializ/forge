@@ -9,22 +9,23 @@ import (
 
 // ForgeConfig represents the top-level forge.yaml configuration.
 type ForgeConfig struct {
-	AgentID      string           `yaml:"agent_id"`
-	Version      string           `yaml:"version"`
-	Framework    string           `yaml:"framework"`
-	Entrypoint   string           `yaml:"entrypoint"`
-	Model        ModelRef         `yaml:"model,omitempty"`
-	Tools        []ToolRef        `yaml:"tools,omitempty"`
-	BuiltinTools []string         `yaml:"builtin_tools,omitempty"`
-	Channels     []string         `yaml:"channels,omitempty"`
-	Registry     string           `yaml:"registry,omitempty"`
-	Egress       EgressRef        `yaml:"egress,omitempty"`
-	Skills       SkillsRef        `yaml:"skills,omitempty"`
-	Memory       MemoryConfig     `yaml:"memory,omitempty"`
-	Secrets      SecretsConfig    `yaml:"secrets,omitempty"`
-	Schedules    []ScheduleConfig `yaml:"schedules,omitempty"`
-	CORSOrigins  []string         `yaml:"cors_origins,omitempty"`
-	Package      PackageConfig    `yaml:"package,omitempty"`
+	AgentID        string           `yaml:"agent_id"`
+	Version        string           `yaml:"version"`
+	Framework      string           `yaml:"framework"`
+	Entrypoint     string           `yaml:"entrypoint"`
+	Model          ModelRef         `yaml:"model,omitempty"`
+	Tools          []ToolRef        `yaml:"tools,omitempty"`
+	BuiltinTools   []string         `yaml:"builtin_tools,omitempty"`
+	Channels       []string         `yaml:"channels,omitempty"`
+	Registry       string           `yaml:"registry,omitempty"`
+	Egress         EgressRef        `yaml:"egress,omitempty"`
+	Skills         SkillsRef        `yaml:"skills,omitempty"`
+	Memory         MemoryConfig     `yaml:"memory,omitempty"`
+	Secrets        SecretsConfig    `yaml:"secrets,omitempty"`
+	Schedules      []ScheduleConfig `yaml:"schedules,omitempty"`
+	CORSOrigins    []string         `yaml:"cors_origins,omitempty"`
+	Package        PackageConfig    `yaml:"package,omitempty"`
+	GuardrailsPath string           `yaml:"guardrails_path,omitempty"` // path to guardrails.json (default: "guardrails.json")
 }
 
 // ScheduleConfig defines a recurring scheduled task in forge.yaml.

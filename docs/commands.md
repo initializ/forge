@@ -38,6 +38,18 @@ forge init [name] [flags]
 | `--from-skills` | | | Path to a SKILL.md file for auto-configuration |
 | `--non-interactive` | | `false` | Skip interactive prompts |
 
+### Generated Files
+
+`forge init` generates these key files:
+
+| File | Purpose |
+|------|---------|
+| `forge.yaml` | Agent configuration |
+| `guardrails.json` | Guardrail policy config (PII, security, secret patterns, gate config) |
+| `SKILL.md` | Agent skill definition |
+| `.env` | Environment variables |
+| `.gitignore` | Includes `guardrails.json`, `.env`, `.forge/` |
+
 ### Examples
 
 ```bash

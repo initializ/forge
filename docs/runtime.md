@@ -19,7 +19,7 @@ The core agent loop follows a simple pattern:
 User message → Memory → LLM → tool_calls? → Execute tools → LLM → ... → text → Done
 ```
 
-The loop terminates when `FinishReason == "stop"` or `len(ToolCalls) == 0`.
+The loop terminates when `len(ToolCalls) == 0`. Tool calls are always executed even if `FinishReason` is `"stop"` — this prevents orphaned function calls that would cause API rejection on session recovery.
 
 ### Q&A Nudge Suppression
 
@@ -245,7 +245,7 @@ For details on session persistence, context window management, compaction, and l
 
 The engine fires hooks at key points in the loop. See [Hooks](hooks.md) for details.
 
-The runner registers five hook groups: logging, audit, progress, global guardrail hooks, and skill guardrail hooks. The global guardrail `AfterToolExec` hook scans tool output for secrets and PII, redacting or blocking before results enter the LLM context. Skill guardrail hooks enforce domain-specific rules declared in `SKILL.md` — blocking commands, redacting output, intercepting capability enumeration probes, and replacing binary-enumerating responses. Skill guardrails are loaded from build artifacts or parsed directly from `SKILL.md` at runtime (no `forge build` required). See [Tool Output Scanning](security/guardrails.md#tool-output-scanning) and [Skill Guardrails](security/guardrails.md#skill-guardrails).
+The runner registers five hook groups: logging, audit, progress, global guardrail hooks, and skill guardrail hooks. Global guardrails use the `GuardrailChecker` interface backed by the `github.com/initializ/guardrails` library — the `AfterToolExec` hook scans tool output for secrets and PII, redacting or blocking before results enter the LLM context. Guardrail config is loaded from `guardrails.json` (file mode) or MongoDB (DB mode). Skill guardrail hooks enforce domain-specific rules declared in `SKILL.md` — blocking commands, redacting output, intercepting capability enumeration probes, and replacing binary-enumerating responses. Skill guardrails are loaded from build artifacts or parsed directly from `SKILL.md` at runtime (no `forge build` required). See [Guardrails](security/guardrails.md) for full details.
 
 ## Streaming
 

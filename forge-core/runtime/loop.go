@@ -248,8 +248,11 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 		// Append assistant message to memory
 		mem.Append(resp.Message)
 
-		// Check if we're done (no tool calls)
-		if resp.FinishReason == "stop" || len(resp.Message.ToolCalls) == 0 {
+		// Check if we're done (no tool calls).
+		// Always execute tool calls even when finish_reason is "stop" —
+		// otherwise we persist an assistant message with orphaned function
+		// calls that the Responses API will reject on session recovery.
+		if len(resp.Message.ToolCalls) == 0 {
 			// If the LLM stopped after executing tools, send a continuation
 			// nudge. This catches cases where the LLM reports findings instead
 			// of completing the full workflow (e.g., stops after exploration
@@ -500,17 +503,48 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 }
 
 // persistSession saves the current memory state to disk (best-effort).
+// It strips orphaned tool calls from the last assistant message to prevent
+// the Responses API from rejecting recovered sessions with
+// "No tool output found for function call".
 func (e *LLMExecutor) persistSession(taskID string, mem *Memory) {
 	if e.store == nil {
 		return
 	}
 	mem.mu.Lock()
+	msgs := make([]llm.ChatMessage, len(mem.messages))
+	copy(msgs, mem.messages)
+	mem.mu.Unlock()
+
+	// Build a set of tool call IDs that have matching tool results.
+	answeredCalls := make(map[string]bool)
+	for _, m := range msgs {
+		if m.Role == llm.RoleTool && m.ToolCallID != "" {
+			answeredCalls[m.ToolCallID] = true
+		}
+	}
+
+	// Strip unanswered tool calls from assistant messages to avoid
+	// orphaned function_call items in the persisted session.
+	for i := range msgs {
+		if msgs[i].Role != llm.RoleAssistant || len(msgs[i].ToolCalls) == 0 {
+			continue
+		}
+		var kept []llm.ToolCall
+		for _, tc := range msgs[i].ToolCalls {
+			if answeredCalls[tc.ID] {
+				kept = append(kept, tc)
+			}
+		}
+		if len(kept) != len(msgs[i].ToolCalls) {
+			msgs[i].ToolCalls = kept
+		}
+	}
+
 	data := &SessionData{
 		TaskID:   taskID,
-		Messages: mem.messages,
+		Messages: msgs,
 		Summary:  mem.existingSummary,
 	}
-	mem.mu.Unlock()
 
 	if err := e.store.Save(data); err != nil {
 		e.logger.Warn("failed to persist session", map[string]any{

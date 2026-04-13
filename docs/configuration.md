@@ -77,6 +77,8 @@ memory:
   keyword_weight: 0.3               # Hybrid search keyword weight
   decay_half_life_days: 7           # Temporal decay half-life
 
+guardrails_path: "guardrails.json"  # Path to guardrails config (default: "guardrails.json")
+
 schedules:                          # Recurring scheduled tasks (optional)
   - id: "daily-report"
     cron: "@daily"
@@ -108,6 +110,9 @@ schedules:                          # Recurring scheduled tasks (optional)
 | `FORGE_CORS_ORIGINS` | Comma-separated CORS allowed origins for A2A server |
 | `FORGE_AUTH_URL` | External auth provider URL for token validation |
 | `FORGE_AUTH_ORG_ID` | Organization ID sent to external auth provider |
+| `FORGE_GUARDRAILS_DB` | MongoDB URI for DB-backed guardrails config + audit |
+| `FORGE_AGENT_ID` | Agent identifier for DB guardrails (falls back to `agent_id` in YAML) |
+| `FORGE_ORG_ID` | Organization identifier for DB guardrails |
 | `FORGE_PASSPHRASE` | Passphrase for encrypted secrets file |
 
 ---

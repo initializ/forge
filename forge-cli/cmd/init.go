@@ -883,6 +883,7 @@ func getFileManifest(opts *initOptions) []fileToRender {
 		{TemplatePath: "forge.yaml.tmpl", OutputPath: "forge.yaml"},
 		{TemplatePath: "env.example.tmpl", OutputPath: ".env.example"},
 		{TemplatePath: "gitignore.tmpl", OutputPath: ".gitignore"},
+		{TemplatePath: "guardrails.json.tmpl", OutputPath: "guardrails.json"},
 	}
 
 	switch opts.Framework {

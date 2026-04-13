@@ -131,10 +131,15 @@ func (r *Runner) ResolveAuth() error {
 	if r.cfg.AuthOrgID == "" {
 		r.cfg.AuthOrgID = os.Getenv("FORGE_AUTH_ORG_ID")
 	}
-	// When using an external auth URL, skip local token generation —
-	// the external provider validates tokens on every request.
+	// When using an external auth URL, still generate an internal token
+	// for channel adapter loopback calls, but external requests are
+	// validated against the auth provider.
 	if r.cfg.AuthURL != "" {
-		r.authToken = "external" // sentinel so subsequent calls are no-ops
+		token, err := auth.GenerateToken()
+		if err != nil {
+			return fmt.Errorf("generating internal auth token: %w", err)
+		}
+		r.authToken = token
 		return nil
 	}
 	local := isLocalhost(r.cfg.Host)

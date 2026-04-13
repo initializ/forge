@@ -203,7 +203,7 @@ The daemon forks `forge run` in the background with `setsid`, writes state to `.
 
 ## External Authentication
 
-When `--auth-url` is set (or `FORGE_AUTH_URL` env var), the runtime delegates token validation to an external auth provider instead of generating local tokens. On each request, the bearer token is forwarded to the external URL for verification.
+When `--auth-url` is set (or `FORGE_AUTH_URL` env var), the runtime delegates token validation to an external auth provider. On each request, the bearer token is forwarded to the external URL for verification.
 
 ```bash
 # Via CLI flag
@@ -213,7 +213,7 @@ forge run --auth-url https://auth.example.com/verify
 docker run -e FORGE_AUTH_URL=https://auth.example.com/verify my-agent
 ```
 
-When using external auth, local token generation is skipped entirely.
+The middleware checks tokens in two layers: an internal token is accepted first (used by channel adapter loopback calls), then the external auth provider is consulted. This ensures channel adapters (Slack, Telegram) can reach the A2A server without needing a valid external token.
 
 ## KUBECONFIG Materialization
 

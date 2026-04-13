@@ -24,6 +24,9 @@ func ConfigToAgentSpec(cfg *types.ForgeConfig) *agentspec.AgentSpec {
 	// Default entrypoint for forge framework agents
 	if cfg.Framework == "forge" && len(fields) == 0 {
 		fields = []string{"forge", "run", "--host", "0.0.0.0"}
+		if len(cfg.Channels) > 0 {
+			fields = append(fields, "--with", strings.Join(cfg.Channels, ","))
+		}
 	}
 	spec.Runtime = &agentspec.RuntimeConfig{
 		Image:      InferBaseImage(fields),

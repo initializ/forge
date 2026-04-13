@@ -129,8 +129,18 @@ func Middleware(cfg Config) func(http.Handler) http.Handler {
 				return
 			}
 
-			// External auth provider validation.
+			// When external auth is configured, first check the internal
+			// token (used by channel adapter loopback calls), then fall
+			// through to the external auth provider for other tokens.
 			if cfg.AuthURL != "" {
+				// Accept internal token for loopback (channel adapters)
+				if cfg.Token != "" && ValidateToken(token, cfg.Token) {
+					if cfg.OnAuth != nil {
+						cfg.OnAuth(r, true)
+					}
+					next.ServeHTTP(w, r)
+					return
+				}
 				// Use org_id from request header (multiple header names), fall back to config.
 				orgID := extractOrgID(r, cfg.AuthOrgID)
 				valid, err := validateExternal(cfg.AuthURL, token, orgID)

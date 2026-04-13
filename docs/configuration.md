@@ -46,8 +46,18 @@ egress:
 cors_origins:                       # CORS allowed origins for A2A server
   - "https://app.example.com"      # (default: localhost variants)
 
-skills:
-  path: "SKILL.md"
+package:
+  alpine: false                     # Prefer Alpine base image
+  slim: false                       # Minimize image size
+  bin_overrides:                    # Per-binary install overrides
+    forge:
+      local: "/path/to/linux/forge" # Host path to local binary file
+    jq:
+      apt: "jq"                     # APT package name
+    custom-tool:
+      url: "https://example.com/tool.tar.gz"  # Direct download URL
+      dest: "/usr/local/bin/custom-tool"       # Install destination
+      chmod: "0755"                            # File permissions
 
 secrets:
   providers:                        # Secret providers (order matters)
@@ -96,6 +106,8 @@ schedules:                          # Recurring scheduled tasks (optional)
 | `ANTHROPIC_BASE_URL` | Override Anthropic base URL |
 | `OLLAMA_BASE_URL` | Override Ollama base URL (default: `http://localhost:11434`) |
 | `FORGE_CORS_ORIGINS` | Comma-separated CORS allowed origins for A2A server |
+| `FORGE_AUTH_URL` | External auth provider URL for token validation |
+| `FORGE_AUTH_ORG_ID` | Organization ID sent to external auth provider |
 | `FORGE_PASSPHRASE` | Passphrase for encrypted secrets file |
 
 ---

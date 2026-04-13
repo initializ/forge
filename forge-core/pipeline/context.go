@@ -26,6 +26,18 @@ type BuildContext struct {
 	SecurityAudit      any // *analyzer.AuditReport (avoid import cycle)
 	SkillsCount        int
 	ToolCategoryCounts map[string]int
+
+	// Bin resolution for smart Dockerfile generation
+	BinManifest  any // *packaging.BinManifest (avoid import cycle)
+	PreferAlpine bool
+	PreferSlim   bool
+
+	// ForgeCLIVersion is the version of the forge CLI binary (e.g. "v0.9.0").
+	// Used to pull the correct release when framework is "forge".
+	ForgeCLIVersion string
+
+	// LocalBins maps binary name → host file path (from --local-bin flags).
+	LocalBins map[string]string
 }
 
 // NewBuildContext creates a BuildContext with the given options and initialized maps.

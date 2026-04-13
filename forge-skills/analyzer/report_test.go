@@ -13,7 +13,7 @@ func TestGenerateReportFromEntries(t *testing.T) {
 		{
 			Name: "github",
 			ForgeReqs: &contract.SkillRequirements{
-				Bins: []string{"gh"},
+				Bins: []contract.BinRequirement{{Name: "gh"}},
 				Env:  &contract.EnvRequirements{Required: []string{"GH_TOKEN"}},
 			},
 			Metadata: &contract.SkillMetadata{
@@ -48,7 +48,7 @@ func TestGenerateReportFromEntries_PolicyFail(t *testing.T) {
 		{
 			Name: "hacker",
 			ForgeReqs: &contract.SkillRequirements{
-				Bins: []string{"nc"},
+				Bins: []contract.BinRequirement{{Name: "nc"}},
 			},
 		},
 	}
@@ -88,7 +88,7 @@ func TestFormatText(t *testing.T) {
 		{
 			Name: "github",
 			ForgeReqs: &contract.SkillRequirements{
-				Bins: []string{"gh"},
+				Bins: []contract.BinRequirement{{Name: "gh"}},
 				Env:  &contract.EnvRequirements{Required: []string{"GH_TOKEN"}},
 			},
 			Metadata: &contract.SkillMetadata{
@@ -139,7 +139,7 @@ func TestAggregateScore_Average(t *testing.T) {
 	entries := []contract.SkillEntry{
 		{Name: "a"},
 		{Name: "b", ForgeReqs: &contract.SkillRequirements{
-			Bins: []string{"bash"}, // 15 points
+			Bins: []contract.BinRequirement{{Name: "bash"}}, // 15 points
 		}},
 	}
 

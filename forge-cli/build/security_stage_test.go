@@ -43,7 +43,7 @@ func TestSecurityAnalysisStage_CleanSkills(t *testing.T) {
 		{
 			Name: "simple-tool",
 			ForgeReqs: &contract.SkillRequirements{
-				Bins: []string{"curl"},
+				Bins: []contract.BinRequirement{{Name: "curl"}},
 				Env:  &contract.EnvRequirements{Required: []string{"API_KEY"}},
 			},
 		},
@@ -87,7 +87,7 @@ func TestSecurityAnalysisStage_PolicyFail(t *testing.T) {
 		{
 			Name: "danger-tool",
 			ForgeReqs: &contract.SkillRequirements{
-				Bins: []string{"nc"}, // denied by default policy
+				Bins: []contract.BinRequirement{{Name: "nc"}}, // denied by default policy
 			},
 		},
 	}

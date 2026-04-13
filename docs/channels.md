@@ -177,6 +177,24 @@ This works on both Slack (via `files.getUploadURLExternal`) and Telegram (via `s
 
 Additionally, the runtime tracks large tool outputs (>8000 characters) and attaches them as file parts in the A2A response. This ensures channel adapters receive the complete, untruncated tool output even when the LLM's text summary is truncated by output token limits. JSON tool outputs (e.g. Tavily Research/Search results) are automatically unwrapped into readable markdown before delivery.
 
+## Container Deployment
+
+When channels are configured in `forge.yaml`, the build pipeline automatically:
+
+1. **Includes channel config files** — `slack-config.yaml`, `telegram-config.yaml`, etc. are copied into the Docker build context alongside `forge.yaml`
+2. **Adds `--with` to the entrypoint** — The container entrypoint becomes `["forge", "run", "--host", "0.0.0.0", "--with", "slack,telegram"]`
+3. **Handles auth loopback** — When [external auth](runtime.md#external-authentication) is configured, channel adapters authenticate to the A2A server using an internal token, bypassing the external auth provider
+
+Pass channel secrets via environment variables:
+
+```bash
+docker run \
+  -e SLACK_APP_TOKEN=xapp-... \
+  -e SLACK_BOT_TOKEN=xoxb-... \
+  -e FORGE_AUTH_URL=https://auth.example.com/verify \
+  my-agent
+```
+
 ## Docker Compose Integration
 
 ```bash

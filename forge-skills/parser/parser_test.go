@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/initializ/forge/forge-skills/contract"
 )
 
 func TestParse_HeadingFormat(t *testing.T) {
@@ -290,8 +292,9 @@ Create a GitHub issue.
 	if entries[0].ForgeReqs == nil {
 		t.Fatal("expected non-nil ForgeReqs")
 	}
-	if !reflect.DeepEqual(entries[0].ForgeReqs.Bins, []string{"curl", "jq"}) {
-		t.Errorf("Bins = %v, want [curl jq]", entries[0].ForgeReqs.Bins)
+	wantBins := []contract.BinRequirement{{Name: "curl"}, {Name: "jq"}}
+	if !reflect.DeepEqual(entries[0].ForgeReqs.Bins, wantBins) {
+		t.Errorf("Bins = %v, want %v", entries[0].ForgeReqs.Bins, wantBins)
 	}
 	if entries[0].ForgeReqs.Env == nil {
 		t.Fatal("expected non-nil Env")
@@ -338,8 +341,9 @@ Does things.
 	if entries[0].ForgeReqs == nil {
 		t.Fatal("expected non-nil ForgeReqs")
 	}
-	if !reflect.DeepEqual(entries[0].ForgeReqs.Bins, []string{"python"}) {
-		t.Errorf("Bins = %v, want [python]", entries[0].ForgeReqs.Bins)
+	wantPythonBins := []contract.BinRequirement{{Name: "python"}}
+	if !reflect.DeepEqual(entries[0].ForgeReqs.Bins, wantPythonBins) {
+		t.Errorf("Bins = %v, want %v", entries[0].ForgeReqs.Bins, wantPythonBins)
 	}
 }
 
@@ -422,8 +426,9 @@ Create a GitHub issue.
 	if entries[0].ForgeReqs == nil {
 		t.Fatal("expected non-nil ForgeReqs")
 	}
-	if !reflect.DeepEqual(entries[0].ForgeReqs.Bins, []string{"gh"}) {
-		t.Errorf("Bins = %v, want [gh]", entries[0].ForgeReqs.Bins)
+	wantGhBins := []contract.BinRequirement{{Name: "gh"}}
+	if !reflect.DeepEqual(entries[0].ForgeReqs.Bins, wantGhBins) {
+		t.Errorf("Bins = %v, want %v", entries[0].ForgeReqs.Bins, wantGhBins)
 	}
 }
 
@@ -661,8 +666,54 @@ Estimate K8s costs.
 	if entries[0].ForgeReqs == nil {
 		t.Fatal("expected non-nil ForgeReqs")
 	}
-	if !reflect.DeepEqual(entries[0].ForgeReqs.Bins, []string{"kubectl"}) {
-		t.Errorf("Bins = %v, want [kubectl]", entries[0].ForgeReqs.Bins)
+	wantKubectlBins := []contract.BinRequirement{{Name: "kubectl"}}
+	if !reflect.DeepEqual(entries[0].ForgeReqs.Bins, wantKubectlBins) {
+		t.Errorf("Bins = %v, want %v", entries[0].ForgeReqs.Bins, wantKubectlBins)
+	}
+}
+
+func TestParseWithMetadata_RichBinRequirements(t *testing.T) {
+	input := `---
+name: infra
+description: Infrastructure skill
+metadata:
+  forge:
+    requires:
+      bins:
+        - jq
+        - name: playwright
+          version: "1.50.0"
+          optional: true
+        - name: kubectl
+          apt: kubectl
+---
+## Tool: infra_tool
+Manage infrastructure.
+`
+	entries, _, err := ParseWithMetadata(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseWithMetadata error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if entries[0].ForgeReqs == nil {
+		t.Fatal("expected non-nil ForgeReqs")
+	}
+	bins := entries[0].ForgeReqs.Bins
+	if len(bins) != 3 {
+		t.Fatalf("expected 3 bins, got %d: %+v", len(bins), bins)
+	}
+	// scalar form
+	if bins[0].Name != "jq" || bins[0].Version != "" {
+		t.Errorf("bins[0] = %+v, want {Name: jq}", bins[0])
+	}
+	// rich mapping form
+	if bins[1].Name != "playwright" || bins[1].Version != "1.50.0" || !bins[1].Optional {
+		t.Errorf("bins[1] = %+v, want {Name: playwright, Version: 1.50.0, Optional: true}", bins[1])
+	}
+	if bins[2].Name != "kubectl" || bins[2].AptPackage != "kubectl" {
+		t.Errorf("bins[2] = %+v, want {Name: kubectl, Apt: kubectl}", bins[2])
 	}
 }
 

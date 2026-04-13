@@ -128,7 +128,9 @@ func entryToDescriptor(entry *contract.SkillEntry) *contract.SkillDescriptor {
 		sd.Tags = entry.Metadata.Tags
 	}
 	if entry.ForgeReqs != nil {
-		sd.RequiredBins = entry.ForgeReqs.Bins
+		for _, b := range entry.ForgeReqs.Bins {
+			sd.RequiredBins = append(sd.RequiredBins, b.Name)
+		}
 		if entry.ForgeReqs.Env != nil {
 			sd.RequiredEnv = entry.ForgeReqs.Env.Required
 			sd.OneOfEnv = entry.ForgeReqs.Env.OneOf

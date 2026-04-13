@@ -213,7 +213,6 @@ func TestGetFileManifestForge(t *testing.T) {
 	files := getFileManifest(opts)
 	// Forge framework should have common files but no entrypoint scaffolding
 	assertContainsTemplate(t, files, "forge.yaml.tmpl")
-	assertContainsTemplate(t, files, "SKILL.md.tmpl")
 	assertContainsTemplate(t, files, "gitignore.tmpl")
 	// Should NOT have agent.py or similar
 	for _, f := range files {
@@ -227,7 +226,6 @@ func TestGetFileManifestCommonFiles(t *testing.T) {
 	opts := &initOptions{Framework: "forge"}
 	files := getFileManifest(opts)
 	assertContainsTemplate(t, files, "forge.yaml.tmpl")
-	assertContainsTemplate(t, files, "SKILL.md.tmpl")
 	assertContainsTemplate(t, files, "env.example.tmpl")
 	assertContainsTemplate(t, files, "gitignore.tmpl")
 }
@@ -261,7 +259,6 @@ func TestScaffoldIntegration(t *testing.T) {
 	// Verify all expected files exist (forge framework has no entrypoint files)
 	expectedFiles := []string{
 		"forge.yaml",
-		"SKILL.md",
 		".env.example",
 		".gitignore",
 	}

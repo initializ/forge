@@ -187,12 +187,17 @@ func extractFromForgeMap(forgeMap map[string]any) (bins, reqEnv, oneOfEnv, optEn
 		return
 	}
 
-	// bins
+	// bins — handle both string items and map items (rich BinRequirement)
 	if binsRaw, ok := reqMap["bins"]; ok {
 		if arr, ok := binsRaw.([]any); ok {
 			for _, v := range arr {
-				if s, ok := v.(string); ok {
-					bins = append(bins, s)
+				switch item := v.(type) {
+				case string:
+					bins = append(bins, item)
+				case map[string]any:
+					if name, ok := item["name"].(string); ok && name != "" {
+						bins = append(bins, name)
+					}
 				}
 			}
 		}

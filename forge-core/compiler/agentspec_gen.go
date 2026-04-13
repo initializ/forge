@@ -21,6 +21,10 @@ func ConfigToAgentSpec(cfg *types.ForgeConfig) *agentspec.AgentSpec {
 	}
 
 	fields := strings.Fields(cfg.Entrypoint)
+	// Default entrypoint for forge framework agents
+	if cfg.Framework == "forge" && len(fields) == 0 {
+		fields = []string{"forge", "run", "--host", "0.0.0.0"}
+	}
 	spec.Runtime = &agentspec.RuntimeConfig{
 		Image:      InferBaseImage(fields),
 		Entrypoint: fields,
@@ -86,6 +90,8 @@ func InferBaseImage(entrypoint []string) string {
 		return "golang:1.23-alpine"
 	case entrypoint[0] == "node":
 		return "node:20-slim"
+	case entrypoint[0] == "forge":
+		return "debian:bookworm-slim"
 	default:
 		return "ubuntu:latest"
 	}

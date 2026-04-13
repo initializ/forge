@@ -84,6 +84,15 @@ forge build [flags]
 
 Uses global `--config` and `--output-dir` flags. Output is written to `.forge-output/` by default.
 
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--signing-key` | | Path to Ed25519 private key for signing build output |
+| `--slim` | `false` | Minimize image size (skip heavy/optional binaries) |
+| `--alpine` | `false` | Prefer Alpine base image |
+| `--local-bin` | | Local binary override as `name=/path/to/file` (repeatable) |
+
 ### Examples
 
 ```bash
@@ -92,6 +101,12 @@ forge build
 
 # Build with custom config and output
 forge build --config agent.yaml --output-dir ./build
+
+# Build with a local binary override
+forge build --local-bin forge=/path/to/linux/forge
+
+# Build with Alpine base and slim image
+forge build --alpine --slim
 ```
 
 ---
@@ -147,6 +162,7 @@ forge run [flags]
 | `--provider` | | LLM provider: `openai`, `anthropic`, or `ollama` |
 | `--env` | `.env` | Path to .env file |
 | `--with` | | Comma-separated channel adapters (e.g., `slack,telegram`) |
+| `--auth-url` | | External auth provider URL for token validation |
 | `--cors-origins` | localhost | Comma-separated CORS allowed origins (e.g., `https://app.example.com,https://admin.example.com`). Use `*` to allow all origins |
 
 ### Examples
@@ -277,6 +293,9 @@ forge package [flags]
 | `--builder` | | Force builder: `docker`, `podman`, or `buildah` |
 | `--skip-build` | `false` | Skip re-running forge build |
 | `--with-channels` | `false` | Generate docker-compose.yaml with channel adapters |
+| `--slim` | `false` | Minimize image size (skip heavy/optional binaries) |
+| `--alpine` | `false` | Prefer Alpine base image |
+| `--local-bin` | | Local binary override as `name=/path/to/file` (repeatable) |
 
 ### Examples
 
@@ -292,6 +311,12 @@ forge package --platform linux/amd64 --no-cache
 
 # Generate docker-compose with channels
 forge package --with-channels
+
+# Package with a local binary override
+forge package --local-bin forge=/path/to/linux/forge
+
+# Package with slim Alpine image
+forge package --alpine --slim
 ```
 
 ---

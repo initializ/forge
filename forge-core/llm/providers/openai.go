@@ -136,7 +136,7 @@ type streamOptions struct {
 
 type openaiMessage struct {
 	Role       string         `json:"role"`
-	Content    string         `json:"content,omitempty"`
+	Content    *string        `json:"content,omitempty"`
 	ToolCalls  []llm.ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 	Name       string         `json:"name,omitempty"`
@@ -150,13 +150,21 @@ func (c *OpenAIClient) toOpenAIRequest(req *llm.ChatRequest, stream bool) openai
 
 	msgs := make([]openaiMessage, len(req.Messages))
 	for i, m := range req.Messages {
-		msgs[i] = openaiMessage{
+		msg := openaiMessage{
 			Role:       m.Role,
-			Content:    m.Content,
 			ToolCalls:  m.ToolCalls,
 			ToolCallID: m.ToolCallID,
 			Name:       m.Name,
 		}
+		// Assistant messages with tool_calls may omit content (valid per OpenAI spec).
+		// All other roles must always include content as a string.
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 && m.Content == "" {
+			// Leave Content nil — omitempty will omit the field entirely.
+		} else {
+			content := m.Content
+			msg.Content = &content
+		}
+		msgs[i] = msg
 	}
 
 	r := openaiRequest{

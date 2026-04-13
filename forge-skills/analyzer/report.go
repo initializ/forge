@@ -23,8 +23,12 @@ func GenerateReport(registry contract.SkillRegistry, policy SecurityPolicy) (*Au
 			Description: sd.Description,
 		}
 		if len(sd.RequiredBins) > 0 || len(sd.RequiredEnv) > 0 || len(sd.OneOfEnv) > 0 || len(sd.OptionalEnv) > 0 || len(sd.EgressDomains) > 0 {
+			var binReqs []contract.BinRequirement
+			for _, name := range sd.RequiredBins {
+				binReqs = append(binReqs, contract.BinRequirement{Name: name})
+			}
 			entry.ForgeReqs = &contract.SkillRequirements{
-				Bins: sd.RequiredBins,
+				Bins: binReqs,
 			}
 			if len(sd.RequiredEnv) > 0 || len(sd.OneOfEnv) > 0 || len(sd.OptionalEnv) > 0 {
 				entry.ForgeReqs.Env = &contract.EnvRequirements{

@@ -1,5 +1,11 @@
 package contract
 
+import (
+	"fmt"
+
+	"gopkg.in/yaml.v3"
+)
+
 // SkillDescriptor describes a skill available in a registry.
 type SkillDescriptor struct {
 	Name          string
@@ -70,9 +76,49 @@ type SkillOutputFilter struct {
 	Action  string `yaml:"action" json:"action"`   // "block" or "redact"
 }
 
+// BinRequirement describes a binary dependency with optional install metadata.
+// It supports both scalar YAML ("jq") and mapping YAML ({name: jq, version: "1.6"}).
+type BinRequirement struct {
+	Name        string   `yaml:"name" json:"name"`
+	Version     string   `yaml:"version,omitempty" json:"version,omitempty"`
+	Optional    bool     `yaml:"optional,omitempty" json:"optional,omitempty"`
+	AptPackage  string   `yaml:"apt,omitempty" json:"apt,omitempty"`
+	ApkPackage  string   `yaml:"apk,omitempty" json:"apk,omitempty"`
+	DirectURL   string   `yaml:"url,omitempty" json:"url,omitempty"`
+	Dest        string   `yaml:"dest,omitempty" json:"dest,omitempty"`
+	Chmod       string   `yaml:"chmod,omitempty" json:"chmod,omitempty"`
+	CustomLines []string `yaml:"run,omitempty" json:"run,omitempty"`
+}
+
+// UnmarshalYAML handles both scalar ("jq") and mapping ({name: jq, ...}) YAML nodes.
+func (b *BinRequirement) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		b.Name = value.Value
+		if b.Name == "" {
+			return fmt.Errorf("bin requirement: name cannot be empty")
+		}
+		return nil
+	case yaml.MappingNode:
+		// Decode into an alias to avoid infinite recursion.
+		type binReqAlias BinRequirement
+		var alias binReqAlias
+		if err := value.Decode(&alias); err != nil {
+			return fmt.Errorf("bin requirement: %w", err)
+		}
+		if alias.Name == "" {
+			return fmt.Errorf("bin requirement: name is required in mapping form")
+		}
+		*b = BinRequirement(alias)
+		return nil
+	default:
+		return fmt.Errorf("bin requirement: expected string or mapping, got %v", value.Kind)
+	}
+}
+
 // SkillRequirements declares CLI binaries and environment variables a skill needs.
 type SkillRequirements struct {
-	Bins []string         `yaml:"bins,omitempty" json:"bins,omitempty"`
+	Bins []BinRequirement `yaml:"bins,omitempty" json:"bins,omitempty"`
 	Env  *EnvRequirements `yaml:"env,omitempty" json:"env,omitempty"`
 }
 
@@ -111,7 +157,8 @@ type SkillFilter struct {
 
 // AggregatedRequirements is the union of all skill requirements.
 type AggregatedRequirements struct {
-	Bins            []string              // union of all bins, deduplicated, sorted
+	Bins            []string              // union of all bin names, deduplicated, sorted
+	BinRequirements []BinRequirement      // rich requirements, deduplicated by name (richer entry wins)
 	EnvRequired     []string              // union of required vars (promoted from optional if needed)
 	EnvOneOf        [][]string            // separate groups per skill (not merged across skills)
 	EnvOptional     []string              // union of optional vars minus those promoted to required

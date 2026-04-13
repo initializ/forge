@@ -32,6 +32,8 @@ func AggregateRequirements(entries []contract.SkillEntry) *contract.AggregatedRe
 	promptPatternSeen := make(map[string]bool)
 	responsePatternSeen := make(map[string]bool)
 
+	binReqMap := make(map[string]contract.BinRequirement)
+
 	for _, e := range entries {
 		// Collect forge-level metadata (denied_tools, egress_domains, guardrails)
 		if e.Metadata != nil && e.Metadata.Metadata != nil {
@@ -99,7 +101,11 @@ func AggregateRequirements(entries []contract.SkillEntry) *contract.AggregatedRe
 			continue
 		}
 		for _, b := range e.ForgeReqs.Bins {
-			binSet[b] = true
+			binSet[b.Name] = true
+			// Keep richer entry: one with more fields set wins
+			if existing, ok := binReqMap[b.Name]; !ok || isRicher(b, existing) {
+				binReqMap[b.Name] = b
+			}
 		}
 		if e.ForgeReqs.Env != nil {
 			for _, v := range e.ForgeReqs.Env.Required {
@@ -121,12 +127,24 @@ func AggregateRequirements(entries []contract.SkillEntry) *contract.AggregatedRe
 		}
 	}
 
+	// Build sorted BinRequirements from the map
+	sortedBins := sortedKeys(binSet)
+	binReqs := make([]contract.BinRequirement, 0, len(sortedBins))
+	for _, name := range sortedBins {
+		if br, ok := binReqMap[name]; ok {
+			binReqs = append(binReqs, br)
+		} else {
+			binReqs = append(binReqs, contract.BinRequirement{Name: name})
+		}
+	}
+
 	agg := &contract.AggregatedRequirements{
-		Bins:           sortedKeys(binSet),
-		EnvOneOf:       oneOfGroups,
-		DeniedTools:    sortedKeys(deniedSet),
-		EgressDomains:  sortedKeys(egressSet),
-		WorkflowPhases: sortedKeys(phaseSet),
+		Bins:            sortedBins,
+		BinRequirements: binReqs,
+		EnvOneOf:        oneOfGroups,
+		DeniedTools:     sortedKeys(deniedSet),
+		EgressDomains:   sortedKeys(egressSet),
+		WorkflowPhases:  sortedKeys(phaseSet),
 	}
 	agg.EnvRequired = sortedKeys(reqSet)
 	agg.EnvOptional = sortedKeys(optSet)
@@ -152,6 +170,30 @@ func AggregateDescriptorRequirements(descs []contract.SkillDescriptor) int {
 		}
 	}
 	return maxTimeout
+}
+
+// isRicher returns true if a has more install metadata than b.
+func isRicher(a, b contract.BinRequirement) bool {
+	countFields := func(br contract.BinRequirement) int {
+		n := 0
+		if br.Version != "" {
+			n++
+		}
+		if br.AptPackage != "" {
+			n++
+		}
+		if br.ApkPackage != "" {
+			n++
+		}
+		if br.DirectURL != "" {
+			n++
+		}
+		if len(br.CustomLines) > 0 {
+			n++
+		}
+		return n
+	}
+	return countFields(a) > countFields(b)
 }
 
 func sortedKeys(m map[string]bool) []string {

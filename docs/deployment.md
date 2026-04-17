@@ -4,7 +4,28 @@
 
 Forge agents can be packaged as container images and deployed to Docker, Kubernetes, or air-gapped environments.
 
-## Building Container Images
+## Pre-built Docker Image
+
+Forge publishes multi-architecture Docker images (linux/amd64, linux/arm64) to GitHub Container Registry on every release:
+
+```bash
+# Pull the latest release
+docker pull ghcr.io/initializ/forge:latest
+
+# Pin to a specific version
+docker pull ghcr.io/initializ/forge:v1.2.3
+
+# Run with your agent directory mounted
+docker run -v /path/to/agent:/home/forge/agent -w /home/forge/agent \
+  -e OPENAI_API_KEY=sk-... \
+  ghcr.io/initializ/forge:latest run --host 0.0.0.0
+```
+
+Tags follow the pattern `v1.2.3`, `v1.2`, `v1`, and `latest`.
+
+The image is built from a multi-stage Dockerfile in the repository root — `golang:1.25-alpine` for the build stage (static binary, `CGO_ENABLED=0`) and `alpine:3.21` for the runtime with `ca-certificates`, `git`, and `tzdata`. The container runs as a non-root `forge` user.
+
+## Building Agent Container Images
 
 ```bash
 # Build a container image (auto-detects Docker/Podman/Buildah)

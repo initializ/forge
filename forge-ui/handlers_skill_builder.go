@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/initializ/forge/forge-cli/runtime"
+	"github.com/initializ/forge/forge-core/llm/oauth"
 	"github.com/initializ/forge/forge-core/types"
 )
 
@@ -71,32 +72,55 @@ func (s *UIServer) handleSkillBuilderProvider(w http.ResponseWriter, r *http.Req
 	}
 
 	provider := cfg.Model.Provider
-	model := SkillBuilderCodegenModel(provider, cfg.Model.Name)
 
 	// Load the agent's .env and encrypted secrets so we can check for API keys
 	// that aren't in the UI process's own environment.
 	envPath := filepath.Join(agentDir, ".env")
 	envVars, _ := runtime.LoadEnvFile(envPath)
 	for k, v := range envVars {
+		// Don't pollute process env with __oauth__ sentinels — they block
+		// OverlaySecretsToEnv from replacing them with real keys later.
+		if v == "__oauth__" {
+			continue
+		}
 		if os.Getenv(k) == "" {
 			_ = os.Setenv(k, v)
 		}
 	}
 	runtime.OverlaySecretsToEnv(cfg, agentDir)
 
-	// Check if the provider's API key env var is set
+	// Check if the provider's API key env var is set (excluding __oauth__ sentinel)
+	keyVal := func(k string) bool {
+		v := os.Getenv(k)
+		return v != "" && v != "__oauth__"
+	}
 	hasKey := false
+	isOAuth := false
 	switch provider {
 	case "openai":
-		hasKey = os.Getenv("OPENAI_API_KEY") != ""
+		hasKey = keyVal("OPENAI_API_KEY")
+		if !hasKey {
+			// Check for stored OAuth credentials
+			if token, err := oauth.LoadCredentials("openai"); err == nil && token != nil && token.RefreshToken != "" {
+				hasKey = true
+				isOAuth = true
+			}
+		}
 	case "anthropic":
-		hasKey = os.Getenv("ANTHROPIC_API_KEY") != ""
+		hasKey = keyVal("ANTHROPIC_API_KEY")
 	case "gemini":
-		hasKey = os.Getenv("GEMINI_API_KEY") != ""
+		hasKey = keyVal("GEMINI_API_KEY")
 	case "ollama":
 		hasKey = true // Ollama doesn't need an API key
 	default:
-		hasKey = os.Getenv("LLM_API_KEY") != "" || os.Getenv("MODEL_API_KEY") != ""
+		hasKey = keyVal("LLM_API_KEY") || keyVal("MODEL_API_KEY")
+	}
+
+	// OAuth/Codex backend has model restrictions — use agent's configured model.
+	// API key clients get upgraded to a stronger codegen model.
+	model := cfg.Model.Name
+	if !isOAuth {
+		model = SkillBuilderCodegenModel(provider, model)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -243,19 +267,17 @@ func (s *UIServer) handleSkillBuilderSave(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	err := s.cfg.SkillSaveFunc(SkillSaveOptions{
+	saveResult, err := s.cfg.SkillSaveFunc(SkillSaveOptions{
 		AgentDir:  agentDir,
 		SkillName: req.SkillName,
 		SkillMD:   req.SkillMD,
 		Scripts:   req.Scripts,
+		EnvVars:   req.EnvVars,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "saving skill: "+err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{
-		"status": "saved",
-		"path":   "skills/" + req.SkillName + "/SKILL.md",
-	})
+	writeJSON(w, http.StatusOK, saveResult)
 }

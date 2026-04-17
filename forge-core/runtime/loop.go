@@ -157,8 +157,26 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 		}
 	}
 
-	// Append the new user message
-	mem.Append(a2aMessageToLLM(*msg))
+	// Append the new user message, but skip if the recovered session
+	// already ends with an identical user message (avoids duplicates
+	// when users retry after a premature loop exit).
+	newMsg := a2aMessageToLLM(*msg)
+	if recovered {
+		msgs := mem.Messages()
+		// Find the last user message in the recovered session.
+		lastUserIdx := -1
+		for j := len(msgs) - 1; j >= 0; j-- {
+			if msgs[j].Role == llm.RoleUser {
+				lastUserIdx = j
+				break
+			}
+		}
+		if lastUserIdx < 0 || msgs[lastUserIdx].Content != newMsg.Content {
+			mem.Append(newMsg)
+		}
+	} else {
+		mem.Append(newMsg)
+	}
 
 	// Build tool definitions
 	var toolDefs []llm.ToolDefinition
@@ -248,10 +266,10 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 		// Append assistant message to memory
 		mem.Append(resp.Message)
 
-		// Check if we're done (no tool calls).
-		// Always execute tool calls even when finish_reason is "stop" —
-		// otherwise we persist an assistant message with orphaned function
-		// calls that the Responses API will reject on session recovery.
+		// Check if we're done: the definitive signal is the absence of tool
+		// calls. FinishReason is unreliable — some providers return "stop"
+		// even when tool calls are present, and others return empty/non-standard
+		// values. Only the tool call list determines whether execution continues.
 		if len(resp.Message.ToolCalls) == 0 {
 			// If the LLM stopped after executing tools, send a continuation
 			// nudge. This catches cases where the LLM reports findings instead

@@ -97,11 +97,26 @@ type SkillSaveOptions struct {
 	SkillName string
 	SkillMD   string
 	Scripts   map[string]string
+	EnvVars   map[string]string // env vars to write to .env
 }
 
-// SkillSaveFunc saves a generated skill to disk.
+// SkillSaveResult holds the result of saving a skill, including env/egress changes.
+type SkillSaveResult struct {
+	Path          string          `json:"path"`
+	EgressAdded   []string        `json:"egress_added,omitempty"`
+	EnvConfigured []string        `json:"env_configured,omitempty"`
+	EnvMissing    []SkillEnvEntry `json:"env_missing,omitempty"`
+}
+
+// SkillEnvEntry describes a missing environment variable requirement.
+type SkillEnvEntry struct {
+	Name string `json:"name"`
+	Kind string `json:"kind"` // "required", "one_of", "optional"
+}
+
+// SkillSaveFunc saves a generated skill to disk and configures env/egress.
 // Injected by forge-cli.
-type SkillSaveFunc func(opts SkillSaveOptions) error
+type SkillSaveFunc func(opts SkillSaveOptions) (*SkillSaveResult, error)
 
 // SkillBuilderChatRequest is the POST body for the skill builder chat endpoint.
 type SkillBuilderChatRequest struct {
@@ -119,6 +134,7 @@ type SkillBuilderSaveRequest struct {
 	SkillName string            `json:"skill_name"`
 	SkillMD   string            `json:"skill_md"`
 	Scripts   map[string]string `json:"scripts,omitempty"`
+	EnvVars   map[string]string `json:"env_vars,omitempty"`
 }
 
 // SkillValidationResult holds the result of validating a SKILL.md.

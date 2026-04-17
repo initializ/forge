@@ -136,6 +136,35 @@ model:
 	}
 }
 
+func TestDetectExternalAgentStalePID(t *testing.T) {
+	dir := t.TempDir()
+	forgeDir := filepath.Join(dir, ".forge")
+	if err := os.MkdirAll(forgeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write serve.json with a dead PID (PID 2147483647 should not exist).
+	writeFile(t, filepath.Join(forgeDir, "serve.json"), `{"pid":2147483647,"port":9999,"host":"127.0.0.1"}`)
+
+	port, ok := detectExternalAgent(dir)
+	if ok {
+		t.Errorf("expected false for stale PID, got port %d", port)
+	}
+
+	// serve.json should have been cleaned up.
+	if _, err := os.Stat(filepath.Join(forgeDir, "serve.json")); !os.IsNotExist(err) {
+		t.Error("expected stale serve.json to be removed")
+	}
+}
+
+func TestDetectExternalAgentNoStateFile(t *testing.T) {
+	dir := t.TempDir()
+	port, ok := detectExternalAgent(dir)
+	if ok {
+		t.Errorf("expected false when no serve.json, got port %d", port)
+	}
+}
+
 func TestScanEmptyDir(t *testing.T) {
 	root := t.TempDir()
 

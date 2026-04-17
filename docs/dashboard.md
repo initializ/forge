@@ -117,6 +117,8 @@ The Skill Builder uses the agent's own LLM provider to power a chat conversation
 | Script preview | View generated helper scripts alongside the SKILL.md |
 | Validation | Server-side validation checks name format, required fields, egress domain declarations, and name uniqueness |
 | One-click save | Save the validated skill directly to the agent's `skills/` directory |
+| Egress injection | Automatically merges declared `egress_domains` into `forge.yaml` allowlist on save |
+| Env var handling | Writes user-provided env vars to `.env`; prompts for missing required vars after save |
 
 ### Workflow
 
@@ -125,7 +127,8 @@ The Skill Builder uses the agent's own LLM provider to power a chat conversation
 3. **Iterate** — the AI asks about requirements, security constraints, and env vars
 4. **Review** — inspect the generated SKILL.md and scripts in the preview panel
 5. **Validate** — check for errors and warnings before saving
-6. **Save** — writes `skills/{name}/SKILL.md` and `skills/{name}/scripts/` to the agent directory
+6. **Save** — writes `skills/{name}/SKILL.md` and `skills/{name}/scripts/` to the agent directory, merges egress domains into `forge.yaml`, and writes env vars to `.env`
+7. **Configure** — if the skill requires env vars that aren't set, the UI shows input fields to provide them and re-save
 
 ### Validation Rules
 
@@ -150,7 +153,7 @@ The validator enforces the [SKILL.md format](skills.md):
 | `GET` | `/api/agents/{id}/skill-builder/context` | Returns the system prompt used for skill generation |
 | `POST` | `/api/agents/{id}/skill-builder/chat` | Streams an LLM conversation via SSE (accepts `messages` array) |
 | `POST` | `/api/agents/{id}/skill-builder/validate` | Validates a SKILL.md and optional scripts |
-| `POST` | `/api/agents/{id}/skill-builder/save` | Saves a validated skill to `skills/{name}/` |
+| `POST` | `/api/agents/{id}/skill-builder/save` | Saves a validated skill to `skills/{name}/`, merges egress domains, writes env vars; returns `SkillSaveResult` with `path`, `egress_added`, `env_configured`, `env_missing` |
 
 ## Architecture
 

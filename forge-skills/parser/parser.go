@@ -118,7 +118,7 @@ func ParseWithMetadata(r io.Reader) ([]contract.SkillEntry, *contract.SkillMetad
 	var forgeReqs *contract.SkillRequirements
 	var egressDomains []string
 	if meta != nil {
-		forgeReqs, egressDomains, _ = extractForgeReqs(meta)
+		forgeReqs, egressDomains, _ = ExtractForgeReqs(meta)
 	}
 
 	bodyStr := strings.TrimSpace(string(body))
@@ -216,9 +216,9 @@ func validateCategoryAndTags(meta *contract.SkillMetadata) error {
 	return nil
 }
 
-// extractForgeReqs extracts SkillRequirements, egress_domains, and guardrails from the generic
+// ExtractForgeReqs extracts SkillRequirements, egress_domains, and guardrails from the generic
 // metadata map by re-marshaling metadata["forge"] through yaml round-trip into ForgeSkillMeta.
-func extractForgeReqs(meta *contract.SkillMetadata) (*contract.SkillRequirements, []string, *contract.SkillGuardrailConfig) {
+func ExtractForgeReqs(meta *contract.SkillMetadata) (*contract.SkillRequirements, []string, *contract.SkillGuardrailConfig) {
 	if meta == nil || meta.Metadata == nil {
 		return nil, nil, nil
 	}

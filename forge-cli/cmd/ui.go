@@ -13,6 +13,7 @@ import (
 	"github.com/initializ/forge/forge-cli/internal/tui"
 	"github.com/initializ/forge/forge-cli/runtime"
 	"github.com/initializ/forge/forge-core/llm"
+	"github.com/initializ/forge/forge-core/llm/oauth"
 	"github.com/initializ/forge/forge-core/llm/providers"
 	coreruntime "github.com/initializ/forge/forge-core/runtime"
 	"github.com/initializ/forge/forge-core/util"
@@ -141,33 +142,41 @@ func runUI(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("loading config: %w", err)
 		}
 
-		// Load .env
+		// Load .env — force-set values so __oauth__ sentinels from prior
+		// handler calls don't block real keys from encrypted secrets.
 		envPath := filepath.Join(opts.AgentDir, ".env")
 		envVars, err := runtime.LoadEnvFile(envPath)
 		if err != nil {
 			return fmt.Errorf("loading env: %w", err)
 		}
 		for k, v := range envVars {
-			if os.Getenv(k) == "" {
-				_ = os.Setenv(k, v)
+			_ = os.Setenv(k, v)
+		}
+
+		// Clear __oauth__ sentinels so OverlaySecretsToEnv can replace them
+		// with real keys from the encrypted secrets store.
+		for _, key := range []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"} {
+			if os.Getenv(key) == "__oauth__" {
+				_ = os.Unsetenv(key)
 			}
 		}
 
 		// Overlay encrypted secrets
 		runtime.OverlaySecretsToEnv(cfg, opts.AgentDir)
 
-		// Build env map for model resolution
+		// Build env map for model resolution. OS env takes priority over .env
+		// file because OverlaySecretsToEnv may have replaced sentinels with
+		// real keys from the encrypted store.
 		envMap := make(map[string]string)
 		for k, v := range envVars {
-			envMap[k] = v
+			if v != "__oauth__" {
+				envMap[k] = v
+			}
 		}
-		// Include OS env vars that may have been set by overlay
 		for _, kv := range os.Environ() {
 			parts := strings.SplitN(kv, "=", 2)
 			if len(parts) == 2 {
-				if _, exists := envMap[parts[0]]; !exists {
-					envMap[parts[0]] = parts[1]
-				}
+				envMap[parts[0]] = parts[1]
 			}
 		}
 
@@ -176,11 +185,39 @@ func runUI(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("unable to resolve model configuration")
 		}
 
-		mc.Client.Model = forgeui.SkillBuilderCodegenModel(mc.Provider, mc.Client.Model)
-
-		client, err := providers.NewClient(mc.Provider, mc.Client)
-		if err != nil {
-			return fmt.Errorf("creating LLM client: %w", err)
+		// Resolve OAuth credentials when the API key is the __oauth__ sentinel
+		// or empty. OAuth/Codex backend has its own model constraints, so
+		// skip the codegen model upgrade for OAuth clients.
+		var client llm.Client
+		needsOAuth := mc.Provider == "openai" && (mc.Client.APIKey == "" || mc.Client.APIKey == "__oauth__")
+		if needsOAuth {
+			token, oauthErr := oauth.LoadCredentials(mc.Provider)
+			if oauthErr == nil && token != nil && token.RefreshToken != "" {
+				oauthCfg := oauth.OpenAIConfig()
+				baseURL := token.BaseURL
+				if baseURL == "" {
+					baseURL = oauthCfg.BaseURL
+				}
+				mc.Client.APIKey = token.AccessToken
+				mc.Client.BaseURL = baseURL
+				client = providers.NewOAuthClient(mc.Client, mc.Provider, oauthCfg)
+			} else if mc.Client.APIKey == "" || mc.Client.APIKey == "__oauth__" {
+				// No API key and OAuth failed — surface the error instead
+				// of silently falling through to a client with no auth.
+				if oauthErr != nil {
+					return fmt.Errorf("loading OAuth credentials: %w", oauthErr)
+				}
+				return fmt.Errorf("no OpenAI API key or OAuth credentials found; run 'forge init' with OAuth or set OPENAI_API_KEY")
+			}
+		}
+		if client == nil {
+			// Only upgrade to the codegen model for non-OAuth (API key) clients.
+			mc.Client.Model = forgeui.SkillBuilderCodegenModel(mc.Provider, mc.Client.Model)
+			var clientErr error
+			client, clientErr = providers.NewClient(mc.Provider, mc.Client)
+			if clientErr != nil {
+				return fmt.Errorf("creating LLM client: %w", clientErr)
+			}
 		}
 
 		// Build chat request with system prompt + conversation messages
@@ -223,31 +260,55 @@ func runUI(cmd *cobra.Command, args []string) error {
 	}
 
 	// Build the SkillSaveFunc for saving generated skills.
-	skillSaveFunc := func(opts forgeui.SkillSaveOptions) error {
+	skillSaveFunc := func(opts forgeui.SkillSaveOptions) (*forgeui.SkillSaveResult, error) {
 		skillDir := filepath.Join(opts.AgentDir, "skills", opts.SkillName)
 		if err := os.MkdirAll(skillDir, 0o755); err != nil {
-			return fmt.Errorf("creating skill directory: %w", err)
+			return nil, fmt.Errorf("creating skill directory: %w", err)
 		}
 
 		skillPath := filepath.Join(skillDir, "SKILL.md")
 		if err := os.WriteFile(skillPath, []byte(opts.SkillMD), 0o644); err != nil {
-			return fmt.Errorf("writing SKILL.md: %w", err)
+			return nil, fmt.Errorf("writing SKILL.md: %w", err)
 		}
 
 		if len(opts.Scripts) > 0 {
 			scriptsDir := filepath.Join(skillDir, "scripts")
 			if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
-				return fmt.Errorf("creating scripts directory: %w", err)
+				return nil, fmt.Errorf("creating scripts directory: %w", err)
 			}
 			for filename, content := range opts.Scripts {
 				scriptPath := filepath.Join(scriptsDir, filename)
 				if err := os.WriteFile(scriptPath, []byte(content), 0o755); err != nil {
-					return fmt.Errorf("writing script %s: %w", filename, err)
+					return nil, fmt.Errorf("writing script %s: %w", filename, err)
 				}
 			}
 		}
 
-		return nil
+		result := &forgeui.SkillSaveResult{
+			Path: "skills/" + opts.SkillName + "/SKILL.md",
+		}
+
+		// Parse skill requirements from SKILL.md
+		reqInfo := ParseSkillRequirements(opts.SkillMD)
+
+		// Write user-provided env vars to .env
+		if len(opts.EnvVars) > 0 {
+			written, _ := AppendEnvVars(opts.AgentDir, opts.EnvVars, opts.SkillName)
+			result.EnvConfigured = written
+		}
+
+		// Merge egress domains into forge.yaml
+		if len(reqInfo.EgressDomains) > 0 {
+			added, _ := MergeEgressDomains(opts.AgentDir, reqInfo.EgressDomains)
+			result.EgressAdded = added
+		}
+
+		// Check for missing env vars
+		if reqInfo.EnvReqs != nil {
+			result.EnvMissing = CheckMissingEnv(opts.AgentDir, reqInfo.EnvReqs)
+		}
+
+		return result, nil
 	}
 
 	server := forgeui.NewUIServer(forgeui.UIServerConfig{

@@ -195,11 +195,13 @@ async function validateSkillBuilderMD(agentId, skillMD, scripts) {
   return res.json();
 }
 
-async function saveSkillBuilder(agentId, skillName, skillMD, scripts) {
+async function saveSkillBuilder(agentId, skillName, skillMD, scripts, envVars) {
+  const body = { skill_name: skillName, skill_md: skillMD, scripts };
+  if (envVars && Object.keys(envVars).length > 0) body.env_vars = envVars;
   const res = await fetch(`/api/agents/${agentId}/skill-builder/save`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ skill_name: skillName, skill_md: skillMD, scripts }),
+    body: JSON.stringify(body),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || `Save failed: ${res.status}`);
@@ -2098,6 +2100,7 @@ function SkillBuilderPage({ agentId }) {
   const [activeTab, setActiveTab] = useState('skill.md');
   const [validation, setValidation] = useState(null);
   const [saveStatus, setSaveStatus] = useState(null);
+  const [envInputs, setEnvInputs] = useState({});
   const [error, setError] = useState(null);
   const abortRef = useRef(null);
   const chatEndRef = useRef(null);
@@ -2234,13 +2237,16 @@ function SkillBuilderPage({ agentId }) {
     }
 
     try {
-      const result = await saveSkillBuilder(agentId, skillName, skillMD, scripts);
+      // Pass any user-provided env vars
+      const envVars = Object.keys(envInputs).length > 0 ? envInputs : undefined;
+      const result = await saveSkillBuilder(agentId, skillName, skillMD, scripts, envVars);
       setSaveStatus(result);
+      setEnvInputs({});
       setError(null);
     } catch (err) {
       setError('Save failed: ' + err.message);
     }
-  }, [agentId, skillMD, scripts]);
+  }, [agentId, skillMD, scripts, envInputs]);
 
   const handleKeyDown = useCallback((e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -2371,6 +2377,30 @@ function SkillBuilderPage({ agentId }) {
           ${saveStatus && html`
             <div class="sb-save-success">
               Saved to ${saveStatus.path}
+              ${saveStatus.egress_added && saveStatus.egress_added.length > 0 && html`
+                <div class="sb-save-detail">Egress domains added: ${saveStatus.egress_added.join(', ')}</div>
+              `}
+              ${saveStatus.env_configured && saveStatus.env_configured.length > 0 && html`
+                <div class="sb-save-detail">Env vars configured: ${saveStatus.env_configured.join(', ')}</div>
+              `}
+            </div>
+          `}
+          ${saveStatus && saveStatus.env_missing && saveStatus.env_missing.filter(e => e.kind !== 'optional').length > 0 && html`
+            <div class="sb-env-missing">
+              <div class="sb-env-missing-title">Missing environment variables:</div>
+              ${saveStatus.env_missing.filter(e => e.kind !== 'optional').map(entry => html`
+                <div class="sb-env-input" key=${entry.name}>
+                  <label>${entry.name} <span class="sb-env-kind">(${entry.kind})</span></label>
+                  <input type="text" placeholder=${'Enter ' + entry.name}
+                    value=${envInputs[entry.name] || ''}
+                    onInput=${(e) => setEnvInputs(prev => ({...prev, [entry.name]: e.target.value}))} />
+                </div>
+              `)}
+              <button class="btn btn-primary btn-sm"
+                onClick=${handleSave}
+                disabled=${Object.values(envInputs).every(v => !v)}>
+                Save Env Vars
+              </button>
             </div>
           `}
 

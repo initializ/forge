@@ -218,6 +218,19 @@ func runSkillsAdd(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Merge egress domains into forge.yaml
+	if len(info.EgressDomains) > 0 {
+		added, mergeErr := MergeEgressDomains(wd, info.EgressDomains)
+		if mergeErr != nil {
+			fmt.Printf("\n  Warning: could not update egress domains: %s\n", mergeErr)
+		} else if len(added) > 0 {
+			fmt.Println("\n  Egress domains added to forge.yaml:")
+			for _, d := range added {
+				fmt.Printf("    + %s\n", d)
+			}
+		}
+	}
+
 	fmt.Printf("\nSkill %q added successfully.\n", info.DisplayName)
 	return nil
 }

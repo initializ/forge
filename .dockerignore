@@ -1,0 +1,13 @@
+.git
+.github
+*.md
+!forge-*/
+LICENSE
+Makefile
+.goreleaser.yaml
+install.sh
+forge
+forge-cli/forge
+docs/
+coverage.out
+*.test

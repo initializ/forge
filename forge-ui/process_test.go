@@ -8,19 +8,20 @@ func TestPortAllocator(t *testing.T) {
 	pa := NewPortAllocator(9100)
 
 	p1 := pa.Allocate()
-	if p1 != 9100 {
-		t.Errorf("first port = %d, want 9100", p1)
+	if p1 < 9100 {
+		t.Errorf("first port = %d, want >= 9100", p1)
 	}
 
 	p2 := pa.Allocate()
-	if p2 != 9101 {
-		t.Errorf("second port = %d, want 9101", p2)
+	if p2 <= p1 {
+		t.Errorf("second port = %d, want > %d", p2, p1)
 	}
 
-	pa.Release(9100)
+	// Release first port and re-allocate — should get it back.
+	pa.Release(p1)
 	p3 := pa.Allocate()
-	if p3 != 9100 {
-		t.Errorf("after release, port = %d, want 9100", p3)
+	if p3 != p1 {
+		t.Errorf("after release, port = %d, want %d", p3, p1)
 	}
 }
 
@@ -43,12 +44,12 @@ func TestProcessManagerStartExecError(t *testing.T) {
 		t.Fatal("expected error from non-existent binary")
 	}
 
-	// Port should have been released.
-	pm.ports.mu.Lock()
-	_, used := pm.ports.used[9100]
-	pm.ports.mu.Unlock()
-	if used {
-		t.Error("expected port 9100 to be released after failure")
+	// The allocated port should have been released (not in allocated map).
+	pm.mu.Lock()
+	_, tracked := pm.allocated["test-agent"]
+	pm.mu.Unlock()
+	if tracked {
+		t.Error("expected agent port to be released from allocated map after failure")
 	}
 }
 

@@ -352,6 +352,80 @@ func TestLLMErrorReturnsFriendlyMessage(t *testing.T) {
 	}
 }
 
+func TestToolCallsExecutedWhenFinishReasonStop(t *testing.T) {
+	// Regression: some providers return FinishReason="stop" even when
+	// tool_calls are present. The loop must execute those tool calls
+	// instead of exiting prematurely.
+	callCount := 0
+	toolExecuted := false
+
+	client := &mockLLMClient{
+		chatFunc: func(ctx context.Context, req *llm.ChatRequest) (*llm.ChatResponse, error) {
+			callCount++
+			if callCount == 1 {
+				// Return tool call with FinishReason "stop" (the buggy case)
+				return &llm.ChatResponse{
+					Message: llm.ChatMessage{
+						Role: llm.RoleAssistant,
+						ToolCalls: []llm.ToolCall{
+							{
+								ID:   "call_1",
+								Type: "function",
+								Function: llm.FunctionCall{
+									Name:      "test_tool",
+									Arguments: `{"input":"hello"}`,
+								},
+							},
+						},
+					},
+					FinishReason: "stop", // Bug trigger: stop + tool_calls
+				}, nil
+			}
+			// Second call: final response after tool execution
+			return &llm.ChatResponse{
+				Message:      llm.ChatMessage{Role: llm.RoleAssistant, Content: "Tool executed successfully."},
+				FinishReason: "stop",
+			}, nil
+		},
+	}
+
+	tools := &mockToolExecutor{
+		executeFunc: func(ctx context.Context, name string, arguments json.RawMessage) (string, error) {
+			toolExecuted = true
+			return "tool result", nil
+		},
+		toolDefs: []llm.ToolDefinition{
+			{Type: "function", Function: llm.FunctionSchema{Name: "test_tool"}},
+		},
+	}
+
+	executor := NewLLMExecutor(LLMExecutorConfig{
+		Client: client,
+		Tools:  tools,
+	})
+
+	task := &a2a.Task{ID: "stop-with-tools"}
+	msg := &a2a.Message{
+		Role:  a2a.MessageRoleUser,
+		Parts: []a2a.Part{a2a.NewTextPart("do it")},
+	}
+
+	resp, err := executor.Execute(context.Background(), task, msg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected response, got nil")
+	}
+
+	if !toolExecuted {
+		t.Error("tool was not executed despite being in tool_calls (FinishReason=stop bug)")
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 LLM calls (tool call + final), got %d", callCount)
+	}
+}
+
 // ─── Workflow Tracker Tests ──────────────────────────────────────────
 
 func TestToolPhaseClassification(t *testing.T) {

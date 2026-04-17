@@ -458,7 +458,7 @@ forge key list
 Manage agent skills.
 
 ```bash
-# Add a skill from the registry
+# Add a skill from the registry (prompts for env vars, merges egress domains)
 forge skills add <skill-name>
 
 # List available skills

@@ -37,12 +37,17 @@ model:
 		return nil
 	}
 
-	mockSave := func(opts SkillSaveOptions) error {
+	mockSave := func(opts SkillSaveOptions) (*SkillSaveResult, error) {
 		skillDir := filepath.Join(opts.AgentDir, "skills", opts.SkillName)
 		if err := os.MkdirAll(skillDir, 0o755); err != nil {
-			return err
+			return nil, err
 		}
-		return os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(opts.SkillMD), 0o644)
+		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(opts.SkillMD), 0o644); err != nil {
+			return nil, err
+		}
+		return &SkillSaveResult{
+			Path: "skills/" + opts.SkillName + "/SKILL.md",
+		}, nil
 	}
 
 	srv := NewUIServer(UIServerConfig{
@@ -77,8 +82,11 @@ func TestSkillBuilderProvider(t *testing.T) {
 	if resp["provider"] != "openai" {
 		t.Errorf("provider = %q, want %q", resp["provider"], "openai")
 	}
-	if resp["model"] != "gpt-4.1" {
-		t.Errorf("model = %q, want %q", resp["model"], "gpt-4.1")
+	// Model is gpt-4.1 (API key codegen upgrade) or the agent's configured
+	// model (OAuth — Codex backend has model restrictions).
+	model := resp["model"].(string)
+	if model != "gpt-4.1" && model != "gpt-4o" {
+		t.Errorf("model = %q, want %q or %q", model, "gpt-4.1", "gpt-4o")
 	}
 }
 
@@ -337,13 +345,13 @@ A new tool.
 		t.Fatalf("status = %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
 	}
 
-	var resp map[string]string
+	var resp SkillSaveResult
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode error: %v", err)
 	}
 
-	if resp["status"] != "saved" {
-		t.Errorf("status = %q, want %q", resp["status"], "saved")
+	if resp.Path != "skills/new-skill/SKILL.md" {
+		t.Errorf("path = %q, want %q", resp.Path, "skills/new-skill/SKILL.md")
 	}
 
 	// Verify file was created

@@ -40,7 +40,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     -o /out/forge ./forge-cli/cmd/forge
 
 # ── Runtime stage ─────────────────────────────────────────────
-FROM alpine:3.21
+FROM alpine:3.22.4
 
 RUN apk add --no-cache ca-certificates git tzdata && \
     adduser -D -h /home/forge forge

@@ -97,7 +97,7 @@ forge skills validate
 forge skills audit --embedded
 ```
 
-`forge skills add` copies the skill's SKILL.md and any associated scripts into your project's `skills/` directory. It validates binary and environment requirements, checks for existing values in your environment, `.env` file, and encrypted secrets, and prompts only for truly missing values with a suggestion to use `forge secrets set` for sensitive keys.
+`forge skills add` copies the skill's SKILL.md and any associated scripts into your project's `skills/` directory. It validates binary and environment requirements, checks for existing values in your environment, `.env` file, and encrypted secrets, and prompts only for truly missing values with a suggestion to use `forge secrets set` for sensitive keys. If the skill declares `egress_domains`, they are automatically merged into the `forge.yaml` `egress.allowed_domains` list (deduplicated and sorted).
 
 ## Skills as First-Class Tools
 
@@ -516,7 +516,11 @@ forge build
 
 ## Skill Builder (Web UI)
 
-The [Web Dashboard](dashboard.md#skill-builder) includes an AI-powered Skill Builder that generates valid SKILL.md files and helper scripts through a conversational interface. It uses the agent's own LLM provider and includes server-side validation before saving to the agent's `skills/` directory.
+The [Web Dashboard](dashboard.md#skill-builder) includes an AI-powered Skill Builder that generates valid SKILL.md files and helper scripts through a conversational interface. It uses the agent's own LLM provider and includes server-side validation before saving to the agent's `skills/` directory. On save, the builder automatically parses the skill's requirements and:
+
+- **Merges egress domains** into `forge.yaml` `egress.allowed_domains` (deduplicated)
+- **Writes user-provided env vars** to `.env` (skipping keys already present)
+- **Reports missing env vars** so the user can provide values and re-save
 
 ---
 ← [Architecture](architecture.md) | [Back to README](../README.md) | [Tools](tools.md) →

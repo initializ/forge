@@ -15,6 +15,7 @@ memory:
 ```
 
 - Sessions are saved as JSON files with atomic writes (temp file + fsync + rename)
+- Orphaned tool calls (assistant tool_calls without matching tool results) are stripped on both save and recovery, preventing API rejection errors
 - Automatic cleanup of sessions older than 7 days at startup
 - Session recovery on subsequent requests (disk snapshot supersedes task history)
 - **Session max age** (default 30 minutes): stale sessions are discarded on recovery to prevent poisoned error context from blocking tool retries. When an LLM accumulates repeated tool failures in a session, it may stop retrying altogether. The max age ensures these poisoned sessions expire, giving the agent a fresh start.

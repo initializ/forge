@@ -74,7 +74,7 @@ Skill system including the embedded and local skill registries, SKILL.md parser,
 | `pipeline` | Build pipeline context and orchestration | `Pipeline`, `Stage`, `BuildContext` |
 | `plugins` | Plugin and framework plugin interfaces | `Plugin`, `FrameworkPlugin`, `AgentConfig`, `FrameworkRegistry` |
 | `registry` | Embedded skill registry | — |
-| `runtime` | LLM agent loop, executor, hooks, memory, guardrails | `AgentExecutor`, `LLMExecutor`, `ToolExecutor` |
+| `runtime` | LLM agent loop, executor, hooks, memory, guardrail interface | `AgentExecutor`, `LLMExecutor`, `ToolExecutor`, `GuardrailChecker` |
 | `schemas` | Embedded JSON schemas | `agentspec.v1.0.schema.json` |
 | `security` | Egress allowlist, security policies, network policies | `EgressConfig`, `Resolve`, `GenerateAllowlistJSON` |
 | `skills` | Skill parsing, compilation, requirements resolution | `CompiledSkills`, `Compile`, `WriteArtifacts` |
@@ -98,7 +98,7 @@ Skill system including the embedded and local skill registries, SKILL.md parser,
 | `plugins/crewai` | CrewAI framework adapter | — |
 | `plugins/langchain` | LangChain framework adapter | — |
 | `plugins/custom` | Custom framework plugin | — |
-| `runtime` | CLI-specific runtime (subprocess, watchers, stubs, mocks) | — |
+| `runtime` | CLI-specific runtime (subprocess, guardrail engine, watchers, stubs, mocks) | `LibraryGuardrailEngine` |
 | `server` | A2A HTTP server implementation | — |
 | `channels` | Channel configuration and routing | — |
 | `skills` | Skill file loading and writing | — |

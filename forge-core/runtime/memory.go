@@ -119,11 +119,44 @@ func (m *Memory) Messages() []llm.ChatMessage {
 }
 
 // LoadFromStore restores memory state from a persisted SessionData.
+// It sanitizes the loaded messages by stripping orphaned tool calls —
+// assistant messages whose tool_calls have no matching tool result.
+// This prevents the Responses API from rejecting recovered sessions
+// with "No tool output found for function call".
 func (m *Memory) LoadFromStore(data *SessionData) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.messages = data.Messages
+	m.messages = sanitizeToolCalls(data.Messages)
 	m.existingSummary = data.Summary
+}
+
+// sanitizeToolCalls removes tool calls from assistant messages that have
+// no matching tool result in the message history.
+func sanitizeToolCalls(msgs []llm.ChatMessage) []llm.ChatMessage {
+	// Build set of tool call IDs that have results.
+	answered := make(map[string]bool, len(msgs))
+	for _, m := range msgs {
+		if m.Role == llm.RoleTool && m.ToolCallID != "" {
+			answered[m.ToolCallID] = true
+		}
+	}
+
+	// Strip unanswered tool calls.
+	for i := range msgs {
+		if msgs[i].Role != llm.RoleAssistant || len(msgs[i].ToolCalls) == 0 {
+			continue
+		}
+		var kept []llm.ToolCall
+		for _, tc := range msgs[i].ToolCalls {
+			if answered[tc.ID] {
+				kept = append(kept, tc)
+			}
+		}
+		if len(kept) != len(msgs[i].ToolCalls) {
+			msgs[i].ToolCalls = kept
+		}
+	}
+	return msgs
 }
 
 // Reset clears the conversation history (keeps the system prompt).

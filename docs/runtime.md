@@ -19,7 +19,11 @@ The core agent loop follows a simple pattern:
 User message → Memory → LLM → tool_calls? → Execute tools → LLM → ... → text → Done
 ```
 
-The loop terminates when `FinishReason == "stop"` or `len(ToolCalls) == 0`.
+The loop terminates when `len(ToolCalls) == 0`. `FinishReason` is intentionally ignored — some providers return `"stop"` even when tool calls are present. Only the tool call list determines whether execution continues.
+
+### Session Recovery Deduplication
+
+When a session is recovered from disk (e.g., after a premature loop exit), the executor checks whether the recovered conversation already ends with an identical user message. If so, the duplicate is skipped to prevent the same message from appearing twice in the context window. This handles the common case where a user retries the same prompt after a crash or timeout.
 
 ### Q&A Nudge Suppression
 

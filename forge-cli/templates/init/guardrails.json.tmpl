@@ -1,0 +1,39 @@
+{
+  "pii": {
+    "enabled": true,
+    "action": "mask",
+    "categories": {
+      "email": {"enabled": true, "action": "mask"},
+      "phoneNumber": {"enabled": true, "action": "mask"},
+      "ssn": {"enabled": true, "action": "mask"},
+      "creditCard": {"enabled": true, "action": "mask"}
+    }
+  },
+  "security": {
+    "jailbreakDetection": {"enabled": true, "confidenceThreshold": 25, "action": "block"},
+    "promptInjection": {"enabled": true, "confidenceThreshold": 30, "action": "block"},
+    "commandInjection": {"enabled": true, "confidenceThreshold": 35, "action": "block"}
+  },
+  "customRules": {
+    "rules": [
+      {"id": "secret_anthropic", "name": "Anthropic API Key", "type": "regex", "constraint": "hard", "pattern": "sk-ant-[A-Za-z0-9\\-]{20,}", "action": "mask", "gates": ["output", "tool_call"]},
+      {"id": "secret_openai", "name": "OpenAI API Key", "type": "regex", "constraint": "hard", "pattern": "sk-[A-Za-z0-9]{20,}", "action": "mask", "gates": ["output", "tool_call"]},
+      {"id": "secret_github_pat", "name": "GitHub PAT", "type": "regex", "constraint": "hard", "pattern": "ghp_[A-Za-z0-9]{36}", "action": "mask", "gates": ["output", "tool_call"]},
+      {"id": "secret_github_oauth", "name": "GitHub OAuth", "type": "regex", "constraint": "hard", "pattern": "gho_[A-Za-z0-9]{36}", "action": "mask", "gates": ["output", "tool_call"]},
+      {"id": "secret_github_server", "name": "GitHub Server Token", "type": "regex", "constraint": "hard", "pattern": "ghs_[A-Za-z0-9]{36}", "action": "mask", "gates": ["output", "tool_call"]},
+      {"id": "secret_github_fine", "name": "GitHub Fine-grained PAT", "type": "regex", "constraint": "hard", "pattern": "github_pat_[A-Za-z0-9_]{22,}", "action": "mask", "gates": ["output", "tool_call"]},
+      {"id": "secret_aws", "name": "AWS Access Key", "type": "regex", "constraint": "hard", "pattern": "AKIA[0-9A-Z]{16}", "action": "mask", "gates": ["output", "tool_call"]},
+      {"id": "secret_slack_bot", "name": "Slack Bot Token", "type": "regex", "constraint": "hard", "pattern": "xoxb-[0-9]{10,}-[A-Za-z0-9-]+", "action": "mask", "gates": ["output", "tool_call"]},
+      {"id": "secret_slack_user", "name": "Slack User Token", "type": "regex", "constraint": "hard", "pattern": "xoxp-[0-9]{10,}-[A-Za-z0-9-]+", "action": "mask", "gates": ["output", "tool_call"]},
+      {"id": "secret_private_key", "name": "Private Key", "type": "regex", "constraint": "hard", "pattern": "-----BEGIN (RSA|EC|OPENSSH|PRIVATE) .*KEY-----", "action": "mask", "gates": ["output", "tool_call"]},
+      {"id": "secret_telegram", "name": "Telegram Bot Token", "type": "regex", "constraint": "hard", "pattern": "[0-9]{8,10}:[A-Za-z0-9_-]{35,}", "action": "mask", "gates": ["output", "tool_call"]}
+    ]
+  },
+  "gateConfig": {
+    "inputGate": true,
+    "toolCallGate": true,
+    "outputGate": true,
+    "contextGate": false,
+    "streamGate": false
+  }
+}

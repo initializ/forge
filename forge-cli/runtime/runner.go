@@ -205,15 +205,17 @@ func (r *Runner) Run(ctx context.Context) error {
 		return err
 	}
 
-	// 2. Load policy scaffold (fall back to built-in defaults)
+	// 2. Build guardrail checker (DB mode → file mode → defaults)
+	guardrails := BuildGuardrailChecker(r.cfg.Config, r.cfg.WorkDir, r.cfg.EnforceGuardrails, r.logger)
+
+	// Still load scaffold for SkillGuardrails (separate concern)
 	scaffold, err := LoadPolicyScaffold(r.cfg.WorkDir)
 	if err != nil {
 		r.logger.Warn("failed to load policy scaffold", map[string]any{"error": err.Error()})
 	}
-	if scaffold == nil || len(scaffold.Guardrails) == 0 {
+	if scaffold == nil {
 		scaffold = DefaultPolicyScaffold()
 	}
-	guardrails := coreruntime.NewGuardrailEngine(scaffold, r.cfg.EnforceGuardrails, r.logger)
 
 	// 3. Build agent card
 	card, err := BuildAgentCard(r.cfg.WorkDir, r.cfg.Config, r.cfg.Port)
@@ -693,7 +695,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	return srv.Start(ctx)
 }
 
-func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.AgentExecutor, guardrails *coreruntime.GuardrailEngine, egressClient *http.Client, auditLogger *coreruntime.AuditLogger) {
+func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.AgentExecutor, guardrails coreruntime.GuardrailChecker, egressClient *http.Client, auditLogger *coreruntime.AuditLogger) {
 	store := srv.TaskStore()
 
 	// tasks/send — synchronous request
@@ -1004,7 +1006,7 @@ func (r *Runner) executeTask(
 	params a2a.SendTaskParams,
 	store *a2a.TaskStore,
 	executor coreruntime.AgentExecutor,
-	guardrails *coreruntime.GuardrailEngine,
+	guardrails coreruntime.GuardrailChecker,
 	egressClient *http.Client,
 	auditLogger *coreruntime.AuditLogger,
 ) (*a2a.Task, error) {
@@ -1124,7 +1126,7 @@ type restTaskRequest struct {
 }
 
 // registerRESTHandlers registers REST-style HTTP endpoints on the server.
-func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.AgentExecutor, guardrails *coreruntime.GuardrailEngine, egressClient *http.Client, auditLogger *coreruntime.AuditLogger) {
+func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.AgentExecutor, guardrails coreruntime.GuardrailChecker, egressClient *http.Client, auditLogger *coreruntime.AuditLogger) {
 	store := srv.TaskStore()
 
 	// POST /tasks/send — synchronous REST endpoint
@@ -1506,7 +1508,7 @@ func (r *Runner) registerProgressHooks(hooks *coreruntime.HookRegistry) {
 
 // registerGuardrailHooks registers an AfterToolExec hook that scans tool output
 // for secrets and PII, redacting or blocking based on guardrail mode.
-func (r *Runner) registerGuardrailHooks(hooks *coreruntime.HookRegistry, guardrails *coreruntime.GuardrailEngine) {
+func (r *Runner) registerGuardrailHooks(hooks *coreruntime.HookRegistry, guardrails coreruntime.GuardrailChecker) {
 	hooks.Register(coreruntime.AfterToolExec, func(_ context.Context, hctx *coreruntime.HookContext) error {
 		if hctx.ToolOutput == "" {
 			return nil

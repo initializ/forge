@@ -28,17 +28,17 @@ func (s *SkillsStage) Execute(ctx context.Context, bc *pipeline.BuildContext) er
 		skillsPath = filepath.Join(bc.Opts.WorkDir, skillsPath)
 	}
 
-	// Skip silently if not found
-	if _, err := os.Stat(skillsPath); os.IsNotExist(err) {
-		return nil
+	// Parse root skills file if it exists
+	var entries []contract.SkillEntry
+	if _, err := os.Stat(skillsPath); err == nil {
+		parsed, _, parseErr := cliskills.ParseFileWithMetadata(skillsPath)
+		if parseErr != nil {
+			return fmt.Errorf("parsing skills file: %w", parseErr)
+		}
+		entries = parsed
 	}
 
-	entries, _, err := cliskills.ParseFileWithMetadata(skillsPath)
-	if err != nil {
-		return fmt.Errorf("parsing skills file: %w", err)
-	}
-
-	// Scan skills/ subdirectory for additional SKILL.md files
+	// Always scan skills/ subdirectory (skills may exist without root SKILL.md)
 	skillsSubDir := filepath.Join(bc.Opts.WorkDir, "skills")
 	subEntries, subErr := scanSkillsSubDir(skillsSubDir)
 	if subErr != nil {

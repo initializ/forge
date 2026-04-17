@@ -1603,7 +1603,8 @@ func (r *Runner) createProviderClient(provider string, cfg llm.ClientConfig) (ll
 	// Check for stored OAuth credentials — but only if no real API key is
 	// configured. The "__oauth__" sentinel means the user chose OAuth auth
 	// during init, so we should load the actual token from the credential store.
-	if provider == "openai" && (cfg.APIKey == "" || cfg.APIKey == "__oauth__") {
+	needsOAuth := provider == "openai" && (cfg.APIKey == "" || cfg.APIKey == "__oauth__")
+	if needsOAuth {
 		token, err := oauth.LoadCredentials(provider)
 		if err == nil && token != nil && token.RefreshToken != "" {
 			oauthCfg := oauth.OpenAIConfig()
@@ -1619,6 +1620,14 @@ func (r *Runner) createProviderClient(provider string, cfg llm.ClientConfig) (ll
 			cfg.APIKey = token.AccessToken
 			cfg.BaseURL = baseURL
 			return providers.NewOAuthClient(cfg, provider, oauthCfg), nil
+		}
+		// No API key and OAuth failed — surface the error instead of
+		// creating a client with no auth that will fail with 401.
+		if cfg.APIKey == "" || cfg.APIKey == "__oauth__" {
+			if err != nil {
+				return nil, fmt.Errorf("loading OAuth credentials: %w", err)
+			}
+			return nil, fmt.Errorf("no OpenAI API key or OAuth credentials found; run 'forge init' with OAuth or set OPENAI_API_KEY")
 		}
 	}
 

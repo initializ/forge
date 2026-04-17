@@ -30,18 +30,35 @@ func NewPortAllocator(basePort int) *PortAllocator {
 	}
 }
 
-// Allocate returns the next available port.
+// Allocate returns the next available port. It verifies the port is actually
+// free (not just absent from the used map) by attempting a TCP listen. This
+// prevents collisions with externally-started agents or other processes that
+// the PortAllocator doesn't know about (e.g., after a UI restart).
 func (pa *PortAllocator) Allocate() int {
 	pa.mu.Lock()
 	defer pa.mu.Unlock()
 	port := pa.basePort
 	for {
 		if _, ok := pa.used[port]; !ok {
+			if portFree(port) {
+				pa.used[port] = struct{}{}
+				return port
+			}
+			// Port is in use by another process; mark it and skip.
 			pa.used[port] = struct{}{}
-			return port
 		}
 		port++
 	}
+}
+
+// portFree checks whether a TCP port is available by attempting to listen on it.
+func portFree(port int) bool {
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		return false
+	}
+	_ = ln.Close()
+	return true
 }
 
 // Release frees a port for reuse.

@@ -185,11 +185,12 @@ func runUI(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("unable to resolve model configuration")
 		}
 
-		// Resolve OAuth credentials when the API key is the __oauth__ sentinel.
-		// OAuth/Codex backend has its own model constraints, so skip the
-		// codegen model upgrade for OAuth clients.
+		// Resolve OAuth credentials when the API key is the __oauth__ sentinel
+		// or empty. OAuth/Codex backend has its own model constraints, so
+		// skip the codegen model upgrade for OAuth clients.
 		var client llm.Client
-		if mc.Provider == "openai" && (mc.Client.APIKey == "" || mc.Client.APIKey == "__oauth__") {
+		needsOAuth := mc.Provider == "openai" && (mc.Client.APIKey == "" || mc.Client.APIKey == "__oauth__")
+		if needsOAuth {
 			token, oauthErr := oauth.LoadCredentials(mc.Provider)
 			if oauthErr == nil && token != nil && token.RefreshToken != "" {
 				oauthCfg := oauth.OpenAIConfig()
@@ -200,6 +201,13 @@ func runUI(cmd *cobra.Command, args []string) error {
 				mc.Client.APIKey = token.AccessToken
 				mc.Client.BaseURL = baseURL
 				client = providers.NewOAuthClient(mc.Client, mc.Provider, oauthCfg)
+			} else if mc.Client.APIKey == "" || mc.Client.APIKey == "__oauth__" {
+				// No API key and OAuth failed — surface the error instead
+				// of silently falling through to a client with no auth.
+				if oauthErr != nil {
+					return fmt.Errorf("loading OAuth credentials: %w", oauthErr)
+				}
+				return fmt.Errorf("no OpenAI API key or OAuth credentials found; run 'forge init' with OAuth or set OPENAI_API_KEY")
 			}
 		}
 		if client == nil {

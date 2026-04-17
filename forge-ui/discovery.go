@@ -111,8 +111,12 @@ func (s *Scanner) scanDir(dir string) (*AgentInfo, error) {
 }
 
 // detectExternalAgent checks whether an agent in dir is running externally
-// (started via CLI rather than the UI). It reads .forge/serve.json and
-// verifies the port is still listening. Returns the port and true if running.
+// (started via CLI rather than the UI). It reads .forge/serve.json, verifies
+// PID liveness, and probes the port. Returns the port and true if running.
+//
+// If the PID from serve.json is no longer alive, the state file is stale —
+// it is removed and the agent is reported as stopped. This prevents ghost
+// agents from appearing after a crash or unclean shutdown.
 func detectExternalAgent(dir string) (int, bool) {
 	statePath := filepath.Join(dir, ".forge", "serve.json")
 	data, err := os.ReadFile(statePath)
@@ -125,6 +129,12 @@ func detectExternalAgent(dir string) (int, bool) {
 		return 0, false
 	}
 
+	// Check PID liveness first — if the process is dead, serve.json is stale.
+	if state.PID > 0 && !pidAlive(state.PID) {
+		_ = os.Remove(statePath)
+		return 0, false
+	}
+
 	host := state.Host
 	if host == "" {
 		host = "127.0.0.1"
@@ -133,6 +143,7 @@ func detectExternalAgent(dir string) (int, bool) {
 	// Verify the port is actually listening (fast TCP probe).
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", host, state.Port), 500*time.Millisecond)
 	if err != nil {
+		// PID may be alive but port not yet ready, or process is zombie.
 		return 0, false
 	}
 	_ = conn.Close()

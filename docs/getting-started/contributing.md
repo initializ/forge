@@ -1,4 +1,8 @@
-# Contributing
+---
+title: "Contributing"
+description: "Set up the development environment and contribute to Forge."
+order: 5
+---
 
 ## Development Setup
 

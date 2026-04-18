@@ -1,6 +1,8 @@
-# Secrets Management
-
-> Part of [Forge Documentation](../../README.md)
+---
+title: "Secret Management"
+description: "AES-256-GCM encrypted secret storage with per-agent isolation."
+order: 4
+---
 
 Forge provides encrypted secret management with per-agent isolation and interactive passphrase prompting.
 
@@ -81,6 +83,3 @@ Secret files are automatically excluded from git (`.forge/` in `.gitignore`) and
 - `.forge/` directories are automatically added to `.gitignore`
 - `*.enc` files are excluded in `.dockerignore`
 - Secret files never appear in container images
-
----
-← [Egress Security](egress.md) | [Back to README](../../README.md) | [Build Signing](signing.md) →

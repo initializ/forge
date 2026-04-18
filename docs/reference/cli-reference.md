@@ -1,6 +1,8 @@
-# CLI Reference
-
-> Part of [Forge Documentation](../README.md)
+---
+title: "CLI Reference"
+description: "Complete reference for all Forge CLI commands."
+order: 1
+---
 
 Complete reference for all Forge CLI commands.
 
@@ -504,6 +506,3 @@ forge ui --no-open
 ```
 
 See [Dashboard](dashboard.md) for full documentation.
-
----
-← [Hooks](hooks.md) | [Back to README](../README.md) | [Configuration](configuration.md) →

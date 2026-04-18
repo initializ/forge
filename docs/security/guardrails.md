@@ -1,6 +1,8 @@
-# Content Guardrails
-
-> Part of [Forge Documentation](../../README.md)
+---
+title: "Content Guardrails"
+description: "Configurable content filtering, PII detection, and jailbreak protection."
+order: 7
+---
 
 The guardrail engine validates inbound and outbound messages against configurable policy rules using the `github.com/initializ/guardrails` library.
 
@@ -303,6 +305,3 @@ Guardrail evaluations are logged as structured audit events:
 In DB mode, the guardrails library writes audit records to MongoDB automatically when `EnableAudit` is set.
 
 See [Security Overview](overview.md) for the full security architecture.
-
----
-← [Build Signing](signing.md) | [Back to README](../../README.md) | [Scheduling](../scheduling.md) →

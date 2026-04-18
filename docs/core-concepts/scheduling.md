@@ -1,6 +1,8 @@
-# Scheduling (Cron)
-
-> Part of [Forge Documentation](../README.md)
+---
+title: "Scheduling"
+description: "Built-in cron scheduler for recurring agent tasks."
+order: 8
+---
 
 Forge includes a built-in cron scheduler for recurring tasks, configurable in `forge.yaml` or created dynamically by the agent at runtime.
 
@@ -53,6 +55,3 @@ When a schedule includes `channel` and `channel_target`, the agent's response is
 - **Persistence**: Schedules are stored in `.forge/memory/SCHEDULES.md` and survive restarts
 - **History**: The last 50 executions are recorded with status, duration, and correlation IDs
 - **Audit events**: `schedule_fire`, `schedule_complete`, `schedule_skip`, `schedule_modify`
-
----
-← [Guardrails](security/guardrails.md) | [Back to README](../README.md) | [Hooks](hooks.md) →

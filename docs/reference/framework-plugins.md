@@ -1,4 +1,8 @@
-# Framework Plugins
+---
+title: "Framework Plugins"
+description: "Plugin system for CrewAI, LangChain, and custom frameworks."
+order: 6
+---
 
 ## Overview
 
@@ -139,6 +143,3 @@ type Plugin interface {
 ```
 
 Available hook points: `pre-build`, `post-build`, `pre-push`, `post-push`.
-
----
-← [Deployment](deployment.md) | [Back to README](../README.md) | [Command Integration](command-integration.md) →

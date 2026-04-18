@@ -1,4 +1,8 @@
-# Security
+---
+title: "Security Overview"
+description: "Forge's layered security architecture from network posture to guardrails."
+order: 1
+---
 
 Forge is designed with security as a foundational principle, not an afterthought. This document describes the complete security architecture — from network-level egress controls to encrypted secrets, build signing, execution sandboxing, and runtime guardrails.
 
@@ -271,6 +275,3 @@ Production builds enforce:
 | [Tools](../tools.md) | Tool system including `cli_execute` security layers |
 | [Skills](../skills.md) | Skill definitions and runtime execution |
 | [Commands](../commands.md) | CLI reference including security-related flags |
-
----
-← [Channels](../channels.md) | [Back to README](../../README.md) | [Egress Security](egress.md) →

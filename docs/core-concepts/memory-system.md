@@ -1,6 +1,8 @@
-# Memory
-
-> Part of [Forge Documentation](../README.md)
+---
+title: "Memory System"
+description: "Session persistence, context management, and long-term memory."
+order: 5
+---
 
 Forge provides two layers of memory management: session persistence for multi-turn conversations and long-term memory for cross-session knowledge.
 
@@ -122,6 +124,3 @@ Environment variables:
 | `FORGE_SESSION_MAX_AGE` | Session idle timeout, e.g. `30m`, `1h` (default: `30m`) |
 | `FORGE_MEMORY_LONG_TERM` | Set `true` to enable long-term memory |
 | `FORGE_EMBEDDING_PROVIDER` | Override embedding provider |
-
----
-← [Runtime](runtime.md) | [Back to README](../README.md) | [Channels](channels.md) →

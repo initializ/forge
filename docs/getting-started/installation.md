@@ -1,6 +1,8 @@
-# Installation
-
-> Part of [Forge Documentation](../README.md)
+---
+title: "Installation"
+description: "Install Forge via Homebrew, script, or binary download."
+order: 1
+---
 
 Forge can be installed via Homebrew, pre-built binary, or manual download on Windows.
 
@@ -27,6 +29,3 @@ Download the latest `.zip` from [GitHub Releases](https://github.com/initializ/f
 ```bash
 forge --version
 ```
-
----
-← [Quick Start](quickstart.md) | [Back to README](../README.md) | [Architecture](architecture.md) →

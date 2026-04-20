@@ -1,0 +1,19 @@
+name: Notify docs update
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger useforge.ai rebuild
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.USEFORGE_DISPATCH_TOKEN }}
+          repository: initializ/useforge.ai
+          event-type: docs-updated
+          client-payload: '{"ref": "${{ github.sha }}", "message": "${{ github.event.head_commit.message }}"}'

@@ -1,6 +1,8 @@
-# Web Dashboard
-
-> Part of [Forge Documentation](../README.md)
+---
+title: "Web Dashboard"
+description: "Local web dashboard for managing agents from the browser."
+order: 5
+---
 
 Forge includes a local web dashboard for managing agents from the browser — no CLI needed after launch.
 
@@ -185,6 +187,3 @@ Key design decisions:
 - **Daemon-based lifecycle** — the UI delegates to `forge serve start/stop` via `exec.Command`, so agents are independent OS processes that survive UI restarts.
 - **Scanner as source of truth** — `discovery.go` reads `.forge/serve.json` and does a TCP probe to detect running agents. No in-memory state tracking is needed.
 - **Version display** — the sidebar footer shows the Forge version (injected via `-ldflags` at build time) and links to [useforge.ai](https://useforge.ai).
-
----
-← [Configuration](configuration.md) | [Back to README](../README.md) | [Deployment](deployment.md) →

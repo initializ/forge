@@ -1,6 +1,8 @@
-# Tools
-
-> Part of [Forge Documentation](../README.md)
+---
+title: "Tools & Builtins"
+description: "Built-in tools, adapter tools, and the pluggable tool system."
+order: 3
+---
 
 Tools are capabilities that an LLM agent can invoke during execution. Forge provides a pluggable tool system with built-in tools, adapter tools, development tools, and custom tools.
 
@@ -248,6 +250,3 @@ The `ToolFilterStage` runs during `forge build`:
 2. Sets `tool_interface_version` to `"1.0"` on the AgentSpec
 3. In production mode (`--prod`), removes all dev-category tools
 4. Counts tools per category for the build manifest
-
----
-← [Skills](skills.md) | [Back to README](../README.md) | [Runtime](runtime.md) →

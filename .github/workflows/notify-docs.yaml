@@ -16,4 +16,4 @@ jobs:
           token: ${{ secrets.USEFORGE_DISPATCH_TOKEN }}
           repository: initializ/useforge.ai
           event-type: docs-updated
-          client-payload: '{"ref": "${{ github.sha }}", "message": "${{ github.event.head_commit.message }}"}'
+          client-payload: '{"ref": "${{ github.sha }}"}'

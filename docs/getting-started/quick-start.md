@@ -1,6 +1,8 @@
-# Quick Start
-
-> Part of [Forge Documentation](../README.md)
+---
+title: "Quick Start"
+description: "Get a Forge agent running in under 60 seconds."
+order: 2
+---
 
 Get a Forge agent running in under 60 seconds.
 
@@ -47,6 +49,3 @@ forge run --with telegram
 The `forge init` wizard walks you through model provider, API key, fallback providers, tools, skills, and channel setup. Use `--non-interactive` with flags for scripted setups.
 
 See [Installation](installation.md) for all installation methods.
-
----
-[Back to README](../README.md) | [Installation](installation.md) →

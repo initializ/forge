@@ -1,6 +1,8 @@
-# Build Signing & Verification
-
-> Part of [Forge Documentation](../../README.md)
+---
+title: "Build Signing"
+description: "Ed25519 signing and verification of build artifacts."
+order: 5
+---
 
 Forge supports Ed25519 signing of build artifacts for supply chain integrity.
 
@@ -44,6 +46,3 @@ The build pipeline includes a `secret-safety` stage that:
 - Blocks production builds (`--prod`) that only use `encrypted-file` without `env` provider (containers can't use encrypted files at runtime)
 - Warns if `.dockerignore` is missing alongside a generated Dockerfile
 - Ensures secrets never leak into container images
-
----
-← [Secrets](secrets.md) | [Back to README](../../README.md) | [Guardrails](guardrails.md) →

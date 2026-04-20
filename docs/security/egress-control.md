@@ -1,4 +1,8 @@
-# Egress Security
+---
+title: "Egress Control"
+description: "Layered egress security controls for restricting outbound network access."
+order: 2
+---
 
 Forge provides layered egress security controls that restrict which external domains an agent can access — at both build time and runtime.
 
@@ -301,6 +305,3 @@ Events without `"source"` come from the in-process enforcer; events with `"sourc
 | `forge-cli/tools/exec.go` | `SkillCommandExecutor` — proxy env injection for skill scripts |
 | `forge-cli/tools/cli_execute.go` | `CLIExecuteTool` — proxy env injection for CLI binaries |
 | `forge-cli/runtime/runner.go` | Proxy lifecycle management in `Run()` |
-
----
-← [Security Overview](overview.md) | [Back to README](../../README.md) | [Secrets](secrets.md) →

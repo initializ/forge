@@ -1,6 +1,8 @@
-# LLM Runtime Engine
-
-> Part of [Forge Documentation](../README.md)
+---
+title: "Runtime Engine"
+description: "The LLM runtime engine powering tool calling, memory, and hooks."
+order: 6
+---
 
 The runtime engine powers `forge run` — executing agent tasks via LLM providers with tool calling, conversation memory, and lifecycle hooks.
 
@@ -254,6 +256,3 @@ The runner registers five hook groups: logging, audit, progress, global guardrai
 ## Streaming
 
 The LLM tool-calling loop runs non-streaming internally. `ExecuteStream` calls `Execute` and emits the final response on a channel. However, the **UI chat proxy** (`forge-ui/chat.go`) streams A2A SSE events to the browser in real-time — `status` events carry incremental text, `progress` events carry tool execution updates, and `result` events carry the final response. The frontend renders text and tool progress as each event arrives.
-
----
-← [Tools](tools.md) | [Back to README](../README.md) | [Memory](memory.md) →

@@ -1,6 +1,8 @@
-# Channel Adapters
-
-> Part of [Forge Documentation](../README.md)
+---
+title: "Channels"
+description: "Bridge messaging platforms like Slack and Telegram to your AI agent."
+order: 4
+---
 
 Channel adapters bridge messaging platforms (Slack, Telegram) to your A2A-compliant agent. Each adapter normalizes platform-specific events into a common `ChannelEvent` format, forwards them to the agent's A2A server, and delivers responses back to the originating platform.
 
@@ -227,6 +229,3 @@ type ChannelPlugin interface {
 2. Implement `ChannelPlugin`.
 3. Register the plugin in the channel registry.
 4. Add config generation in `generateChannelConfig()` and env vars in `generateEnvVars()`.
-
----
-← [Memory](memory.md) | [Back to README](../README.md) | [Security Overview](security/overview.md) →

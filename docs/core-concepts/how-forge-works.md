@@ -1,6 +1,8 @@
-# Architecture
-
-> Part of [Forge Documentation](../README.md)
+---
+title: "How Forge Works"
+description: "Understand Forge's architecture, module system, and data flows."
+order: 1
+---
 
 Forge is a portable runtime for building and running secure AI agents from simple skill definitions.
 
@@ -359,6 +361,3 @@ The A2A server adds:
 - **Request size limits** — `MaxHeaderBytes` (1 MiB) and `http.MaxBytesReader` (2 MiB) on request bodies; returns 413 on excess
 
 See [Egress Security](security/egress.md) for details.
-
----
-← [Installation](installation.md) | [Back to README](../README.md) | [Skills](skills.md) →

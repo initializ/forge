@@ -1,6 +1,8 @@
-# Hooks
-
-> Part of [Forge Documentation](../README.md)
+---
+title: "Hooks"
+description: "Hook into the agent loop for logging, enforcement, and auditing."
+order: 7
+---
 
 The hook system allows custom logic to run at key points in the LLM agent loop. Hooks can observe, modify context, or block execution.
 
@@ -142,6 +144,3 @@ exec := engine.NewLLMExecutor(engine.LLMExecutorConfig{
 ```
 
 If no `HookRegistry` is provided, an empty one is created automatically.
-
----
-← [Scheduling](scheduling.md) | [Back to README](../README.md) | [Commands](commands.md) →

@@ -2328,30 +2328,71 @@ func (r *Runner) resolveEmbedder(mc *coreruntime.ModelConfig) llm.Embedder {
 	return embedder
 }
 
+// builtinSecretKeys is the set of forge-internal secret keys whose purpose
+// (LLM / search / channel) is recognized by secretCategory and that are always
+// attempted via provider.Get, even when the provider cannot enumerate keys
+// (e.g. the env provider). Custom skill-declared keys do not need to appear
+// here — they are discovered dynamically via provider.List in secretOverlayKeys.
+var builtinSecretKeys = []string{
+	"OPENAI_API_KEY",
+	"ANTHROPIC_API_KEY",
+	"GEMINI_API_KEY",
+	"LLM_API_KEY",
+	"MODEL_API_KEY",
+	"TAVILY_API_KEY",
+	"PERPLEXITY_API_KEY",
+	"TELEGRAM_BOT_TOKEN",
+	"SLACK_APP_TOKEN",
+	"SLACK_BOT_TOKEN",
+}
+
+// secretOverlayKeys returns the set of secret keys to overlay into the env:
+// the builtin keys unioned with whatever the provider exposes via List().
+// Providers that cannot enumerate (e.g. EnvProvider) return nil from List, in
+// which case only the builtins are returned. List errors are non-fatal — the
+// builtin keys are still tried via Get downstream.
+func secretOverlayKeys(provider secrets.Provider) ([]string, error) {
+	seen := make(map[string]bool, len(builtinSecretKeys))
+	keys := make([]string, 0, len(builtinSecretKeys))
+	for _, k := range builtinSecretKeys {
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		keys = append(keys, k)
+	}
+
+	listed, err := provider.List()
+	for _, k := range listed {
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		keys = append(keys, k)
+	}
+	return keys, err
+}
+
 // overlaySecrets reads secrets from the configured provider chain and overlays
-// them into envVars for known API key variables. Existing values are not overwritten.
-// Returns an error if the same secret value is reused across different purpose categories.
+// them into envVars. The key set is the builtin LLM/channel keys plus any
+// custom keys the provider enumerates via List() — so skill-declared env vars
+// stored as encrypted secrets are loaded without needing a code change here.
+// Existing values are not overwritten. Returns an error if the same secret
+// value is reused across different purpose categories among the builtin keys.
 func (r *Runner) overlaySecrets(envVars map[string]string) error {
 	provider := r.buildSecretProvider()
 	if provider == nil {
 		return nil
 	}
 
-	// Known secret keys to overlay into env for model resolution.
-	knownKeys := []string{
-		"OPENAI_API_KEY",
-		"ANTHROPIC_API_KEY",
-		"GEMINI_API_KEY",
-		"LLM_API_KEY",
-		"MODEL_API_KEY",
-		"TAVILY_API_KEY",
-		"PERPLEXITY_API_KEY",
-		"TELEGRAM_BOT_TOKEN",
-		"SLACK_APP_TOKEN",
-		"SLACK_BOT_TOKEN",
+	keys, listErr := secretOverlayKeys(provider)
+	if listErr != nil {
+		r.logger.Warn("provider list failed; overlaying builtin keys only", map[string]any{
+			"provider": provider.Name(), "error": listErr.Error(),
+		})
 	}
 
-	for _, key := range knownKeys {
+	for _, key := range keys {
 		if envVars[key] != "" {
 			continue // don't overwrite existing values
 		}
@@ -2362,9 +2403,10 @@ func (r *Runner) overlaySecrets(envVars map[string]string) error {
 		}
 	}
 
-	// Check for cross-category secret reuse.
+	// Cross-category secret reuse is only meaningful for keys whose category
+	// is known — i.e. the builtin set. Custom keys have no defined category.
 	valueToKeys := make(map[string][]string)
-	for _, key := range knownKeys {
+	for _, key := range builtinSecretKeys {
 		val := envVars[key]
 		if val == "" {
 			continue
@@ -2504,20 +2546,8 @@ func OverlaySecretsToEnv(cfg *types.ForgeConfig, workDir string) {
 		provider = secrets.NewChainProvider(chain...)
 	}
 
-	knownKeys := []string{
-		"OPENAI_API_KEY",
-		"ANTHROPIC_API_KEY",
-		"GEMINI_API_KEY",
-		"LLM_API_KEY",
-		"MODEL_API_KEY",
-		"TAVILY_API_KEY",
-		"PERPLEXITY_API_KEY",
-		"TELEGRAM_BOT_TOKEN",
-		"SLACK_APP_TOKEN",
-		"SLACK_BOT_TOKEN",
-	}
-
-	for _, key := range knownKeys {
+	keys, _ := secretOverlayKeys(provider)
+	for _, key := range keys {
 		if os.Getenv(key) != "" {
 			continue
 		}

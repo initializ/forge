@@ -46,13 +46,15 @@ var sensitiveEnvPatterns = []string{
 	"CREDENTIALS",
 }
 
-// AnalyzeSkillDescriptor scores a SkillDescriptor for security risk.
-func AnalyzeSkillDescriptor(sd *contract.SkillDescriptor, hasScript bool) SkillRiskAssessment {
+// AnalyzeSkillDescriptor scores a SkillDescriptor for security risk under the
+// given policy. A zero-value SecurityPolicy{} preserves the historical default
+// scoring (no overrides applied).
+func AnalyzeSkillDescriptor(sd *contract.SkillDescriptor, hasScript bool, policy SecurityPolicy) SkillRiskAssessment {
 	var factors []RiskFactor
 
-	factors = append(factors, scoreEgress(sd.EgressDomains, nil)...)
-	factors = append(factors, scoreBinaries(sd.RequiredBins)...)
-	factors = append(factors, scoreEnv(sd.RequiredEnv, sd.OneOfEnv, sd.OptionalEnv)...)
+	factors = append(factors, scoreEgress(sd.EgressDomains, policy)...)
+	factors = append(factors, scoreBinaries(sd.RequiredBins, policy)...)
+	factors = append(factors, scoreEnv(sd.RequiredEnv, sd.OneOfEnv, sd.OptionalEnv, policy)...)
 	if hasScript {
 		factors = append(factors, scoreScript()...)
 	}
@@ -66,8 +68,10 @@ func AnalyzeSkillDescriptor(sd *contract.SkillDescriptor, hasScript bool) SkillR
 	}
 }
 
-// AnalyzeSkillEntry scores a SkillEntry for security risk.
-func AnalyzeSkillEntry(entry *contract.SkillEntry, hasScript bool) SkillRiskAssessment {
+// AnalyzeSkillEntry scores a SkillEntry for security risk under the given
+// policy. A zero-value SecurityPolicy{} preserves the historical default
+// scoring (no overrides applied).
+func AnalyzeSkillEntry(entry *contract.SkillEntry, hasScript bool, policy SecurityPolicy) SkillRiskAssessment {
 	var factors []RiskFactor
 	var egressDomains []string
 	var bins []string
@@ -97,9 +101,9 @@ func AnalyzeSkillEntry(entry *contract.SkillEntry, hasScript bool) SkillRiskAsse
 		}
 	}
 
-	factors = append(factors, scoreEgress(egressDomains, nil)...)
-	factors = append(factors, scoreBinaries(bins)...)
-	factors = append(factors, scoreEnv(reqEnv, oneOfEnv, optEnv)...)
+	factors = append(factors, scoreEgress(egressDomains, policy)...)
+	factors = append(factors, scoreBinaries(bins, policy)...)
+	factors = append(factors, scoreEnv(reqEnv, oneOfEnv, optEnv, policy)...)
 	if hasScript {
 		factors = append(factors, scoreScript()...)
 	}
@@ -113,25 +117,32 @@ func AnalyzeSkillEntry(entry *contract.SkillEntry, hasScript bool) SkillRiskAsse
 	}
 }
 
-func scoreEgress(domains []string, extraTrusted []string) []RiskFactor {
+func scoreEgress(domains []string, policy SecurityPolicy) []RiskFactor {
 	var factors []RiskFactor
 
-	trusted := make(map[string]bool)
-	for k, v := range trustedDomains {
-		trusted[k] = v
-	}
-	for _, d := range extraTrusted {
-		trusted[d] = true
+	// Union builtin trusted domains with policy.TrustedDomains. We track the
+	// policy-trusted set separately so the RiskFactor description can record
+	// that the trust came from a policy override.
+	policyTrusted := make(map[string]bool, len(policy.TrustedDomains))
+	for _, d := range policy.TrustedDomains {
+		policyTrusted[d] = true
 	}
 
 	for _, domain := range domains {
-		if trusted[domain] {
+		switch {
+		case trustedDomains[domain]:
 			factors = append(factors, RiskFactor{
 				Category:    "egress",
 				Description: fmt.Sprintf("trusted domain: %s", domain),
 				Points:      2,
 			})
-		} else {
+		case policyTrusted[domain]:
+			factors = append(factors, RiskFactor{
+				Category:    "egress",
+				Description: fmt.Sprintf("trusted domain (via policy): %s", domain),
+				Points:      2,
+			})
+		default:
 			factors = append(factors, RiskFactor{
 				Category:    "egress",
 				Description: fmt.Sprintf("unknown domain: %s", domain),
@@ -151,16 +162,28 @@ func scoreEgress(domains []string, extraTrusted []string) []RiskFactor {
 	return factors
 }
 
-func scoreBinaries(bins []string) []RiskFactor {
+func scoreBinaries(bins []string, policy SecurityPolicy) []RiskFactor {
+	acknowledged := make(map[string]bool, len(policy.AcknowledgedBins))
+	for _, b := range policy.AcknowledgedBins {
+		acknowledged[b] = true
+	}
+
 	var factors []RiskFactor
 	for _, bin := range bins {
-		if highRiskBinaries[bin] {
+		switch {
+		case highRiskBinaries[bin] && acknowledged[bin]:
+			factors = append(factors, RiskFactor{
+				Category:    "binary",
+				Description: fmt.Sprintf("high-risk binary (acknowledged by policy): %s", bin),
+				Points:      3,
+			})
+		case highRiskBinaries[bin]:
 			factors = append(factors, RiskFactor{
 				Category:    "binary",
 				Description: fmt.Sprintf("high-risk binary: %s", bin),
 				Points:      15,
 			})
-		} else {
+		default:
 			factors = append(factors, RiskFactor{
 				Category:    "binary",
 				Description: fmt.Sprintf("standard binary: %s", bin),
@@ -171,21 +194,33 @@ func scoreBinaries(bins []string) []RiskFactor {
 	return factors
 }
 
-func scoreEnv(reqEnv, oneOfEnv, optEnv []string) []RiskFactor {
-	var factors []RiskFactor
+func scoreEnv(reqEnv, oneOfEnv, optEnv []string, policy SecurityPolicy) []RiskFactor {
+	acknowledged := make(map[string]bool, len(policy.AcknowledgedEnv))
+	for _, e := range policy.AcknowledgedEnv {
+		acknowledged[e] = true
+	}
+
 	allEnv := make([]string, 0, len(reqEnv)+len(oneOfEnv)+len(optEnv))
 	allEnv = append(allEnv, reqEnv...)
 	allEnv = append(allEnv, oneOfEnv...)
 	allEnv = append(allEnv, optEnv...)
 
+	var factors []RiskFactor
 	for _, env := range allEnv {
-		if isSensitiveEnv(env) {
+		switch {
+		case isSensitiveEnv(env) && acknowledged[env]:
+			factors = append(factors, RiskFactor{
+				Category:    "env",
+				Description: fmt.Sprintf("sensitive variable (acknowledged by policy): %s", env),
+				Points:      5,
+			})
+		case isSensitiveEnv(env):
 			factors = append(factors, RiskFactor{
 				Category:    "env",
 				Description: fmt.Sprintf("sensitive variable: %s", env),
 				Points:      10,
 			})
-		} else {
+		default:
 			factors = append(factors, RiskFactor{
 				Category:    "env",
 				Description: fmt.Sprintf("API key: %s", env),

@@ -60,12 +60,23 @@ type PolicySummary struct {
 }
 
 // SecurityPolicy defines configurable security rules.
+//
+// Policy-check fields raise PolicyViolations during CheckPolicy. Scoring
+// override fields influence how AnalyzeSkill* assigns points — they reduce
+// the score for items an operator has explicitly accepted, and the affected
+// RiskFactor's Description is annotated with "(via policy)" so the override
+// is visible in the audit report.
 type SecurityPolicy struct {
+	// Policy checks.
 	MaxEgressDomains  int      `yaml:"max_egress_domains" json:"max_egress_domains"`
 	BinaryDenylist    []string `yaml:"binary_denylist" json:"binary_denylist,omitempty"`
 	DeniedEnvPatterns []string `yaml:"denied_env_patterns" json:"denied_env_patterns,omitempty"`
 	ScriptPolicy      string   `yaml:"script_policy" json:"script_policy"` // "allow"|"warn"|"deny"
 	MaxRiskScore      int      `yaml:"max_risk_score" json:"max_risk_score"`
 	MaxTags           int      `yaml:"max_tags" json:"max_tags"`
-	TrustedDomains    []string `yaml:"trusted_domains" json:"trusted_domains,omitempty"`
+
+	// Scoring overrides.
+	TrustedDomains   []string `yaml:"trusted_domains" json:"trusted_domains,omitempty"`     // egress domains scored as trusted (+2) instead of unknown (+10)
+	AcknowledgedBins []string `yaml:"acknowledged_bins" json:"acknowledged_bins,omitempty"` // builtin high-risk binaries scored as standard (+3) instead of high-risk (+15)
+	AcknowledgedEnv  []string `yaml:"acknowledged_env" json:"acknowledged_env,omitempty"`   // env vars matching builtin sensitive patterns scored as standard (+5) instead of sensitive (+10)
 }

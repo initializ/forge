@@ -77,6 +77,7 @@ var skillsTrustReportCmd = &cobra.Command{
 var auditFormat string
 var auditEmbedded bool
 var auditDir string
+var auditPolicyPath string
 var signKeyPath string
 
 func init() {
@@ -91,6 +92,7 @@ func init() {
 	skillsAuditCmd.Flags().StringVar(&auditFormat, "format", "text", "Output format: text or json")
 	skillsAuditCmd.Flags().BoolVar(&auditEmbedded, "embedded", false, "Audit embedded skills from the binary")
 	skillsAuditCmd.Flags().StringVar(&auditDir, "dir", "", "Audit skills from a directory of SKILL.md subdirectories")
+	skillsAuditCmd.Flags().StringVar(&auditPolicyPath, "policy", "", "Path to a YAML security policy file (overrides DefaultPolicy for both scoring and policy checks)")
 	skillsSignCmd.Flags().StringVar(&signKeyPath, "key", "", "Path to Ed25519 private key")
 	_ = skillsSignCmd.MarkFlagRequired("key")
 }
@@ -375,6 +377,13 @@ func loadSecretPlaceholders(path string) map[string]bool {
 
 func runSkillsAudit(cmd *cobra.Command, args []string) error {
 	policy := analyzer.DefaultPolicy()
+	if auditPolicyPath != "" {
+		loaded, err := analyzer.LoadPolicyFromFile(auditPolicyPath)
+		if err != nil {
+			return err
+		}
+		policy = loaded
+	}
 	var report *analyzer.AuditReport
 
 	switch {

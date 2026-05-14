@@ -9,6 +9,7 @@ import (
 	"text/template"
 	"time"
 
+	clichannels "github.com/initializ/forge/forge-cli/channels"
 	"github.com/initializ/forge/forge-cli/config"
 	"github.com/initializ/forge/forge-cli/container"
 	"github.com/initializ/forge/forge-cli/templates"
@@ -203,7 +204,7 @@ func runPackage(cmd *cobra.Command, args []string) error {
 	// Generate docker-compose.yaml if --with-channels is set
 	if withChannels && len(cfg.Channels) > 0 {
 		composePath := filepath.Join(outDir, "docker-compose.yaml")
-		if err := generateDockerCompose(composePath, imageTag, cfg, 8080); err != nil {
+		if err := generateDockerCompose(composePath, imageTag, cfg, filepath.Dir(cfgPath), 8080); err != nil {
 			return fmt.Errorf("generating docker-compose.yaml: %w", err)
 		}
 		fmt.Printf("Generated %s\n", composePath)
@@ -267,7 +268,7 @@ type composeData struct {
 	Channels      []channelComposeData
 }
 
-func generateDockerCompose(path string, imageTag string, cfg *types.ForgeConfig, port int) error {
+func generateDockerCompose(path string, imageTag string, cfg *types.ForgeConfig, workDir string, port int) error {
 	if port == 0 {
 		port = 8080
 	}
@@ -282,22 +283,21 @@ func generateDockerCompose(path string, imageTag string, cfg *types.ForgeConfig,
 		return fmt.Errorf("parsing docker-compose template: %w", err)
 	}
 
+	// Build per-channel env var lists from the same canonical source the
+	// build pipeline uses for the K8s manifests — each project channel's
+	// *-config.yaml. Channels without a config file contribute no env vars.
 	var channels []channelComposeData
 	for _, ch := range cfg.Channels {
-		if ch != "slack" && ch != "telegram" {
+		envVars, _, envErr := clichannels.EnvVarsFromConfig(workDir, []string{ch})
+		if envErr != nil {
+			return fmt.Errorf("reading channel %q env vars: %w", ch, envErr)
+		}
+		if len(envVars) == 0 {
 			continue
 		}
-		cd := channelComposeData{Name: ch}
-		switch ch {
-		case "slack":
-			cd.EnvVars = []string{
-				"SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET}",
-				"SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}",
-			}
-		case "telegram":
-			cd.EnvVars = []string{
-				"TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}",
-			}
+		cd := channelComposeData{Name: ch, EnvVars: make([]string, 0, len(envVars))}
+		for _, name := range envVars {
+			cd.EnvVars = append(cd.EnvVars, fmt.Sprintf("%s=${%s}", name, name))
 		}
 		channels = append(channels, cd)
 	}

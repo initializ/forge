@@ -467,7 +467,9 @@ func TestResolveBotID(t *testing.T) {
 			t.Errorf("Authorization = %q, want 'Bearer xoxb-test-token'", r.Header.Get("Authorization"))
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"ok":true,"user_id":"U123BOT"}`)) //nolint:errcheck
+		// auth.test returns both user_id and bot_id; the plugin needs both —
+		// user_id for @mention matching, bot_id for the self-loop guard.
+		w.Write([]byte(`{"ok":true,"user_id":"U123BOT","bot_id":"B123BOT"}`)) //nolint:errcheck
 	}))
 	defer srv.Close()
 
@@ -481,6 +483,9 @@ func TestResolveBotID(t *testing.T) {
 	}
 	if p.botUserID != "U123BOT" {
 		t.Errorf("botUserID = %q, want U123BOT", p.botUserID)
+	}
+	if p.ownBotID != "B123BOT" {
+		t.Errorf("ownBotID = %q, want B123BOT", p.ownBotID)
 	}
 }
 
@@ -786,5 +791,120 @@ func TestEvictExpiredDedup(t *testing.T) {
 	}
 	if _, ok := p.dedupCache["recent-env"]; !ok {
 		t.Error("recent-env should still be present")
+	}
+}
+
+// --- Bot-mention admission (issue #55) -----------------------------------
+
+func TestParseAllowBotIDs(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want []string // sorted list of ids expected in the set
+	}{
+		{"empty", "", nil},
+		{"single", "B0123ABC", []string{"B0123ABC"}},
+		{"two with spaces", " B0123ABC , B0456DEF ", []string{"B0123ABC", "B0456DEF"}},
+		{"empty entries ignored", "B0123ABC,,B0456DEF,", []string{"B0123ABC", "B0456DEF"}},
+		{"whitespace only ignored", "  ,   ,  ", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseAllowBotIDs(tt.raw)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d entries, want %d (entries=%v)", len(got), len(tt.want), got)
+			}
+			for _, id := range tt.want {
+				if !got[id] {
+					t.Errorf("missing %q in result", id)
+				}
+			}
+		})
+	}
+}
+
+func TestInit_PopulatesAllowBotIDs(t *testing.T) {
+	p := New()
+	err := p.Init(channels.ChannelConfig{
+		Adapter: "slack",
+		Settings: map[string]string{
+			"app_token":     "xoxa-test",
+			"bot_token":     "xoxb-test",
+			"allow_bot_ids": "B0123ABC, B0456DEF",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if !p.allowBotIDs["B0123ABC"] || !p.allowBotIDs["B0456DEF"] {
+		t.Errorf("allowBotIDs = %v, want both B0123ABC and B0456DEF admitted", p.allowBotIDs)
+	}
+}
+
+func TestInit_AllowBotIDsAbsent(t *testing.T) {
+	// Default behavior: with no allow_bot_ids setting, the allowlist is
+	// empty and only humans (botID == "") flow through admitBotEvent.
+	p := New()
+	err := p.Init(channels.ChannelConfig{
+		Adapter: "slack",
+		Settings: map[string]string{
+			"app_token": "xoxa-test",
+			"bot_token": "xoxb-test",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if len(p.allowBotIDs) != 0 {
+		t.Errorf("expected empty allowBotIDs, got %v", p.allowBotIDs)
+	}
+}
+
+func TestAdmitBotEvent(t *testing.T) {
+	p := New()
+	p.ownBotID = "B0SELF"
+	p.allowBotIDs = map[string]bool{"B0ALLOWED": true}
+
+	tests := []struct {
+		name      string
+		botID     string
+		wantAdmit bool
+		// wantReasonSubstr is checked when admit is false to make sure the
+		// log line is operator-actionable.
+		wantReasonSubstr string
+	}{
+		{"human message admitted", "", true, ""},
+		{"own bot_id dropped (self-loop guard)", "B0SELF", false, "authored by self"},
+		{"allowlisted bot admitted", "B0ALLOWED", true, ""},
+		{"non-allowlisted bot dropped", "B0OTHER", false, "non-allowlisted"},
+		{"non-allowlisted bot reason mentions allow_bot_ids", "B0OTHER", false, "allow_bot_ids"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reason, admit := p.admitBotEvent(tt.botID)
+			if admit != tt.wantAdmit {
+				t.Errorf("admit = %v, want %v (reason=%q)", admit, tt.wantAdmit, reason)
+			}
+			if !admit && !strings.Contains(reason, tt.wantReasonSubstr) {
+				t.Errorf("reason = %q, want substring %q", reason, tt.wantReasonSubstr)
+			}
+		})
+	}
+}
+
+// TestAdmitBotEvent_SelfGuardBeatsAllowlist verifies the hard rule from #55:
+// even if the agent's own bot_id were somehow listed in allow_bot_ids,
+// the self-loop guard short-circuits before the allowlist check.
+func TestAdmitBotEvent_SelfGuardBeatsAllowlist(t *testing.T) {
+	p := New()
+	p.ownBotID = "B0SELF"
+	p.allowBotIDs = map[string]bool{"B0SELF": true} // misconfiguration
+
+	reason, admit := p.admitBotEvent("B0SELF")
+	if admit {
+		t.Fatal("agent must never admit its own bot_id, even when allowlisted")
+	}
+	if !strings.Contains(reason, "self") {
+		t.Errorf("reason should identify self-loop guard, got %q", reason)
 	}
 }

@@ -29,16 +29,18 @@ const longRunningThreshold = 15 * time.Second
 
 // Plugin implements channels.ChannelPlugin for Slack using Socket Mode.
 type Plugin struct {
-	appToken   string
-	botToken   string
-	botUserID  string // resolved at startup via auth.test
-	wsConn     *websocket.Conn
-	connMu     sync.Mutex
-	stopCh     chan struct{}
-	client     *http.Client
-	apiBase    string // overridable for tests
-	dedupMu    sync.Mutex
-	dedupCache map[string]time.Time
+	appToken    string
+	botToken    string
+	botUserID   string          // resolved at startup via auth.test
+	ownBotID    string          // resolved at startup via auth.test; used as the self-loop guard
+	allowBotIDs map[string]bool // bot_ids whose @mentions are admitted; default empty (no other bots admitted)
+	wsConn      *websocket.Conn
+	connMu      sync.Mutex
+	stopCh      chan struct{}
+	client      *http.Client
+	apiBase     string // overridable for tests
+	dedupMu     sync.Mutex
+	dedupCache  map[string]time.Time
 }
 
 // New creates an uninitialised Slack plugin.
@@ -64,10 +66,52 @@ func (p *Plugin) Init(cfg channels.ChannelConfig) error {
 		return fmt.Errorf("slack: bot_token is required (set SLACK_BOT_TOKEN)")
 	}
 
+	// Optional: comma-separated list of bot_ids whose @mentions of the agent
+	// are admitted. Empty (the default) means no other bots are admitted —
+	// the agent only responds to humans. The agent's own bot_id is always
+	// dropped regardless of this list (see ownBotID guard in Start).
+	p.allowBotIDs = parseAllowBotIDs(settings["allow_bot_ids"])
+
 	return nil
 }
 
-// resolveBotID calls auth.test to discover the bot's own Slack user ID.
+// parseAllowBotIDs splits a comma-separated bot_id list into a lookup set.
+// Whitespace around entries is trimmed; empty entries are skipped.
+func parseAllowBotIDs(raw string) map[string]bool {
+	set := make(map[string]bool)
+	for _, id := range strings.Split(raw, ",") {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			set[id] = true
+		}
+	}
+	return set
+}
+
+// admitBotEvent decides whether an inbound event authored by a bot should
+// flow through to the agent. Human messages (botID == "") always admit.
+// The agent's own bot_id is dropped unconditionally — this is the self-loop
+// guard, not subject to the allowlist. Any other bot is admitted only when
+// its bot_id appears in allowBotIDs.
+//
+// The returned reason string is the operator-facing log line for dropped
+// events; for admitted events it is empty.
+func (p *Plugin) admitBotEvent(botID string) (reason string, admit bool) {
+	if botID == "" {
+		return "", true
+	}
+	if botID == p.ownBotID {
+		return fmt.Sprintf("dropping event authored by self (bot_id=%s)", botID), false
+	}
+	if !p.allowBotIDs[botID] {
+		return fmt.Sprintf("dropping event from non-allowlisted bot (bot_id=%s); add to slack-config.yaml allow_bot_ids to admit", botID), false
+	}
+	return "", true
+}
+
+// resolveBotID calls auth.test to discover the bot's own Slack user ID and
+// bot_id. The user ID drives @mention matching; the bot_id powers the
+// self-loop guard that drops messages authored by this same bot.
 func (p *Plugin) resolveBotID() error {
 	req, err := http.NewRequest(http.MethodPost, p.apiBase+"/auth.test", nil)
 	if err != nil {
@@ -90,6 +134,7 @@ func (p *Plugin) resolveBotID() error {
 	var result struct {
 		OK     bool   `json:"ok"`
 		UserID string `json:"user_id"`
+		BotID  string `json:"bot_id"`
 		Error  string `json:"error,omitempty"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -100,6 +145,7 @@ func (p *Plugin) resolveBotID() error {
 	}
 
 	p.botUserID = result.UserID
+	p.ownBotID = result.BotID
 	return nil
 }
 
@@ -325,8 +371,11 @@ func (p *Plugin) readLoop(ctx context.Context, conn *websocket.Conn, handler cha
 			continue
 		}
 
-		// Skip bot messages.
-		if payload.Event.BotID != "" {
+		// Bot-authored events go through admitBotEvent: self-mentions are
+		// always dropped (loop guard); other bots are dropped unless the
+		// operator has admitted them via allow_bot_ids in slack-config.yaml.
+		if reason, admit := p.admitBotEvent(payload.Event.BotID); !admit {
+			fmt.Printf("  slack: %s\n", reason)
 			continue
 		}
 

@@ -233,13 +233,13 @@ This registers fourteen tools:
 
 **Pagination:** List tools (`github_list_prs`, `github_list_stargazers`, `github_list_forks`, `github_pr_author_profiles`, `github_stargazer_profiles`) support `page` (1-based) and `per_page` (default 30, max 100) parameters. Responses include `pagination.has_next_page` to indicate more results are available.
 
-**PII exemption:** Profile-returning tools (`github_get_user`, `github_pr_author_profiles`, `github_stargazer_profiles`) are pre-configured in the default policy scaffold's `no_pii` `allow_tools` list, so they can return public profile data (emails, bios) without triggering PII guardrails. See [Per-Tool PII Exemptions](security/guardrails.md#per-tool-pii-exemptions).
+**PII exemption:** Profile-returning tools (`github_get_user`, `github_pr_author_profiles`, `github_stargazer_profiles`) are pre-configured in the default policy scaffold's `no_pii` `allow_tools` list, so they can return public profile data (emails, bios) without triggering PII guardrails. See [Per-Tool PII Exemptions](../security/guardrails.md#per-tool-pii-exemptions).
 
 Requires: `gh`, `git`, `jq`. Optional: `GH_TOKEN`. Egress: `api.github.com`, `github.com`.
 
 ### Code-Agent Skill
 
-The `code-agent` skill enables autonomous code generation and modification using [builtin code-agent tools](tools.md#code-agent-tools):
+The `code-agent` skill enables autonomous code generation and modification using [builtin code-agent tools](../core-concepts/tools-and-builtins.md#code-agent-tools):
 
 ```bash
 forge skills add code-agent

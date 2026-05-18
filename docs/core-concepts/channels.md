@@ -185,7 +185,8 @@ When channels are configured in `forge.yaml`, the build pipeline automatically:
 
 1. **Includes channel config files** — `slack-config.yaml`, `telegram-config.yaml`, etc. are copied into the Docker build context alongside `forge.yaml`
 2. **Adds `--with` to the entrypoint** — The container entrypoint becomes `["forge", "run", "--host", "0.0.0.0", "--with", "slack,telegram"]`
-3. **Handles auth loopback** — When [external auth](runtime.md#external-authentication) is configured, channel adapters authenticate to the A2A server using an internal token, bypassing the external auth provider
+3. **Surfaces channel env vars in the manifests** — Every `_env`-suffixed setting in each `<channel>-config.yaml` (e.g. `bot_token_env: SLACK_BOT_TOKEN`) is unioned into the Kubernetes `secrets.yaml` and `deployment.yaml` (via `secretKeyRef`) and into the docker-compose adapter services. Both outputs derive from the same source — see [Kubernetes — Env Var Injection](../deployment/kubernetes.md#env-var-injection)
+4. **Handles auth loopback** — When [external auth](runtime.md#external-authentication) is configured, channel adapters authenticate to the A2A server using an internal token, bypassing the external auth provider
 
 Pass channel secrets via environment variables:
 

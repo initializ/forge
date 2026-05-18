@@ -2,3 +2,12 @@ adapter: slack
 settings:
   app_token_env: SLACK_APP_TOKEN
   bot_token_env: SLACK_BOT_TOKEN
+
+  # Optional: comma-separated list of bot_ids whose @mentions of this agent
+  # should be honored. By default no other bots are admitted, so the agent
+  # only responds to humans. Use this to let a scheduler, monitoring tool,
+  # or CI bot mention the agent. The agent's own bot_id is always dropped
+  # regardless of this list (self-loop guard).
+  #
+  # Find a bot's bot_id: Slack admin → Manage apps → app → Bot User OAuth.
+  # allow_bot_ids: B0123ABC,B0456DEF

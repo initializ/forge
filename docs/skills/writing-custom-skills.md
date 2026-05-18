@@ -50,7 +50,7 @@ For skills **without** scripts (binary-backed skills like `k8s-incident-triage`)
 
 Skill scripts run in a restricted environment via `SkillCommandExecutor`:
 
-- **Isolated environment**: Only `PATH`, `HOME`, and explicitly declared env vars are passed through
+- **Isolated environment**: Only `PATH`, `HOME`, and the env vars the skill declared in `metadata.forge.requires.env` are passed through. Values may live in the shell, a `.env` file, or the encrypted secrets store — the runtime overlays each declared key from the provider chain at startup (see [Secret Management — Skill-Declared Secrets](../security/secret-management.md#skill-declared-secrets))
 - **OAuth token resolution**: When `OPENAI_API_KEY` is set to `__oauth__`, the executor resolves OAuth credentials and injects the access token, `OPENAI_BASE_URL`, and the configured model as `REVIEW_MODEL`
 - **Configurable timeout**: Each skill declares a `timeout_hint` in its YAML frontmatter (e.g., 300s for research)
 - **No shell execution**: Scripts run via `bash <script> <json-input>`, not through a shell interpreter

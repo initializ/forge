@@ -86,11 +86,11 @@ When `OPENAI_API_KEY` is set to the sentinel value `__oauth__`, the `SkillComman
 
 Skill scripts (e.g., `code-review-diff.sh`) detect `OPENAI_BASE_URL` and automatically use the OpenAI Responses API with streaming instead of the standard Chat Completions API.
 
-### Secret Reuse Detection
+### Secret Overlay and Reuse Detection
 
-At startup, the runtime validates that secret values are not reused across different purpose categories. Sharing the same token between unrelated services (e.g., using an OpenAI API key as a Telegram bot token) is blocked with an error.
+At startup, the runtime overlays secret values from the configured provider chain into the process environment so downstream skill scripts and `cli_execute` invocations can read them via `os.Getenv`. The overlay set is the union of forge's builtin LLM/search/channel keys and whatever the provider enumerates via `List()` — so a skill declaring a custom env var name (e.g. `ACME_API_TOKEN`) flows through without any code change. See [Secret Management](../security/secret-management.md#skill-declared-secrets).
 
-Categories: `llm` (OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, etc.), `search` (TAVILY_API_KEY, PERPLEXITY_API_KEY), `telegram` (TELEGRAM_BOT_TOKEN), `slack` (SLACK_APP_TOKEN, SLACK_BOT_TOKEN). Same-category reuse (e.g., two LLM keys with the same value) is allowed.
+Once overlaid, the runtime also validates that secret values are not reused across different purpose categories. Sharing the same token between unrelated services (e.g., using an OpenAI API key as a Telegram bot token) is blocked with an error. Categories: `llm` (OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, etc.), `search` (TAVILY_API_KEY, PERPLEXITY_API_KEY), `telegram` (TELEGRAM_BOT_TOKEN), `slack` (SLACK_APP_TOKEN, SLACK_BOT_TOKEN). Cross-category reuse detection is scoped to these builtin categories — custom skill-declared keys have no defined category and are not part of the check. Same-category reuse (e.g., two LLM keys with the same value) is allowed.
 
 ### Organization ID (OpenAI Enterprise)
 

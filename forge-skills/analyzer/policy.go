@@ -98,7 +98,7 @@ func CheckPolicy(sd *contract.SkillDescriptor, hasScript bool, policy SecurityPo
 
 	// Rule 6: MaxRiskScore
 	if policy.MaxRiskScore > 0 {
-		assessment := AnalyzeSkillDescriptor(sd, hasScript)
+		assessment := AnalyzeSkillDescriptor(sd, hasScript, policy)
 		if assessment.Score.Value > policy.MaxRiskScore {
 			violations = append(violations, PolicyViolation{
 				Rule:     "max_risk_score",

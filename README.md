@@ -1,4 +1,15 @@
+<p align="center">
+  <img src="assets/banner.png" alt="Forge — open-source AI agent framework" width="100%">
+</p>
+
 # Forge — OpenClaw for Enterprise: A Secure, Portable AI Agent Runtime
+
+<p align="center">
+  <a href="https://useforge.ai/docs/"><img src="https://img.shields.io/badge/Docs-useforge.ai-FFD700?style=for-the-badge" alt="Documentation"></a>
+  <a href="https://discord.gg/PtFa4z97Ag"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://github.com/initializ/forge/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-green?style=for-the-badge" alt="License: Apache 2.0"></a>
+  <a href="https://initializ.ai"><img src="https://img.shields.io/badge/Built%20by-initializ-blueviolet?style=for-the-badge" alt="Built by initializ"></a>
+</p>
 
 Build, run, and deploy AI agents from a single `SKILL.md` file.
 Secure by default. Runs anywhere — local, container, cloud, air-gapped.

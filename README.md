@@ -36,7 +36,7 @@ forge init my-agent && cd my-agent && forge run
 forge run --with slack
 ```
 
-See [Quick Start](docs/quickstart.md) for the full walkthrough, or [Installation](docs/installation.md) for all methods.
+See [Quick Start](docs/getting-started/quick-start.md) for the full walkthrough, or [Installation](docs/getting-started/installation.md) for all methods.
 
 ## How It Works
 
@@ -73,42 +73,42 @@ You write a `SKILL.md`. Forge compiles it into a secure, runnable agent with egr
 
 | Document | Description |
 |----------|-------------|
-| [Quick Start](docs/quickstart.md) | Get an agent running in 60 seconds |
-| [Installation](docs/installation.md) | Homebrew, binary, and Windows install |
-| [Architecture](docs/architecture.md) | System design, module layout, and data flows |
+| [Quick Start](docs/getting-started/quick-start.md) | Get an agent running in 60 seconds |
+| [Installation](docs/getting-started/installation.md) | Homebrew, binary, and Windows install |
+| [Architecture](docs/core-concepts/how-forge-works.md) | System design, module layout, and data flows |
 
 ### Core Concepts
 
 | Document | Description |
 |----------|-------------|
-| [Skills](docs/skills.md) | Skill definitions, registry, and compilation |
-| [Tools](docs/tools.md) | Built-in tools, adapters, and custom tools |
-| [Runtime](docs/runtime.md) | LLM providers, fallback chains, running modes |
-| [Memory](docs/memory.md) | Session persistence and long-term memory |
-| [Channels](docs/channels.md) | Slack and Telegram adapter setup |
-| [Scheduling](docs/scheduling.md) | Cron configuration and schedule tools |
+| [Skills](docs/skills/writing-custom-skills.md) | Skill definitions, registry, and compilation |
+| [Tools](docs/core-concepts/tools-and-builtins.md) | Built-in tools, adapters, and custom tools |
+| [Runtime](docs/core-concepts/runtime-engine.md) | LLM providers, fallback chains, running modes |
+| [Memory](docs/core-concepts/memory-system.md) | Session persistence and long-term memory |
+| [Channels](docs/core-concepts/channels.md) | Slack and Telegram adapter setup |
+| [Scheduling](docs/core-concepts/scheduling.md) | Cron configuration and schedule tools |
 
 ### Security
 
 | Document | Description |
 |----------|-------------|
 | [Security Overview](docs/security/overview.md) | Complete security architecture |
-| [Egress Security](docs/security/egress.md) | Egress enforcement deep dive |
-| [Secrets](docs/security/secrets.md) | Encrypted secret management |
-| [Build Signing](docs/security/signing.md) | Ed25519 signing and verification |
+| [Egress Security](docs/security/egress-control.md) | Egress enforcement deep dive |
+| [Secrets](docs/security/secret-management.md) | Encrypted secret management |
+| [Build Signing](docs/security/build-signing.md) | Ed25519 signing and verification |
 | [Guardrails](docs/security/guardrails.md) | Content filtering and PII detection |
 
 ### Operations
 
 | Document | Description |
 |----------|-------------|
-| [Commands](docs/commands.md) | Full CLI reference |
-| [Configuration](docs/configuration.md) | `forge.yaml` schema and environment variables |
-| [Dashboard](docs/dashboard.md) | Web UI features and architecture |
-| [Deployment](docs/deployment.md) | Container packaging, Kubernetes, air-gap |
-| [Hooks](docs/hooks.md) | Agent loop hook system |
-| [Plugins](docs/plugins.md) | Framework plugin system |
-| [Command Integration](docs/command-integration.md) | Initializ Command platform guide |
+| [Commands](docs/reference/cli-reference.md) | Full CLI reference |
+| [Configuration](docs/reference/forge-yaml-schema.md) | `forge.yaml` schema and environment variables |
+| [Dashboard](docs/reference/web-dashboard.md) | Web UI features and architecture |
+| [Deployment](docs/deployment/kubernetes.md) | Container packaging, Kubernetes, air-gap |
+| [Hooks](docs/core-concepts/hooks.md) | Agent loop hook system |
+| [Plugins](docs/reference/framework-plugins.md) | Framework plugin system |
+| [Command Integration](docs/reference/command-integration.md) | Initializ Command platform guide |
 
 ## Philosophy
 

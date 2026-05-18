@@ -44,6 +44,32 @@ forge secret set OPENAI_API_KEY sk-agent2-key --local
 
 At runtime, secrets are resolved in order: **agent-local** -> **global** -> **environment variables**. This lets you override global defaults per agent.
 
+## Skill-Declared Secrets
+
+Skills declare env var requirements in `SKILL.md` (`metadata.forge.requires.env`). At startup the runtime overlays each declared key from the configured secret provider chain into the process environment, so the skill's script or `cli_execute` invocation finds it via `os.Getenv`.
+
+The overlay key set is the union of:
+
+- **Builtin keys** — LLM (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc.), search (`TAVILY_API_KEY`, `PERPLEXITY_API_KEY`), and channel tokens (`SLACK_*`, `TELEGRAM_BOT_TOKEN`). Always attempted even when the provider can't enumerate (e.g. the `env` provider).
+- **Provider-enumerated keys** — every key the provider exposes via `List()`. The encrypted-file provider returns whatever you've stored via `forge secret set`, so a skill declaring `ACME_API_TOKEN` works without any code change in forge.
+
+```yaml
+# skills/my-skill/SKILL.md
+metadata:
+  forge:
+    requires:
+      env:
+        required: [ACME_API_TOKEN]
+```
+
+```bash
+# Store the value once; runtime overlays it on every `forge run`.
+forge secret --local set ACME_API_TOKEN my-secret-value
+forge run
+```
+
+Existing values in the process environment are never overwritten — set `ACME_API_TOKEN` in your shell to override the encrypted store for one session.
+
 ## Runtime Passphrase Prompting
 
 When `forge run` encounters encrypted secrets and no `FORGE_PASSPHRASE` environment variable is set, it prompts interactively:

@@ -140,11 +140,10 @@ func TestOverlaySecretsToEnv_CustomSkillKey(t *testing.T) {
 	const builtinVal = "tavily-secret-value"
 
 	t.Setenv("FORGE_PASSPHRASE", passphrase)
-	// Redirect HOME so the global ~/.forge/secrets.enc fallback resolves to an
-	// empty path under the temp dir, isolating the test from the developer's
-	// real home directory.
-	t.Setenv("HOME", t.TempDir())
-	// Ensure the target env vars are clear before the test runs.
+	// HOME isolation is no longer required: viableEncryptedFileProviders
+	// (issue #52) eagerly validates each candidate file and silently skips
+	// any global ~/.forge/secrets.enc that fails to decrypt with the test
+	// passphrase. The test now exercises the real chain-build path.
 	t.Setenv(customKey, "")
 	t.Setenv(builtinKey, "")
 
@@ -175,5 +174,129 @@ func TestOverlaySecretsToEnv_CustomSkillKey(t *testing.T) {
 	// is the regression check for #48.
 	if got := os.Getenv(customKey); got != customVal {
 		t.Errorf("custom skill key %q in OS env = %q, want %q", customKey, got, customVal)
+	}
+}
+
+// TestOverlaySecretsToEnv_StaleGlobalFileDoesNotPoisonChain is the regression
+// for issue #52: a global ~/.forge/secrets.enc encrypted with a different
+// passphrase than the project's local file must not block local keys from
+// being overlaid. Before the fix, ChainProvider.List() (and Get for keys not
+// in the local file) would propagate the decryption error, hiding every
+// non-builtin key the local file declared.
+func TestOverlaySecretsToEnv_StaleGlobalFileDoesNotPoisonChain(t *testing.T) {
+	workDir := t.TempDir()
+	fakeHome := t.TempDir()
+
+	const localPass = "local-project-passphrase"
+	const globalPass = "old-unrelated-passphrase" // intentionally different
+	const customKey = "PROJECT_CUSTOM_KEY"
+	const customVal = "from-local-encrypted-file"
+
+	t.Setenv("FORGE_PASSPHRASE", localPass)
+	t.Setenv("HOME", fakeHome)
+	t.Setenv(customKey, "")
+
+	// Seed the LOCAL encrypted file with the project's passphrase.
+	localPath := filepath.Join(workDir, ".forge", "secrets.enc")
+	localProvider := secrets.NewEncryptedFileProvider(localPath, func() (string, error) {
+		return localPass, nil
+	})
+	if err := localProvider.SetBatch(map[string]string{customKey: customVal}); err != nil {
+		t.Fatalf("seeding local secrets: %v", err)
+	}
+
+	// Seed the GLOBAL encrypted file at $HOME/.forge/secrets.enc with a
+	// different passphrase. The runtime will pick this file up via the
+	// global fallback path; pre-#52 it would poison the chain.
+	globalPath := filepath.Join(fakeHome, ".forge", "secrets.enc")
+	globalProvider := secrets.NewEncryptedFileProvider(globalPath, func() (string, error) {
+		return globalPass, nil
+	})
+	if err := globalProvider.SetBatch(map[string]string{"UNRELATED": "value"}); err != nil {
+		t.Fatalf("seeding global secrets: %v", err)
+	}
+
+	cfg := &types.ForgeConfig{
+		AgentID: "stale-global-test",
+		Secrets: types.SecretsConfig{Providers: []string{"encrypted-file"}},
+	}
+
+	OverlaySecretsToEnv(cfg, workDir)
+
+	// The local file's custom key must reach the OS env even though the
+	// global file failed to decrypt with the project passphrase.
+	if got := os.Getenv(customKey); got != customVal {
+		t.Errorf("custom key %q in OS env = %q, want %q (stale global file should be skipped, not poison the chain)", customKey, got, customVal)
+	}
+}
+
+// TestViableEncryptedFileProviders_Categorization verifies the three outcomes
+// for each candidate path: missing file silently skipped, decryptable file
+// admitted to the chain, undecryptable file dropped with a warning.
+func TestViableEncryptedFileProviders_Categorization(t *testing.T) {
+	workDir := t.TempDir()
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	const projectPass = "p1"
+	const globalPass = "p2"
+
+	// Local: decryptable.
+	localPath := filepath.Join(workDir, ".forge", "secrets.enc")
+	if err := secrets.NewEncryptedFileProvider(localPath, func() (string, error) {
+		return projectPass, nil
+	}).SetBatch(map[string]string{"LOCAL_KEY": "v"}); err != nil {
+		t.Fatalf("seeding local: %v", err)
+	}
+	// Global: undecryptable with the project passphrase.
+	globalPath := filepath.Join(fakeHome, ".forge", "secrets.enc")
+	if err := secrets.NewEncryptedFileProvider(globalPath, func() (string, error) {
+		return globalPass, nil
+	}).SetBatch(map[string]string{"OTHER_KEY": "v"}); err != nil {
+		t.Fatalf("seeding global: %v", err)
+	}
+
+	var warnings []string
+	got := viableEncryptedFileProviders(workDir, func() (string, error) {
+		return projectPass, nil
+	}, func(msg string, fields map[string]any) {
+		warnings = append(warnings, fields["label"].(string))
+	})
+
+	if len(got) != 1 {
+		t.Fatalf("got %d viable providers, want 1 (local only)", len(got))
+	}
+	if len(warnings) != 1 || warnings[0] != "global" {
+		t.Errorf("warnings = %v, want one warning for label=global", warnings)
+	}
+}
+
+// TestViableEncryptedFileProviders_MissingGlobalIsSilent verifies the
+// common-case path: no global file at all, no warning, just the local.
+func TestViableEncryptedFileProviders_MissingGlobalIsSilent(t *testing.T) {
+	workDir := t.TempDir()
+	fakeHome := t.TempDir() // no secrets.enc inside
+	t.Setenv("HOME", fakeHome)
+
+	const projectPass = "p"
+	localPath := filepath.Join(workDir, ".forge", "secrets.enc")
+	if err := secrets.NewEncryptedFileProvider(localPath, func() (string, error) {
+		return projectPass, nil
+	}).SetBatch(map[string]string{"K": "v"}); err != nil {
+		t.Fatalf("seeding local: %v", err)
+	}
+
+	var warnings []string
+	got := viableEncryptedFileProviders(workDir, func() (string, error) {
+		return projectPass, nil
+	}, func(msg string, fields map[string]any) {
+		warnings = append(warnings, fields["label"].(string))
+	})
+
+	if len(got) != 1 {
+		t.Errorf("got %d providers, want 1", len(got))
+	}
+	if len(warnings) != 0 {
+		t.Errorf("warnings = %v, want none (missing global should be silent)", warnings)
 	}
 }

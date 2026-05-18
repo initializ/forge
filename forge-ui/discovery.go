@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/initializ/forge/forge-core/types"
+	"github.com/initializ/forge/forge-core/util/process"
 )
 
 // externalDaemonState mirrors the daemonState written by `forge serve start`.
@@ -130,7 +131,7 @@ func detectExternalAgent(dir string) (int, bool) {
 	}
 
 	// Check PID liveness first — if the process is dead, serve.json is stale.
-	if state.PID > 0 && !pidAlive(state.PID) {
+	if state.PID > 0 && !process.IsAlive(state.PID) {
 		_ = os.Remove(statePath)
 		return 0, false
 	}

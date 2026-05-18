@@ -1,0 +1,46 @@
+name: Docs Links
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "README.md"
+      - "docs/**"
+      - ".github/workflows/docs-links.yaml"
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "README.md"
+      - "docs/**"
+      - ".github/workflows/docs-links.yaml"
+
+permissions:
+  contents: read
+
+jobs:
+  readme-links:
+    name: README link check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify relative .md links in README resolve
+        run: |
+          python3 - <<'PY'
+          import re, os, sys
+          text = open("README.md").read()
+          bad = []
+          for m in re.finditer(r"\[([^\]]+)\]\(([^)]+\.md)(#[^)]*)?\)", text):
+              label, target = m.group(1), m.group(2)
+              if target.startswith("http"):
+                  continue
+              resolved = os.path.normpath(os.path.join(".", target))
+              if not os.path.exists(resolved):
+                  bad.append(f"  [{label}]({target})")
+          if bad:
+              print("Broken relative .md links in README.md:")
+              for line in bad:
+                  print(line)
+              sys.exit(1)
+          print("README.md: all relative .md links resolve")
+          PY

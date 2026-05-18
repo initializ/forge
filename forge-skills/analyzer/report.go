@@ -73,7 +73,7 @@ func GenerateReportFromEntries(entries []contract.SkillEntry, hasScript func(str
 		entry := &entries[i]
 		hs := hasScript != nil && hasScript(entry.Name)
 
-		assessment := AnalyzeSkillEntry(entry, hs)
+		assessment := AnalyzeSkillEntry(entry, hs, policy)
 
 		// Run policy checks
 		violations := CheckPolicyFromEntry(entry, hs, policy)

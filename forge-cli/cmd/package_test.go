@@ -130,6 +130,19 @@ func TestWithChannelsFlagDefault(t *testing.T) {
 
 func TestGenerateDockerCompose(t *testing.T) {
 	dir := t.TempDir()
+	// Seed the per-channel config files that the generator now reads to
+	// derive env vars. These mirror the templates shipped by `forge init`.
+	writeFile(t, filepath.Join(dir, "slack-config.yaml"), `
+adapter: slack
+settings:
+  app_token_env: SLACK_APP_TOKEN
+  bot_token_env: SLACK_BOT_TOKEN
+`)
+	writeFile(t, filepath.Join(dir, "telegram-config.yaml"), `
+adapter: telegram
+settings:
+  bot_token_env: TELEGRAM_BOT_TOKEN
+`)
 	path := filepath.Join(dir, "docker-compose.yaml")
 
 	cfg := &types.ForgeConfig{
@@ -147,7 +160,7 @@ func TestGenerateDockerCompose(t *testing.T) {
 		},
 	}
 
-	err := generateDockerCompose(path, "my-agent:0.1.0", cfg, 8080)
+	err := generateDockerCompose(path, "my-agent:0.1.0", cfg, dir, 8080)
 	if err != nil {
 		t.Fatalf("generateDockerCompose() error: %v", err)
 	}
@@ -186,26 +199,34 @@ func TestGenerateDockerCompose(t *testing.T) {
 		t.Error("missing egress mode label")
 	}
 
-	// Check slack adapter
+	// Slack adapter env vars come from slack-config.yaml. The current Slack
+	// adapter is Socket Mode (app_token + bot_token), so signing_secret is
+	// not declared in the YAML and therefore not injected — switching to the
+	// YAML-driven source corrects a long-standing inaccuracy in the prior
+	// hardcoded map.
 	if !strings.Contains(content, "slack-adapter:") {
 		t.Error("missing slack-adapter service")
 	}
-	if !strings.Contains(content, "SLACK_SIGNING_SECRET") {
-		t.Error("missing SLACK_SIGNING_SECRET env var")
+	if !strings.Contains(content, "SLACK_APP_TOKEN=${SLACK_APP_TOKEN}") {
+		t.Error("missing SLACK_APP_TOKEN env var")
 	}
-	if !strings.Contains(content, "SLACK_BOT_TOKEN") {
+	if !strings.Contains(content, "SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}") {
 		t.Error("missing SLACK_BOT_TOKEN env var")
+	}
+	if strings.Contains(content, "SLACK_SIGNING_SECRET") {
+		t.Error("SLACK_SIGNING_SECRET should not be injected: not declared in slack-config.yaml and unused by Socket Mode adapter")
 	}
 
 	// Check telegram adapter
 	if !strings.Contains(content, "telegram-adapter:") {
 		t.Error("missing telegram-adapter service")
 	}
-	if !strings.Contains(content, "TELEGRAM_BOT_TOKEN") {
+	if !strings.Contains(content, "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}") {
 		t.Error("missing TELEGRAM_BOT_TOKEN env var")
 	}
 
-	// Non-adapter channels (a2a) should be skipped
+	// Channels without a *-config.yaml (a2a here) contribute no env vars
+	// and so produce no adapter service.
 	if strings.Contains(content, "a2a-adapter") {
 		t.Error("a2a should not generate an adapter service")
 	}
@@ -230,7 +251,7 @@ func TestGenerateDockerCompose_NoAdapters(t *testing.T) {
 		Channels:   []string{"a2a", "http"},
 	}
 
-	err := generateDockerCompose(path, "my-agent:0.1.0", cfg, 8080)
+	err := generateDockerCompose(path, "my-agent:0.1.0", cfg, dir, 8080)
 	if err != nil {
 		t.Fatalf("generateDockerCompose() error: %v", err)
 	}
@@ -241,5 +262,12 @@ func TestGenerateDockerCompose_NoAdapters(t *testing.T) {
 	// Only agent service, no adapters
 	if strings.Contains(content, "-adapter:") {
 		t.Error("should not generate adapter services for non-adapter channels")
+	}
+}
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("writing %s: %v", path, err)
 	}
 }

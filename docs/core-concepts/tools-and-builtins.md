@@ -114,14 +114,14 @@ tools:
 | 2 | **Binary allowlist** | Only pre-approved binaries can execute |
 | 3 | **Binary resolution** | Binaries are resolved to absolute paths via `exec.LookPath` at startup |
 | 4 | **Argument validation** | Rejects arguments containing `$(`, backticks, newlines, or `file://` URLs |
-| 5 | **File protocol blocking** | Arguments containing `file://` (case-insensitive) are blocked to prevent filesystem traversal via `curl file:///etc/passwd` (see [File Protocol Blocking](security/guardrails.md#file-protocol-blocking)) |
-| 6 | **Path confinement** | Path arguments inside `$HOME` but outside `workDir` are blocked (see [Path Containment](security/guardrails.md#path-containment)) |
+| 5 | **File protocol blocking** | Arguments containing `file://` (case-insensitive) are blocked to prevent filesystem traversal via `curl file:///etc/passwd` (see [File Protocol Blocking](../security/guardrails.md#file-protocol-blocking)) |
+| 6 | **Path confinement** | Path arguments inside `$HOME` but outside `workDir` are blocked (see [Path Containment](../security/guardrails.md#path-containment)) |
 | 7 | **Timeout** | Configurable per-command timeout (default: 120s) |
 | 8 | **No shell** | Uses `exec.CommandContext` directly — no shell expansion |
 | 9 | **Working directory** | `cmd.Dir` set to `workDir` so relative paths resolve within the agent directory |
 | 10 | **Environment isolation** | Only `PATH`, `HOME`, `LANG`, explicit passthrough vars, proxy vars, `OPENAI_ORG_ID` (when set), `GH_CONFIG_DIR` (auto-set to real `~/.config/gh` **only for `gh`**), and `KUBECONFIG`/`NO_PROXY` (**only for `kubectl`/`helm`** — see below). `HOME` is overridden to `workDir` to prevent `~` expansion from reaching the real home directory |
 | 11 | **Output limits** | Configurable max output size (default: 1MB) to prevent memory exhaustion |
-| 12 | **Skill guardrails** | Skill-declared `deny_commands` and `deny_output` patterns block/redact command inputs and outputs (see [Skill Guardrails](security/guardrails.md#skill-guardrails)) |
+| 12 | **Skill guardrails** | Skill-declared `deny_commands` and `deny_output` patterns block/redact command inputs and outputs (see [Skill Guardrails](../security/guardrails.md#skill-guardrails)) |
 | 13 | **Custom tool entrypoint validation** | Custom tool entrypoints are validated: rejects empty, absolute, or `..`-containing paths; resolves symlinks and verifies the target stays within the project directory and is a regular file |
 
 ### KUBECONFIG and NO_PROXY Scoping
@@ -133,7 +133,7 @@ When `HOME` is overridden to `workDir`, `kubectl` and `helm` lose access to `~/.
 | `KUBECONFIG` | Explicit `KUBECONFIG` if set, else `<real-home>/.kube/config` | Passes through the active kubeconfig |
 | `NO_PROXY` | K8s API server hostname(s) | Bypasses the egress proxy for cluster connections |
 
-If `KUBECONFIG` is explicitly set in the environment (e.g., via `docker run -e KUBECONFIG=...` or after [KUBECONFIG materialization](runtime.md#kubeconfig-materialization)), that value is passed through directly. Otherwise, `cli_execute` falls back to the real `~/.kube/config`. `NO_PROXY` is extracted from the kubeconfig's `clusters[].cluster.server` field. Other binaries do not receive these variables.
+If `KUBECONFIG` is explicitly set in the environment (e.g., via `docker run -e KUBECONFIG=...` or after [KUBECONFIG materialization](runtime-engine.md#kubeconfig-materialization)), that value is passed through directly. Otherwise, `cli_execute` falls back to the real `~/.kube/config`. `NO_PROXY` is extracted from the kubeconfig's `clusters[].cluster.server` field. Other binaries do not receive these variables.
 
 ## File Create
 
@@ -167,7 +167,7 @@ Filenames with path separators (`/`, `\`) or traversal patterns (`..`) are rejec
 
 ## Memory Tools
 
-When [long-term memory](memory.md) is enabled, two additional tools are registered:
+When [long-term memory](memory-system.md) is enabled, two additional tools are registered:
 
 - **`memory_search`** — Hybrid vector + keyword search across stored memory files
 - **`memory_get`** — Read specific memory files by path

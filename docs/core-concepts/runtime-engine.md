@@ -243,17 +243,17 @@ The runtime configures a `FilesDir` for tool-generated files (e.g., from `file_c
     memory/       ← long-term memory
 ```
 
-The `FilesDir` is set via `LLMExecutorConfig.FilesDir` and made available to tools through `runtime.FilesDirFromContext(ctx)`. See [Tools — File Create](tools.md#file-create) for details.
+The `FilesDir` is set via `LLMExecutorConfig.FilesDir` and made available to tools through `runtime.FilesDirFromContext(ctx)`. See [Tools — File Create](tools-and-builtins.md#file-create) for details.
 
 ## Conversation Memory
 
-For details on session persistence, context window management, compaction, and long-term memory, see [Memory](memory.md).
+For details on session persistence, context window management, compaction, and long-term memory, see [Memory](memory-system.md).
 
 ## Hooks
 
 The engine fires hooks at key points in the loop. See [Hooks](hooks.md) for details.
 
-The runner registers five hook groups: logging, audit, progress, global guardrail hooks, and skill guardrail hooks. Global guardrails use the `GuardrailChecker` interface backed by the `github.com/initializ/guardrails` library — the `AfterToolExec` hook scans tool output for secrets and PII, redacting or blocking before results enter the LLM context. Guardrail config is loaded from `guardrails.json` (file mode) or MongoDB (DB mode). Skill guardrail hooks enforce domain-specific rules declared in `SKILL.md` — blocking commands, redacting output, intercepting capability enumeration probes, and replacing binary-enumerating responses. Skill guardrails are loaded from build artifacts or parsed directly from `SKILL.md` at runtime (no `forge build` required). See [Guardrails](security/guardrails.md) for full details.
+The runner registers five hook groups: logging, audit, progress, global guardrail hooks, and skill guardrail hooks. Global guardrails use the `GuardrailChecker` interface backed by the `github.com/initializ/guardrails` library — the `AfterToolExec` hook scans tool output for secrets and PII, redacting or blocking before results enter the LLM context. Guardrail config is loaded from `guardrails.json` (file mode) or MongoDB (DB mode). Skill guardrail hooks enforce domain-specific rules declared in `SKILL.md` — blocking commands, redacting output, intercepting capability enumeration probes, and replacing binary-enumerating responses. Skill guardrails are loaded from build artifacts or parsed directly from `SKILL.md` at runtime (no `forge build` required). See [Guardrails](../security/guardrails.md) for full details.
 
 ## Streaming
 

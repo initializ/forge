@@ -18,29 +18,36 @@ permissions:
   contents: read
 
 jobs:
-  readme-links:
-    name: README link check
+  doc-links:
+    name: Doc link check (README + docs/**)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify relative .md links in README resolve
+      - name: Verify relative .md links resolve
         run: |
           python3 - <<'PY'
           import re, os, sys
-          text = open("README.md").read()
+          targets = ["README.md"]
+          for root, _, files in os.walk("docs"):
+              for f in files:
+                  if f.endswith(".md"):
+                      targets.append(os.path.join(root, f))
           bad = []
-          for m in re.finditer(r"\[([^\]]+)\]\(([^)]+\.md)(#[^)]*)?\)", text):
-              label, target = m.group(1), m.group(2)
-              if target.startswith("http"):
-                  continue
-              resolved = os.path.normpath(os.path.join(".", target))
-              if not os.path.exists(resolved):
-                  bad.append(f"  [{label}]({target})")
+          for path in targets:
+              with open(path) as fp:
+                  text = fp.read()
+              for m in re.finditer(r"\[([^\]]+)\]\(([^)]+\.md)(#[^)]*)?\)", text):
+                  label, target = m.group(1), m.group(2)
+                  if target.startswith("http"):
+                      continue
+                  resolved = os.path.normpath(os.path.join(os.path.dirname(path), target))
+                  if not os.path.exists(resolved):
+                      bad.append(f"  {path}: [{label}]({target})")
           if bad:
-              print("Broken relative .md links in README.md:")
+              print("Broken relative .md links:")
               for line in bad:
                   print(line)
               sys.exit(1)
-          print("README.md: all relative .md links resolve")
+          print(f"Checked {len(targets)} doc files: all relative .md links resolve")
           PY

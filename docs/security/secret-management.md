@@ -44,6 +44,20 @@ forge secret set OPENAI_API_KEY sk-agent2-key --local
 
 At runtime, secrets are resolved in order: **agent-local** -> **global** -> **environment variables**. This lets you override global defaults per agent.
 
+## Provider Chain Validation
+
+When the chain is built, each candidate encrypted-file provider is eagerly validated before being admitted:
+
+| Candidate state | Result | Operator-visible signal |
+|---|---|---|
+| File absent (e.g. you never ran `forge secret set --global`) | Silently skipped | None |
+| File present and decrypts with the active passphrase | Admitted; cache populated so subsequent reads reuse the cleartext | Normal operation |
+| File present but decryption fails (wrong passphrase, corruption) | **Dropped from the chain** with a warning | `forge: skipping secrets provider that failed to load (path=..., error=...)` |
+
+The drop-with-warning behavior prevents a stale `~/.forge/secrets.enc` — one encrypted with a passphrase you've since forgotten or from an unrelated project — from poisoning the chain and hiding the keys your agent-local file declares. The local file's keys still flow through to the agent. The warning tells you exactly which file to delete or re-encrypt.
+
+This validation runs once per `forge run`, in both `OverlaySecretsToEnv` (pre-runner startup) and `Runner.buildSecretProvider` (in-runner).
+
 ## Skill-Declared Secrets
 
 Skills declare env var requirements in `SKILL.md` (`metadata.forge.requires.env`). At startup the runtime overlays each declared key from the configured secret provider chain into the process environment, so the skill's script or `cli_execute` invocation finds it via `os.Getenv`.

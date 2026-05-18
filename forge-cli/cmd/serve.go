@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/initializ/forge/forge-core/util/process"
 	"github.com/spf13/cobra"
 )
 
@@ -141,7 +142,7 @@ func readDaemonState(path string) (daemonState, bool) {
 		return daemonState{}, false
 	}
 
-	if state.PID <= 0 || !isProcessAlive(state.PID) {
+	if state.PID <= 0 || !process.IsAlive(state.PID) {
 		return daemonState{}, false
 	}
 
@@ -301,7 +302,7 @@ func serveStopRun(cmd *cobra.Command, args []string) error {
 	// Poll for exit (up to 10 seconds)
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		if !isProcessAlive(state.PID) {
+		if !process.IsAlive(state.PID) {
 			os.Remove(statePath) //nolint:errcheck
 			fmt.Fprintln(os.Stderr, "Daemon stopped.")
 			return nil

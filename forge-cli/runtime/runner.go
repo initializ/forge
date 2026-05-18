@@ -2480,16 +2480,7 @@ func (r *Runner) buildSecretProvider() secrets.Provider {
 		case "env":
 			providers = append(providers, secrets.NewEnvProvider(""))
 		case "encrypted-file":
-			// Agent-local secrets file (in agent workdir)
-			localPath := filepath.Join(r.cfg.WorkDir, ".forge", "secrets.enc")
-			providers = append(providers, secrets.NewEncryptedFileProvider(localPath, passCb))
-
-			// Global fallback secrets file
-			home, err := os.UserHomeDir()
-			if err == nil {
-				globalPath := filepath.Join(home, ".forge", "secrets.enc")
-				providers = append(providers, secrets.NewEncryptedFileProvider(globalPath, passCb))
-			}
+			providers = append(providers, viableEncryptedFileProviders(r.cfg.WorkDir, passCb, r.logger.Warn)...)
 		default:
 			r.logger.Warn("unknown secret provider, skipping", map[string]any{"provider": name})
 		}
@@ -2504,10 +2495,60 @@ func (r *Runner) buildSecretProvider() secrets.Provider {
 	return secrets.NewChainProvider(providers...)
 }
 
+// viableEncryptedFileProviders returns the agent-local and global
+// encrypted-file providers that pass an eager-load check. Files that don't
+// exist are silently skipped (the common case: the operator never ran
+// `forge secret set --global`). Files that fail to decrypt (wrong passphrase,
+// corruption) emit a warning via warnFn and are dropped from the chain — so a
+// stale global file with a different passphrase cannot poison subsequent
+// ChainProvider.Get/List calls once admitted to the chain.
+//
+// The returned providers retain their decrypted cache (EncryptedFileProvider
+// flags `loaded = true` after a successful List()), so subsequent reads — by
+// secretOverlayKeys, by Get on individual keys — reuse the work and don't
+// trigger another Argon2id derivation.
+//
+// warnFn may be nil; in that case decryption failures are silently skipped.
+func viableEncryptedFileProviders(workDir string, passCb func() (string, error), warnFn func(msg string, fields map[string]any)) []secrets.Provider {
+	candidates := []struct{ path, label string }{
+		{filepath.Join(workDir, ".forge", "secrets.enc"), "agent-local"},
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates, struct{ path, label string }{filepath.Join(home, ".forge", "secrets.enc"), "global"})
+	}
+
+	var viable []secrets.Provider
+	for _, c := range candidates {
+		if _, err := os.Stat(c.path); os.IsNotExist(err) {
+			continue
+		}
+		provider := secrets.NewEncryptedFileProvider(c.path, passCb)
+		// Eagerly validate the file can be decrypted. List() runs
+		// ensureLoaded which performs the decrypt and caches the cleartext
+		// for later calls.
+		if _, err := provider.List(); err != nil {
+			if warnFn != nil {
+				warnFn("skipping secrets provider that failed to load", map[string]any{
+					"path":  c.path,
+					"label": c.label,
+					"error": err.Error(),
+				})
+			}
+			continue
+		}
+		viable = append(viable, provider)
+	}
+	return viable
+}
+
 // OverlaySecretsToEnv loads secrets from the config's provider chain and sets
 // them in the OS environment so that channel adapters (which use os.Getenv) can
 // access encrypted secrets. Only keys not already set in the env are written.
 // workDir is the agent directory used to locate agent-local secrets.
+//
+// Runs before the Runner exists (called from cmd/common.go), so it doesn't
+// have access to the structured logger — warnings about unloadable secret
+// files go to stderr in the same style as other early-startup messages.
 func OverlaySecretsToEnv(cfg *types.ForgeConfig, workDir string) {
 	providerNames := cfg.Secrets.Providers
 	if len(providerNames) == 0 {
@@ -2520,16 +2561,7 @@ func OverlaySecretsToEnv(cfg *types.ForgeConfig, workDir string) {
 	for _, name := range providerNames {
 		switch name {
 		case "encrypted-file":
-			// Agent-local secrets file
-			localPath := filepath.Join(workDir, ".forge", "secrets.enc")
-			chain = append(chain, secrets.NewEncryptedFileProvider(localPath, passCb))
-
-			// Global fallback secrets file
-			home, err := os.UserHomeDir()
-			if err == nil {
-				globalPath := filepath.Join(home, ".forge", "secrets.enc")
-				chain = append(chain, secrets.NewEncryptedFileProvider(globalPath, passCb))
-			}
+			chain = append(chain, viableEncryptedFileProviders(workDir, passCb, stderrWarn)...)
 		case "env":
 			// env provider uses os.Getenv — already available, skip
 		}
@@ -2556,6 +2588,20 @@ func OverlaySecretsToEnv(cfg *types.ForgeConfig, workDir string) {
 			_ = os.Setenv(key, val)
 		}
 	}
+}
+
+// stderrWarn is a warning sink for code paths that run before the structured
+// logger is available (e.g. OverlaySecretsToEnv).
+func stderrWarn(msg string, fields map[string]any) {
+	var parts []string
+	for k, v := range fields {
+		parts = append(parts, fmt.Sprintf("%s=%v", k, v))
+	}
+	fmt.Fprintf(os.Stderr, "  forge: %s", msg)
+	if len(parts) > 0 {
+		fmt.Fprintf(os.Stderr, " (%s)", strings.Join(parts, ", "))
+	}
+	fmt.Fprintln(os.Stderr)
 }
 
 // writeJSON writes a JSON response with the given status code.

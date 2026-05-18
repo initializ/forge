@@ -11,8 +11,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
+
+	"github.com/initializ/forge/forge-core/util/process"
 )
 
 // PortAllocator manages port assignment for agent processes.
@@ -171,7 +172,7 @@ func (pm *ProcessManager) waitForPort(agentDir string, port int) bool {
 
 	for time.Now().Before(deadline) {
 		// Fast-fail: if the child process already exited, don't keep polling.
-		if pid > 0 && !pidAlive(pid) {
+		if pid > 0 && !process.IsAlive(pid) {
 			return false
 		}
 
@@ -199,15 +200,6 @@ func (pm *ProcessManager) readServePID(agentDir string) int {
 		return 0
 	}
 	return state.PID
-}
-
-// pidAlive checks if a process with the given PID is still running.
-func pidAlive(pid int) bool {
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return proc.Signal(syscall.Signal(0)) == nil
 }
 
 // readServeLogs reads .forge/serve.log and extracts the error message.

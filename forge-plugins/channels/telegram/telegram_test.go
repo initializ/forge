@@ -147,6 +147,104 @@ func TestSendResponse_MarkdownConversion(t *testing.T) {
 	}
 }
 
+// TestSendResponse_PrefersMessageSummary verifies that when a2a.Message.Summary
+// is set on a long response, the Telegram adapter uses it as the inline message
+// instead of head-truncating the body.
+func TestSendResponse_PrefersMessageSummary(t *testing.T) {
+	var sendMessageBody string
+	var sendDocumentCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/sendDocument") {
+			sendDocumentCalls++
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"ok":true}`)) //nolint:errcheck
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/sendMessage") {
+			body, _ := io.ReadAll(r.Body)
+			var payload map[string]any
+			json.Unmarshal(body, &payload) //nolint:errcheck
+			sendMessageBody, _ = payload["text"].(string)
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"ok":true}`)) //nolint:errcheck
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	p := New()
+	p.botToken = "test-token"
+	p.apiBase = srv.URL
+
+	event := &channels.ChannelEvent{WorkspaceID: "67890", MessageID: "42"}
+
+	longBody := strings.Repeat("This is the full untruncated body text. ", 200) // ~8 KB
+	msg := &a2a.Message{
+		Role:    a2a.MessageRoleAgent,
+		Parts:   []a2a.Part{a2a.NewTextPart(longBody)},
+		Summary: "TL;DR: the migration completed in 38s with no failed rows.",
+	}
+
+	if err := p.SendResponse(event, msg); err != nil {
+		t.Fatalf("SendResponse: %v", err)
+	}
+
+	if sendDocumentCalls != 1 {
+		t.Errorf("expected 1 sendDocument call (full report attached), got %d", sendDocumentCalls)
+	}
+	if !strings.Contains(sendMessageBody, "TL;DR: the migration completed in 38s") {
+		t.Errorf("expected Summary in inline message, got %q", sendMessageBody)
+	}
+	if strings.Contains(sendMessageBody, "This is the full untruncated body text. This is the full") {
+		t.Errorf("body leaked into inline message; expected only Summary, got %q", sendMessageBody)
+	}
+}
+
+// TestSendResponse_FallsBackWhenNoSummary preserves the existing head-truncation
+// behavior when callers don't populate Message.Summary.
+func TestSendResponse_FallsBackWhenNoSummary(t *testing.T) {
+	var sendMessageBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/sendDocument") {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"ok":true}`)) //nolint:errcheck
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/sendMessage") {
+			body, _ := io.ReadAll(r.Body)
+			var payload map[string]any
+			json.Unmarshal(body, &payload) //nolint:errcheck
+			sendMessageBody, _ = payload["text"].(string)
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"ok":true}`)) //nolint:errcheck
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	p := New()
+	p.botToken = "test-token"
+	p.apiBase = srv.URL
+
+	event := &channels.ChannelEvent{WorkspaceID: "67890", MessageID: "42"}
+
+	longBody := "Lead sentence summary of the answer.\n\n" + strings.Repeat("Body filler. ", 500)
+	msg := &a2a.Message{
+		Role:  a2a.MessageRoleAgent,
+		Parts: []a2a.Part{a2a.NewTextPart(longBody)},
+	}
+
+	if err := p.SendResponse(event, msg); err != nil {
+		t.Fatalf("SendResponse: %v", err)
+	}
+
+	if !strings.Contains(sendMessageBody, "Lead sentence summary of the answer.") {
+		t.Errorf("expected head-truncated lead in inline message, got %q", sendMessageBody)
+	}
+}
+
 func TestPollingGetUpdates(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := `{"ok":true,"result":[{"update_id":1,"message":{"message_id":10,"from":{"id":1},"chat":{"id":2},"text":"poll msg"}}]}`

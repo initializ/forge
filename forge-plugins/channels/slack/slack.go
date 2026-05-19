@@ -559,10 +559,14 @@ func (p *Plugin) SendResponse(event *channels.ChannelEvent, response *a2a.Messag
 			return p.sendChunked(event, fileContent)
 		}
 
-		// File uploaded — send the LLM text as summary with "attached" note.
-		summary := text
-		if len(summary) > 600 {
-			summary, _ = markdown.SplitSummaryAndReport(summary)
+		// File uploaded — prefer the runtime-generated summary when available,
+		// otherwise fall back to head-truncating the LLM text.
+		summary := response.Summary
+		if summary == "" {
+			summary = text
+			if len(summary) > 600 {
+				summary, _ = markdown.SplitSummaryAndReport(summary)
+			}
 		}
 		summaryText := summary + "\n\n_Full report attached as file above._"
 		summaryMrkdwn := markdown.ToSlackMrkdwn(summaryText)
@@ -579,7 +583,11 @@ func (p *Plugin) SendResponse(event *channels.ChannelEvent, response *a2a.Messag
 
 	// No file parts — use text-based logic.
 	if len(text) > 4096 {
-		summary, report := markdown.SplitSummaryAndReport(text)
+		summary := response.Summary
+		report := text
+		if summary == "" {
+			summary, report = markdown.SplitSummaryAndReport(text)
+		}
 
 		threadTS := event.ThreadID
 		if threadTS == "" {

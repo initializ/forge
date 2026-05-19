@@ -199,10 +199,22 @@ The Slack adapter deduplicates events by envelope ID to prevent processing the s
 
 When an agent response exceeds 4096 characters (common with research reports), channel adapters automatically split it into a **summary message** and a **file attachment**:
 
-1. A brief summary (first paragraph, up to 600 characters) is sent as a regular message
+1. A brief summary is sent as a regular inline message
 2. The full report is uploaded as a downloadable Markdown file (`research-report.md`)
 
 This works on both Slack (via `files.getUploadURLExternal`) and Telegram (via `sendDocument`). If file upload fails, adapters fall back to chunked messages. Markdown is converted to platform-native formatting (Slack mrkdwn or Telegram HTML).
+
+### Summary Source
+
+The runtime decides what the inline summary contains:
+
+| Condition | Inline summary source |
+|---|---|
+| Final LLM response > 4096 chars | LLM-generated summary — one extra `Chat()` call asking the model to summarise its own response in 2-4 sentences. Returned to channel adapters as `a2a.Message.Summary` |
+| LLM response ≤ 4096 chars but a tool attached a large file part | The LLM's response text itself — it is already a brief summary of the file content. No extra summariser call |
+| LLM response ≤ 4096 chars, no file part | The full response is sent inline as chunked messages — no attachment, no summary |
+
+If the summariser call fails or returns empty, channel adapters fall back to head-truncating the response body at the first paragraph boundary (≤ 600 chars) or `truncateAtSentence(text, 500)`. The fallback ensures the channel always delivers *something* even when the LLM is unreachable.
 
 Additionally, the runtime tracks large tool outputs (>8000 characters) and attaches them as file parts in the A2A response. This ensures channel adapters receive the complete, untruncated tool output even when the LLM's text summary is truncated by output token limits. JSON tool outputs (e.g. Tavily Research/Search results) are automatically unwrapped into readable markdown before delivery.
 

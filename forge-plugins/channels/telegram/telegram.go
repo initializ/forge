@@ -347,10 +347,14 @@ func (p *Plugin) SendResponse(event *channels.ChannelEvent, response *a2a.Messag
 			return p.sendChunked(event, fileContent)
 		}
 
-		// Document uploaded — send LLM text as summary with "attached" note.
-		summary := text
-		if len(summary) > 600 {
-			summary, _ = markdown.SplitSummaryAndReport(summary)
+		// Document uploaded — prefer the runtime-generated summary when available,
+		// otherwise fall back to head-truncating the LLM text.
+		summary := response.Summary
+		if summary == "" {
+			summary = text
+			if len(summary) > 600 {
+				summary, _ = markdown.SplitSummaryAndReport(summary)
+			}
 		}
 		summaryText := summary + "\n\nFull report attached as file above."
 		summaryHTML := markdown.ToTelegramHTML(summaryText)
@@ -372,7 +376,11 @@ func (p *Plugin) SendResponse(event *channels.ChannelEvent, response *a2a.Messag
 
 	// No file parts — use text-based logic.
 	if len(text) > 4096 {
-		summary, report := markdown.SplitSummaryAndReport(text)
+		summary := response.Summary
+		report := text
+		if summary == "" {
+			summary, report = markdown.SplitSummaryAndReport(text)
+		}
 
 		uploadOK := true
 		if err := p.sendDocument(event, "research-report.md", report); err != nil {

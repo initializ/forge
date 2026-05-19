@@ -39,9 +39,15 @@ const (
 )
 
 // Message is a single conversational turn in the A2A protocol.
+//
+// Summary, when set, is a short LLM-generated synopsis of the agent's full
+// response. Channel adapters prefer it over head-truncating the verbose body
+// when an inline-friendly message is needed. Empty for short responses where
+// the full text already fits inline.
 type Message struct {
-	Role  MessageRole `json:"role"`
-	Parts []Part      `json:"parts"`
+	Role    MessageRole `json:"role"`
+	Parts   []Part      `json:"parts"`
+	Summary string      `json:"summary,omitempty"`
 }
 
 // PartKind discriminates the content type of a Part.

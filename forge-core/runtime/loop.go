@@ -397,7 +397,7 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 				resp.Message.Content = "I processed your request but wasn't able to produce a response. Please try again."
 			}
 			e.persistSession(task.ID, mem)
-			return llmMessageToA2A(resp.Message, largeToolOutputs...), nil
+			return e.finalizeResponse(ctx, resp.Message, largeToolOutputs...), nil
 		}
 
 		// Execute tool calls
@@ -406,7 +406,7 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 				resp.Message.Content = "I processed your request but wasn't able to produce a response. Please try again."
 			}
 			e.persistSession(task.ID, mem)
-			return llmMessageToA2A(resp.Message, largeToolOutputs...), nil
+			return e.finalizeResponse(ctx, resp.Message, largeToolOutputs...), nil
 		}
 
 		// The LLM made tool calls -- it's making progress. Allow
@@ -645,6 +645,24 @@ func llmMessageToA2A(msg llm.ChatMessage, extraParts ...a2a.Part) *a2a.Message {
 		Role:  role,
 		Parts: parts,
 	}
+}
+
+// finalizeResponse builds the A2A message for the final agent response and,
+// when the LLM body itself is long enough to be split into "inline summary +
+// attached markdown" by channel adapters, asks the LLM for a real summary.
+// The summary is attached as Message.Summary; channels prefer it over
+// head-truncating the verbose body. Failure to produce a summary is non-fatal
+// — channels fall back to their existing head-truncation behavior.
+//
+// When the LLM text is short but a tool produced a large file part, no
+// summariser pass is needed: the LLM text is already the summary of the file
+// content, and channel adapters already use it that way.
+func (e *LLMExecutor) finalizeResponse(ctx context.Context, msg llm.ChatMessage, extraParts ...a2a.Part) *a2a.Message {
+	out := llmMessageToA2A(msg, extraParts...)
+	if len(msg.Content) > summaryInlineThreshold {
+		out.Summary = generateSummary(ctx, e.client, msg.Content)
+	}
+	return out
 }
 
 // isWriteActionTool returns true for tools that modify state (edit, write,

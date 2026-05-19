@@ -737,6 +737,104 @@ func TestSendResponse_WithFilePart(t *testing.T) {
 	}
 }
 
+// TestSendResponse_PrefersMessageSummary verifies that when a2a.Message.Summary
+// is set, channel adapters use it instead of head-truncating the body — so a
+// 5K-char response with a one-sentence runtime summary delivers that summary,
+// not the first 500 chars of the body, to the channel.
+func TestSendResponse_PrefersMessageSummary(t *testing.T) {
+	var lastPostText string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/files.getUploadURLExternal":
+			w.Write([]byte(`{"ok":true,"upload_url":"` + "http://" + r.Host + `/upload","file_id":"F456"}`)) //nolint:errcheck
+		case "/upload":
+			w.WriteHeader(http.StatusOK)
+		case "/files.completeUploadExternal":
+			w.Write([]byte(`{"ok":true}`)) //nolint:errcheck
+		case "/chat.postMessage":
+			body, _ := io.ReadAll(r.Body)
+			var payload map[string]any
+			json.Unmarshal(body, &payload) //nolint:errcheck
+			lastPostText, _ = payload["text"].(string)
+			w.Write([]byte(`{"ok":true}`)) //nolint:errcheck
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := New()
+	p.botToken = "xoxb-test"
+	p.apiBase = srv.URL
+
+	event := &channels.ChannelEvent{WorkspaceID: "C123", MessageID: "1234.5"}
+
+	longBody := strings.Repeat("This is the full untruncated body text. ", 200) // ~8 KB
+	msg := &a2a.Message{
+		Role:    a2a.MessageRoleAgent,
+		Parts:   []a2a.Part{a2a.NewTextPart(longBody)},
+		Summary: "TL;DR: the build succeeded after upgrading Go.",
+	}
+
+	if err := p.SendResponse(event, msg); err != nil {
+		t.Fatalf("SendResponse: %v", err)
+	}
+
+	if !strings.Contains(lastPostText, "TL;DR: the build succeeded") {
+		t.Errorf("expected runtime Summary in post, got %q", lastPostText)
+	}
+	// First 200 chars of the body should NOT appear inline — only the Summary should.
+	if strings.Contains(lastPostText, "This is the full untruncated body text. This is the full") {
+		t.Errorf("body leaked into inline message; expected only Summary, got %q", lastPostText)
+	}
+}
+
+// TestSendResponse_FallsBackWhenNoSummary verifies that when Summary is empty,
+// channel adapters fall back to the existing head-truncation behavior (the
+// pre-Summary contract is preserved for callers that don't populate it).
+func TestSendResponse_FallsBackWhenNoSummary(t *testing.T) {
+	var lastPostText string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/files.getUploadURLExternal":
+			w.Write([]byte(`{"ok":true,"upload_url":"` + "http://" + r.Host + `/upload","file_id":"F456"}`)) //nolint:errcheck
+		case "/upload":
+			w.WriteHeader(http.StatusOK)
+		case "/files.completeUploadExternal":
+			w.Write([]byte(`{"ok":true}`)) //nolint:errcheck
+		case "/chat.postMessage":
+			body, _ := io.ReadAll(r.Body)
+			var payload map[string]any
+			json.Unmarshal(body, &payload) //nolint:errcheck
+			lastPostText, _ = payload["text"].(string)
+			w.Write([]byte(`{"ok":true}`)) //nolint:errcheck
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := New()
+	p.botToken = "xoxb-test"
+	p.apiBase = srv.URL
+
+	event := &channels.ChannelEvent{WorkspaceID: "C123", MessageID: "1234.5"}
+
+	longBody := "Lead sentence summary of the answer.\n\n" + strings.Repeat("Body filler. ", 500)
+	msg := &a2a.Message{
+		Role:  a2a.MessageRoleAgent,
+		Parts: []a2a.Part{a2a.NewTextPart(longBody)},
+	}
+
+	if err := p.SendResponse(event, msg); err != nil {
+		t.Fatalf("SendResponse: %v", err)
+	}
+
+	if !strings.Contains(lastPostText, "Lead sentence summary of the answer.") {
+		t.Errorf("expected head-truncated lead in post, got %q", lastPostText)
+	}
+}
+
 func TestDedupCache_FirstSeen(t *testing.T) {
 	p := New()
 	if p.isDuplicate("env-1") {

@@ -9,6 +9,8 @@ order: 1
 | Skill | Icon | Category | Description | Scripts |
 |-------|------|----------|-------------|---------|
 | `github` | 🐙 | developer | Clone repos, create issues/PRs, query GitHub API, and manage git workflows | `github-clone.sh`, `github-checkout.sh`, `github-commit.sh`, `github-push.sh`, `github-create-pr.sh`, `github-status.sh`, `github-list-prs.sh`, `github-get-user.sh`, `github-list-stargazers.sh`, `github-list-forks.sh`, `github-pr-author-profiles.sh`, `github-stargazer-profiles.sh` |
+| `linear` | 📋 | project-management | Read Linear issues, transition state, and post comments — the entry point for ticket-driven agent workflows | `linear-get-issue.sh`, `linear-search-issues.sh`, `linear-list-my-issues.sh`, `linear-get-workflow-states.sh`, `linear-update-issue-state.sh`, `linear-add-comment.sh` |
+| `code-plan` | 🗺️ | developer | Turn a task description and repository into a structured implementation plan (files to create/modify, tests, risks) | `code-plan-create.sh`, `code-plan-validate.sh` |
 | `code-agent` | 🤖 | developer | Autonomous code generation, modification, and project scaffolding | — (builtin tools) |
 | `weather` | 🌤️ | utilities | Get weather data for a location | — (binary-backed) |
 | `tavily-search` | 🔍 | research | Search the web using Tavily AI search API | `tavily-search.sh` |
@@ -261,3 +263,63 @@ This registers eight tools:
 The skill uses **denied tools** (`file_write`, `file_edit`, `file_patch`, `file_read`, `schedule_*`) to ensure the LLM uses the skill's own tool wrappers instead of raw builtins. All file operations are confined to the agent's working directory via `PathValidator`.
 
 Requires: `bash`, `jq`. Egress: `registry.npmjs.org`, `cdn.tailwindcss.com`, `pypi.org`, `files.pythonhosted.org`, `proxy.golang.org`, `sum.golang.org`, `storage.googleapis.com`, `repo.maven.apache.org`, `repo1.maven.org`.
+
+### Linear Skill
+
+The `linear` skill reads and updates Linear issues through the Linear GraphQL API. It is the **entry point for ticket-driven agent workflows** — convert `ENG-123` into a structured issue payload, transition workflow state, and post progress comments.
+
+```bash
+forge skills add linear
+```
+
+This registers six tools:
+
+| Tool | Purpose |
+|------|---------|
+| `linear_get_issue` | Fetch one issue by its human identifier (e.g. `ENG-123`) with title, description, state, assignee, labels, priority |
+| `linear_search_issues` | Filter issues across one team or all accessible teams — `team_id` accepts a UUID **or** a team key like `ENG`. All parameters optional; call with `{}` for "list everything" |
+| `linear_list_my_issues` | Issues assigned to the API key's owner (`viewer`). Defaults to states `started,unstarted` |
+| `linear_get_workflow_states` | Enumerate a team's workflow states. **Required before `linear_update_issue_state`** since state IDs are per-team UUIDs |
+| `linear_update_issue_state` | Transition an issue to a different workflow state (using a `state_id` from `linear_get_workflow_states`) |
+| `linear_add_comment` | Post a markdown comment to an issue (10 000 char cap) |
+
+**State transition pattern (hard rule):** the LLM must call `linear_get_workflow_states` first to discover a team's state IDs before calling `linear_update_issue_state`. State *names* like `"Todo"` and `"In Progress"` are not portable across teams.
+
+**Commenting etiquette:** post at most **one comment per agent action** — work started, PR opened, work complete. The skill is read/comment/transition only; it does not delete issues, comments, or projects.
+
+**Authentication:** raw API key in the `Authorization` header — **no `Bearer ` prefix** (Linear's API specifically rejects the `Bearer` form, this is the most common integration bug). `guardrails.deny_output` redacts any key that leaks back through an error payload.
+
+**Workflow integration:** typically used as `linear_get_issue` → [`code_plan_create`](#code-plan-skill) → present plan to user → `code_agent_*` / [`github_*`](#github-skill) → `linear_add_comment` with the PR URL.
+
+Requires: `curl`, `jq`. Env: `LINEAR_API_KEY` (required); `LINEAR_DEFAULT_TEAM_ID` (optional — accepts a UUID or a team key). Egress: `api.linear.app`.
+
+### Code Plan Skill
+
+The `code-plan` skill turns a free-form task description plus a repository on disk into a **structured implementation plan** — files to create, files to modify, tests to add, risks, complexity. Returns JSON only; execution happens in [`code-agent`](#code-agent-skill) / [`github`](#github-skill).
+
+```bash
+forge skills add code-plan
+```
+
+This registers two tools:
+
+| Tool | Purpose | LLM call? |
+|------|---------|-----------|
+| `code_plan_create` | Generate a plan from a task description and repo state. One LLM call. | Yes |
+| `code_plan_validate` | Filesystem-only audit of an existing plan: do `files_to_modify` exist? do `files_to_create` collide? Returns warnings for stale plans. | No — pure filesystem check |
+
+**Repo signal extraction:** `code_plan_create` automatically samples the repo so the LLM has enough context without the agent pre-reading files:
+
+1. Top 200 entries of `git ls-files` (or `find` fallback for non-git dirs)
+2. Manifest files: `go.mod`, `package.json`, `pyproject.toml`, `setup.py`, `requirements.txt`, `Cargo.toml`, `pom.xml`, `build.gradle*`
+3. First 4 KB of `README.md` if present
+
+Size-bounded at 256 KB by default (override via `PLAN_MAX_REPO_SIGNAL_BYTES`). If the repo is too large to fit, the tool returns `{"status": "repo_too_large", "tree_bytes", "limit_bytes", "suggestion"}` rather than truncating silently — pass `context_files` to scope the plan to relevant files, or call from a subdirectory.
+
+**Plan-then-execute discipline:** once a plan is generated, present its `summary` and `files_to_modify` / `files_to_create` lists to the user before writing code. Do not proceed if the plan returns `complexity: "high"` or non-empty `risks` without acknowledging them. The plan is a contract: subsequent code-writing tool calls should match the file lists. If the plan turns out to be wrong, regenerate it rather than silently drift from it.
+
+**Schema validation with retry:** after the LLM call, the script validates the response has all 9 required top-level keys (`summary`, `approach`, `files_to_create`, `files_to_modify`, `tests_to_add`, `risks`, `complexity`, `estimated_file_count`, `open_questions`). On failure → one retry with a schema-reminder follow-up. Still failing → `{"status": "error", "error": "llm output did not match plan schema", "raw": "..."}`.
+
+**Provider selection:** `ANTHROPIC_API_KEY` wins if set, else `OPENAI_API_KEY` (`one_of`). Defaults: Anthropic `claude-sonnet-4-5`, OpenAI `gpt-4.1`. Override via `PLAN_MODEL`.
+
+Requires: `curl`, `jq`, `git`. Env: `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` (one-of); `PLAN_MODEL`, `PLAN_MAX_REPO_SIGNAL_BYTES` (optional). Egress: `api.anthropic.com`, `api.openai.com`.

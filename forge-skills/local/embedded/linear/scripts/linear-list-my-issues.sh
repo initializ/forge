@@ -30,7 +30,7 @@ FILTER="$(jq -n --arg vid "$VIEWER_ID" --argjson states "$STATE_ARRAY" \
   '{assignee: {id: {eq: $vid}}, state: {type: {in: $states}}}')"
 
 GQL='query($filter: IssueFilter, $first: Int!) {
-  issues(filter: $filter, first: $first, orderBy: updatedAt) {
+  issues(filter: $filter, first: $first) {
     nodes {
       identifier
       title

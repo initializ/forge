@@ -16,12 +16,12 @@ func TestEmbeddedRegistry_DiscoverAll(t *testing.T) {
 		t.Fatalf("List error: %v", err)
 	}
 
-	if len(skills) != 14 {
+	if len(skills) != 15 {
 		names := make([]string, len(skills))
 		for i, s := range skills {
 			names[i] = s.Name
 		}
-		t.Fatalf("expected 14 skills, got %d: %v", len(skills), names)
+		t.Fatalf("expected 15 skills, got %d: %v", len(skills), names)
 	}
 
 	// Verify all expected skills are present
@@ -45,6 +45,7 @@ func TestEmbeddedRegistry_DiscoverAll(t *testing.T) {
 		"codegen-html":          {displayName: "Codegen Html", hasEnv: false, hasBins: true, hasEgress: true},
 		"k8s-pod-rightsizer":    {displayName: "K8s Pod Rightsizer", hasEnv: false, hasBins: true, hasEgress: false},
 		"k8s-cost-visibility":   {displayName: "K8s Cost Visibility", hasEnv: false, hasBins: true, hasEgress: true},
+		"linear":                {displayName: "Linear", hasEnv: true, hasBins: true, hasEgress: true},
 	}
 
 	for _, s := range skills {
@@ -194,6 +195,81 @@ func TestEmbeddedRegistry_TavilyResearchDetails(t *testing.T) {
 	// Check timeout hint
 	if s.TimeoutHint != 300 {
 		t.Errorf("TimeoutHint = %d, want 300", s.TimeoutHint)
+	}
+}
+
+func TestEmbeddedRegistry_LinearDetails(t *testing.T) {
+	reg, err := NewEmbeddedRegistry()
+	if err != nil {
+		t.Fatalf("NewEmbeddedRegistry error: %v", err)
+	}
+
+	s := reg.Get("linear")
+	if s == nil {
+		t.Fatal("Get(\"linear\") returned nil")
+	}
+	if s.Icon != "📋" {
+		t.Errorf("Icon = %q, want 📋", s.Icon)
+	}
+	if s.Category != "project-management" {
+		t.Errorf("Category = %q, want project-management", s.Category)
+	}
+	if len(s.RequiredEnv) != 1 || s.RequiredEnv[0] != "LINEAR_API_KEY" {
+		t.Errorf("RequiredEnv = %v, want [LINEAR_API_KEY]", s.RequiredEnv)
+	}
+	if len(s.RequiredBins) < 2 {
+		t.Errorf("RequiredBins = %v, want at least [curl, jq]", s.RequiredBins)
+	}
+
+	foundDomain := false
+	for _, d := range s.EgressDomains {
+		if d == "api.linear.app" {
+			foundDomain = true
+		}
+	}
+	if !foundDomain {
+		t.Errorf("EgressDomains = %v, want api.linear.app", s.EgressDomains)
+	}
+
+	// Linear is a multi-script skill — verify all 6 per-tool scripts + the
+	// sourced helper. (The helper is named common.sh, not _common.sh, because
+	// //go:embed excludes files starting with '_'.)
+	expectedScripts := []string{
+		"common.sh",
+		"linear-add-comment.sh",
+		"linear-get-issue.sh",
+		"linear-get-workflow-states.sh",
+		"linear-list-my-issues.sh",
+		"linear-search-issues.sh",
+		"linear-update-issue-state.sh",
+	}
+	gotScripts := reg.ListScripts("linear")
+	gotSet := make(map[string]bool, len(gotScripts))
+	for _, n := range gotScripts {
+		gotSet[n] = true
+	}
+	for _, want := range expectedScripts {
+		if !gotSet[want] {
+			t.Errorf("missing expected script %q (got: %v)", want, gotScripts)
+		}
+	}
+
+	// Verify the SKILL.md content references the canonical tool names.
+	content, err := reg.LoadContent("linear")
+	if err != nil {
+		t.Fatalf("LoadContent error: %v", err)
+	}
+	for _, tool := range []string{
+		"linear_get_issue",
+		"linear_search_issues",
+		"linear_list_my_issues",
+		"linear_get_workflow_states",
+		"linear_update_issue_state",
+		"linear_add_comment",
+	} {
+		if !strings.Contains(string(content), "## Tool: "+tool) {
+			t.Errorf("SKILL.md missing '## Tool: %s' heading", tool)
+		}
 	}
 }
 

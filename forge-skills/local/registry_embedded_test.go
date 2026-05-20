@@ -16,12 +16,12 @@ func TestEmbeddedRegistry_DiscoverAll(t *testing.T) {
 		t.Fatalf("List error: %v", err)
 	}
 
-	if len(skills) != 13 {
+	if len(skills) != 14 {
 		names := make([]string, len(skills))
 		for i, s := range skills {
 			names[i] = s.Name
 		}
-		t.Fatalf("expected 13 skills, got %d: %v", len(skills), names)
+		t.Fatalf("expected 14 skills, got %d: %v", len(skills), names)
 	}
 
 	// Verify all expected skills are present
@@ -32,6 +32,7 @@ func TestEmbeddedRegistry_DiscoverAll(t *testing.T) {
 		hasEgress   bool
 	}{
 		"code-agent":            {displayName: "Code Agent", hasEnv: false, hasBins: false, hasEgress: false},
+		"code-plan":             {displayName: "Code Plan", hasEnv: false, hasBins: true, hasEgress: true},
 		"github":                {displayName: "Github", hasEnv: false, hasBins: true, hasEgress: true},
 		"weather":               {displayName: "Weather", hasEnv: false, hasBins: true, hasEgress: true},
 		"tavily-search":         {displayName: "Tavily Search", hasEnv: true, hasBins: true, hasEgress: true},
@@ -193,6 +194,75 @@ func TestEmbeddedRegistry_TavilyResearchDetails(t *testing.T) {
 	// Check timeout hint
 	if s.TimeoutHint != 300 {
 		t.Errorf("TimeoutHint = %d, want 300", s.TimeoutHint)
+	}
+}
+
+func TestEmbeddedRegistry_CodePlanDetails(t *testing.T) {
+	reg, err := NewEmbeddedRegistry()
+	if err != nil {
+		t.Fatalf("NewEmbeddedRegistry error: %v", err)
+	}
+
+	s := reg.Get("code-plan")
+	if s == nil {
+		t.Fatal("Get(\"code-plan\") returned nil")
+	}
+	if s.Icon != "🗺️" {
+		t.Errorf("Icon = %q, want 🗺️", s.Icon)
+	}
+	if s.Category != "developer" {
+		t.Errorf("Category = %q, want developer", s.Category)
+	}
+	if len(s.OneOfEnv) != 2 {
+		t.Errorf("OneOfEnv = %v, want [ANTHROPIC_API_KEY OPENAI_API_KEY]", s.OneOfEnv)
+	}
+	if len(s.RequiredBins) < 3 {
+		t.Errorf("RequiredBins = %v, want at least [curl, jq, git]", s.RequiredBins)
+	}
+	if s.TimeoutHint != 180 {
+		t.Errorf("TimeoutHint = %d, want 180", s.TimeoutHint)
+	}
+
+	foundAnthropic := false
+	foundOpenAI := false
+	for _, d := range s.EgressDomains {
+		switch d {
+		case "api.anthropic.com":
+			foundAnthropic = true
+		case "api.openai.com":
+			foundOpenAI = true
+		}
+	}
+	if !foundAnthropic || !foundOpenAI {
+		t.Errorf("EgressDomains = %v, want api.anthropic.com AND api.openai.com", s.EgressDomains)
+	}
+
+	// Multi-script skill — verify both per-tool scripts + the sourced helper.
+	expectedScripts := []string{
+		"common.sh",
+		"code-plan-create.sh",
+		"code-plan-validate.sh",
+	}
+	gotScripts := reg.ListScripts("code-plan")
+	gotSet := make(map[string]bool, len(gotScripts))
+	for _, n := range gotScripts {
+		gotSet[n] = true
+	}
+	for _, want := range expectedScripts {
+		if !gotSet[want] {
+			t.Errorf("missing expected script %q (got: %v)", want, gotScripts)
+		}
+	}
+
+	// Verify the SKILL.md content references the canonical tool names.
+	content, err := reg.LoadContent("code-plan")
+	if err != nil {
+		t.Fatalf("LoadContent error: %v", err)
+	}
+	for _, tool := range []string{"code_plan_create", "code_plan_validate"} {
+		if !strings.Contains(string(content), "## Tool: "+tool) {
+			t.Errorf("SKILL.md missing '## Tool: %s' heading", tool)
+		}
 	}
 }
 

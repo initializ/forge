@@ -45,10 +45,11 @@ linear_graphql() {
     --max-time 30 \
     -d "$body" \
     "$LINEAR_API_URL")" || linear_die "network error calling Linear API"
-  # Surface GraphQL errors clearly.
+  # Surface GraphQL errors clearly — include message + path + extensions so
+  # validation failures point at the offending argument.
   if echo "$resp" | jq -e '.errors' >/dev/null 2>&1; then
     local err
-    err="$(echo "$resp" | jq -r '.errors[0].message')"
+    err="$(echo "$resp" | jq -c '.errors[0] | {message, path, extensions}' 2>/dev/null)"
     linear_die "linear api error: $err"
   fi
   echo "$resp" | jq '.data'

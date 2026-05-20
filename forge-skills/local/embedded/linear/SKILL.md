@@ -102,18 +102,27 @@ Fetch a Linear issue by its human identifier.
 
 ## Tool: linear_search_issues
 
-Filter issues across one team (or across all teams if no team is given and no default is configured).
+Filter issues across one team — or across **all teams** the API key can see, if no team is supplied. **All parameters are optional.** Call this tool with `{}` when the user asks something broad like "list open issues" or "what's in the backlog" — do not ask for a team_id first; the result will include the team key in each issue's identifier (e.g. `ENG-12` vs `OPS-7`) and the user can drill down from there.
 
 **Input:**
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| team_id | string | no | Linear team UUID. Defaults to `$LINEAR_DEFAULT_TEAM_ID` when set. |
+| team_id | string | no | Linear team UUID **or** team key like `ENG`. Auto-detects which form. Defaults to `$LINEAR_DEFAULT_TEAM_ID` when set. |
 | state | string | no | Workflow state type (`unstarted`, `started`, `completed`, `canceled`, `triage`, `backlog`). |
 | assignee_email | string | no | Filter by assignee email. |
 | label | string | no | Filter by label name. |
 | query | string | no | Free-text search over title and description. |
 | limit | integer | no | Max results (default 20, capped at 100). |
+
+**Examples — call the tool directly, do not ask the user for an ID:**
+
+| User says | Tool input |
+| --- | --- |
+| "list open issues" / "what's in the backlog" | `{}` |
+| "show me INI tickets" | `{"team_id": "INI"}` (team key works) |
+| "open bugs in ENG" | `{"team_id": "ENG", "state": "unstarted", "label": "bug"}` |
+| "what's @alice working on?" | `{"assignee_email": "alice@example.com", "state": "started"}` |
 
 **Output:**
 

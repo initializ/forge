@@ -29,9 +29,16 @@ elif ! [ "$LIMIT" -gt 0 ] 2>/dev/null; then
 fi
 
 # Build the filter object incrementally.
+# Linear's TeamFilter accepts either an `id` (UUID) or a `key` (short team
+# prefix like "ENG"). Auto-detect which form was supplied so the same
+# parameter works whether the caller passes a UUID or a team key.
 FILTER='{}'
 if [ -n "$TEAM_ID" ]; then
-  FILTER="$(echo "$FILTER" | jq --arg id "$TEAM_ID" '. + {team: {id: {eq: $id}}}')"
+  if [[ "$TEAM_ID" =~ ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$ ]]; then
+    FILTER="$(echo "$FILTER" | jq --arg id "$TEAM_ID" '. + {team: {id: {eq: $id}}}')"
+  else
+    FILTER="$(echo "$FILTER" | jq --arg key "$TEAM_ID" '. + {team: {key: {eq: $key}}}')"
+  fi
 fi
 if [ -n "$STATE" ]; then
   FILTER="$(echo "$FILTER" | jq --arg t "$STATE" '. + {state: {type: {eq: $t}}}')"
@@ -46,19 +53,39 @@ if [ -n "$QUERY_TEXT" ]; then
   FILTER="$(echo "$FILTER" | jq --arg q "$QUERY_TEXT" '. + {searchableContent: {contains: $q}}')"
 fi
 
-GQL='query($filter: IssueFilter, $first: Int!) {
-  issues(filter: $filter, first: $first, orderBy: updatedAt) {
-    nodes {
-      identifier
-      title
-      url
-      state { name type }
-      assignee { email }
+# If the filter object has zero fields, omit it from variables so Linear
+# treats the argument as "unset" rather than "an empty filter input".
+# `orderBy` is dropped — Linear's default ordering is fine and the bare
+# enum form was the leading suspect for the schema-validation rejection.
+HAS_FILTER="$(echo "$FILTER" | jq 'length > 0')"
+if [ "$HAS_FILTER" = "true" ]; then
+  GQL='query($filter: IssueFilter, $first: Int!) {
+    issues(filter: $filter, first: $first) {
+      nodes {
+        identifier
+        title
+        url
+        state { name type }
+        assignee { email }
+      }
     }
-  }
-}'
+  }'
+  VARS="$(jq -n --argjson f "$FILTER" --argjson n "$LIMIT" '{filter: $f, first: $n}')"
+else
+  GQL='query($first: Int!) {
+    issues(first: $first) {
+      nodes {
+        identifier
+        title
+        url
+        state { name type }
+        assignee { email }
+      }
+    }
+  }'
+  VARS="$(jq -n --argjson n "$LIMIT" '{first: $n}')"
+fi
 
-VARS="$(jq -n --argjson f "$FILTER" --argjson n "$LIMIT" '{filter: $f, first: $n}')"
 DATA="$(linear_graphql "$GQL" "$VARS")"
 
 echo "$DATA" | jq '{

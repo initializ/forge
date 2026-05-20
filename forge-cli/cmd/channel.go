@@ -13,6 +13,7 @@ import (
 	"github.com/initializ/forge/forge-cli/templates"
 	"github.com/initializ/forge/forge-core/auth"
 	corechannels "github.com/initializ/forge/forge-core/channels"
+	"github.com/initializ/forge/forge-plugins/channels/msteams"
 	"github.com/initializ/forge/forge-plugins/channels/slack"
 	"github.com/initializ/forge/forge-plugins/channels/telegram"
 	"github.com/spf13/cobra"
@@ -22,22 +23,22 @@ import (
 var channelCmd = &cobra.Command{
 	Use:   "channel",
 	Short: "Manage agent communication channels",
-	Long:  "Add and serve channel adapters (Slack, Telegram) for your agent.",
+	Long:  "Add and serve channel adapters (Slack, Telegram, MS Teams) for your agent.",
 }
 
 var channelAddCmd = &cobra.Command{
-	Use:       "add <slack|telegram>",
+	Use:       "add <slack|telegram|msteams>",
 	Short:     "Add a channel adapter to the project",
 	Args:      cobra.ExactArgs(1),
-	ValidArgs: []string{"slack", "telegram"},
+	ValidArgs: []string{"slack", "telegram", "msteams"},
 	RunE:      runChannelAdd,
 }
 
 var channelServeCmd = &cobra.Command{
-	Use:       "serve <slack|telegram>",
+	Use:       "serve <slack|telegram|msteams>",
 	Short:     "Run a standalone channel adapter (for container use)",
 	Args:      cobra.ExactArgs(1),
-	ValidArgs: []string{"slack", "telegram"},
+	ValidArgs: []string{"slack", "telegram", "msteams"},
 	RunE:      runChannelServe,
 }
 
@@ -48,8 +49,8 @@ func init() {
 
 func runChannelAdd(cmd *cobra.Command, args []string) error {
 	adapter := args[0]
-	if adapter != "slack" && adapter != "telegram" {
-		return fmt.Errorf("unsupported adapter: %s (supported: slack, telegram)", adapter)
+	if adapter != "slack" && adapter != "telegram" && adapter != "msteams" {
+		return fmt.Errorf("unsupported adapter: %s (supported: slack, telegram, msteams)", adapter)
 	}
 
 	wd, err := os.Getwd()
@@ -101,8 +102,8 @@ func runChannelAdd(cmd *cobra.Command, args []string) error {
 
 func runChannelServe(cmd *cobra.Command, args []string) error {
 	adapter := args[0]
-	if adapter != "slack" && adapter != "telegram" {
-		return fmt.Errorf("unsupported adapter: %s (supported: slack, telegram)", adapter)
+	if adapter != "slack" && adapter != "telegram" && adapter != "msteams" {
+		return fmt.Errorf("unsupported adapter: %s (supported: slack, telegram, msteams)", adapter)
 	}
 
 	// Load channel config
@@ -164,6 +165,8 @@ func createPlugin(name string) corechannels.ChannelPlugin {
 		return slack.New()
 	case "telegram":
 		return telegram.New()
+	case "msteams":
+		return msteams.New()
 	default:
 		return nil
 	}
@@ -174,6 +177,7 @@ func defaultRegistry() *corechannels.Registry {
 	r := corechannels.NewRegistry()
 	r.Register(slack.New())
 	r.Register(telegram.New())
+	r.Register(msteams.New())
 	return r
 }
 
@@ -312,6 +316,32 @@ func addChannelEgressToForgeYAML(path, adapter string) error {
 			domainsAny[i] = s
 		}
 		egressMap["allowed_domains"] = domainsAny
+
+	case "msteams":
+		// Add "msteams" to egress.capabilities (same pattern as slack).
+		// The capability resolves to graph.microsoft.com + login.microsoftonline.com
+		// via DefaultCapabilityBundles in forge-core/security/capabilities.go.
+		var caps []string
+		if existing, ok := egressMap["capabilities"]; ok {
+			if arr, ok := existing.([]any); ok {
+				for _, v := range arr {
+					if s, ok := v.(string); ok {
+						caps = append(caps, s)
+					}
+				}
+			}
+		}
+		for _, c := range caps {
+			if c == "msteams" {
+				return nil // already present
+			}
+		}
+		caps = append(caps, "msteams")
+		capsAny := make([]any, len(caps))
+		for i, s := range caps {
+			capsAny[i] = s
+		}
+		egressMap["capabilities"] = capsAny
 	}
 
 	doc["egress"] = egressMap
@@ -348,6 +378,20 @@ func printSetupInstructions(adapter string) {
 		fmt.Println("  For webhook mode (requires public URL):")
 		fmt.Println("    Set mode: webhook in telegram-config.yaml")
 		fmt.Println("    Set your webhook URL via Telegram Bot API")
+	case "msteams":
+		fmt.Println("Microsoft Teams setup instructions:")
+		fmt.Println("  1. Register an Entra ID app at https://entra.microsoft.com")
+		fmt.Println("  2. Add delegated API permissions: Chat.Read, Chat.ReadWrite, User.Read")
+		fmt.Println("  3. (Optional) Grant admin consent if your tenant requires it")
+		fmt.Println("  4. Create a client secret under \"Certificates & secrets\"")
+		fmt.Println("  5. Capture a refresh token via the device-code flow — see")
+		fmt.Println("     docs/channels/msteams.md for the exact curl invocation")
+		fmt.Println("  6. Fill MSTEAMS_TENANT_ID, MSTEAMS_CLIENT_ID, MSTEAMS_CLIENT_SECRET,")
+		fmt.Println("     and MSTEAMS_REFRESH_TOKEN in .env")
+		fmt.Println("  7. Run: forge run --with msteams")
+		fmt.Println()
+		fmt.Println("  This adapter is outbound-only — no public endpoint required.")
+		fmt.Println("  Default poll cadence is 5s (configurable in msteams-config.yaml).")
 	}
 	fmt.Println()
 	fmt.Println(strings.Repeat("─", 40))

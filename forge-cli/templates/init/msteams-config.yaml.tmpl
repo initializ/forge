@@ -1,0 +1,39 @@
+adapter: msteams
+
+settings:
+  # Entra ID app registration (https://entra.microsoft.com)
+  tenant_id_env: MSTEAMS_TENANT_ID
+  client_id_env: MSTEAMS_CLIENT_ID
+  client_secret_env: MSTEAMS_CLIENT_SECRET
+
+  # Auth flow: "delegated" (recommended) or "client_credentials".
+  # delegated uses a refresh token captured via the device-code flow at setup.
+  # client_credentials requires admin consent + RSC permissions on chats.
+  auth_flow: delegated
+
+  # Delegated flow only — refresh token captured during interactive setup.
+  refresh_token_env: MSTEAMS_REFRESH_TOKEN
+
+  # The agent user's objectId. For delegated flow this is auto-resolved via
+  # /me at startup; for client_credentials it MUST be set explicitly.
+  user_id_env: MSTEAMS_USER_ID
+
+  # Sovereign clouds: override the Graph base URL.
+  # US Gov:  https://graph.microsoft.us
+  # China:   https://microsoftgraph.chinacloudapi.cn
+  # graph_base_url_env: MSTEAMS_GRAPH_BASE_URL
+
+  # Polling cadence in seconds. Floor 3, default 5, ceiling 60.
+  poll_interval_seconds: 5
+
+  # Admission policy: which message types reach the agent.
+  # - "mention": only messages where the agent user is @-mentioned
+  # - "dm": only 1:1 chat messages
+  # - "mention_or_dm" (default, recommended): either
+  admit: mention_or_dm
+
+  # Allowed bot user IDs (Application.ID values from Graph from.application).
+  # Default behaviour: drop all messages where from.application is non-nil.
+  # Add entries here to admit specific bots (CI bot, scheduler, etc.).
+  # Comma- or whitespace-separated.
+  allow_bot_ids: ""

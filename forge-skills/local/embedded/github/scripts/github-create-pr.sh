@@ -21,6 +21,8 @@ TITLE=$(printf '%s' "$INPUT" | jq -r '.title // empty')
 BODY=$(printf '%s' "$INPUT" | jq -r '.body // empty')
 HEAD=$(printf '%s' "$INPUT" | jq -r '.head // empty')
 BASE=$(printf '%s' "$INPUT" | jq -r '.base // empty')
+TICKET_ID=$(printf '%s' "$INPUT" | jq -r '.ticket_id // empty')
+TICKET_URL=$(printf '%s' "$INPUT" | jq -r '.ticket_url // empty')
 
 if [ -z "$REPO" ]; then
   echo '{"error": "repo is required"}' >&2
@@ -50,6 +52,29 @@ fi
 # Default base branch to main
 if [ -z "$BASE" ]; then
   BASE="main"
+fi
+
+# --- Apply ticket-driven conventions ---
+# When ticket_id is provided, suffix the title with [<ticket_id>] if not
+# already present, and append a "Tracks:" back-link footer to the body.
+# This lets callers pass an unmodified title/body and have the skill
+# enforce the convention uniformly.
+if [ -n "$TICKET_ID" ]; then
+  case "$TITLE" in
+    *"[$TICKET_ID]"*) ;;
+    *) TITLE="$TITLE [$TICKET_ID]" ;;
+  esac
+  if [ -n "$TICKET_URL" ]; then
+    BODY="$BODY
+
+---
+Tracks: [$TICKET_ID]($TICKET_URL)"
+  else
+    BODY="$BODY
+
+---
+Tracks: $TICKET_ID"
+  fi
 fi
 
 # --- Create PR via gh CLI ---

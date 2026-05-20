@@ -11,6 +11,8 @@ tags:
   - stargazers
   - forks
   - users
+  - ticket-driven
+  - linear-compatible
 description: Create issues, PRs, clone repos, and manage git workflows
 metadata:
   forge:
@@ -55,8 +57,17 @@ The `repo` parameter accepts any of these formats:
 - ALL tools that accept `project_dir` (github tools, code-agent tools) accept BOTH `openclaw` and `workspace/openclaw` — the `workspace/` prefix is stripped automatically.
 - For `directory_tree`, `grep_search`, `glob_search` use `workspace/<project_dir>` as the `path` (e.g. `workspace/openclaw`).
 
-**You MUST complete the entire workflow — do NOT stop after exploring.**
-When asked to fix a bug or make changes, you must: explore → understand → edit → commit → push → create PR. Do NOT stop after step 2 to report findings. Complete ALL steps in ONE session. Only stop early if you genuinely cannot determine what to change.
+**Workflow completion rule:**
+
+When asked to fix a bug or make changes, you must drive the full sequence: explore → understand → edit → commit → push → create PR. Do NOT stop after exploration to report findings. Complete the full sequence in one session.
+
+**Exceptions where pausing is correct:**
+
+- **Ticket-driven mode**: if the task originated from a `linear_get_issue` call (or any external ticket) and the ticket leaves a material question unanswered, post a `linear_add_comment` (or the equivalent for your tracker) asking the question, then stop and wait. Do NOT guess on irreversible decisions like API contract shape, data model changes, or user-facing copy.
+- **Code planning**: if `code_plan_create` returns `complexity: "high"` or non-empty `risks`, present the plan to the user and confirm before writing code.
+- **Genuine ambiguity**: if you cannot determine what to change even after thorough exploration, stop and ask. Do not invent a change.
+
+Outside these exceptions, complete all steps in one session.
 
 **Exploration strategy — bug fixes:**
 1. `directory_tree` to understand project structure.
@@ -86,6 +97,28 @@ When asked to fix a bug or make changes, you must: explore → understand → ed
 - `github_clone` automatically creates a feature branch after cloning.
 - `github_commit`, `github_push`, and `github_checkout` refuse to operate on main/master.
 - Always use `github_status` before committing to review what changed.
+
+**When working from a ticket**, prefer to:
+1. Call `github_branch_name_from_ticket` first with the ticket ID and title.
+2. Pass the resulting `branch` to `github_clone` via its `branch` parameter.
+
+This produces consistent naming across runs. Do not invent branch names like `claude/fix-thing` or `agent-branch-1`.
+
+**Ticket-driven PR conventions:**
+
+When the work originates from a Linear ticket or GitHub issue:
+
+1. Use `github_branch_name_from_ticket` to generate a conventional branch name from the identifier and title. Do not invent your own naming scheme.
+2. Pass `ticket_id` (and `ticket_url` if available) to `github_create_pr`. The skill builds the PR body with a back-link automatically.
+3. The PR title format is: `<type>(<scope>): <short description> [<ticket-id>]` — examples below.
+4. After `github_create_pr` returns the PR URL, post a comment back on the originating ticket with the PR URL using the appropriate tracker skill. Do NOT post the PR URL into the PR itself as a comment.
+
+Title examples:
+- `feat(billing): add invoice creation endpoint [ENG-123]`
+- `fix(auth): reject empty refresh tokens [ENG-456]`
+- `chore(deps): bump go to 1.25.3 [INFRA-7]`
+
+If no clear conventional-commit type applies, use `chore`. Never invent a type like `wip` or `tmp`.
 
 **Pagination:**
 For tools that return lists (`github_list_prs`, `github_list_stargazers`, `github_list_forks`, `github_pr_author_profiles`, `github_stargazer_profiles`), use `page` (1-based) and `per_page` (default 30, max 100) parameters. The response includes a `pagination` object with `has_next_page` — if true, increment `page` to fetch the next batch.
@@ -125,6 +158,13 @@ Switch to or create a branch. Refuses to switch to main/master.
 **Input:** project_dir (string), branch (string: target branch name), create (boolean, optional: create new branch — default false)
 **Output:** `{status, branch}`
 
+## Tool: github_branch_name_from_ticket
+
+Generate a conventional branch name from a ticket identifier and title. Use this instead of inventing branch names manually — it ensures consistency across agents and humans. No network call.
+
+**Input:** ticket_id (string), title (string), prefix (string, optional: `feat`/`fix`/`chore`/`docs`/`refactor`, default `feat`)
+**Output:** `{branch: "feat/eng-123-add-invoice-creation-endpoint"}`
+
 ## Tool: github_create_issue
 
 Create a GitHub issue.
@@ -141,9 +181,20 @@ List open issues for a repository.
 
 ## Tool: github_create_pr
 
-Create a pull request.
+Create a pull request. When `ticket_id` is supplied, the title is auto-suffixed with `[<ticket_id>]` (if not already present) and a `Tracks:` back-link footer is appended to the body — the LLM does not need to format the back-link manually.
 
-**Input:** repo (string), title (string), body (string), head (string), base (string)
+**Input:**
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| repo | string | yes | `owner/repo`, SSH URL, or HTTPS URL |
+| title | string | yes | PR title |
+| body | string | yes | PR body (markdown) |
+| head | string | yes | Source branch |
+| base | string | no | Target branch. Default `main`. |
+| ticket_id | string | no | External ticket identifier (e.g. `ENG-123`). Appended to title and PR body if not already present. |
+| ticket_url | string | no | Full URL to the ticket. When provided alongside `ticket_id`, added as a back-link in the PR body as `Tracks: [<ticket_id>](<ticket_url>)`. |
+
 **Output:** Pull request URL
 
 ## Tool: github_list_prs

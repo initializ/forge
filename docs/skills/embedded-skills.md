@@ -212,16 +212,17 @@ The `github` skill provides a complete git + GitHub workflow through script-back
 forge skills add github
 ```
 
-This registers fourteen tools:
+This registers fifteen tools:
 
 | Tool | Purpose |
 |------|---------|
 | `github_clone` | Clone a repository and create a feature branch |
 | `github_checkout` | Switch to or create a branch |
+| `github_branch_name_from_ticket` | Generate a conventional branch name from a ticket ID + title (e.g. `ENG-123` + title → `feat/eng-123-add-invoice-creation-endpoint`). No network call — pure string transform. |
 | `github_status` | Show git status for a cloned project |
 | `github_commit` | Stage and commit changes |
 | `github_push` | Push a feature branch to the remote |
-| `github_create_pr` | Create a pull request |
+| `github_create_pr` | Create a pull request. Optional `ticket_id` / `ticket_url` parameters auto-suffix the title with `[<ticket_id>]` and append a `Tracks:` back-link footer to the body. |
 | `github_create_issue` | Create a GitHub issue |
 | `github_list_issues` | List open issues for a repository |
 | `github_list_prs` | List pull requests with state filter and pagination |
@@ -232,6 +233,21 @@ This registers fourteen tools:
 | `github_stargazer_profiles` | List stargazers and fetch their full profiles (compound 2-step) |
 
 **Workflow:** Clone → explore → edit → status → commit → push → create PR. The skill's system prompt enforces this sequence and prevents raw `git` commands via `cli_execute`.
+
+**Workflow-completion rule:** the skill normally requires driving the full sequence in one session without stopping after exploration. Three exceptions allow pausing:
+
+- **Ticket-driven mode** — if the task originated from a `linear_get_issue` call (or any external ticket) and the ticket leaves a material question unanswered, post a `linear_add_comment` asking the question, then stop and wait. Do not guess on irreversible decisions like API contract shape or data-model changes.
+- **Code planning** — if `code_plan_create` returns `complexity: "high"` or non-empty `risks`, present the plan to the user and confirm before writing code.
+- **Genuine ambiguity** — if you cannot determine what to change even after thorough exploration, stop and ask. Do not invent a change.
+
+**Ticket-driven PR conventions:** when the work originates from a Linear ticket or GitHub issue:
+
+1. Call `github_branch_name_from_ticket` first to generate a conventional branch name. Do not invent your own scheme like `claude/fix-thing`.
+2. Pass `ticket_id` (and `ticket_url` if available) to `github_create_pr` — the skill builds the back-link footer automatically.
+3. PR title format: `<type>(<scope>): <short description> [<ticket-id>]`. Examples: `feat(billing): add invoice creation endpoint [ENG-123]`, `fix(auth): reject empty refresh tokens [ENG-456]`, `chore(deps): bump go to 1.25.3 [INFRA-7]`.
+4. After `github_create_pr` returns the PR URL, post a single comment back on the originating ticket using the tracker's skill (e.g. `linear_add_comment`). Do **not** post the PR URL into the PR itself.
+
+`github_branch_name_from_ticket` accepts a `prefix` (default `feat`; allow-list `feat`/`fix`/`chore`/`docs`/`refactor`), lowercases the ticket ID, slugifies the title (lowercase, non-alnum → `-`, strip leading/trailing `-`), and truncates to 60 chars cutting at the last hyphen boundary so no half-word is emitted.
 
 **Pagination:** List tools (`github_list_prs`, `github_list_stargazers`, `github_list_forks`, `github_pr_author_profiles`, `github_stargazer_profiles`) support `page` (1-based) and `per_page` (default 30, max 100) parameters. Responses include `pagination.has_next_page` to indicate more results are available.
 

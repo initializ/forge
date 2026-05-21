@@ -334,14 +334,15 @@ func (s *ChannelStep) View(width int) string {
 		)
 		return ins + s.keyInput.View(width)
 	case channelMsteamsRefreshTokenPhase:
-		ins := fmt.Sprintf("  %s\n  %s\n  %s\n  %s\n  %s\n  %s\n  %s\n\n",
+		ins := fmt.Sprintf("  %s\n  %s\n  %s\n  %s\n  %s\n  %s\n  %s\n  %s\n\n",
 			s.styles.SecondaryTxt.Render("MS Teams Setup (Step 4/4 — Refresh Token):"),
-			s.styles.DimTxt.Render("Capture a refresh token via the device-code flow:"),
-			s.styles.DimTxt.Render("  curl -X POST \"https://login.microsoftonline.com/$TENANT/oauth2/v2.0/devicecode\" \\"),
-			s.styles.DimTxt.Render("    -d \"client_id=$CLIENT_ID\" \\"),
-			s.styles.DimTxt.Render("    -d \"scope=https://graph.microsoft.com/.default offline_access\""),
-			s.styles.DimTxt.Render("Visit verification_uri, enter user_code, then exchange device_code"),
-			s.styles.DimTxt.Render("at /token (grant_type=device_code) to receive a refresh_token."),
+			s.styles.DimTxt.Render("In a second terminal, from this project root, run:"),
+			s.styles.AccentTxt.Render("    forge channel msteams-login"),
+			s.styles.DimTxt.Render("That command will print a URL + one-time code, wait for you"),
+			s.styles.DimTxt.Render("to approve in your browser, then poll Microsoft and print the"),
+			s.styles.DimTxt.Render("refresh token to stdout. Paste it below."),
+			s.styles.DimTxt.Render("(Or run with --write-env to skip the paste and have it written"),
+			s.styles.DimTxt.Render("directly to .env, then leave this field blank and continue.)"),
 		)
 		return ins + s.keyInput.View(width)
 	}

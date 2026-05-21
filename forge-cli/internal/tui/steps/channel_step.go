@@ -1,10 +1,14 @@
 package steps
 
 import (
+	"context"
 	"fmt"
+	"net/http"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/initializ/forge/forge-cli/internal/devicecode"
 	"github.com/initializ/forge/forge-cli/internal/tui"
 	"github.com/initializ/forge/forge-cli/internal/tui/components"
 )
@@ -17,9 +21,29 @@ const (
 	channelSlackBotTokenPhase
 	channelMsteamsClientIDPhase
 	channelMsteamsClientSecretPhase
-	channelMsteamsRefreshTokenPhase
+	channelMsteamsDeviceLoginPhase
 	channelDonePhase
 )
+
+// msteams device-login sub-states inside channelMsteamsDeviceLoginPhase.
+type msteamsLoginStatus int
+
+const (
+	msteamsLoginRequesting msteamsLoginStatus = iota // POST /devicecode in flight
+	msteamsLoginWaiting                              // showing URL + code, polling /token
+	msteamsLoginErr                                  // last attempt failed; show retry/skip
+)
+
+// Tea messages produced by the device-code goroutines. They flow through the
+// wizard's main loop and are routed back to ChannelStep.Update.
+type msteamsDeviceCodeReadyMsg struct {
+	dc  *devicecode.DeviceCodeResponse
+	err error
+}
+type msteamsRefreshTokenReadyMsg struct {
+	token string
+	err   error
+}
 
 // ChannelStep handles channel connector selection.
 type ChannelStep struct {
@@ -28,8 +52,14 @@ type ChannelStep struct {
 	selector components.SingleSelect
 	keyInput components.SecretInput
 	complete bool
-	channel  string
-	tokens   map[string]string
+
+	// msteams device-login state. Populated when the user reaches the
+	// device-login phase via steps 1-3 (tenant / client / secret).
+	loginStatus msteamsLoginStatus
+	loginDevice *devicecode.DeviceCodeResponse
+	loginErr    string
+	channel     string
+	tokens      map[string]string
 }
 
 // NewChannelStep creates a new channel step.
@@ -90,10 +120,12 @@ func (s *ChannelStep) Update(msg tea.Msg) (tui.Step, tea.Cmd) {
 		return s.updateMsteamsPhase(msg, "MSTEAMS_CLIENT_ID",
 			"MS Teams Client Secret (from Entra app)", channelMsteamsClientSecretPhase)
 	case channelMsteamsClientSecretPhase:
-		return s.updateMsteamsPhase(msg, "MSTEAMS_CLIENT_SECRET",
-			"MS Teams Refresh Token (from device-code flow)", channelMsteamsRefreshTokenPhase)
-	case channelMsteamsRefreshTokenPhase:
-		return s.updateMsteamsPhase(msg, "MSTEAMS_REFRESH_TOKEN", "", channelDonePhase)
+		// Last secret-input step. After capturing client_secret, transition
+		// into the inline device-login phase which runs the OAuth flow
+		// itself instead of asking the operator to paste a refresh token.
+		return s.updateMsteamsClientSecretPhase(msg)
+	case channelMsteamsDeviceLoginPhase:
+		return s.updateMsteamsDeviceLoginPhase(msg)
 	}
 
 	return s, nil
@@ -231,10 +263,11 @@ func (s *ChannelStep) updateTokenPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
 	return s, cmd
 }
 
-// updateMsteamsPhase is the shared advance logic for the msteams token chain.
-// Each phase stores the just-collected value under storeKey, and either
-// transitions to the next phase (with the prompt nextPrompt) or marks the step
-// complete when nextPhase == channelDonePhase.
+// updateMsteamsPhase is the shared advance logic for the intermediate msteams
+// secret-input chain (tenant_id → client_id → client_secret). On Done, stores
+// the just-collected value under storeKey and moves to nextPhase with the
+// prompt nextPrompt. Only valid for the three intermediate phases — the
+// terminal device-login phase uses updateMsteamsDeviceLoginPhase instead.
 func (s *ChannelStep) updateMsteamsPhase(msg tea.Msg, storeKey, nextPrompt string, nextPhase channelPhase) (tui.Step, tea.Cmd) {
 	updated, cmd := s.keyInput.Update(msg)
 	s.keyInput = updated
@@ -247,14 +280,122 @@ func (s *ChannelStep) updateMsteamsPhase(msg tea.Msg, storeKey, nextPrompt strin
 		s.tokens[storeKey] = val
 	}
 
-	if nextPhase == channelDonePhase {
-		s.complete = true
-		return s, func() tea.Msg { return tui.StepCompleteMsg{} }
-	}
-
 	s.phase = nextPhase
 	s.keyInput = s.newMsteamsInput(nextPrompt)
 	return s, s.keyInput.Init()
+}
+
+// updateMsteamsClientSecretPhase captures MSTEAMS_CLIENT_SECRET and then
+// transitions into the inline device-login phase. Unlike the earlier secret
+// inputs, this one does NOT show another text-input prompt afterward —
+// instead it kicks off the OAuth device-code flow directly.
+func (s *ChannelStep) updateMsteamsClientSecretPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
+	updated, cmd := s.keyInput.Update(msg)
+	s.keyInput = updated
+
+	if !s.keyInput.Done() {
+		return s, cmd
+	}
+
+	if val := s.keyInput.Value(); val != "" {
+		s.tokens["MSTEAMS_CLIENT_SECRET"] = val
+	}
+
+	// Enter the device-login phase. We immediately request a device code.
+	s.phase = channelMsteamsDeviceLoginPhase
+	s.loginStatus = msteamsLoginRequesting
+	s.loginErr = ""
+	return s, s.requestDeviceCodeCmd()
+}
+
+// updateMsteamsDeviceLoginPhase is the state machine for the inline OAuth
+// device-code flow. It handles the two async events (device code received,
+// refresh token received) plus the retry/skip key presses available in
+// the error state.
+func (s *ChannelStep) updateMsteamsDeviceLoginPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
+	switch m := msg.(type) {
+	case msteamsDeviceCodeReadyMsg:
+		if m.err != nil {
+			s.loginStatus = msteamsLoginErr
+			s.loginErr = m.err.Error()
+			return s, nil
+		}
+		s.loginDevice = m.dc
+		s.loginStatus = msteamsLoginWaiting
+		// Best-effort browser open. Failures are silently ignored — the
+		// verification URL is also rendered in the View so the operator
+		// can navigate manually if the open fails.
+		_ = devicecode.OpenURL(m.dc.VerificationURI)
+		return s, s.pollTokenCmd(m.dc)
+
+	case msteamsRefreshTokenReadyMsg:
+		if m.err != nil {
+			s.loginStatus = msteamsLoginErr
+			s.loginErr = m.err.Error()
+			return s, nil
+		}
+		if m.token != "" {
+			s.tokens["MSTEAMS_REFRESH_TOKEN"] = m.token
+		}
+		s.complete = true
+		return s, func() tea.Msg { return tui.StepCompleteMsg{} }
+
+	case tea.KeyMsg:
+		if s.loginStatus != msteamsLoginErr {
+			return s, nil
+		}
+		switch m.String() {
+		case "r", "R":
+			// Retry — request a fresh device code.
+			s.loginStatus = msteamsLoginRequesting
+			s.loginErr = ""
+			return s, s.requestDeviceCodeCmd()
+		case "s", "S":
+			// Skip — finish the wizard with no refresh token. The agent
+			// can still be started later after the operator captures the
+			// token out-of-band with `forge channel msteams-login --write-env`.
+			s.complete = true
+			return s, func() tea.Msg { return tui.StepCompleteMsg{} }
+		}
+	}
+
+	return s, nil
+}
+
+// requestDeviceCodeCmd kicks off RequestDeviceCode against the tenant/client
+// the operator just provided. Returns a tea.Cmd that produces a
+// msteamsDeviceCodeReadyMsg on completion.
+func (s *ChannelStep) requestDeviceCodeCmd() tea.Cmd {
+	tenant := s.tokens["MSTEAMS_TENANT_ID"]
+	clientID := s.tokens["MSTEAMS_CLIENT_ID"]
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		dc, err := devicecode.RequestDeviceCode(ctx, &http.Client{Timeout: 30 * time.Second},
+			devicecode.DefaultLoginBase, tenant, clientID)
+		return msteamsDeviceCodeReadyMsg{dc: dc, err: err}
+	}
+}
+
+// pollTokenCmd kicks off PollDeviceToken. Returns a tea.Cmd that produces a
+// msteamsRefreshTokenReadyMsg on completion. Uses a generous 15-minute
+// timeout — matches Microsoft's device-code expiry.
+func (s *ChannelStep) pollTokenCmd(dc *devicecode.DeviceCodeResponse) tea.Cmd {
+	tenant := s.tokens["MSTEAMS_TENANT_ID"]
+	clientID := s.tokens["MSTEAMS_CLIENT_ID"]
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		defer cancel()
+		tok, err := devicecode.PollDeviceToken(ctx, &http.Client{Timeout: 30 * time.Second},
+			devicecode.DefaultLoginBase, tenant, clientID, dc)
+		if err != nil {
+			return msteamsRefreshTokenReadyMsg{err: err}
+		}
+		if tok.RefreshToken == "" {
+			return msteamsRefreshTokenReadyMsg{err: fmt.Errorf("token endpoint returned no refresh_token — did the scope include offline_access?")}
+		}
+		return msteamsRefreshTokenReadyMsg{token: tok.RefreshToken}
+	}
 }
 
 func (s *ChannelStep) updateSlackBotTokenPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
@@ -333,18 +474,43 @@ func (s *ChannelStep) View(width int) string {
 			s.styles.DimTxt.Render("Entra only shows it once."),
 		)
 		return ins + s.keyInput.View(width)
-	case channelMsteamsRefreshTokenPhase:
-		ins := fmt.Sprintf("  %s\n  %s\n  %s\n  %s\n  %s\n  %s\n  %s\n  %s\n\n",
-			s.styles.SecondaryTxt.Render("MS Teams Setup (Step 4/4 — Refresh Token):"),
-			s.styles.DimTxt.Render("In a second terminal, from this project root, run:"),
-			s.styles.AccentTxt.Render("    forge channel msteams-login"),
-			s.styles.DimTxt.Render("That command will print a URL + one-time code, wait for you"),
-			s.styles.DimTxt.Render("to approve in your browser, then poll Microsoft and print the"),
-			s.styles.DimTxt.Render("refresh token to stdout. Paste it below."),
-			s.styles.DimTxt.Render("(Or run with --write-env to skip the paste and have it written"),
-			s.styles.DimTxt.Render("directly to .env, then leave this field blank and continue.)"),
+	case channelMsteamsDeviceLoginPhase:
+		return s.viewMsteamsDeviceLogin()
+	}
+	return ""
+}
+
+// viewMsteamsDeviceLogin renders the three sub-states of the inline OAuth
+// device-code flow. No SecretInput is shown — the operator's only action
+// is to complete sign-in in the browser (the URL is already open).
+func (s *ChannelStep) viewMsteamsDeviceLogin() string {
+	switch s.loginStatus {
+	case msteamsLoginRequesting:
+		return fmt.Sprintf("  %s\n  %s\n\n",
+			s.styles.SecondaryTxt.Render("MS Teams Setup (Step 4/4 — Sign in to Microsoft):"),
+			s.styles.AccentTxt.Render("⣾ Requesting a one-time code from Microsoft..."),
 		)
-		return ins + s.keyInput.View(width)
+
+	case msteamsLoginWaiting:
+		dc := s.loginDevice
+		return fmt.Sprintf("  %s\n\n  %s\n  %s\n\n  %s\n  %s\n\n  %s\n  %s\n\n",
+			s.styles.SecondaryTxt.Render("MS Teams Setup (Step 4/4 — Sign in to Microsoft):"),
+			s.styles.DimTxt.Render("Your browser should have just opened. If not, go to:"),
+			s.styles.AccentTxt.Render("    "+dc.VerificationURI),
+			s.styles.DimTxt.Render("Enter this one-time code when prompted:"),
+			s.styles.AccentTxt.Render("    "+dc.UserCode),
+			s.styles.DimTxt.Render("⣾ Waiting for you to complete sign-in..."),
+			s.styles.DimTxt.Render("(This page will advance automatically once you approve.)"),
+		)
+
+	case msteamsLoginErr:
+		return fmt.Sprintf("  %s\n\n  %s\n  %s\n\n  %s\n  %s\n",
+			s.styles.SecondaryTxt.Render("MS Teams Setup (Step 4/4 — Sign in to Microsoft):"),
+			s.styles.ErrorTxt.Render("✗ Device-code flow failed:"),
+			s.styles.DimTxt.Render("    "+s.loginErr),
+			s.styles.DimTxt.Render("Press R to retry, or S to skip and capture the refresh token"),
+			s.styles.DimTxt.Render("later with `forge channel msteams-login --write-env`."),
+		)
 	}
 	return ""
 }

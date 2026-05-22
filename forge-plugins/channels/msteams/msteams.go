@@ -62,6 +62,16 @@ type adapterConfig struct {
 	AdmitMode    AdmitMode
 	AllowBotIDs  map[string]bool
 
+	// IncludeRecentHistory: when true (default), every dispatched message
+	// is prepended with a chronological block of the chat's recent
+	// messages so the LLM has conversational context. Teams chats are
+	// thread-oriented — without this, the agent only sees the literal
+	// mention or DM and can't satisfy "summarise this week" prompts.
+	IncludeRecentHistory bool
+	// RecentHistoryCount: how many recent messages to fetch (capped at
+	// 50 by Graph's per-request limit on /chats/{id}/messages).
+	RecentHistoryCount int
+
 	CursorPath string // resolved against working dir at Init
 }
 
@@ -125,6 +135,24 @@ func (p *Plugin) Init(cfg channels.ChannelConfig) error {
 		pollSec = maxPollIntervalSec
 	}
 	ac.PollInterval = time.Duration(pollSec) * time.Second
+
+	// History context — default ON for Teams (chats are thread-shaped;
+	// without this the LLM sees only the literal mention/DM with no
+	// prior conversation and can't satisfy "summarise this week" style
+	// prompts).
+	ac.IncludeRecentHistory = true
+	if raw, ok := settings["include_recent_history"]; ok && raw != "" {
+		ac.IncludeRecentHistory = raw != "false" && raw != "0" && raw != "no"
+	}
+	ac.RecentHistoryCount = 20
+	if raw, ok := settings["recent_history_count"]; ok && raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			if n > 50 {
+				n = 50 // Graph's per-request cap on /chats/{id}/messages
+			}
+			ac.RecentHistoryCount = n
+		}
+	}
 
 	p.cfg = ac
 	p.graphBaseURL = strOrDefault(settings["graph_base_url"], defaultGraphBaseURL)
@@ -575,6 +603,19 @@ func (p *Plugin) dispatch(ctx context.Context, msg *ChatMessage, chatTypeHint st
 		return
 	}
 
+	// Inject recent chat history so the LLM has conversational context
+	// (Teams chats are thread-shaped; without this the agent sees only
+	// the literal mention/DM and can't answer prompts like "summarise
+	// this week's updates"). Best-effort: an error fetching history
+	// downgrades to dispatch without context.
+	if p.cfg.IncludeRecentHistory {
+		if history, herr := p.graph.ListChatMessages(ctx, msg.ChatID, p.cfg.RecentHistoryCount); herr == nil {
+			event.Message = prependChatHistory(history, msg.ID, event.Message)
+		} else {
+			log.Printf("[msteams] WARN history fetch failed for chat %s (continuing without context): %v", msg.ChatID, herr)
+		}
+	}
+
 	go func() {
 		taskCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
@@ -587,6 +628,62 @@ func (p *Plugin) dispatch(ctx context.Context, msg *ChatMessage, chatTypeHint st
 			log.Printf("[msteams] send response error: %v", serr)
 		}
 	}()
+}
+
+// prependChatHistory formats the most recent chat messages chronologically
+// (oldest first) and prepends them as a context block before the user's
+// current prompt. Skips currentMsgID to avoid duplicating it inside its own
+// context. Total block is soft-capped at ~5000 chars so even chatty threads
+// don't blow the LLM context budget.
+func prependChatHistory(history []ChatMessage, currentMsgID, prompt string) string {
+	if len(history) == 0 {
+		return prompt
+	}
+
+	const softCap = 5000
+
+	// Graph returns newest-first; iterate from oldest by walking the
+	// slice in reverse.
+	var b strings.Builder
+	b.WriteString("[Recent chat history for context — most recent message at the bottom:]\n")
+	for i := len(history) - 1; i >= 0; i-- {
+		m := history[i]
+		if m.ID == currentMsgID {
+			continue
+		}
+		text := m.Body.Content
+		if m.Body.ContentType == "html" {
+			text = markdown.TeamsHTMLToPlain(text)
+		}
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		author := "(unknown)"
+		if m.From != nil && m.From.User != nil && m.From.User.DisplayName != "" {
+			author = m.From.User.DisplayName
+		} else if m.From != nil && m.From.Application != nil && m.From.Application.DisplayName != "" {
+			author = m.From.Application.DisplayName + " (bot)"
+		}
+		entry := fmt.Sprintf("%s  %s: %s\n", shortTimestamp(m.CreatedDateTime), author, text)
+		if b.Len()+len(entry) > softCap {
+			break
+		}
+		b.WriteString(entry)
+	}
+	b.WriteString("[End of history. The user's current message follows:]\n\n")
+	b.WriteString(prompt)
+	return b.String()
+}
+
+// shortTimestamp trims an ISO-8601 timestamp to date + minute precision so
+// the history block stays readable: "2026-05-22T01:23:45.123Z" → "05-22 01:23".
+func shortTimestamp(iso string) string {
+	if len(iso) < 16 {
+		return iso
+	}
+	// Expect "YYYY-MM-DDTHH:MM:..." — slice month-day + hour-minute.
+	return iso[5:10] + " " + iso[11:16]
 }
 
 // SendResponse delivers an agent reply back to the Teams chat. Mirrors the

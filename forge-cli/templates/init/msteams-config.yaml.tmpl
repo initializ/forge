@@ -37,3 +37,17 @@ settings:
   # Add entries here to admit specific bots (CI bot, scheduler, etc.).
   # Comma- or whitespace-separated.
   allow_bot_ids: ""
+
+  # Prepend the recent chat-history block to each dispatched message so
+  # the LLM has conversational context. Teams chats are thread-shaped
+  # (you @-mention to invoke the agent, but the surrounding messages
+  # are what the agent should reason about). Set to false to dispatch
+  # only the literal mention/DM with no surrounding history.
+  include_recent_history: true
+
+  # How many recent messages to fetch when include_recent_history is on.
+  # Hard-capped at 50 (Graph's per-request limit on /chats/{id}/messages).
+  # The formatted block is also soft-capped at ~5000 chars in the code to
+  # protect the LLM context budget, so very long messages may be
+  # truncated even when this count is reached.
+  recent_history_count: 20

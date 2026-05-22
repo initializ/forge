@@ -16,6 +16,8 @@ import (
 	"github.com/initializ/forge/forge-core/a2a"
 	"github.com/initializ/forge/forge-core/agentspec"
 	"github.com/initializ/forge/forge-core/auth"
+	"github.com/initializ/forge/forge-core/auth/providers/httpverifier"
+	"github.com/initializ/forge/forge-core/auth/providers/statictoken"
 	"github.com/initializ/forge/forge-core/llm"
 	"github.com/initializ/forge/forge-core/llm/oauth"
 	"github.com/initializ/forge/forge-core/llm/providers"
@@ -1719,24 +1721,33 @@ func (r *Runner) printBanner(proxyURL string) {
 	fmt.Fprintf(os.Stderr, "  Press Ctrl+C to stop\n\n")
 }
 
-// resolveAuth builds the auth middleware config. Token resolution is done by
-// ResolveAuth() (called early so channel adapters can use it); this method
-// just wires the already-resolved token into a middleware Config with the audit callback.
-func (r *Runner) resolveAuth(auditLogger *coreruntime.AuditLogger) (auth.Config, error) {
+// resolveAuth builds the auth middleware options for the A2A server.
+//
+// Behavior preserved from the pre-chain implementation:
+//   - --no-auth (NoAuth=true)           → no chain, anonymous access
+//   - --auth-url set                    → chain: [static_token (loopback), http_verifier]
+//   - neither set                       → chain: [static_token (local)]
+//
+// Token resolution is performed by ResolveAuth() (called earlier so channel
+// adapters can use it); this method translates the resolved token + URL into
+// a Provider chain.
+func (r *Runner) resolveAuth(auditLogger *coreruntime.AuditLogger) (auth.MiddlewareOptions, error) {
 	// Ensure token is resolved (no-op if already done by ResolveAuth).
 	if err := r.ResolveAuth(); err != nil {
-		return auth.Config{}, err
+		return auth.MiddlewareOptions{}, err
 	}
 
 	if r.cfg.NoAuth {
-		return auth.Config{Enabled: false}, nil
+		return auth.MiddlewareOptions{}, nil // nil chain → passthrough
 	}
 
-	cfg := auth.Config{
-		Enabled:   true,
-		Token:     r.authToken,
-		AuthURL:   r.cfg.AuthURL,
-		AuthOrgID: r.cfg.AuthOrgID,
+	chain, err := buildLegacyAuthChain(r.authToken, r.cfg.AuthURL, r.cfg.AuthOrgID)
+	if err != nil {
+		return auth.MiddlewareOptions{}, fmt.Errorf("building auth chain: %w", err)
+	}
+
+	return auth.MiddlewareOptions{
+		Chain:     chain,
 		SkipPaths: auth.DefaultSkipPaths(),
 		OnAuth: func(req *http.Request, success bool) {
 			if auditLogger == nil {
@@ -1755,8 +1766,50 @@ func (r *Runner) resolveAuth(auditLogger *coreruntime.AuditLogger) (auth.Config,
 				},
 			})
 		},
+	}, nil
+}
+
+// buildLegacyAuthChain constructs the Provider chain from the legacy
+// CLI-flag inputs (--auth-token / --auth-url / --auth-org-id).
+//
+// When both an internal token and an external --auth-url are present, the
+// static_token provider runs first so channel-adapter loopback calls
+// short-circuit before reaching the external verifier. This mirrors the
+// pre-refactor "internal token then external" check in middleware.go.
+//
+// Returns nil chain (passthrough) when no providers are configured.
+func buildLegacyAuthChain(internalToken, authURL, authOrgID string) (auth.Provider, error) {
+	var providers []auth.Provider
+
+	if internalToken != "" {
+		p, err := statictoken.New(statictoken.Config{
+			Token: internalToken,
+			Identity: auth.Identity{
+				UserID: "forge-internal",
+				Source: "internal",
+			},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("static_token provider: %w", err)
+		}
+		providers = append(providers, p)
 	}
-	return cfg, nil
+
+	if authURL != "" {
+		p, err := httpverifier.New(httpverifier.Config{
+			URL:        authURL,
+			DefaultOrg: authOrgID,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("http_verifier provider: %w", err)
+		}
+		providers = append(providers, p)
+	}
+
+	if len(providers) == 0 {
+		return nil, nil
+	}
+	return auth.NewChainProvider(providers...), nil
 }
 
 // ensureGitignore makes sure .forge/ is listed in the project's .gitignore.

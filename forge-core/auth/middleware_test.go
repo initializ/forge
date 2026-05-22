@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,125 +9,157 @@ import (
 	"testing"
 )
 
+// tokenProvider is a minimal test-only Provider that compares against a fixed
+// token. We define it here so middleware tests don't need to import the
+// statictoken provider package (which would create a cycle since it imports
+// this package).
+type tokenProvider struct {
+	expected string
+	identity Identity
+}
+
+func (t *tokenProvider) Name() string { return "test_token" }
+
+func (t *tokenProvider) Verify(_ context.Context, token string, _ Headers) (*Identity, error) {
+	if token != t.expected {
+		return nil, ErrTokenNotForMe
+	}
+	id := t.identity
+	return &id, nil
+}
+
+// rejectingProvider returns ErrTokenRejected for any token, simulating an
+// external verifier that recognized the token but denied it.
+type rejectingProvider struct{}
+
+func (rejectingProvider) Name() string { return "test_reject" }
+func (rejectingProvider) Verify(_ context.Context, _ string, _ Headers) (*Identity, error) {
+	return nil, ErrTokenRejected
+}
+
+// brokenProvider returns ErrInvalidToken (e.g., signature failure).
+type brokenProvider struct{}
+
+func (brokenProvider) Name() string { return "test_broken" }
+func (brokenProvider) Verify(_ context.Context, _ string, _ Headers) (*Identity, error) {
+	return nil, ErrInvalidToken
+}
+
 func TestMiddleware(t *testing.T) {
 	const validToken = "test-secret-token"
 
 	okHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok")) //nolint:errcheck
+		_, _ = w.Write([]byte("ok"))
+	})
+
+	chain := NewChainProvider(&tokenProvider{
+		expected: validToken,
+		identity: Identity{UserID: "u1", Source: "test_token"},
 	})
 
 	tests := []struct {
 		name       string
-		cfg        Config
+		opts       MiddlewareOptions
 		method     string
 		path       string
 		authHeader string
 		wantStatus int
 	}{
 		{
-			name:       "disabled passes through",
-			cfg:        Config{Enabled: false},
+			name:       "nil chain passes through",
+			opts:       MiddlewareOptions{Chain: nil},
 			method:     "POST",
 			path:       "/",
 			wantStatus: http.StatusOK,
 		},
 		{
-			name: "valid token accepted",
-			cfg: Config{
-				Enabled:   true,
-				Token:     validToken,
-				SkipPaths: DefaultSkipPaths(),
-			},
+			name:       "valid token accepted",
+			opts:       MiddlewareOptions{Chain: chain, SkipPaths: DefaultSkipPaths()},
 			method:     "POST",
 			path:       "/",
 			authHeader: "Bearer " + validToken,
 			wantStatus: http.StatusOK,
 		},
 		{
-			name: "missing token rejected",
-			cfg: Config{
-				Enabled:   true,
-				Token:     validToken,
-				SkipPaths: DefaultSkipPaths(),
-			},
+			name:       "missing token rejected",
+			opts:       MiddlewareOptions{Chain: chain, SkipPaths: DefaultSkipPaths()},
 			method:     "POST",
 			path:       "/",
 			wantStatus: http.StatusUnauthorized,
 		},
 		{
-			name: "wrong token rejected",
-			cfg: Config{
-				Enabled:   true,
-				Token:     validToken,
-				SkipPaths: DefaultSkipPaths(),
-			},
+			name:       "wrong token rejected",
+			opts:       MiddlewareOptions{Chain: chain, SkipPaths: DefaultSkipPaths()},
 			method:     "POST",
 			path:       "/",
 			authHeader: "Bearer wrong-token",
 			wantStatus: http.StatusUnauthorized,
 		},
 		{
-			name: "GET / is public",
-			cfg: Config{
-				Enabled:   true,
-				Token:     validToken,
-				SkipPaths: DefaultSkipPaths(),
-			},
+			name:       "GET / is public",
+			opts:       MiddlewareOptions{Chain: chain, SkipPaths: DefaultSkipPaths()},
 			method:     "GET",
 			path:       "/",
 			wantStatus: http.StatusOK,
 		},
 		{
-			name: "GET /.well-known/agent.json is public",
-			cfg: Config{
-				Enabled:   true,
-				Token:     validToken,
-				SkipPaths: DefaultSkipPaths(),
-			},
+			name:       "GET /.well-known/agent.json is public",
+			opts:       MiddlewareOptions{Chain: chain, SkipPaths: DefaultSkipPaths()},
 			method:     "GET",
 			path:       "/.well-known/agent.json",
 			wantStatus: http.StatusOK,
 		},
 		{
-			name: "GET /healthz is public",
-			cfg: Config{
-				Enabled:   true,
-				Token:     validToken,
-				SkipPaths: DefaultSkipPaths(),
-			},
+			name:       "GET /healthz is public",
+			opts:       MiddlewareOptions{Chain: chain, SkipPaths: DefaultSkipPaths()},
 			method:     "GET",
 			path:       "/healthz",
 			wantStatus: http.StatusOK,
 		},
 		{
-			name: "POST /tasks/send requires auth",
-			cfg: Config{
-				Enabled:   true,
-				Token:     validToken,
-				SkipPaths: DefaultSkipPaths(),
-			},
+			name:       "POST /tasks/send requires auth",
+			opts:       MiddlewareOptions{Chain: chain, SkipPaths: DefaultSkipPaths()},
 			method:     "POST",
 			path:       "/tasks/send",
 			wantStatus: http.StatusUnauthorized,
 		},
 		{
-			name: "case insensitive Bearer prefix",
-			cfg: Config{
-				Enabled:   true,
-				Token:     validToken,
-				SkipPaths: DefaultSkipPaths(),
-			},
+			name:       "case insensitive Bearer prefix",
+			opts:       MiddlewareOptions{Chain: chain, SkipPaths: DefaultSkipPaths()},
 			method:     "POST",
 			path:       "/",
 			authHeader: "bearer " + validToken,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "rejected by provider returns 401",
+			opts:       MiddlewareOptions{Chain: NewChainProvider(rejectingProvider{}), SkipPaths: DefaultSkipPaths()},
+			method:     "POST",
+			path:       "/",
+			authHeader: "Bearer anything",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:       "invalid token from provider returns 401",
+			opts:       MiddlewareOptions{Chain: NewChainProvider(brokenProvider{}), SkipPaths: DefaultSkipPaths()},
+			method:     "POST",
+			path:       "/",
+			authHeader: "Bearer malformed",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:       "nil SkipPaths uses defaults",
+			opts:       MiddlewareOptions{Chain: chain},
+			method:     "GET",
+			path:       "/healthz",
 			wantStatus: http.StatusOK,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mw := Middleware(tt.cfg)
+			mw := Middleware(tt.opts)
 			handler := mw(okHandler)
 
 			req := httptest.NewRequest(tt.method, tt.path, nil)
@@ -155,16 +188,18 @@ func TestMiddleware(t *testing.T) {
 	}
 }
 
-func TestMiddlewareOnAuthCallback(t *testing.T) {
+func TestMiddleware_OnAuthCallback(t *testing.T) {
 	const token = "callback-token"
 
 	var successCount, failCount atomic.Int32
 
-	cfg := Config{
-		Enabled:   true,
-		Token:     token,
+	opts := MiddlewareOptions{
+		Chain: NewChainProvider(&tokenProvider{
+			expected: token,
+			identity: Identity{UserID: "u", Source: "test"},
+		}),
 		SkipPaths: DefaultSkipPaths(),
-		OnAuth: func(r *http.Request, success bool) {
+		OnAuth: func(_ *http.Request, success bool) {
 			if success {
 				successCount.Add(1)
 			} else {
@@ -173,7 +208,7 @@ func TestMiddlewareOnAuthCallback(t *testing.T) {
 		},
 	}
 
-	handler := Middleware(cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Middleware(opts)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -191,5 +226,53 @@ func TestMiddlewareOnAuthCallback(t *testing.T) {
 	}
 	if got := failCount.Load(); got != 1 {
 		t.Errorf("failure callbacks = %d, want 1", got)
+	}
+}
+
+func TestMiddleware_IdentityIsAttachedToContext(t *testing.T) {
+	const token = "ctx-token"
+
+	wantID := Identity{UserID: "ctx-user", Email: "ctx@example.com", Source: "test_token"}
+
+	opts := MiddlewareOptions{
+		Chain:     NewChainProvider(&tokenProvider{expected: token, identity: wantID}),
+		SkipPaths: DefaultSkipPaths(),
+	}
+
+	var gotID *Identity
+	handler := Middleware(opts)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		gotID = IdentityFromContext(r.Context())
+	}))
+
+	req := httptest.NewRequest("POST", "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if gotID == nil {
+		t.Fatal("identity not attached to context")
+	}
+	if gotID.UserID != wantID.UserID || gotID.Email != wantID.Email {
+		t.Errorf("identity = %+v, want %+v", gotID, wantID)
+	}
+}
+
+func TestClassifyAuthFailure(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"nil", nil, "valid bearer token required"},
+		{"not for me", ErrTokenNotForMe, "valid bearer token required"},
+		{"rejected", ErrTokenRejected, "token rejected by auth provider"},
+		{"invalid", ErrInvalidToken, "invalid token"},
+		{"unexpected", context.Canceled, "auth provider error"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyAuthFailure(tt.err); got != tt.want {
+				t.Errorf("classifyAuthFailure(%v) = %q, want %q", tt.err, got, tt.want)
+			}
+		})
 	}
 }

@@ -193,12 +193,18 @@ func (g *graphClient) ListChats(ctx context.Context, limit int) ([]ChatRef, erro
 // delegated flow. /chats/{id}/messages/delta supports delegated context
 // (Chat.Read or ChatMessage.Read) and is the foundation of the
 // per-chat polling design.
-func (g *graphClient) InitialChatDeltaURL(chatID string, since time.Time) string {
-	filter := "lastModifiedDateTime gt " + since.UTC().Format(time.RFC3339)
-	v := url.Values{}
-	v.Set("$filter", filter)
-	return fmt.Sprintf("%s/chats/%s/messages/delta?%s",
-		g.baseURL, url.PathEscape(chatID), v.Encode())
+//
+// IMPORTANT: $filter is NOT supported on this endpoint — Microsoft Graph
+// returns HTTP 400 "Change tracking is not supported against
+// 'microsoft.graph.chatMessage'" if any $filter clause is present. The
+// initial call therefore returns ALL current messages in the chat
+// (paginated via @odata.nextLink) followed by an @odata.deltaLink. Callers
+// must drain that initial sync without dispatching messages, persist the
+// deltaLink, and only treat messages from SUBSEQUENT calls as new
+// chat activity.
+func (g *graphClient) InitialChatDeltaURL(chatID string) string {
+	return fmt.Sprintf("%s/chats/%s/messages/delta",
+		g.baseURL, url.PathEscape(chatID))
 }
 
 // FetchDeltaPage retrieves the next page of messages. The URL is the full

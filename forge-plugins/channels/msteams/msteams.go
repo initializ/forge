@@ -283,6 +283,18 @@ func (p *Plugin) pollLoopAppOnly(ctx context.Context, handler channels.EventHand
 // pollLoopDelegated runs per-chat polling using /me/chats + /chats/{id}/messages/delta.
 // Chat enumeration runs once per chatRefreshInterval (default 60s) to pick up
 // new chats; the per-chat delta call runs every PollInterval tick.
+//
+// Microsoft Graph's /chats/{id}/messages/delta has a non-obvious initial-sync
+// behaviour: the very first call (with no $deltatoken) returns ALL current
+// messages in the chat (paginated via @odata.nextLink) followed by a
+// @odata.deltaLink. Those historical messages must NOT be dispatched to the
+// agent — they pre-date the agent's existence and treating them as new
+// would flood the channel handler. Only messages returned by polls that
+// happen AFTER the first deltaLink count as real-time chat activity.
+//
+// We track this via the per-chat DeltaSeen flag: while false, fetched
+// messages are silently drained (paginated) until the deltaLink arrives;
+// thereafter, DeltaSeen is true and subsequent messages dispatch normally.
 func (p *Plugin) pollLoopDelegated(ctx context.Context, handler channels.EventHandler) error {
 	const chatRefreshInterval = 60 * time.Second
 	const maxChats = 50 // hard cap so a chatty inbox doesn't OOM the agent
@@ -304,10 +316,9 @@ func (p *Plugin) pollLoopDelegated(ctx context.Context, handler channels.EventHa
 
 	cursors := p.cursor.loadChats()
 	if cursors == nil {
-		cursors = map[string]string{}
+		cursors = map[string]chatCursorState{}
 	}
 
-	since := time.Now().UTC()
 	backoff := 5 * time.Second
 	maxBackoff := 60 * time.Second
 
@@ -337,20 +348,22 @@ func (p *Plugin) pollLoopDelegated(ctx context.Context, handler channels.EventHa
 		case <-pollTimer.C:
 		}
 
-		// One tick: walk every known chat, fetch its delta page, dispatch.
+		// One tick: walk every known chat, fetch its delta page, dispatch
+		// (or drain on initial sync), persist cursor.
 		anyErr := false
 		for _, ch := range chats {
-			pageURL, ok := cursors[ch.ID]
-			if !ok || pageURL == "" {
-				pageURL = p.graph.InitialChatDeltaURL(ch.ID, since)
+			state, ok := cursors[ch.ID]
+			if !ok || state.URL == "" {
+				state = chatCursorState{URL: p.graph.InitialChatDeltaURL(ch.ID)}
 			}
 
-			page, ferr := p.graph.FetchDeltaPage(ctx, pageURL)
+			page, ferr := p.graph.FetchDeltaPage(ctx, state.URL)
 			if ferr != nil {
 				if errIs(ferr, errCursorExpired) {
-					// 410 for this chat — reinit just this one's cursor.
-					log.Printf("[msteams] WARN chat %s cursor expired; reinit from now", ch.ID)
-					cursors[ch.ID] = p.graph.InitialChatDeltaURL(ch.ID, time.Now().UTC())
+					// 410 for this chat — restart this chat's sync from
+					// scratch. Initial sync semantics apply again.
+					log.Printf("[msteams] WARN chat %s cursor expired; restarting initial sync", ch.ID)
+					cursors[ch.ID] = chatCursorState{URL: p.graph.InitialChatDeltaURL(ch.ID)}
 					continue
 				}
 				if errIs(ferr, errUnauthorized) {
@@ -372,21 +385,36 @@ func (p *Plugin) pollLoopDelegated(ctx context.Context, handler channels.EventHa
 				break
 			}
 
-			for i := range page.Messages {
-				// Inject chatType so admission knows the chat classification
-				// (Graph's chatMessage payload often omits it).
-				page.Messages[i].ChatID = ch.ID
-				if page.Messages[i].ChatType == "" {
-					page.Messages[i].ChatType = chatType[ch.ID]
+			// Only dispatch when we're past the initial-sync drain.
+			// Otherwise mark messages as seen in the dedup ring so a
+			// later cursor reset doesn't reprocess them.
+			if state.DeltaSeen {
+				for i := range page.Messages {
+					page.Messages[i].ChatID = ch.ID
+					if page.Messages[i].ChatType == "" {
+						page.Messages[i].ChatType = chatType[ch.ID]
+					}
+					p.dispatch(ctx, &page.Messages[i], chatType[ch.ID], handler)
 				}
-				p.dispatch(ctx, &page.Messages[i], chatType[ch.ID], handler)
+			} else {
+				for _, msg := range page.Messages {
+					p.dedup.mark(msg.ID)
+				}
 			}
 
+			// Advance the cursor. Receipt of a deltaLink means we're now
+			// caught up — future polls will return only real changes.
 			if page.NextLink != "" {
-				cursors[ch.ID] = page.NextLink
+				state.URL = page.NextLink
 			} else if page.DeltaLink != "" {
-				cursors[ch.ID] = page.DeltaLink
+				state.URL = page.DeltaLink
+				if !state.DeltaSeen {
+					log.Printf("[msteams] chat %s initial sync complete (dropped %d historical messages); now tracking changes",
+						ch.ID, len(page.Messages))
+					state.DeltaSeen = true
+				}
 			}
+			cursors[ch.ID] = state
 		}
 
 		if anyErr {

@@ -499,12 +499,15 @@ func (s *ChannelStep) viewMsteamsDeviceLogin() string {
 
 	case msteamsLoginWaiting:
 		dc := s.loginDevice
-		return fmt.Sprintf("  %s\n\n  %s\n  %s\n\n  %s\n  %s\n\n  %s\n  %s\n\n",
+		return fmt.Sprintf("  %s\n\n  %s\n  %s\n\n  %s\n  %s\n\n  %s\n  %s\n  %s\n\n  %s\n  %s\n\n",
 			s.styles.SecondaryTxt.Render("MS Teams Setup (Step 4/4 — Sign in to Microsoft):"),
 			s.styles.DimTxt.Render("Your browser should have just opened. If not, go to:"),
 			s.styles.AccentTxt.Render("    "+dc.VerificationURI),
 			s.styles.DimTxt.Render("Enter this one-time code when prompted:"),
 			s.styles.AccentTxt.Render("    "+dc.UserCode),
+			s.styles.ErrorTxt.Render("IMPORTANT: sign in as the dedicated Microsoft 365 account"),
+			s.styles.ErrorTxt.Render("you want the agent to ACT AS (e.g. forge-agent@yourtenant)."),
+			s.styles.DimTxt.Render("Other Teams users will @-mention that account to invoke the agent."),
 			s.styles.DimTxt.Render("⣾ Waiting for you to complete sign-in..."),
 			s.styles.DimTxt.Render("(This page will advance automatically once you approve.)"),
 		)

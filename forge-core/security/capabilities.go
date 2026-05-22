@@ -4,6 +4,11 @@ package security
 var DefaultCapabilityBundles = map[string][]string{
 	"slack":    {"slack.com", "wss-primary.slack.com", "api.slack.com", "files.slack.com"},
 	"telegram": {"api.telegram.org"},
+	// MS Teams via Microsoft Graph polling. Sovereign clouds (US Gov, China)
+	// stay out of this default bundle — operators add the appropriate domains
+	// (graph.microsoft.us / microsoftgraph.chinacloudapi.cn / their respective
+	// login hosts) via egress.allowed_domains.
+	"msteams": {"graph.microsoft.com", "login.microsoftonline.com"},
 }
 
 // ResolveCapabilities returns a deduplicated list of domains for the given capability names.

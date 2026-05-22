@@ -546,7 +546,26 @@ func (p *Plugin) dispatch(ctx context.Context, msg *ChatMessage, chatTypeHint st
 
 	result := admit(msg, p.ownUserID, p.cfg.AllowBotIDs, p.cfg.AdmitMode, chatType)
 	if !result.admit {
-		log.Printf("[msteams] DEBUG %s (msg_id=%s)", result.reason, msg.ID)
+		// On mention-mode drops, surface the mentions array so operators
+		// can see WHY the message wasn't recognised as a mention. The
+		// most common confusion in delegated mode: the user types
+		// "@AgentName" thinking they're tagging the agent, but in
+		// delegated mode the agent has no Teams display name distinct
+		// from the user — they must @-mention their own display name
+		// (Teams autocomplete required, not just typing @+text).
+		if strings.Contains(result.reason, "non-mention") {
+			log.Printf("[msteams] DEBUG %s (msg_id=%s, mentions=%d, ownUserID=%s)",
+				result.reason, msg.ID, len(msg.Mentions), p.ownUserID)
+			for i, m := range msg.Mentions {
+				log.Printf("[msteams] DEBUG   mention[%d]: text=%q user.id=%q displayName=%q",
+					i, m.Text, m.Mentioned.User.ID, m.Mentioned.User.DisplayName)
+			}
+			if len(msg.Mentions) == 0 {
+				log.Printf("[msteams] DEBUG   no formal mentions in payload — in delegated mode you must @-mention your own Teams display name (autocomplete required); the agent shares your identity (%s)", p.ownUserID)
+			}
+		} else {
+			log.Printf("[msteams] DEBUG %s (msg_id=%s)", result.reason, msg.ID)
+		}
 		return
 	}
 

@@ -211,11 +211,28 @@ func (p *Plugin) normalizeChatMessage(msg *ChatMessage) (*channels.ChannelEvent,
 }
 
 func (p *Plugin) pollLoop(ctx context.Context, handler channels.EventHandler) error {
+	// Two polling strategies, chosen by auth flow:
+	//
+	//   client_credentials → app-only token → /users/{id}/chats/getAllMessages/delta
+	//     One global delta cursor. Requires Chat.Read.All application permission
+	//     with admin consent. Most efficient (one HTTP call per tick).
+	//
+	//   delegated → user token → /chats/{id}/messages/delta per chat
+	//     getAllMessages/delta is app-only and returns HTTP 412 PreconditionFailed
+	//     with a delegated token. Instead, list /me/chats and maintain one delta
+	//     cursor per chat. More HTTP per tick but works with personal API perms
+	//     (Chat.Read) and needs no admin consent.
+	if p.cfg.Flow == FlowDelegated {
+		return p.pollLoopDelegated(ctx, handler)
+	}
+	return p.pollLoopAppOnly(ctx, handler)
+}
+
+func (p *Plugin) pollLoopAppOnly(ctx context.Context, handler channels.EventHandler) error {
 	pageURL := p.cursor.load()
 	if pageURL == "" {
 		// First run: skip the historical backlog.
-		userID := p.ownUserID
-		pageURL = p.graph.InitialDeltaURL(userID, time.Now().UTC())
+		pageURL = p.graph.InitialDeltaURL(p.ownUserID, time.Now().UTC())
 	}
 
 	// Backoff state for transient errors. Reset on each successful poll.
@@ -244,7 +261,7 @@ func (p *Plugin) pollLoop(ctx context.Context, handler channels.EventHandler) er
 		backoff = 5 * time.Second
 
 		for i := range page.Messages {
-			p.dispatch(ctx, &page.Messages[i], handler)
+			p.dispatch(ctx, &page.Messages[i], "", handler)
 		}
 
 		// Drain pagination immediately (no sleep mid-batch).
@@ -260,6 +277,134 @@ func (p *Plugin) pollLoop(ctx context.Context, handler channels.EventHandler) er
 			}
 		}
 		timer.Reset(p.cfg.PollInterval)
+	}
+}
+
+// pollLoopDelegated runs per-chat polling using /me/chats + /chats/{id}/messages/delta.
+// Chat enumeration runs once per chatRefreshInterval (default 60s) to pick up
+// new chats; the per-chat delta call runs every PollInterval tick.
+func (p *Plugin) pollLoopDelegated(ctx context.Context, handler channels.EventHandler) error {
+	const chatRefreshInterval = 60 * time.Second
+	const maxChats = 50 // hard cap so a chatty inbox doesn't OOM the agent
+
+	chats, err := p.graph.ListChats(ctx, maxChats)
+	if err != nil {
+		log.Printf("[msteams] WARN initial ListChats failed (will retry): %v", err)
+	} else {
+		log.Printf("[msteams] discovered %d chats", len(chats))
+	}
+
+	// chatType lookup so the admission gate sees the correct DM/group/meeting
+	// classification for every message regardless of whether the Graph
+	// chatMessage payload included it.
+	chatType := make(map[string]string, len(chats))
+	for _, ch := range chats {
+		chatType[ch.ID] = ch.ChatType
+	}
+
+	cursors := p.cursor.loadChats()
+	if cursors == nil {
+		cursors = map[string]string{}
+	}
+
+	since := time.Now().UTC()
+	backoff := 5 * time.Second
+	maxBackoff := 60 * time.Second
+
+	pollTimer := time.NewTimer(p.cfg.PollInterval)
+	refreshTimer := time.NewTimer(chatRefreshInterval)
+	defer pollTimer.Stop()
+	defer refreshTimer.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-p.stopCh:
+			return nil
+		case <-refreshTimer.C:
+			latest, lerr := p.graph.ListChats(ctx, maxChats)
+			if lerr != nil {
+				log.Printf("[msteams] WARN ListChats refresh failed: %v", lerr)
+			} else {
+				for _, ch := range latest {
+					chatType[ch.ID] = ch.ChatType
+				}
+				chats = latest
+			}
+			refreshTimer.Reset(chatRefreshInterval)
+			continue
+		case <-pollTimer.C:
+		}
+
+		// One tick: walk every known chat, fetch its delta page, dispatch.
+		anyErr := false
+		for _, ch := range chats {
+			pageURL, ok := cursors[ch.ID]
+			if !ok || pageURL == "" {
+				pageURL = p.graph.InitialChatDeltaURL(ch.ID, since)
+			}
+
+			page, ferr := p.graph.FetchDeltaPage(ctx, pageURL)
+			if ferr != nil {
+				if errIs(ferr, errCursorExpired) {
+					// 410 for this chat — reinit just this one's cursor.
+					log.Printf("[msteams] WARN chat %s cursor expired; reinit from now", ch.ID)
+					cursors[ch.ID] = p.graph.InitialChatDeltaURL(ch.ID, time.Now().UTC())
+					continue
+				}
+				if errIs(ferr, errUnauthorized) {
+					if _, rerr := p.auth.ForceRefresh(context.Background()); rerr != nil {
+						log.Printf("[msteams] ERROR token refresh failed: %v", rerr)
+					}
+					anyErr = true
+					break
+				}
+				if errIsRateLimited(ferr) {
+					retry := rateLimitRetry(ferr)
+					log.Printf("[msteams] WARN 429 rate limited; honouring Retry-After=%s", retry)
+					pollTimer.Reset(retry)
+					anyErr = true
+					break
+				}
+				log.Printf("[msteams] WARN poll error on chat %s (backoff=%s): %v", ch.ID, backoff, ferr)
+				anyErr = true
+				break
+			}
+
+			for i := range page.Messages {
+				// Inject chatType so admission knows the chat classification
+				// (Graph's chatMessage payload often omits it).
+				page.Messages[i].ChatID = ch.ID
+				if page.Messages[i].ChatType == "" {
+					page.Messages[i].ChatType = chatType[ch.ID]
+				}
+				p.dispatch(ctx, &page.Messages[i], chatType[ch.ID], handler)
+			}
+
+			if page.NextLink != "" {
+				cursors[ch.ID] = page.NextLink
+			} else if page.DeltaLink != "" {
+				cursors[ch.ID] = page.DeltaLink
+			}
+		}
+
+		if anyErr {
+			// Apply exponential backoff for the next tick.
+			d := backoff
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+			pollTimer.Reset(d)
+			continue
+		}
+		// Successful round — reset backoff and persist cursors.
+		backoff = 5 * time.Second
+		if serr := p.cursor.saveChats(cursors); serr != nil {
+			log.Printf("[msteams] cursor saveChats failed: %v", serr)
+		}
+		pollTimer.Reset(p.cfg.PollInterval)
 	}
 }
 
@@ -306,8 +451,10 @@ func (p *Plugin) handlePollError(err error, pageURL *string, backoff *time.Durat
 }
 
 // dispatch runs the admission gate and, if admitted, forwards the event to
-// the handler on a background goroutine.
-func (p *Plugin) dispatch(ctx context.Context, msg *ChatMessage, handler channels.EventHandler) {
+// the handler on a background goroutine. The chatTypeHint allows the
+// delegated polling path to supply chatType from /me/chats when Graph's
+// chatMessage payload omits it.
+func (p *Plugin) dispatch(ctx context.Context, msg *ChatMessage, chatTypeHint string, handler channels.EventHandler) {
 	// Dedup first — applies to dropped messages too so we don't re-evaluate
 	// the same ID across paginated pages.
 	if p.dedup.seen(msg.ID) {
@@ -315,17 +462,15 @@ func (p *Plugin) dispatch(ctx context.Context, msg *ChatMessage, handler channel
 	}
 	p.dedup.mark(msg.ID)
 
-	// Determine the chat type. Graph doesn't always include it on
-	// chatMessage; for chats we can derive "oneOnOne" only when chatId
-	// matches the 1:1 pattern OR when we explicitly fetch the chat.
-	// For the inbound gate we treat any message that includes a mention OR
-	// arrives from a known 1:1 chat as DM-eligible. The msg.ChatType field
-	// is sometimes populated by Graph; trust it when present.
+	// Determine the chat type. Trust the chatMessage payload when present,
+	// then fall back to the hint from /me/chats. Both can be empty for the
+	// app-only path until we extend it; treat that as non-DM so the mention
+	// path still gates appropriately.
 	chatType := msg.ChatType
 	if chatType == "" {
-		// Best-effort: chat IDs of the form 19:<uuid>_<uuid>@unq.gbl.spaces
-		// are 1:1; group/meeting use different suffixes. We err on the side
-		// of treating unknown as non-DM so the mention path still gates.
+		chatType = chatTypeHint
+	}
+	if chatType == "" {
 		chatType = "unknown"
 	}
 

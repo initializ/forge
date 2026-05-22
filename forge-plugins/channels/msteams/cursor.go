@@ -35,18 +35,18 @@ type cursorFile struct {
 	Chats map[string]chatCursorState `json:"chats,omitempty"`
 }
 
-// chatCursorState tracks both the next URL to call and whether we've passed
-// the initial-sync phase for a chat. Graph's /chats/{id}/messages/delta
-// returns full chat history on the first call, paginated until a deltaLink
-// arrives. We mustn't dispatch those historical messages — only changes
-// returned by calls made AFTER the first deltaLink count as real-time
-// chat activity.
+// chatCursorState tracks per-chat polling state for the delegated flow.
+// Microsoft Graph's v1.0 has no delta primitive for chatMessage in
+// delegated context (see graph.go ListChatMessages comment), so we
+// list messages directly and track the latest-seen timestamp ourselves.
+// Messages with lastModifiedDateTime <= LastSeenTime are skipped.
 type chatCursorState struct {
-	URL string `json:"url"`
-	// DeltaSeen flips true the first time Graph returns @odata.deltaLink
-	// for this chat. While false, messages returned by polling are
-	// historical (initial sync) and the dispatch loop drops them.
-	DeltaSeen bool `json:"delta_seen,omitempty"`
+	// LastSeenTime is the lastModifiedDateTime of the newest message
+	// already dispatched for this chat, as an RFC3339Nano string. Empty
+	// on first contact — the next poll sets it to "now" without
+	// dispatching, so the agent only sees messages received AFTER it
+	// started running.
+	LastSeenTime string `json:"last_seen_time,omitempty"`
 }
 
 func newCursor(path string) *cursor {
@@ -91,22 +91,9 @@ func (c *cursor) loadLocked() {
 	}
 	var cf cursorFile
 	if err := json.Unmarshal(data, &cf); err != nil {
-		// Try the legacy schema (map[string]string) before giving up — old
-		// cursor files used a bare URL per chat.
-		var legacy struct {
-			DeltaLink string            `json:"delta_link,omitempty"`
-			Chats     map[string]string `json:"chats,omitempty"`
-		}
-		if err2 := json.Unmarshal(data, &legacy); err2 == nil {
-			c.val = legacy.DeltaLink
-			for k, v := range legacy.Chats {
-				// Legacy cursors are treated as initial-sync state: we
-				// haven't seen a deltaLink yet from THIS process, so the
-				// next call will re-do initial sync. That's safer than
-				// inadvertently dispatching the next page as new traffic.
-				c.chat[k] = chatCursorState{URL: v, DeltaSeen: false}
-			}
-		}
+		// Schema may be older — silently treat as empty so the next
+		// poll re-bootstraps cleanly. The runtime is more important
+		// than backwards compat of an internal state file.
 		return
 	}
 	c.val = cf.DeltaLink

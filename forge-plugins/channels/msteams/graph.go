@@ -189,22 +189,36 @@ func (g *graphClient) ListChats(ctx context.Context, limit int) ([]ChatRef, erro
 	return out, nil
 }
 
-// InitialChatDeltaURL builds the first delta URL for a single chat in the
-// delegated flow. /chats/{id}/messages/delta supports delegated context
-// (Chat.Read or ChatMessage.Read) and is the foundation of the
-// per-chat polling design.
+// ListChatMessages fetches the most recent messages in a chat, ordered
+// newest-first. The delegated polling path uses this with client-side
+// timestamp filtering since Microsoft Graph's v1.0 endpoint exposes no
+// delta primitive for chatMessage in delegated context:
 //
-// IMPORTANT: $filter is NOT supported on this endpoint — Microsoft Graph
-// returns HTTP 400 "Change tracking is not supported against
-// 'microsoft.graph.chatMessage'" if any $filter clause is present. The
-// initial call therefore returns ALL current messages in the chat
-// (paginated via @odata.nextLink) followed by an @odata.deltaLink. Callers
-// must drain that initial sync without dispatching messages, persist the
-// deltaLink, and only treat messages from SUBSEQUENT calls as new
-// chat activity.
-func (g *graphClient) InitialChatDeltaURL(chatID string) string {
-	return fmt.Sprintf("%s/chats/%s/messages/delta",
-		g.baseURL, url.PathEscape(chatID))
+//	/chats/{id}/messages/delta            → HTTP 400 "Change tracking is
+//	                                         not supported against
+//	                                         'microsoft.graph.chatMessage'"
+//	/users/{id}/chats/getAllMessages/delta → HTTP 412 "API not supported
+//	                                         in delegated context"
+//
+// So we list messages directly and compute the new-message set ourselves
+// from the lastModifiedDateTime field. limit is capped at 50 (Graph's
+// default page size for this endpoint).
+func (g *graphClient) ListChatMessages(ctx context.Context, chatID string, limit int) ([]ChatMessage, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 50
+	}
+	v := url.Values{}
+	v.Set("$top", fmt.Sprintf("%d", limit))
+	v.Set("$orderby", "lastModifiedDateTime desc")
+	u := fmt.Sprintf("%s/chats/%s/messages?%s", g.baseURL, url.PathEscape(chatID), v.Encode())
+
+	var resp struct {
+		Value []ChatMessage `json:"value"`
+	}
+	if err := g.getAbsoluteJSON(ctx, u, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Value, nil
 }
 
 // FetchDeltaPage retrieves the next page of messages. The URL is the full

@@ -280,24 +280,28 @@ func (p *Plugin) pollLoopAppOnly(ctx context.Context, handler channels.EventHand
 	}
 }
 
-// pollLoopDelegated runs per-chat polling using /me/chats + /chats/{id}/messages/delta.
-// Chat enumeration runs once per chatRefreshInterval (default 60s) to pick up
-// new chats; the per-chat delta call runs every PollInterval tick.
+// pollLoopDelegated polls each known chat for new messages using the
+// non-delta /chats/{id}/messages endpoint. Microsoft Graph's v1.0 endpoint
+// exposes no delta primitive for chatMessage in delegated context — both
+// /chats/{id}/messages/delta and /users/{id}/chats/getAllMessages/delta
+// reject delegated tokens — so we track per-chat watermarks ourselves
+// using lastModifiedDateTime.
 //
-// Microsoft Graph's /chats/{id}/messages/delta has a non-obvious initial-sync
-// behaviour: the very first call (with no $deltatoken) returns ALL current
-// messages in the chat (paginated via @odata.nextLink) followed by a
-// @odata.deltaLink. Those historical messages must NOT be dispatched to the
-// agent — they pre-date the agent's existence and treating them as new
-// would flood the channel handler. Only messages returned by polls that
-// happen AFTER the first deltaLink count as real-time chat activity.
+// Strategy per chat:
 //
-// We track this via the per-chat DeltaSeen flag: while false, fetched
-// messages are silently drained (paginated) until the deltaLink arrives;
-// thereafter, DeltaSeen is true and subsequent messages dispatch normally.
+//  1. Bootstrap: if LastSeenTime is empty, set it to "now" and skip
+//     dispatch on this tick. The agent only sees messages received AFTER
+//     it started running; existing chat history is intentionally invisible.
+//  2. Steady state: list the most recent 50 messages, dispatch those
+//     newer than LastSeenTime (in chronological order, since Graph
+//     returns newest-first), then advance LastSeenTime to the newest
+//     message's lastModifiedDateTime.
+//
+// Chat enumeration via /me/chats runs once at startup and every
+// chatRefreshInterval (default 60 s) to pick up new chats.
 func (p *Plugin) pollLoopDelegated(ctx context.Context, handler channels.EventHandler) error {
 	const chatRefreshInterval = 60 * time.Second
-	const maxChats = 50 // hard cap so a chatty inbox doesn't OOM the agent
+	const maxChats = 50
 
 	chats, err := p.graph.ListChats(ctx, maxChats)
 	if err != nil {
@@ -306,9 +310,6 @@ func (p *Plugin) pollLoopDelegated(ctx context.Context, handler channels.EventHa
 		log.Printf("[msteams] discovered %d chats", len(chats))
 	}
 
-	// chatType lookup so the admission gate sees the correct DM/group/meeting
-	// classification for every message regardless of whether the Graph
-	// chatMessage payload included it.
 	chatType := make(map[string]string, len(chats))
 	for _, ch := range chats {
 		chatType[ch.ID] = ch.ChatType
@@ -348,24 +349,23 @@ func (p *Plugin) pollLoopDelegated(ctx context.Context, handler channels.EventHa
 		case <-pollTimer.C:
 		}
 
-		// One tick: walk every known chat, fetch its delta page, dispatch
-		// (or drain on initial sync), persist cursor.
 		anyErr := false
 		for _, ch := range chats {
-			state, ok := cursors[ch.ID]
-			if !ok || state.URL == "" {
-				state = chatCursorState{URL: p.graph.InitialChatDeltaURL(ch.ID)}
+			state := cursors[ch.ID]
+
+			if state.LastSeenTime == "" {
+				// First contact with this chat: anchor the watermark at
+				// "now" so historical messages stay invisible. No poll —
+				// no need to GET when we're going to throw the results
+				// away anyway. The next tick starts dispatching real
+				// new messages.
+				state.LastSeenTime = time.Now().UTC().Format(time.RFC3339Nano)
+				cursors[ch.ID] = state
+				continue
 			}
 
-			page, ferr := p.graph.FetchDeltaPage(ctx, state.URL)
+			msgs, ferr := p.graph.ListChatMessages(ctx, ch.ID, 50)
 			if ferr != nil {
-				if errIs(ferr, errCursorExpired) {
-					// 410 for this chat — restart this chat's sync from
-					// scratch. Initial sync semantics apply again.
-					log.Printf("[msteams] WARN chat %s cursor expired; restarting initial sync", ch.ID)
-					cursors[ch.ID] = chatCursorState{URL: p.graph.InitialChatDeltaURL(ch.ID)}
-					continue
-				}
 				if errIs(ferr, errUnauthorized) {
 					if _, rerr := p.auth.ForceRefresh(context.Background()); rerr != nil {
 						log.Printf("[msteams] ERROR token refresh failed: %v", rerr)
@@ -385,40 +385,36 @@ func (p *Plugin) pollLoopDelegated(ctx context.Context, handler channels.EventHa
 				break
 			}
 
-			// Only dispatch when we're past the initial-sync drain.
-			// Otherwise mark messages as seen in the dedup ring so a
-			// later cursor reset doesn't reprocess them.
-			if state.DeltaSeen {
-				for i := range page.Messages {
-					page.Messages[i].ChatID = ch.ID
-					if page.Messages[i].ChatType == "" {
-						page.Messages[i].ChatType = chatType[ch.ID]
-					}
-					p.dispatch(ctx, &page.Messages[i], chatType[ch.ID], handler)
-				}
-			} else {
-				for _, msg := range page.Messages {
-					p.dedup.mark(msg.ID)
+			// Find messages newer than the watermark. Graph returns
+			// newest-first; we dispatch in chronological order so
+			// session continuity works as expected on the handler side.
+			var fresh []*ChatMessage
+			for i := range msgs {
+				if compareTimestamps(msgs[i].LastModifiedDateTime, state.LastSeenTime) > 0 {
+					fresh = append(fresh, &msgs[i])
 				}
 			}
-
-			// Advance the cursor. Receipt of a deltaLink means we're now
-			// caught up — future polls will return only real changes.
-			if page.NextLink != "" {
-				state.URL = page.NextLink
-			} else if page.DeltaLink != "" {
-				state.URL = page.DeltaLink
-				if !state.DeltaSeen {
-					log.Printf("[msteams] chat %s initial sync complete (dropped %d historical messages); now tracking changes",
-						ch.ID, len(page.Messages))
-					state.DeltaSeen = true
+			// Reverse: dispatch oldest-first.
+			for i, j := 0, len(fresh)-1; i < j; i, j = i+1, j-1 {
+				fresh[i], fresh[j] = fresh[j], fresh[i]
+			}
+			for _, msg := range fresh {
+				msg.ChatID = ch.ID
+				if msg.ChatType == "" {
+					msg.ChatType = chatType[ch.ID]
 				}
+				p.dispatch(ctx, msg, chatType[ch.ID], handler)
+			}
+
+			// Advance watermark to the newest message we saw (newest is
+			// msgs[0] because Graph returned them sorted desc).
+			if len(msgs) > 0 && compareTimestamps(msgs[0].LastModifiedDateTime, state.LastSeenTime) > 0 {
+				state.LastSeenTime = msgs[0].LastModifiedDateTime
 			}
 			cursors[ch.ID] = state
 		}
 
 		if anyErr {
-			// Apply exponential backoff for the next tick.
 			d := backoff
 			backoff *= 2
 			if backoff > maxBackoff {
@@ -427,13 +423,25 @@ func (p *Plugin) pollLoopDelegated(ctx context.Context, handler channels.EventHa
 			pollTimer.Reset(d)
 			continue
 		}
-		// Successful round — reset backoff and persist cursors.
 		backoff = 5 * time.Second
 		if serr := p.cursor.saveChats(cursors); serr != nil {
 			log.Printf("[msteams] cursor saveChats failed: %v", serr)
 		}
 		pollTimer.Reset(p.cfg.PollInterval)
 	}
+}
+
+// compareTimestamps compares two RFC 3339 timestamp strings lexicographically.
+// This works for all ISO 8601 formats Graph returns because they're already
+// sortable as strings (fixed-width year/month/day/etc.).
+func compareTimestamps(a, b string) int {
+	if a == b {
+		return 0
+	}
+	if a < b {
+		return -1
+	}
+	return 1
 }
 
 // handlePollError classifies the error per the §9 table and returns the

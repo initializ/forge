@@ -94,17 +94,6 @@ func (fi *fakeIssuer) addECDSAKey(kid string) *signingKey {
 	return k
 }
 
-// removeKey simulates an IdP rotating out an old key.
-func (fi *fakeIssuer) removeKey(kid string) {
-	delete(fi.keys, kid)
-	for i, k := range fi.keyOrder {
-		if k == kid {
-			fi.keyOrder = append(fi.keyOrder[:i], fi.keyOrder[i+1:]...)
-			break
-		}
-	}
-}
-
 // SignWith builds a signed token using the named key. Claims is the full
 // claim map; helpers below build common claim sets.
 func (fi *fakeIssuer) SignWith(kid string, claims jwt.MapClaims) string {

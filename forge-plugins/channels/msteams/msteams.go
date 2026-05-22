@@ -320,6 +320,14 @@ func (p *Plugin) pollLoopDelegated(ctx context.Context, handler channels.EventHa
 		cursors = map[string]chatCursorState{}
 	}
 
+	// forbiddenChats tracks chats we cannot read with the current delegated
+	// token. Meeting chats (chat IDs of the form 19:meeting_...@thread.v2)
+	// commonly 403 — Microsoft requires per-meeting consent beyond the
+	// delegated Chat.Read scope. Once a chat returns 403 we skip it on
+	// subsequent ticks; the set is cleared every chatRefreshInterval so
+	// permission grants are eventually picked up.
+	forbiddenChats := map[string]bool{}
+
 	backoff := 5 * time.Second
 	maxBackoff := 60 * time.Second
 
@@ -344,6 +352,9 @@ func (p *Plugin) pollLoopDelegated(ctx context.Context, handler channels.EventHa
 				}
 				chats = latest
 			}
+			// Re-evaluate forbidden chats — Microsoft may have granted
+			// permission since we last checked.
+			forbiddenChats = map[string]bool{}
 			refreshTimer.Reset(chatRefreshInterval)
 			continue
 		case <-pollTimer.C:
@@ -351,6 +362,11 @@ func (p *Plugin) pollLoopDelegated(ctx context.Context, handler channels.EventHa
 
 		anyErr := false
 		for _, ch := range chats {
+			// Skip chats we've already learned we cannot read.
+			if forbiddenChats[ch.ID] {
+				continue
+			}
+
 			state := cursors[ch.ID]
 
 			if state.LastSeenTime == "" {
@@ -366,6 +382,8 @@ func (p *Plugin) pollLoopDelegated(ctx context.Context, handler channels.EventHa
 
 			msgs, ferr := p.graph.ListChatMessages(ctx, ch.ID, 50)
 			if ferr != nil {
+				// 401 and 429 are GLOBAL — affect every chat, so break
+				// out of the chat loop and apply a global backoff.
 				if errIs(ferr, errUnauthorized) {
 					if _, rerr := p.auth.ForceRefresh(context.Background()); rerr != nil {
 						log.Printf("[msteams] ERROR token refresh failed: %v", rerr)
@@ -380,9 +398,25 @@ func (p *Plugin) pollLoopDelegated(ctx context.Context, handler channels.EventHa
 					anyErr = true
 					break
 				}
+				// 403 is PER-CHAT — we lack permission to read this
+				// specific chat (most often a meeting chat that
+				// requires extra consent). Mark it forbidden so we
+				// stop polling it, log once, and continue iterating
+				// the other chats. The set is cleared on the next
+				// chat-list refresh in case the permission was added.
+				if errIs(ferr, errForbidden) {
+					log.Printf("[msteams] 403 forbidden on chat %s (type=%s); skipping. "+
+						"Meeting chats often require additional consent beyond delegated Chat.Read.",
+						ch.ID, chatType[ch.ID])
+					forbiddenChats[ch.ID] = true
+					continue
+				}
+				// Other transient errors (5xx, network): log + continue
+				// with other chats. We'll apply global backoff once the
+				// whole iteration finishes.
 				log.Printf("[msteams] WARN poll error on chat %s (backoff=%s): %v", ch.ID, backoff, ferr)
 				anyErr = true
-				break
+				continue
 			}
 
 			// Find messages newer than the watermark. Graph returns

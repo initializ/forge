@@ -20,17 +20,33 @@ import (
 type cursor struct {
 	path string
 	mu   sync.Mutex
-	val  string            // global deltaLink (app-only flow)
-	chat map[string]string // per-chat deltaLinks (delegated flow)
+	val  string                     // global deltaLink (app-only flow)
+	chat map[string]chatCursorState // per-chat delta state (delegated flow)
 }
 
 type cursorFile struct {
 	DeltaLink string `json:"delta_link,omitempty"`
 
-	// Chats holds per-chat delta links for the delegated polling flow,
-	// where /chats/{id}/messages/delta runs once per chat. Empty when the
-	// app-only flow (single getAllMessages/delta cursor) is in use.
-	Chats map[string]string `json:"chats,omitempty"`
+	// Chats holds per-chat delta state for the delegated polling flow.
+	// Empty when the app-only flow (single getAllMessages/delta cursor)
+	// is in use. The string-valued legacy schema (a bare URL per chat) is
+	// also accepted on load for backwards compat with cursor files
+	// produced by earlier commits.
+	Chats map[string]chatCursorState `json:"chats,omitempty"`
+}
+
+// chatCursorState tracks both the next URL to call and whether we've passed
+// the initial-sync phase for a chat. Graph's /chats/{id}/messages/delta
+// returns full chat history on the first call, paginated until a deltaLink
+// arrives. We mustn't dispatch those historical messages — only changes
+// returned by calls made AFTER the first deltaLink count as real-time
+// chat activity.
+type chatCursorState struct {
+	URL string `json:"url"`
+	// DeltaSeen flips true the first time Graph returns @odata.deltaLink
+	// for this chat. While false, messages returned by polling are
+	// historical (initial sync) and the dispatch loop drops them.
+	DeltaSeen bool `json:"delta_seen,omitempty"`
 }
 
 func newCursor(path string) *cursor {
@@ -46,13 +62,13 @@ func (c *cursor) load() string {
 	return c.val
 }
 
-// loadChats returns a copy of the persisted per-chat deltaLink map (delegated
+// loadChats returns a copy of the persisted per-chat delta state (delegated
 // flow). Returns an empty map if no cursor file exists.
-func (c *cursor) loadChats() map[string]string {
+func (c *cursor) loadChats() map[string]chatCursorState {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.loadLocked()
-	out := make(map[string]string, len(c.chat))
+	out := make(map[string]chatCursorState, len(c.chat))
 	for k, v := range c.chat {
 		out[k] = v
 	}
@@ -65,7 +81,7 @@ func (c *cursor) loadLocked() {
 	if c.val != "" || c.chat != nil {
 		return
 	}
-	c.chat = map[string]string{}
+	c.chat = map[string]chatCursorState{}
 	data, err := os.ReadFile(c.path)
 	if err != nil {
 		// Both "missing file" and "corrupt/unreadable" map to "empty cursor"
@@ -75,6 +91,22 @@ func (c *cursor) loadLocked() {
 	}
 	var cf cursorFile
 	if err := json.Unmarshal(data, &cf); err != nil {
+		// Try the legacy schema (map[string]string) before giving up — old
+		// cursor files used a bare URL per chat.
+		var legacy struct {
+			DeltaLink string            `json:"delta_link,omitempty"`
+			Chats     map[string]string `json:"chats,omitempty"`
+		}
+		if err2 := json.Unmarshal(data, &legacy); err2 == nil {
+			c.val = legacy.DeltaLink
+			for k, v := range legacy.Chats {
+				// Legacy cursors are treated as initial-sync state: we
+				// haven't seen a deltaLink yet from THIS process, so the
+				// next call will re-do initial sync. That's safer than
+				// inadvertently dispatching the next page as new traffic.
+				c.chat[k] = chatCursorState{URL: v, DeltaSeen: false}
+			}
+		}
 		return
 	}
 	c.val = cf.DeltaLink
@@ -93,13 +125,13 @@ func (c *cursor) save(deltaLink string) error {
 	return c.writeLocked()
 }
 
-// saveChats persists the per-chat deltaLink map atomically (delegated flow).
+// saveChats persists the per-chat delta state atomically (delegated flow).
 // The global deltaLink in the file is preserved.
-func (c *cursor) saveChats(chats map[string]string) error {
+func (c *cursor) saveChats(chats map[string]chatCursorState) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.loadLocked()
-	c.chat = make(map[string]string, len(chats))
+	c.chat = make(map[string]chatCursorState, len(chats))
 	for k, v := range chats {
 		c.chat[k] = v
 	}

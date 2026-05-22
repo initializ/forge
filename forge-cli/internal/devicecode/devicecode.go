@@ -183,9 +183,43 @@ func PollDeviceToken(ctx context.Context, client *http.Client, loginBase, tenant
 			if msg == "" {
 				msg = tr.Error
 			}
-			return nil, fmt.Errorf("token endpoint error: %s", msg)
+			// Diagnostic: when Entra rejects for missing credentials,
+			// surface whether we sent a client_secret. This catches both
+			// "secret was empty in our form" and "app is confidential but
+			// secret was wrong/expired" cases. Newline-prefixed so it
+			// can't be lost to terminal wrapping of the AADSTS message.
+			diag := ""
+			if strings.Contains(msg, "AADSTS7000218") || strings.Contains(msg, "client_assertion") {
+				if clientSecret == "" {
+					diag = "\n>> client_secret was NOT sent. Your Entra app is a confidential client; provide MSTEAMS_CLIENT_SECRET."
+				} else {
+					diag = "\n>> client_secret WAS sent (len=" + lenStr(clientSecret) + ") but Entra still rejected it." +
+						"\n>> Most common cause: 'Allow public client flows' is OFF in your Entra app." +
+						"\n>>   Fix: Entra portal → App registrations → your app → Authentication →" +
+						"\n>>        Advanced settings → 'Allow public client flows' = Yes → Save." +
+						"\n>> Less common: the secret VALUE (not the Secret ID) is wrong or expired." +
+						"\n>>   Fix: Entra portal → Certificates & secrets → + New client secret → copy the Value column."
+				}
+			}
+			return nil, fmt.Errorf("token endpoint error: %s%s", msg, diag)
 		}
 	}
+}
+
+// lenStr formats an int as a string without bringing in strconv.
+func lenStr(s string) string {
+	n := len(s)
+	if n == 0 {
+		return "0"
+	}
+	var buf [16]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[i:])
 }
 
 // OpenURL launches the host's default browser pointed at u. Best-effort —

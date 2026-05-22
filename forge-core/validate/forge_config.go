@@ -118,5 +118,7 @@ func ValidateForgeConfig(cfg *types.ForgeConfig) *ValidationResult {
 		}
 	}
 
+	ValidateAuthConfig(cfg.Auth, r)
+
 	return r
 }

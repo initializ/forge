@@ -17,6 +17,10 @@ import (
 	"github.com/initializ/forge/forge-core/agentspec"
 	"github.com/initializ/forge/forge-core/auth"
 	"github.com/initializ/forge/forge-core/auth/providers/httpverifier"
+	// Side-effect import: registers the "oidc" provider with the auth registry
+	// so forge.yaml `auth: { type: oidc }` blocks construct successfully via
+	// auth.Build("oidc", settings). The package is not referenced directly.
+	_ "github.com/initializ/forge/forge-core/auth/providers/oidc"
 	"github.com/initializ/forge/forge-core/auth/providers/statictoken"
 	"github.com/initializ/forge/forge-core/llm"
 	"github.com/initializ/forge/forge-core/llm/oauth"
@@ -248,6 +252,10 @@ func (r *Runner) Run(ctx context.Context) error {
 			egressDomains = append(egressDomains, expandEgressDomains(d, envVars)...)
 		}
 	}
+	// Auto-merge auth-provider issuer/verifier hosts. Without this, an
+	// OIDC issuer or http_verifier URL configured in forge.yaml would be
+	// silently blocked at runtime by the egress enforcer.
+	egressDomains = append(egressDomains, security.AuthDomains(r.cfg.Config.Auth)...)
 	egressCfg, egressErr := security.Resolve(
 		r.cfg.Config.Egress.Profile,
 		r.cfg.Config.Egress.Mode,
@@ -1723,14 +1731,18 @@ func (r *Runner) printBanner(proxyURL string) {
 
 // resolveAuth builds the auth middleware options for the A2A server.
 //
-// Behavior preserved from the pre-chain implementation:
-//   - --no-auth (NoAuth=true)           → no chain, anonymous access
-//   - --auth-url set                    → chain: [static_token (loopback), http_verifier]
-//   - neither set                       → chain: [static_token (local)]
+// Source precedence (highest first):
+//  1. --no-auth flag       → nil chain, anonymous access
+//  2. forge.yaml auth:     → Registry.BuildChain(cfg.Auth.Providers)
+//  3. --auth-url / env     → legacy http_verifier chain
+//  4. nothing              → loopback-token-only chain (or nil if also no channels)
 //
-// Token resolution is performed by ResolveAuth() (called earlier so channel
-// adapters can use it); this method translates the resolved token + URL into
-// a Provider chain.
+// If BOTH forge.yaml auth: AND --auth-url are configured, the YAML block
+// wins and a warning is logged — silent merging would be surprising.
+//
+// The internal loopback static_token is ALWAYS prepended at the chain
+// head (regardless of source) so channel-adapter callbacks short-circuit
+// before any external provider is invoked.
 func (r *Runner) resolveAuth(auditLogger *coreruntime.AuditLogger) (auth.MiddlewareOptions, error) {
 	// Ensure token is resolved (no-op if already done by ResolveAuth).
 	if err := r.ResolveAuth(); err != nil {
@@ -1741,9 +1753,26 @@ func (r *Runner) resolveAuth(auditLogger *coreruntime.AuditLogger) (auth.Middlew
 		return auth.MiddlewareOptions{}, nil // nil chain → passthrough
 	}
 
-	chain, err := buildLegacyAuthChain(r.authToken, r.cfg.AuthURL, r.cfg.AuthOrgID)
+	userChain, err := r.buildUserAuthChain()
 	if err != nil {
 		return auth.MiddlewareOptions{}, fmt.Errorf("building auth chain: %w", err)
+	}
+
+	// Prepend the loopback static_token so channel adapter callbacks
+	// short-circuit before any user-configured provider runs.
+	chain := userChain
+	if r.authToken != "" {
+		loopback, err := statictoken.New(statictoken.Config{
+			Token: r.authToken,
+			Identity: auth.Identity{
+				UserID: "forge-internal",
+				Source: "internal",
+			},
+		})
+		if err != nil {
+			return auth.MiddlewareOptions{}, fmt.Errorf("loopback static_token: %w", err)
+		}
+		chain = auth.PrependChain(userChain, loopback)
 	}
 
 	return auth.MiddlewareOptions{
@@ -1769,20 +1798,82 @@ func (r *Runner) resolveAuth(auditLogger *coreruntime.AuditLogger) (auth.Middlew
 	}, nil
 }
 
-// buildLegacyAuthChain constructs the Provider chain from the legacy
-// CLI-flag inputs (--auth-token / --auth-url / --auth-org-id).
+// buildUserAuthChain returns the user-facing portion of the auth chain
+// (everything EXCEPT the loopback static_token, which the caller prepends).
 //
-// When both an internal token and an external --auth-url are present, the
-// static_token provider runs first so channel-adapter loopback calls
-// short-circuit before reaching the external verifier. This mirrors the
-// pre-refactor "internal token then external" check in middleware.go.
-//
-// Returns nil chain (passthrough) when no providers are configured.
-func buildLegacyAuthChain(internalToken, authURL, authOrgID string) (auth.Provider, error) {
-	var providers []auth.Provider
+//   - forge.yaml auth.providers populated → Registry.BuildChain
+//   - --auth-url / FORGE_AUTH_URL only     → legacy http_verifier
+//   - neither                              → nil (no user chain)
+func (r *Runner) buildUserAuthChain() (auth.Provider, error) {
+	hasYAMLAuth := len(r.cfg.Config.Auth.Providers) > 0
+	hasLegacyURL := r.cfg.AuthURL != ""
 
+	if hasYAMLAuth && hasLegacyURL {
+		r.logger.Warn("both --auth-url and forge.yaml 'auth:' block configured; preferring 'auth:' block (--auth-url ignored)", nil)
+	}
+
+	if hasYAMLAuth {
+		return buildChainFromConfig(r.cfg.Config.Auth)
+	}
+	if hasLegacyURL {
+		return buildLegacyHTTPVerifierChain(r.cfg.AuthURL, r.cfg.AuthOrgID)
+	}
+	return nil, nil
+}
+
+// buildChainFromConfig builds a ChainProvider from a typed AuthConfig by
+// delegating to the package-level registry. Each AuthProvider entry is
+// constructed via its registered factory.
+func buildChainFromConfig(cfg types.AuthConfig) (auth.Provider, error) {
+	if len(cfg.Providers) == 0 {
+		return nil, nil
+	}
+	providers := make([]auth.Provider, 0, len(cfg.Providers))
+	for i, spec := range cfg.Providers {
+		p, err := auth.Build(spec.Type, spec.Settings)
+		if err != nil {
+			return nil, fmt.Errorf("auth.providers[%d] (%s): %w", i, spec.Type, err)
+		}
+		providers = append(providers, p)
+	}
+	return auth.NewChainProvider(providers...), nil
+}
+
+// buildLegacyHTTPVerifierChain constructs the legacy --auth-url chain
+// (single http_verifier provider). Kept separate from
+// buildChainFromConfig so the legacy code path is obvious.
+func buildLegacyHTTPVerifierChain(authURL, authOrgID string) (auth.Provider, error) {
+	p, err := httpverifier.New(httpverifier.Config{
+		URL:        authURL,
+		DefaultOrg: authOrgID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("legacy http_verifier: %w", err)
+	}
+	return auth.NewChainProvider(p), nil
+}
+
+// buildLegacyAuthChain is a test-friendly helper that combines the
+// loopback-token prepend and the legacy http_verifier chain. Mirrors the
+// production wiring in resolveAuth so PR1's e2e tests keep working
+// unchanged.
+//
+// Order:
+//  1. static_token (loopback) — if internalToken non-empty
+//  2. http_verifier — if authURL non-empty
+//
+// Returns nil chain when both inputs are empty.
+func buildLegacyAuthChain(internalToken, authURL, authOrgID string) (auth.Provider, error) {
+	var userChain auth.Provider
+	if authURL != "" {
+		c, err := buildLegacyHTTPVerifierChain(authURL, authOrgID)
+		if err != nil {
+			return nil, err
+		}
+		userChain = c
+	}
 	if internalToken != "" {
-		p, err := statictoken.New(statictoken.Config{
+		loopback, err := statictoken.New(statictoken.Config{
 			Token: internalToken,
 			Identity: auth.Identity{
 				UserID: "forge-internal",
@@ -1792,24 +1883,12 @@ func buildLegacyAuthChain(internalToken, authURL, authOrgID string) (auth.Provid
 		if err != nil {
 			return nil, fmt.Errorf("static_token provider: %w", err)
 		}
-		providers = append(providers, p)
-	}
-
-	if authURL != "" {
-		p, err := httpverifier.New(httpverifier.Config{
-			URL:        authURL,
-			DefaultOrg: authOrgID,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("http_verifier provider: %w", err)
+		if userChain == nil {
+			return auth.NewChainProvider(loopback), nil
 		}
-		providers = append(providers, p)
+		return auth.PrependChain(userChain, loopback), nil
 	}
-
-	if len(providers) == 0 {
-		return nil, nil
-	}
-	return auth.NewChainProvider(providers...), nil
+	return userChain, nil
 }
 
 // ensureGitignore makes sure .forge/ is listed in the project's .gitignore.

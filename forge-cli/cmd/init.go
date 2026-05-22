@@ -1100,6 +1100,35 @@ func buildEnvVars(opts *initOptions) []envVarEntry {
 			vars = append(vars, envVarEntry{Key: "SLACK_APP_TOKEN", Value: appVal, Comment: "Slack app-level token (xapp-...)"})
 			botVal := opts.EnvVars["SLACK_BOT_TOKEN"]
 			vars = append(vars, envVarEntry{Key: "SLACK_BOT_TOKEN", Value: botVal, Comment: "Slack bot token (xoxb-...)"})
+		case "msteams":
+			// MS Teams uses Entra delegated OAuth2. All five env vars flow
+			// from the init TUI's channel step into opts.EnvVars; the
+			// device-code flow (TUI step 4) populates MSTEAMS_REFRESH_TOKEN
+			// when consent succeeds and leaves it empty when the user skips.
+			// Empty refresh-token is intentional: the operator can capture
+			// it later via `forge channel msteams-login --write-env`.
+			vars = append(vars, envVarEntry{
+				Key: "MSTEAMS_TENANT_ID", Value: opts.EnvVars["MSTEAMS_TENANT_ID"],
+				Comment: "MS Teams: Entra tenant ID (Directory tenant) GUID",
+			})
+			vars = append(vars, envVarEntry{
+				Key: "MSTEAMS_CLIENT_ID", Value: opts.EnvVars["MSTEAMS_CLIENT_ID"],
+				Comment: "MS Teams: Entra app (client) ID",
+			})
+			vars = append(vars, envVarEntry{
+				Key: "MSTEAMS_CLIENT_SECRET", Value: opts.EnvVars["MSTEAMS_CLIENT_SECRET"],
+				Comment: "MS Teams: Entra app client secret (Value, not Secret ID)",
+			})
+			vars = append(vars, envVarEntry{
+				Key: "MSTEAMS_REFRESH_TOKEN", Value: opts.EnvVars["MSTEAMS_REFRESH_TOKEN"],
+				Comment: "MS Teams: OAuth refresh token captured via device-code flow",
+			})
+			if uid := opts.EnvVars["MSTEAMS_USER_ID"]; uid != "" {
+				vars = append(vars, envVarEntry{
+					Key: "MSTEAMS_USER_ID", Value: uid,
+					Comment: "MS Teams: agent user objectId (required for client_credentials flow only)",
+				})
+			}
 		}
 	}
 

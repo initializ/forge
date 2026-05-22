@@ -232,24 +232,33 @@ func (g *graphClient) FetchDeltaPage(ctx context.Context, pageURL string) (*Delt
 	return &out, nil
 }
 
-// PostChatMessage posts an HTML-body message to a chat.
-func (g *graphClient) PostChatMessage(ctx context.Context, chatID, contentHTML string) error {
+// PostChatMessage posts an HTML-body message to a chat and returns the
+// created message's Graph ID. Callers in delegated mode use the ID to
+// pre-populate the dedup ring so the same message, when it comes back via
+// polling, is recognised as agent-authored and dropped instead of being
+// treated as fresh user input.
+func (g *graphClient) PostChatMessage(ctx context.Context, chatID, contentHTML string) (string, error) {
 	body := map[string]any{
 		"body": map[string]any{
 			"contentType": "html",
 			"content":     contentHTML,
 		},
 	}
-	return g.postJSON(ctx, fmt.Sprintf("/chats/%s/messages", url.PathEscape(chatID)), body, nil)
+	var resp ChatMessage
+	if err := g.postJSON(ctx, fmt.Sprintf("/chats/%s/messages", url.PathEscape(chatID)), body, &resp); err != nil {
+		return "", err
+	}
+	return resp.ID, nil
 }
 
 // PostChatMessageWithAttachment posts a chat message that references a
 // hosted-content attachment. Used for large responses (>24 KB HTML body).
 // Per the issue: hosted-contents have a 4 MB cap; callers must fall back to
-// chunked text beyond that.
-func (g *graphClient) PostChatMessageWithAttachment(ctx context.Context, chatID, filename, mimeType string, content []byte) error {
+// chunked text beyond that. Returns the created message's Graph ID for the
+// same dedup-marking reason as PostChatMessage.
+func (g *graphClient) PostChatMessageWithAttachment(ctx context.Context, chatID, filename, mimeType string, content []byte) (string, error) {
 	if len(content) > 4*1024*1024 {
-		return fmt.Errorf("msteams graph: attachment too large (%d bytes; limit 4 MiB)", len(content))
+		return "", fmt.Errorf("msteams graph: attachment too large (%d bytes; limit 4 MiB)", len(content))
 	}
 	contentID := fmt.Sprintf("forge-%d", time.Now().UnixNano())
 	body := map[string]any{
@@ -264,7 +273,11 @@ func (g *graphClient) PostChatMessageWithAttachment(ctx context.Context, chatID,
 			"name":        filename,
 		}},
 	}
-	return g.postJSON(ctx, fmt.Sprintf("/chats/%s/messages", url.PathEscape(chatID)), body, nil)
+	var resp ChatMessage
+	if err := g.postJSON(ctx, fmt.Sprintf("/chats/%s/messages", url.PathEscape(chatID)), body, &resp); err != nil {
+		return "", err
+	}
+	return resp.ID, nil
 }
 
 // getJSON issues a GET against a relative path under baseURL.

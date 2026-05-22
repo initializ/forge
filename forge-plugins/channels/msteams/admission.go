@@ -26,12 +26,18 @@ type admissionResult struct {
 	reason string
 }
 
-// admit applies the 4-stage gate from the issue's §7.4. The order matters:
+// admit applies the admission gate. The order matters:
 //
-//  1. Self-loop guard — beats everything else. Even an allowlisted bot ID
-//     that happens to match ownUserID is dropped.
-//  2. Bot admission — non-user authors must be in allowBotIDs.
-//  3. Mode filter — mention / dm / mention_or_dm.
+//  1. Bot admission — non-user authors must be in allowBotIDs.
+//  2. Mode filter — mention / dm / mention_or_dm.
+//
+// Loop prevention is NOT done here via from.user.id comparison. In
+// delegated mode, the agent's outbound messages have the same from.user.id
+// as user-typed messages (delegated tokens act AS the user) — there's no
+// way to tell them apart inside admit(). The Plugin instead pre-populates
+// the dedup ring with every outbound message ID it sends, so polling
+// drops those before reaching admission. ownUserID is kept on the
+// signature for diagnostic / future use but is not consulted as a gate.
 //
 // Dedup is the caller's responsibility (it has different lock granularity
 // and is needed for ALL paths, not just admitted ones).
@@ -42,12 +48,9 @@ func admit(
 	mode AdmitMode,
 	chatType string,
 ) admissionResult {
-	// 1. Self-loop guard.
-	if msg.From != nil && msg.From.User != nil && msg.From.User.ID == ownUserID {
-		return admissionResult{admit: false, reason: "msteams: dropping message authored by self"}
-	}
+	_ = ownUserID // intentionally unused; see comment above
 
-	// 2. Bot admission.
+	// 1. Bot admission.
 	if msg.From != nil && msg.From.Application != nil {
 		botID := msg.From.Application.ID
 		if !allowBotIDs[botID] {

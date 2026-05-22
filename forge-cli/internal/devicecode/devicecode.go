@@ -125,6 +125,12 @@ func PollDeviceToken(ctx context.Context, client *http.Client, loginBase, tenant
 	endpoint := fmt.Sprintf("%s/%s/oauth2/v2.0/token", loginBase, tenant)
 	interval := time.Duration(dc.Interval) * time.Second
 
+	// sendSecret starts true (confidential-client behaviour) and flips to
+	// false on AADSTS700025 — Entra's signal that the app is registered as
+	// a public client and rejects client credentials. After the flip we
+	// keep polling without the secret in the same flow.
+	sendSecret := true
+
 	for {
 		// Wait first — Microsoft rejects the very first poll as
 		// authorization_pending anyway, and the spec requires waiting at
@@ -139,9 +145,11 @@ func PollDeviceToken(ctx context.Context, client *http.Client, loginBase, tenant
 		form.Set("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
 		form.Set("client_id", clientID)
 		form.Set("device_code", dc.DeviceCode)
-		if clientSecret != "" {
-			// Required for confidential-client (web) app registrations.
-			// Public-client (native) apps tolerate this extra field.
+		// sendSecret toggles to false after the first AADSTS700025 from
+		// Entra, which means the app is a public-client registration that
+		// rejects client_secret. Subsequent polls in the same call omit
+		// the secret.
+		if clientSecret != "" && sendSecret {
 			form.Set("client_secret", clientSecret)
 		}
 
@@ -182,6 +190,13 @@ func PollDeviceToken(ctx context.Context, client *http.Client, loginBase, tenant
 			msg := tr.ErrorDesc
 			if msg == "" {
 				msg = tr.Error
+			}
+			// AADSTS700025: Entra says the app is registered as public —
+			// stop sending the secret and immediately retry on the same
+			// device code (it's still valid for ~15 minutes).
+			if sendSecret && clientSecret != "" && strings.Contains(msg, "AADSTS700025") {
+				sendSecret = false
+				continue
 			}
 			// Diagnostic: when Entra rejects for missing credentials,
 			// surface whether we sent a client_secret. This catches both

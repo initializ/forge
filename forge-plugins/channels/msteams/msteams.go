@@ -573,13 +573,22 @@ func (p *Plugin) dispatch(ctx context.Context, msg *ChatMessage, chatTypeHint st
 // SendResponse delivers an agent reply back to the Teams chat. Mirrors the
 // Slack/Telegram large-response handling: small responses inline, large
 // responses summary + hosted-content attachment, fallback to chunked text.
+//
+// Every successful outbound message ID is recorded in the dedup ring via
+// markSent. In delegated mode the agent shares the user's Graph identity
+// (delegated tokens act as the user), so messages we post come back via
+// polling with the same from.user.id as messages the user types directly.
+// The dedup ring is the ONLY way to tell our own posts apart from real
+// inbound traffic before reaching the admission gate.
 func (p *Plugin) SendResponse(event *channels.ChannelEvent, response *a2a.Message) error {
 	text := extractText(response)
 	html := markdown.MarkdownToTeamsHTML(text)
 	ctx := context.Background()
 
 	if len(html) <= 24000 {
-		return p.graph.PostChatMessage(ctx, event.WorkspaceID, html)
+		id, err := p.graph.PostChatMessage(ctx, event.WorkspaceID, html)
+		p.markSent(id)
+		return err
 	}
 
 	// Large response. Prefer runtime-generated summary; fall back to
@@ -594,25 +603,42 @@ func (p *Plugin) SendResponse(event *channels.ChannelEvent, response *a2a.Messag
 	}
 	summaryHTML := markdown.MarkdownToTeamsHTML(summary + "\n\n*Full report attached as file above.*")
 
-	if err := p.graph.PostChatMessage(ctx, event.WorkspaceID, summaryHTML); err != nil {
+	summaryID, err := p.graph.PostChatMessage(ctx, event.WorkspaceID, summaryHTML)
+	if err != nil {
 		// If even the summary can't be posted, fall back to chunked plain text.
 		return p.sendChunked(ctx, event.WorkspaceID, html)
 	}
+	p.markSent(summaryID)
 
-	if err := p.graph.PostChatMessageWithAttachment(ctx, event.WorkspaceID, "research-report.md", "text/markdown", []byte(full)); err != nil {
+	attID, err := p.graph.PostChatMessageWithAttachment(ctx, event.WorkspaceID, "research-report.md", "text/markdown", []byte(full))
+	if err != nil {
 		log.Printf("[msteams] attachment failed, falling back to chunked send: %v", err)
 		return p.sendChunked(ctx, event.WorkspaceID, html)
 	}
+	p.markSent(attID)
 	return nil
 }
 
 func (p *Plugin) sendChunked(ctx context.Context, chatID, html string) error {
 	for _, chunk := range markdown.SplitMessageTeams(html) {
-		if err := p.graph.PostChatMessage(ctx, chatID, chunk); err != nil {
+		id, err := p.graph.PostChatMessage(ctx, chatID, chunk)
+		if err != nil {
 			return err
 		}
+		p.markSent(id)
 	}
 	return nil
+}
+
+// markSent records an outbound message ID in the dedup ring so the polling
+// loop drops it instead of routing it through admission as a fresh inbound.
+// Safe to call with an empty id (no-op) — keeps call sites tidy when the
+// post succeeded but Graph somehow omitted the ID.
+func (p *Plugin) markSent(id string) {
+	if id == "" || p.dedup == nil {
+		return
+	}
+	p.dedup.mark(id)
 }
 
 // --- helpers ---

@@ -156,17 +156,16 @@ func newBotMsg(botID, body string) *ChatMessage {
 	return m
 }
 
-func TestAdmit_SelfLoopBeatsAllowlist(t *testing.T) {
-	// Even if the agent's own ID is in allow_bot_ids (a misconfiguration),
-	// self-authored messages MUST be dropped.
-	allow := map[string]bool{"own-id": true}
-	m := newUserMsg("own-id", "anything")
-	res := admit(m, "own-id", allow, AdmitMentionOrDM, "oneOnOne")
-	if res.admit {
-		t.Error("self-authored message must always be dropped")
-	}
-	if !strings.Contains(res.reason, "authored by self") {
-		t.Errorf("reason = %q, expected self-loop label", res.reason)
+func TestAdmit_SelfAuthoredUserMessageAdmitted(t *testing.T) {
+	// In delegated mode the agent shares the user's Graph identity, so a
+	// message authored by ownUserID is NOT inherently a loop — it might be
+	// the user typing from a Teams client. Admit it through admission and
+	// rely on the dedup ring (populated by SendResponse with outbound
+	// message IDs) to catch genuine agent-authored loops upstream of admit.
+	m := newUserMsg("own-id", "hi agent")
+	res := admit(m, "own-id", nil, AdmitDM, "oneOnOne")
+	if !res.admit {
+		t.Errorf("delegated self-authored DM should be admitted (dedup handles loops); got reason=%q", res.reason)
 	}
 }
 
@@ -419,13 +418,16 @@ func TestGraphClient_PostChatMessage(t *testing.T) {
 			t.Errorf("method = %s, want POST", r.Method)
 		}
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
-		_, _ = w.Write([]byte(`{}`))
+		_, _ = w.Write([]byte(`{"id":"msg-out-1"}`))
 	}))
 	defer srv.Close()
 	g := newGraphClient(srv.URL, srv.Client(), newFakeAuthManager("t"))
-	err := g.PostChatMessage(context.Background(), "chat-1", "<strong>hi</strong>")
+	id, err := g.PostChatMessage(context.Background(), "chat-1", "<strong>hi</strong>")
 	if err != nil {
 		t.Fatalf("post: %v", err)
+	}
+	if id != "msg-out-1" {
+		t.Errorf("PostChatMessage id = %q, want msg-out-1", id)
 	}
 	body, ok := gotBody["body"].(map[string]any)
 	if !ok {

@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -199,8 +200,8 @@ func TestMiddleware_OnAuthCallback(t *testing.T) {
 			identity: Identity{UserID: "u", Source: "test"},
 		}),
 		SkipPaths: DefaultSkipPaths(),
-		OnAuth: func(_ *http.Request, success bool) {
-			if success {
+		OnAuth: func(_ *http.Request, id *Identity, err error, _ string) {
+			if err == nil && id != nil {
 				successCount.Add(1)
 			} else {
 				failCount.Add(1)
@@ -253,6 +254,111 @@ func TestMiddleware_IdentityIsAttachedToContext(t *testing.T) {
 	}
 	if gotID.UserID != wantID.UserID || gotID.Email != wantID.Email {
 		t.Errorf("identity = %+v, want %+v", gotID, wantID)
+	}
+}
+
+func TestMiddleware_OnAuthReceivesIdentityAndError(t *testing.T) {
+	const goodToken = "good"
+	wantID := Identity{UserID: "alice", Source: "test_token"}
+
+	var (
+		gotIDOnSuccess *Identity
+		gotErrOnFail   error
+		gotKindSuccess string
+		gotKindFail    string
+	)
+
+	opts := MiddlewareOptions{
+		Chain:     NewChainProvider(&tokenProvider{expected: goodToken, identity: wantID}),
+		SkipPaths: DefaultSkipPaths(),
+		OnAuth: func(_ *http.Request, id *Identity, err error, kind string) {
+			if err == nil && id != nil {
+				gotIDOnSuccess = id
+				gotKindSuccess = kind
+			} else {
+				gotErrOnFail = err
+				gotKindFail = kind
+			}
+		},
+	}
+
+	handler := Middleware(opts)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Success path — OnAuth gets the Identity, kind = "opaque" (no dots).
+	req := httptest.NewRequest("POST", "/", nil)
+	req.Header.Set("Authorization", "Bearer "+goodToken)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if gotIDOnSuccess == nil {
+		t.Fatal("OnAuth did not receive Identity on success")
+	}
+	if gotIDOnSuccess.UserID != "alice" {
+		t.Errorf("OnAuth identity = %+v, want UserID=alice", gotIDOnSuccess)
+	}
+	if gotKindSuccess != "opaque" {
+		t.Errorf("token kind on success = %q, want opaque", gotKindSuccess)
+	}
+
+	// Failure path — no Authorization header → ErrMissingBearer.
+	req2 := httptest.NewRequest("POST", "/", nil)
+	handler.ServeHTTP(httptest.NewRecorder(), req2)
+	if !errors.Is(gotErrOnFail, ErrMissingBearer) {
+		t.Errorf("OnAuth fail err = %v, want ErrMissingBearer", gotErrOnFail)
+	}
+	if gotKindFail != "empty" {
+		t.Errorf("token kind on missing-token fail = %q, want empty", gotKindFail)
+	}
+}
+
+func TestMiddleware_OnAuthGetsChainError(t *testing.T) {
+	// When the chain rejects, OnAuth receives the precise sentinel so
+	// the caller can map to a stable reason code.
+	opts := MiddlewareOptions{
+		Chain:     NewChainProvider(rejectingProvider{}),
+		SkipPaths: DefaultSkipPaths(),
+	}
+	var gotErr error
+	opts.OnAuth = func(_ *http.Request, _ *Identity, err error, _ string) {
+		gotErr = err
+	}
+	handler := Middleware(opts)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("POST", "/", nil)
+	req.Header.Set("Authorization", "Bearer x")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if !errors.Is(gotErr, ErrTokenRejected) {
+		t.Errorf("OnAuth got err = %v, want ErrTokenRejected", gotErr)
+	}
+}
+
+func TestMiddleware_TokenKindDetection(t *testing.T) {
+	// JWT-shaped tokens are reported as "jwt" even when the chain
+	// doesn't recognize them — this is structural, not validity.
+	jwtToken := "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.sig"
+
+	var gotKind string
+	opts := MiddlewareOptions{
+		Chain:     NewChainProvider(rejectingProvider{}),
+		SkipPaths: DefaultSkipPaths(),
+		OnAuth: func(_ *http.Request, _ *Identity, _ error, kind string) {
+			gotKind = kind
+		},
+	}
+	handler := Middleware(opts)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("POST", "/", nil)
+	req.Header.Set("Authorization", "Bearer "+jwtToken)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if gotKind != "jwt" {
+		t.Errorf("token kind = %q, want jwt", gotKind)
 	}
 }
 

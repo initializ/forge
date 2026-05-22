@@ -39,9 +39,28 @@ type MiddlewareOptions struct {
 	SkipPaths map[string]bool
 
 	// OnAuth is an optional callback invoked on every auth decision.
-	// success is true when the request authenticated; false otherwise.
-	OnAuth func(r *http.Request, success bool)
+	//
+	//   - identity is non-nil and err is nil on success.
+	//   - identity is nil and err carries the chain error on failure
+	//     (or auth.ErrMissingBearer when the header was absent).
+	//   - tokenKind is "jwt", "opaque", or "empty" — structural metadata
+	//     safe to log. The token itself is NOT passed; callers must not
+	//     try to recover it from the request.
+	//
+	// Callbacks should be cheap — they run on the request hot path.
+	OnAuth func(r *http.Request, identity *Identity, err error, tokenKind string)
 }
+
+// ErrMissingBearer is returned (via OnAuth) when the request lacked an
+// Authorization: Bearer ... header. Distinct from chain-level errors so
+// callers can emit a precise "missing_token" reason code without parsing
+// error strings.
+var ErrMissingBearer = errorString("auth: missing bearer token")
+
+// errorString is a sentinel-friendly error type that compares by identity.
+type errorString string
+
+func (e errorString) Error() string { return string(e) }
 
 // Middleware returns an http.Handler that enforces bearer token authentication
 // via the provided Provider chain. If opts.Chain is nil, requests pass through
@@ -62,25 +81,36 @@ func Middleware(opts MiddlewareOptions) func(http.Handler) http.Handler {
 			}
 
 			token := extractBearerToken(r)
+			kind := TokenKind(token)
+
 			if token == "" {
-				writeAuthFail(w, r, opts.OnAuth, "valid bearer token required")
+				notifyAuth(opts.OnAuth, r, nil, ErrMissingBearer, kind)
+				writeAuthError(w, "valid bearer token required")
 				return
 			}
 
 			identity, err := opts.Chain.Verify(r.Context(), token, HeadersFromRequest(r))
 			if err != nil || identity == nil {
-				writeAuthFail(w, r, opts.OnAuth, classifyAuthFailure(err))
+				notifyAuth(opts.OnAuth, r, nil, err, kind)
+				writeAuthError(w, classifyAuthFailure(err))
 				return
 			}
 
-			if opts.OnAuth != nil {
-				opts.OnAuth(r, true)
-			}
+			notifyAuth(opts.OnAuth, r, identity, nil, kind)
 
 			ctx := WithIdentity(r.Context(), identity)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// notifyAuth invokes the OnAuth callback if set, swallowing the nil check
+// at the call sites so the main middleware body stays readable.
+func notifyAuth(cb func(*http.Request, *Identity, error, string), r *http.Request, id *Identity, err error, kind string) {
+	if cb == nil {
+		return
+	}
+	cb(r, id, err, kind)
 }
 
 // classifyAuthFailure maps a chain error into a user-visible message.
@@ -99,11 +129,10 @@ func classifyAuthFailure(err error) string {
 	}
 }
 
-// writeAuthFail sends a 401 response and fires the OnAuth callback if set.
-func writeAuthFail(w http.ResponseWriter, r *http.Request, onAuth func(*http.Request, bool), msg string) {
-	if onAuth != nil {
-		onAuth(r, false)
-	}
+// writeAuthError sends a 401 JSON response. The OnAuth callback is fired
+// separately (via notifyAuth) so the audit-emission path can run with the
+// full Identity / error context, not just a bool.
+func writeAuthError(w http.ResponseWriter, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
 	_ = json.NewEncoder(w).Encode(errorResponse{

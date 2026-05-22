@@ -123,9 +123,14 @@ type DeltaPage struct {
 	DeltaLink string        `json:"@odata.deltaLink,omitempty"`
 }
 
-// InitialDeltaURL builds the first delta URL for a fresh adapter, using
-// $filter=lastModifiedDateTime gt <now> so we skip the historical backlog
-// and only see messages from "now" onwards.
+// InitialDeltaURL builds the first delta URL for a fresh adapter using the
+// APP-ONLY /users/{id}/chats/getAllMessages/delta endpoint. This API
+// requires Chat.Read.All (application) — delegated tokens return
+// HTTP 412 PreconditionFailed with "Requested API is not supported in
+// delegated context". Use this when the adapter is configured with
+// auth_flow: client_credentials.
+//
+// For delegated flow, use ListChats + InitialChatDeltaURL instead.
 func (g *graphClient) InitialDeltaURL(userID string, since time.Time) string {
 	// Microsoft Graph requires an exact ISO-8601 timestamp.
 	filter := "lastModifiedDateTime gt " + since.UTC().Format(time.RFC3339)
@@ -133,6 +138,67 @@ func (g *graphClient) InitialDeltaURL(userID string, since time.Time) string {
 	v.Set("$filter", filter)
 	return fmt.Sprintf("%s/users/%s/chats/getAllMessages/delta?%s",
 		g.baseURL, url.PathEscape(userID), v.Encode())
+}
+
+// ChatRef is the minimal shape returned by GET /me/chats / /chats — enough
+// to drive per-chat polling. ChatType discriminates oneOnOne/group/meeting.
+type ChatRef struct {
+	ID       string `json:"id"`
+	Topic    string `json:"topic,omitempty"`
+	ChatType string `json:"chatType"`
+}
+
+type chatsResponse struct {
+	Value    []ChatRef `json:"value"`
+	NextLink string    `json:"@odata.nextLink,omitempty"`
+}
+
+// ListChats enumerates the authenticated user's chats. Used by the delegated
+// polling path so we can fan out per-chat delta cursors (the
+// getAllMessages/delta API is app-only). Returns at most `limit` chats; if
+// limit <= 0 a sensible default of 50 is used. Pagination via @odata.nextLink
+// is followed transparently up to the limit.
+func (g *graphClient) ListChats(ctx context.Context, limit int) ([]ChatRef, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	page := limit
+	if page > 50 {
+		// Graph's per-request cap for /me/chats is 50; bigger requests
+		// would 400. Stay under the cap and follow nextLink.
+		page = 50
+	}
+
+	v := url.Values{}
+	v.Set("$select", "id,topic,chatType")
+	v.Set("$top", fmt.Sprintf("%d", page))
+	next := fmt.Sprintf("%s/me/chats?%s", g.baseURL, v.Encode())
+
+	var out []ChatRef
+	for next != "" && len(out) < limit {
+		var resp chatsResponse
+		if err := g.getAbsoluteJSON(ctx, next, &resp); err != nil {
+			return nil, err
+		}
+		out = append(out, resp.Value...)
+		next = resp.NextLink
+	}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// InitialChatDeltaURL builds the first delta URL for a single chat in the
+// delegated flow. /chats/{id}/messages/delta supports delegated context
+// (Chat.Read or ChatMessage.Read) and is the foundation of the
+// per-chat polling design.
+func (g *graphClient) InitialChatDeltaURL(chatID string, since time.Time) string {
+	filter := "lastModifiedDateTime gt " + since.UTC().Format(time.RFC3339)
+	v := url.Values{}
+	v.Set("$filter", filter)
+	return fmt.Sprintf("%s/chats/%s/messages/delta?%s",
+		g.baseURL, url.PathEscape(chatID), v.Encode())
 }
 
 // FetchDeltaPage retrieves the next page of messages. The URL is the full

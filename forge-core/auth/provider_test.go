@@ -450,6 +450,30 @@ func TestUnmarshalSettings_NilOut(t *testing.T) {
 	}
 }
 
+// --- TokenKind ---
+
+func TestTokenKind(t *testing.T) {
+	tests := []struct {
+		name  string
+		token string
+		want  string
+	}{
+		{"empty", "", "empty"},
+		{"jwt three segments", "eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJ4In0.signature", "jwt"},
+		{"opaque random", "abc123xyz", "opaque"},
+		{"opaque one dot", "abc.def", "opaque"},
+		{"opaque four segments", "a.b.c.d", "opaque"},
+		{"jwt with empty segments still has 2 dots", "..", "jwt"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := TokenKind(tt.token); got != tt.want {
+				t.Errorf("TokenKind(%q) = %q, want %q", tt.token, got, tt.want)
+			}
+		})
+	}
+}
+
 // --- helpers ---
 
 func providerNames(ps []Provider) []string {

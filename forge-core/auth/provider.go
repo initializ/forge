@@ -84,6 +84,33 @@ func HeadersFromRequest(r *http.Request) Headers {
 	}
 }
 
+// TokenKind classifies a presented bearer token structurally — useful for
+// audit logging without leaking the token itself.
+//
+// "jwt"     → three base64url segments separated by dots
+// "opaque"  → anything else (Okta access tokens, custom verifier tokens, dev secrets)
+//
+// This is a CHEAP structural check — it does not parse or validate.
+// Never log the token; this helper is safe to log.
+func TokenKind(token string) string {
+	if token == "" {
+		return "empty"
+	}
+	dots := 0
+	for i := 0; i < len(token); i++ {
+		if token[i] == '.' {
+			dots++
+			if dots > 2 {
+				return "opaque"
+			}
+		}
+	}
+	if dots == 2 {
+		return "jwt"
+	}
+	return "opaque"
+}
+
 // Sentinel errors that Providers and the ChainProvider use to signal outcomes.
 //
 //   - ErrTokenNotForMe         → provider does not recognize this token shape;

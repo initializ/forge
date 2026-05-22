@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -1778,24 +1779,86 @@ func (r *Runner) resolveAuth(auditLogger *coreruntime.AuditLogger) (auth.Middlew
 	return auth.MiddlewareOptions{
 		Chain:     chain,
 		SkipPaths: auth.DefaultSkipPaths(),
-		OnAuth: func(req *http.Request, success bool) {
-			if auditLogger == nil {
-				return
-			}
-			event := coreruntime.AuditAuthSuccess
-			if !success {
-				event = coreruntime.AuditAuthFailure
+		OnAuth:    makeAuthAuditCallback(auditLogger),
+	}, nil
+}
+
+// makeAuthAuditCallback returns the OnAuth callback that emits structured
+// auth_verify / auth_fail audit events.
+//
+// Fields emitted (NO PII — never email, claims, token bytes, or secrets):
+//
+//	auth_verify: { provider, user_id, org_id, groups_count, token_kind, method, path, remote_addr }
+//	auth_fail:   { reason, token_kind, method, path, remote_addr }
+//
+// Reason codes for auth_fail:
+//
+//	missing_token   → no Authorization header
+//	rejected        → provider recognized + denied (revoked, expired, wrong iss/aud)
+//	invalid         → token malformed or cryptographically invalid
+//	not_for_me      → chain exhausted (no provider claimed the token)
+//	infrastructure  → transient provider error (network, etc.)
+func makeAuthAuditCallback(auditLogger *coreruntime.AuditLogger) func(*http.Request, *auth.Identity, error, string) {
+	if auditLogger == nil {
+		return nil
+	}
+	return func(req *http.Request, id *auth.Identity, err error, tokenKind string) {
+		correlationID := coreruntime.CorrelationIDFromContext(req.Context())
+
+		if err == nil && id != nil {
+			// Success → auth_verify.
+			fields := map[string]any{
+				"provider":     id.Source,
+				"user_id":      id.UserID,
+				"org_id":       id.OrgID,
+				"groups_count": len(id.Groups),
+				"token_kind":   tokenKind,
+				"method":       req.Method,
+				"path":         req.URL.Path,
+				"remote_addr":  req.RemoteAddr,
 			}
 			auditLogger.Emit(coreruntime.AuditEvent{
-				Event: event,
-				Fields: map[string]any{
-					"method":      req.Method,
-					"path":        req.URL.Path,
-					"remote_addr": req.RemoteAddr,
-				},
+				Event:         coreruntime.EventAuthVerify,
+				CorrelationID: correlationID,
+				Fields:        fields,
 			})
-		},
-	}, nil
+			return
+		}
+
+		// Failure → auth_fail with reason code.
+		auditLogger.Emit(coreruntime.AuditEvent{
+			Event:         coreruntime.EventAuthFail,
+			CorrelationID: correlationID,
+			Fields: map[string]any{
+				"reason":      authFailReason(err),
+				"token_kind":  tokenKind,
+				"method":      req.Method,
+				"path":        req.URL.Path,
+				"remote_addr": req.RemoteAddr,
+			},
+		})
+	}
+}
+
+// authFailReason maps a chain error to a stable, low-cardinality reason
+// code suitable for dashboarding and alerting. Reason strings are part
+// of the audit-event contract — changing them is a breaking change for
+// downstream consumers.
+func authFailReason(err error) string {
+	switch {
+	case err == nil:
+		return "unknown"
+	case errors.Is(err, auth.ErrMissingBearer):
+		return "missing_token"
+	case errors.Is(err, auth.ErrTokenRejected):
+		return "rejected"
+	case errors.Is(err, auth.ErrInvalidToken):
+		return "invalid"
+	case errors.Is(err, auth.ErrTokenNotForMe):
+		return "not_for_me"
+	default:
+		return "infrastructure"
+	}
 }
 
 // buildUserAuthChain returns the user-facing portion of the auth chain

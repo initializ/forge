@@ -109,7 +109,13 @@ func RequestDeviceCode(ctx context.Context, client *http.Client, loginBase, tena
 // the device code expires, or the context is cancelled. Honours the
 // server-advertised interval and the slow_down rate-limit response per
 // RFC 8628 §3.5.
-func PollDeviceToken(ctx context.Context, client *http.Client, loginBase, tenant, clientID string, dc *DeviceCodeResponse) (*TokenResponse, error) {
+//
+// clientSecret is optional: pass "" for public-client apps (native/mobile
+// registration) and the secret value for confidential-client apps (web
+// registration). Entra returns AADSTS7000218 if a confidential client
+// omits its secret here, so when in doubt, supply it — public clients
+// silently ignore the extra parameter.
+func PollDeviceToken(ctx context.Context, client *http.Client, loginBase, tenant, clientID, clientSecret string, dc *DeviceCodeResponse) (*TokenResponse, error) {
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
@@ -133,6 +139,11 @@ func PollDeviceToken(ctx context.Context, client *http.Client, loginBase, tenant
 		form.Set("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
 		form.Set("client_id", clientID)
 		form.Set("device_code", dc.DeviceCode)
+		if clientSecret != "" {
+			// Required for confidential-client (web) app registrations.
+			// Public-client (native) apps tolerate this extra field.
+			form.Set("client_secret", clientSecret)
+		}
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 		if err != nil {

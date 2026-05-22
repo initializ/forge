@@ -380,14 +380,20 @@ func (s *ChannelStep) requestDeviceCodeCmd() tea.Cmd {
 // pollTokenCmd kicks off PollDeviceToken. Returns a tea.Cmd that produces a
 // msteamsRefreshTokenReadyMsg on completion. Uses a generous 15-minute
 // timeout — matches Microsoft's device-code expiry.
+//
+// We pass the client_secret captured in step 3 because confidential-client
+// (web) Entra app registrations return AADSTS7000218 if /token is called
+// without it. Public-client (native) apps ignore the extra parameter, so
+// always passing it is safe.
 func (s *ChannelStep) pollTokenCmd(dc *devicecode.DeviceCodeResponse) tea.Cmd {
 	tenant := s.tokens["MSTEAMS_TENANT_ID"]
 	clientID := s.tokens["MSTEAMS_CLIENT_ID"]
+	clientSecret := s.tokens["MSTEAMS_CLIENT_SECRET"]
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
 		tok, err := devicecode.PollDeviceToken(ctx, &http.Client{Timeout: 30 * time.Second},
-			devicecode.DefaultLoginBase, tenant, clientID, dc)
+			devicecode.DefaultLoginBase, tenant, clientID, clientSecret, dc)
 		if err != nil {
 			return msteamsRefreshTokenReadyMsg{err: err}
 		}

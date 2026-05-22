@@ -45,11 +45,12 @@ refresh-token step — you do not normally need to run this command yourself.`,
 }
 
 var (
-	msteamsLoginTenantID    string
-	msteamsLoginClientID    string
-	msteamsLoginLoginBase   string
-	msteamsLoginTimeoutSecs int
-	msteamsLoginWriteEnv    bool
+	msteamsLoginTenantID     string
+	msteamsLoginClientID     string
+	msteamsLoginClientSecret string
+	msteamsLoginLoginBase    string
+	msteamsLoginTimeoutSecs  int
+	msteamsLoginWriteEnv     bool
 )
 
 func init() {
@@ -57,6 +58,9 @@ func init() {
 		"Entra tenant ID (defaults to $MSTEAMS_TENANT_ID or the value in .env)")
 	channelMsteamsLoginCmd.Flags().StringVar(&msteamsLoginClientID, "client-id", "",
 		"Entra app client ID (defaults to $MSTEAMS_CLIENT_ID or the value in .env)")
+	channelMsteamsLoginCmd.Flags().StringVar(&msteamsLoginClientSecret, "client-secret", "",
+		"Entra app client secret (defaults to $MSTEAMS_CLIENT_SECRET or the value in .env). "+
+			"Required for confidential-client (web) app registrations; public-client (native) apps may leave it empty.")
 	channelMsteamsLoginCmd.Flags().StringVar(&msteamsLoginLoginBase, "login-base", devicecode.DefaultLoginBase,
 		"OAuth2 authority base URL (override for sovereign clouds: login.microsoftonline.us / login.chinacloudapi.cn)")
 	channelMsteamsLoginCmd.Flags().IntVar(&msteamsLoginTimeoutSecs, "timeout-seconds", 900,
@@ -69,15 +73,20 @@ func init() {
 func runChannelMsteamsLogin(cmd *cobra.Command, args []string) error {
 	tenant := strings.TrimSpace(msteamsLoginTenantID)
 	client := strings.TrimSpace(msteamsLoginClientID)
+	secret := strings.TrimSpace(msteamsLoginClientSecret)
 
-	if tenant == "" || client == "" {
-		envFromFile := readEnvFile(".env")
-		if tenant == "" {
-			tenant = strings.TrimSpace(firstNonEmpty(os.Getenv("MSTEAMS_TENANT_ID"), envFromFile["MSTEAMS_TENANT_ID"]))
-		}
-		if client == "" {
-			client = strings.TrimSpace(firstNonEmpty(os.Getenv("MSTEAMS_CLIENT_ID"), envFromFile["MSTEAMS_CLIENT_ID"]))
-		}
+	envFromFile := readEnvFile(".env")
+	if tenant == "" {
+		tenant = strings.TrimSpace(firstNonEmpty(os.Getenv("MSTEAMS_TENANT_ID"), envFromFile["MSTEAMS_TENANT_ID"]))
+	}
+	if client == "" {
+		client = strings.TrimSpace(firstNonEmpty(os.Getenv("MSTEAMS_CLIENT_ID"), envFromFile["MSTEAMS_CLIENT_ID"]))
+	}
+	if secret == "" {
+		// Optional — public-client apps don't have one. We still try to
+		// pick it up from the environment so confidential-client setups
+		// work without an explicit flag.
+		secret = strings.TrimSpace(firstNonEmpty(os.Getenv("MSTEAMS_CLIENT_SECRET"), envFromFile["MSTEAMS_CLIENT_SECRET"]))
 	}
 
 	if tenant == "" {
@@ -118,7 +127,7 @@ func runChannelMsteamsLogin(cmd *cobra.Command, args []string) error {
 	// the URL is already printed above for manual paste.
 	_ = devicecode.OpenURL(dc.VerificationURI)
 
-	tok, err := devicecode.PollDeviceToken(ctx, httpClient, msteamsLoginLoginBase, tenant, client, dc)
+	tok, err := devicecode.PollDeviceToken(ctx, httpClient, msteamsLoginLoginBase, tenant, client, secret, dc)
 	if err != nil {
 		return err
 	}

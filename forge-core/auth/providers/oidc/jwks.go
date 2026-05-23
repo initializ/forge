@@ -46,16 +46,26 @@ type parsedKey struct {
 // jwksCache is a TTL-bounded cache of parsed JWK keys keyed by `kid`.
 //
 // Refresh strategy:
-//   - First lookup ever: fetch JWKS.
-//   - kid not in cache and last fetch is older than the small "refetch
-//     grace window" (avoids stampedes on bad input): fetch JWKS again.
-//   - kid still not in cache after refresh: return ErrKeyNotFound.
-//   - kid in cache: return immediately.
 //
-// The cache does not eagerly expire entries by TTL — keys are durable; we
-// refresh on miss. This matches how real-world identity providers rotate
-// JWKS (add new key, then later remove old key — the new kid triggers a
-// refresh that picks up both).
+//  1. First lookup ever: fetch JWKS.
+//  2. TTL expired (now - lastSuccessful > ttl): fetch JWKS on the request
+//     path. This is what invalidates keys that the IdP has revoked —
+//     without it, a compromised key removed from the issuer's JWKS would
+//     remain trusted by Forge until process restart.
+//  3. kid not in cache (and TTL not expired): fetch JWKS to pick up new
+//     keys an IdP may have added since last refresh.
+//  4. kid still not in cache after refresh: return ErrKeyNotFound.
+//  5. kid in cache and TTL not expired: return immediately (hot path).
+//
+// Two separate timestamps track refresh state so failures don't extend the
+// TTL window:
+//   - lastSuccessful: timestamp of the most recent successful refresh.
+//     Drives TTL accounting; only advanced on success.
+//   - lastAttempt: timestamp of the most recent attempt (success or fail).
+//     Drives failure backpressure so a dead JWKS endpoint isn't hammered.
+//
+// Concurrency: a single fetch is in flight at a time; concurrent misses
+// coalesce behind the write lock.
 type jwksCache struct {
 	jwksURL    func(ctx context.Context) (string, error)
 	httpClient *http.Client
@@ -64,10 +74,14 @@ type jwksCache struct {
 	// per request. Within this window, repeated unknown-kid lookups skip
 	// the refetch.
 	refetchGrace time.Duration
+	// now returns the current time. Injectable for tests so TTL expiry
+	// can be exercised without real time passing.
+	now func() time.Time
 
-	mu        sync.RWMutex
-	keys      map[string]parsedKey
-	lastFetch time.Time
+	mu             sync.RWMutex
+	keys           map[string]parsedKey
+	lastSuccessful time.Time // last successful JWKS load — drives TTL
+	lastAttempt    time.Time // last refresh attempt (success or fail) — drives error backoff
 	// lastMissRefresh is the last time we refreshed *because of* an
 	// unknown kid and the kid was still not present after refresh.
 	// Used to suppress stampedes of refetches for the same bad kid.
@@ -85,6 +99,11 @@ func newJWKSCache(jwksURL func(ctx context.Context) (string, error), client *htt
 	if ttl == 0 {
 		ttl = defaultJWKSTTL
 	}
+	// Only clamp the minimum when a TTL was actually requested — leaving
+	// callers to opt out of TTL entirely would require an explicit zero
+	// (which the previous branch promoted to the default). The clamp
+	// protects against operators setting an absurdly short value that
+	// would hammer the IdP.
 	if ttl < minJWKSTTL {
 		ttl = minJWKSTTL
 	}
@@ -93,8 +112,33 @@ func newJWKSCache(jwksURL func(ctx context.Context) (string, error), client *htt
 		httpClient:   client,
 		ttl:          ttl,
 		refetchGrace: defaultRefetchGrace,
+		now:          time.Now,
 		keys:         map[string]parsedKey{},
 	}
+}
+
+// ttlExpired reports whether the cache's last successful refresh is older
+// than the configured TTL. Returns true when there's no successful fetch
+// yet (initial state). Must be called with at least an RLock held.
+func (c *jwksCache) ttlExpired() bool {
+	if c.lastSuccessful.IsZero() {
+		return true
+	}
+	return c.now().Sub(c.lastSuccessful) > c.ttl
+}
+
+// backoffActive reports whether we should suppress a refresh attempt
+// because a recent one failed. Prevents a dead JWKS endpoint from being
+// hit on every request during an outage. Must be called with at least
+// an RLock held.
+func (c *jwksCache) backoffActive() bool {
+	if c.lastErr == nil {
+		return false
+	}
+	if c.lastAttempt.IsZero() {
+		return false
+	}
+	return c.now().Sub(c.lastAttempt) < c.refetchGrace
 }
 
 // ErrKeyNotFound is returned when a `kid` is not in the cache and a
@@ -105,37 +149,62 @@ var ErrKeyNotFound = fmt.Errorf("oidc: signing key not found")
 // if necessary. Safe for concurrent use.
 //
 // Refresh semantics:
-//   - kid in cache → return immediately.
-//   - kid missing, never refreshed for a miss before → refresh once.
-//   - kid missing AND we already refreshed for a miss recently (within
-//     refetchGrace) → deny without re-fetching, to prevent a stream of
-//     bad kids from hammering the JWKS endpoint.
+//   - TTL expired (cache stale): refresh on the request path. Required
+//     for revocation to take effect — without this, a key removed from
+//     the IdP's JWKS would remain trusted by Forge until process restart.
+//   - kid in cache AND cache fresh: return immediately (hot path).
+//   - kid missing AND not recently refreshed for a miss: refresh once.
+//   - kid missing AND recently refreshed for a miss (within refetchGrace):
+//     deny without re-fetching — prevents bad kids hammering the endpoint.
+//   - last refresh failed AND within failure backoff: serve from existing
+//     cache without re-attempt — protects a dead IdP from request storms.
 func (c *jwksCache) Get(ctx context.Context, kid string) (parsedKey, error) {
-	// Fast path: lock-free read.
+	// Fast path: lock-free read. Treat a stale (TTL-expired) cache as if
+	// every kid were a miss, so we fall into the write path below where
+	// the actual refresh happens.
 	c.mu.RLock()
-	if key, ok := c.keys[kid]; ok {
-		c.mu.RUnlock()
-		return key, nil
+	stale := c.ttlExpired()
+	var (
+		key parsedKey
+		hit bool
+	)
+	if !stale {
+		key, hit = c.keys[kid]
 	}
-	cooldownActive := !c.lastMissRefresh.IsZero() && time.Since(c.lastMissRefresh) < c.refetchGrace
+	missCooldown := !c.lastMissRefresh.IsZero() && c.now().Sub(c.lastMissRefresh) < c.refetchGrace
+	errBackoff := c.backoffActive()
 	c.mu.RUnlock()
 
-	if cooldownActive {
+	if hit {
+		return key, nil
+	}
+	// During error backoff we serve from the (possibly empty) cache —
+	// don't re-attempt a known-broken endpoint. Note that on the very
+	// first call (never-fetched cache + endpoint already broken), this
+	// path is impossible because lastErr would still be nil.
+	if errBackoff {
+		return parsedKey{}, ErrKeyNotFound
+	}
+	// Don't refresh just to look up a kid we already concluded is absent.
+	// TTL-expired cache always tries a refresh (security), regardless of
+	// the unknown-kid grace window.
+	if !stale && missCooldown {
 		return parsedKey{}, ErrKeyNotFound
 	}
 
-	// Miss — refresh. Take the write lock first so concurrent misses
-	// coalesce into one fetch.
+	// Take the write lock so concurrent refresh attempts coalesce.
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Re-check after acquiring the write lock — another goroutine may
-	// have just refreshed and populated this kid.
-	if key, ok := c.keys[kid]; ok {
-		return key, nil
-	}
-	if !c.lastMissRefresh.IsZero() && time.Since(c.lastMissRefresh) < c.refetchGrace {
-		return parsedKey{}, ErrKeyNotFound
+	// Re-check under write lock — another goroutine may have refreshed
+	// while we were waiting.
+	if !c.ttlExpired() {
+		if key, ok := c.keys[kid]; ok {
+			return key, nil
+		}
+		if !c.lastMissRefresh.IsZero() && c.now().Sub(c.lastMissRefresh) < c.refetchGrace {
+			return parsedKey{}, ErrKeyNotFound
+		}
 	}
 
 	if err := c.refreshLocked(ctx); err != nil {
@@ -146,29 +215,31 @@ func (c *jwksCache) Get(ctx context.Context, kid string) (parsedKey, error) {
 	}
 	// Refresh happened but kid is still missing — remember that so we
 	// don't hammer JWKS on the next unknown-kid request.
-	c.lastMissRefresh = time.Now()
+	c.lastMissRefresh = c.now()
 	return parsedKey{}, ErrKeyNotFound
 }
 
 // refreshLocked fetches the JWKS endpoint and replaces the cache. Must be
 // called with c.mu held for writing.
+// refreshLocked fetches and parses the JWKS. lastAttempt is always
+// updated (drives error backoff). lastSuccessful is updated ONLY when a
+// full parse succeeds — failures must not extend the TTL window.
 func (c *jwksCache) refreshLocked(ctx context.Context) error {
+	c.lastAttempt = c.now()
+
 	url, err := c.jwksURL(ctx)
 	if err != nil {
 		c.lastErr = err
-		c.lastFetch = time.Now()
 		return fmt.Errorf("oidc: resolve jwks_uri: %w", err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		c.lastErr = err
-		c.lastFetch = time.Now()
 		return fmt.Errorf("oidc: build jwks request: %w", err)
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		c.lastErr = err
-		c.lastFetch = time.Now()
 		return fmt.Errorf("oidc: jwks fetch: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -177,7 +248,6 @@ func (c *jwksCache) refreshLocked(ctx context.Context) error {
 		_, _ = io.CopyN(io.Discard, resp.Body, 1024)
 		err := fmt.Errorf("oidc: jwks returned status %d", resp.StatusCode)
 		c.lastErr = err
-		c.lastFetch = time.Now()
 		return err
 	}
 
@@ -186,7 +256,6 @@ func (c *jwksCache) refreshLocked(ctx context.Context) error {
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		c.lastErr = err
-		c.lastFetch = time.Now()
 		return fmt.Errorf("oidc: jwks decode: %w", err)
 	}
 
@@ -218,8 +287,12 @@ func (c *jwksCache) refreshLocked(ctx context.Context) error {
 	}
 
 	c.keys = parsed
-	c.lastFetch = time.Now()
+	c.lastSuccessful = c.now()
 	c.lastErr = nil
+	// Clear the unknown-kid grace window on a successful refresh so the
+	// next miss can re-attempt a refresh immediately (the prior miss may
+	// have been for a kid that's now present in the freshly-loaded JWKS).
+	c.lastMissRefresh = time.Time{}
 	return nil
 }
 

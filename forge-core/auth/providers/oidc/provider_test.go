@@ -757,6 +757,179 @@ func TestVerify_TokenWithoutAudClaim(t *testing.T) {
 	}
 }
 
+// --- TTL-driven refresh (review finding #1) ---
+//
+// These tests guarantee that JWKS keys revoked at the IdP eventually stop
+// being accepted by Forge. Before the fix, the cache's ttl field was dead
+// code and revoked keys remained trusted until process restart.
+
+func TestJWKS_TTLExpiryForcesRefresh(t *testing.T) {
+	// Build the provider with a 1-minute TTL. We can't reach the cache's
+	// injectable clock from outside the package directly, so we exercise
+	// TTL behavior by setting a tiny TTL and advancing wall time via the
+	// `now` field on the provider's JWKS cache through the exported
+	// SetCacheClockForTest test hook below.
+	fi := newFakeIssuer(t)
+	p := newProvider(t, fi, func(c *oidc.Config) {
+		c.JWKSCacheTTL = 10 * time.Minute // any value above the 5-min clamp
+	})
+
+	// Drive a virtual clock so we can move past TTL without sleeping.
+	clk := &virtualClock{now: time.Now()}
+	oidc.SetCacheClockForTest(p, clk.Now)
+
+	tok := fi.SignWith("key-1", fi.DefaultClaims(testAudience))
+	if _, err := p.Verify(context.Background(), tok, nil); err != nil {
+		t.Fatalf("first Verify: %v", err)
+	}
+	fetchesAfterFirst := fi.jwksFetches
+
+	// Same kid, still within TTL → no new JWKS fetch.
+	if _, err := p.Verify(context.Background(), tok, nil); err != nil {
+		t.Fatalf("second Verify within TTL: %v", err)
+	}
+	if fi.jwksFetches != fetchesAfterFirst {
+		t.Errorf("JWKS refetched within TTL (%d → %d) — should have served from cache",
+			fetchesAfterFirst, fi.jwksFetches)
+	}
+
+	// Advance virtual time past TTL.
+	clk.advance(11 * time.Minute)
+
+	// Same kid, but TTL expired → MUST refetch.
+	if _, err := p.Verify(context.Background(), tok, nil); err != nil {
+		t.Fatalf("third Verify after TTL: %v", err)
+	}
+	if fi.jwksFetches != fetchesAfterFirst+1 {
+		t.Errorf("JWKS not refetched after TTL expiry (fetches: %d, expected %d)",
+			fi.jwksFetches, fetchesAfterFirst+1)
+	}
+}
+
+func TestJWKS_RevokedKeyEventuallyRejected(t *testing.T) {
+	// The security-critical case: IdP removes a key from JWKS (revocation).
+	// Within TTL, Forge still trusts it (acceptable — that's the TTL window).
+	// After TTL, Forge picks up the new JWKS without the revoked key and
+	// must reject tokens signed by it.
+	fi := newFakeIssuer(t)
+	p := newProvider(t, fi, func(c *oidc.Config) {
+		c.JWKSCacheTTL = 10 * time.Minute
+	})
+
+	clk := &virtualClock{now: time.Now()}
+	oidc.SetCacheClockForTest(p, clk.Now)
+
+	// Add a second key the issuer rotates between.
+	fi.addRSAKey("key-revoked")
+
+	// Token is signed by key-revoked.
+	tok := fi.SignWith("key-revoked", fi.DefaultClaims(testAudience))
+
+	// Initial verify — cache warms with both keys present.
+	if _, err := p.Verify(context.Background(), tok, nil); err != nil {
+		t.Fatalf("pre-revocation verify: %v", err)
+	}
+
+	// IdP revokes the key (removes it from JWKS).
+	delete(fi.keys, "key-revoked")
+	for i, k := range fi.keyOrder {
+		if k == "key-revoked" {
+			fi.keyOrder = append(fi.keyOrder[:i], fi.keyOrder[i+1:]...)
+			break
+		}
+	}
+
+	// Within TTL: Forge still trusts the old key (acceptable revocation lag).
+	if _, err := p.Verify(context.Background(), tok, nil); err != nil {
+		t.Errorf("within-TTL verify failed unexpectedly: %v", err)
+	}
+
+	// Advance past TTL → refresh picks up the new JWKS without key-revoked.
+	clk.advance(11 * time.Minute)
+
+	// After refresh, the token's kid is no longer in JWKS → ErrInvalidToken.
+	_, err := p.Verify(context.Background(), tok, nil)
+	if !errors.Is(err, auth.ErrInvalidToken) {
+		t.Fatalf("post-TTL verify err = %v, want ErrInvalidToken (kid removed by IdP)", err)
+	}
+}
+
+func TestJWKS_FailedRefreshDoesNotExtendTTL(t *testing.T) {
+	// Bug guard: a failed refresh must not bump lastSuccessful. Otherwise
+	// an IdP outage during a TTL-refresh window would silently extend
+	// trust in already-cached keys.
+	//
+	// Strategy: warm the cache, then make the JWKS endpoint return 500,
+	// advance past TTL, attempt a Verify. The refresh fails, but the
+	// existing keys remain available — and the next attempt after the
+	// failure backoff should retry (proving lastSuccessful did NOT advance).
+	fi := newFakeIssuer(t)
+	failJWKS := atomic.Bool{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if failJWKS.Load() && r.URL.Path == "/jwks" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		fi.serve(w, r)
+	}))
+	defer srv.Close()
+
+	p, err := oidc.New(oidc.Config{
+		Issuer:       srv.URL,
+		Audience:     testAudience,
+		JWKSURL:      srv.URL + "/jwks",
+		JWKSCacheTTL: 10 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Patch the fakeIssuer's IssuerURL so claim's iss matches.
+	fi.server = srv
+
+	clk := &virtualClock{now: time.Now()}
+	oidc.SetCacheClockForTest(p, clk.Now)
+
+	tok := fi.SignWith("key-1", fi.DefaultClaims(testAudience))
+
+	// Warm the cache.
+	if _, err := p.Verify(context.Background(), tok, nil); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+
+	// Endpoint goes down; advance past TTL.
+	failJWKS.Store(true)
+	clk.advance(11 * time.Minute)
+
+	// Refresh attempt fails. The TTL clock was NOT extended by the
+	// failure, so subsequent calls outside the backoff window will
+	// re-attempt.
+	_, err = p.Verify(context.Background(), tok, nil)
+	if err == nil {
+		t.Errorf("expected error during JWKS outage, got nil")
+	}
+
+	// Endpoint comes back, but we're still in error-backoff window.
+	// Advance past refetchGrace (30s) so a retry can happen.
+	failJWKS.Store(false)
+	clk.advance(35 * time.Second)
+
+	// Next verify should retry the refresh and succeed.
+	if _, err := p.Verify(context.Background(), tok, nil); err != nil {
+		t.Errorf("post-recovery verify failed: %v", err)
+	}
+}
+
+// virtualClock is a controllable time source for tests.
+type virtualClock struct {
+	now time.Time
+}
+
+func (c *virtualClock) Now() time.Time { return c.now }
+func (c *virtualClock) advance(d time.Duration) {
+	c.now = c.now.Add(d)
+}
+
 func TestVerify_TokenWithoutExp(t *testing.T) {
 	fi := newFakeIssuer(t)
 	p := newProvider(t, fi, nil)

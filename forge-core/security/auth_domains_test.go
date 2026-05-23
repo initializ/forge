@@ -124,6 +124,67 @@ func TestAuthDomains_PortStripped(t *testing.T) {
 	}
 }
 
+func TestAuthDomains_AWSSigv4(t *testing.T) {
+	got := security.AuthDomains(types.AuthConfig{
+		Providers: []types.AuthProvider{
+			{Type: "aws_sigv4", Settings: map[string]any{"region": "us-east-1"}},
+		},
+	})
+	want := []string{"sts.us-east-1.amazonaws.com"}
+	if len(got) != 1 || got[0] != want[0] {
+		t.Errorf("AuthDomains = %v, want %v", got, want)
+	}
+}
+
+func TestAuthDomains_AWSSigv4_DifferentRegion(t *testing.T) {
+	got := security.AuthDomains(types.AuthConfig{
+		Providers: []types.AuthProvider{
+			{Type: "aws_sigv4", Settings: map[string]any{"region": "eu-west-2"}},
+		},
+	})
+	if len(got) != 1 || got[0] != "sts.eu-west-2.amazonaws.com" {
+		t.Errorf("AuthDomains = %v, want [sts.eu-west-2.amazonaws.com]", got)
+	}
+}
+
+func TestAuthDomains_AWSSigv4_TestEndpointOverride(t *testing.T) {
+	// The sts_endpoint override (test-only escape hatch) must surface in
+	// the egress allowlist too — otherwise local integration tests are
+	// blocked by the egress enforcer.
+	got := security.AuthDomains(types.AuthConfig{
+		Providers: []types.AuthProvider{
+			{Type: "aws_sigv4", Settings: map[string]any{
+				"region":       "us-east-1",
+				"sts_endpoint": "http://127.0.0.1:8080",
+			}},
+		},
+	})
+	have := map[string]bool{}
+	for _, d := range got {
+		have[d] = true
+	}
+	if !have["sts.us-east-1.amazonaws.com"] {
+		t.Errorf("AuthDomains missing real STS host: %v", got)
+	}
+	if !have["127.0.0.1"] {
+		t.Errorf("AuthDomains missing test override host: %v", got)
+	}
+}
+
+func TestAuthDomains_AWSSigv4_MissingRegionReturnsEmpty(t *testing.T) {
+	// Defensive: even though Factory rejects missing region at startup,
+	// AuthDomains should not panic or emit a malformed host if it's ever
+	// called with an incomplete config.
+	got := security.AuthDomains(types.AuthConfig{
+		Providers: []types.AuthProvider{
+			{Type: "aws_sigv4", Settings: map[string]any{}},
+		},
+	})
+	if got != nil {
+		t.Errorf("AuthDomains with missing region = %v, want nil", got)
+	}
+}
+
 func TestAuthDomains_UnknownProviderTypeReturnsEmpty(t *testing.T) {
 	got := security.AuthDomains(types.AuthConfig{
 		Providers: []types.AuthProvider{

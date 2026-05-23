@@ -55,8 +55,20 @@ func authProviderURLs(p types.AuthProvider) []string {
 		return []string{
 			settingString(p.Settings, "url"),
 		}
+	case "aws_sigv4":
+		// STS at sts.<region>.amazonaws.com is the only outbound.
+		// The test-only sts_endpoint override is honored so dev/test
+		// runs against a local fake aren't blocked by egress.
+		region := settingString(p.Settings, "region")
+		out := []string{}
+		if region != "" {
+			out = append(out, "https://sts."+region+".amazonaws.com")
+		}
+		if override := settingString(p.Settings, "sts_endpoint"); override != "" {
+			out = append(out, override)
+		}
+		return out
 	// static_token has no outbound; not listed
-	// okta (Phase 3) will be added here with issuer + api domain
 	default:
 		return nil
 	}

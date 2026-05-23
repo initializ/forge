@@ -57,7 +57,13 @@ func (d *discovery) EnsureLoaded(ctx context.Context) error {
 	// Per OIDC spec, the discovery doc's `issuer` must match the issuer
 	// the client used to fetch it. Catches misconfiguration where someone
 	// points at a discovery doc for a different tenant.
-	if meta.Issuer != d.issuer {
+	//
+	// Trim trailing slashes on both sides — IdPs and operators disagree
+	// on whether the canonical form has one (Auth0 emits with, many
+	// Okta deployments without). The trim is normalization, not a
+	// security weakening — distinct hosts remain distinct after trim.
+	// See Config.normalize() in provider.go.
+	if strings.TrimRight(meta.Issuer, "/") != d.issuer {
 		return fmt.Errorf("oidc: discovery issuer %q does not match configured issuer %q", meta.Issuer, d.issuer)
 	}
 	if meta.JWKSURI == "" {

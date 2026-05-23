@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -99,6 +100,21 @@ func (c Config) Validate() error {
 	return nil
 }
 
+// normalize returns a copy of the Config with the Issuer in canonical
+// form (trailing slash stripped). Called once at New() so every
+// downstream comparison — discovery doc check, JWT iss validation,
+// JWKS URL construction — uses the same form.
+//
+// Why this matters: OIDC IdPs are inconsistent about trailing slashes.
+// Auth0 emits "iss": "https://tenant.auth0.com/", many enterprise
+// Okta tenants emit without, etc. Operators paste whatever they see in
+// their admin UI into forge.yaml. We trim once at the boundary so the
+// mismatch never reaches a comparison.
+func (c Config) normalize() Config {
+	c.Issuer = strings.TrimRight(c.Issuer, "/")
+	return c
+}
+
 // Provider implements auth.Provider for OIDC issuers.
 type Provider struct {
 	cfg       Config
@@ -115,6 +131,10 @@ func New(cfg Config) (*Provider, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	// Normalize trailing slash once so every downstream comparison
+	// (discovery doc, token iss, JWKS URL construction) uses the same
+	// canonical form. Review finding #2.
+	cfg = cfg.normalize()
 	if cfg.ClockSkew == 0 {
 		cfg.ClockSkew = DefaultClockSkew
 	}
@@ -133,15 +153,20 @@ func New(cfg Config) (*Provider, error) {
 	p.jwks = newJWKSCache(p.resolveJWKSURL, client, cfg.JWKSCacheTTL)
 
 	// Configure the JWT parser once.
+	//
+	// Issuer is validated manually (post-parse) instead of via
+	// jwt.WithIssuer — that helper does strict string equality on the
+	// token's iss claim, which fails when the IdP emits with a trailing
+	// slash but our config normalized it off (or vice versa). The manual
+	// check trims both sides. Same reasoning as the discovery doc
+	// comparison in EnsureLoaded.
+	//
+	// Audience is similarly manual because of the azp fallback below.
 	parserOpts := []jwt.ParserOption{
 		jwt.WithValidMethods(allowedAlgNames()),
-		jwt.WithIssuer(cfg.Issuer),
 		jwt.WithLeeway(cfg.ClockSkew),
 		jwt.WithExpirationRequired(),
 	}
-	// Audience validation handled manually so we can implement the azp
-	// fallback below. (jwt.WithAudience rejects when aud lacks the
-	// expected value without considering azp.)
 	p.parser = jwt.NewParser(parserOpts...)
 
 	return p, nil
@@ -221,12 +246,40 @@ func (p *Provider) Verify(ctx context.Context, tokenStr string, headers auth.Hea
 		return nil, classifyJWTError(err)
 	}
 
+	// Issuer validation (manual — trims trailing slash on both sides so
+	// IdPs that emit iss with/without a trailing slash interop with
+	// configs that use the opposite form). See Config.normalize and
+	// review finding #2.
+	if err := p.checkIssuer(claims); err != nil {
+		return nil, err
+	}
+
 	// Audience validation (with azp fallback).
 	if err := p.checkAudience(claims); err != nil {
 		return nil, err
 	}
 
 	return mapClaims(p.cfg.ClaimMap, claims, headers), nil
+}
+
+// checkIssuer validates the token's `iss` claim against the configured
+// Issuer. Both values are trimmed of trailing slashes before comparison
+// so trailing-slash drift between the IdP and the operator's configured
+// value doesn't cause spurious rejections.
+//
+// Security note: trimming a single trailing slash cannot enable issuer
+// impersonation — "https://attacker.example" and "https://legit.example"
+// remain distinct. The trim is purely a normalization fix.
+func (p *Provider) checkIssuer(claims jwt.MapClaims) error {
+	iss, _ := claims["iss"].(string)
+	if iss == "" {
+		return fmt.Errorf("%w: missing iss claim", auth.ErrTokenRejected)
+	}
+	if strings.TrimRight(iss, "/") != p.cfg.Issuer {
+		return fmt.Errorf("%w: issuer %q does not match configured %q",
+			auth.ErrTokenRejected, iss, p.cfg.Issuer)
+	}
+	return nil
 }
 
 // looksLikeJWT does a cheap structural check: exactly three non-empty

@@ -145,6 +145,33 @@ func TestIdentityIsDefensivelyCopied(t *testing.T) {
 	}
 }
 
+func TestVerify_MismatchedLengths_AreRejected(t *testing.T) {
+	// Review #11a: hash-then-compare path must still reject tokens of
+	// any length that aren't the configured one. Specifically, a token
+	// that's just a prefix or a longer-tail variant of the real one
+	// must NOT compare equal — verifying the hash digest comparison
+	// works the same way the byte-level compare did for length-equal
+	// inputs.
+	p, _ := statictoken.New(statictoken.Config{Token: "abcdef0123456789"})
+
+	for _, candidate := range []string{
+		"",                            // empty
+		"abcdef",                      // prefix
+		"abcdef0123456789-extra-bytes", // longer
+		"different-but-same-length-as-real-secret", // same-length mismatch
+		"abcdef0123456788",                          // off-by-one in last char
+	} {
+		if _, err := p.Verify(context.Background(), candidate, nil); !errors.Is(err, auth.ErrTokenNotForMe) {
+			t.Errorf("candidate %q: err = %v, want ErrTokenNotForMe", candidate, err)
+		}
+	}
+
+	// Sanity: the real token still works.
+	if _, err := p.Verify(context.Background(), "abcdef0123456789", nil); err != nil {
+		t.Errorf("real token rejected: %v", err)
+	}
+}
+
 func TestConcurrentVerify_RaceSafe(t *testing.T) {
 	// Race-safety smoke. Run with `go test -race`.
 	p, _ := statictoken.New(statictoken.Config{Token: "tok"})

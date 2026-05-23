@@ -44,12 +44,26 @@ type Provider interface {
 // There is intentionally no Valid field — a non-nil *Identity returned
 // alongside a nil error is the only "valid" signal. See package comment.
 type Identity struct {
-	UserID      string         `json:"user_id,omitempty"`
-	Email       string         `json:"email,omitempty"`
-	OrgID       string         `json:"org_id,omitempty"`
-	WorkspaceID string         `json:"workspace_id,omitempty"`
-	Groups      []string       `json:"groups,omitempty"`
-	Claims      map[string]any `json:"claims,omitempty"`
+	UserID      string   `json:"user_id,omitempty"`
+	Email       string   `json:"email,omitempty"`
+	OrgID       string   `json:"org_id,omitempty"`
+	WorkspaceID string   `json:"workspace_id,omitempty"`
+	Groups      []string `json:"groups,omitempty"`
+
+	// Claims carries the provider-specific raw payload (typically the
+	// full JWT claim set for the oidc provider — including custom
+	// issuer-specific claims). Treat this as an escape hatch for
+	// provider-specific authorization logic; prefer the typed fields
+	// above for portable consumers.
+	//
+	// WARNING (review #11f): for OIDC the map is an unfiltered shallow
+	// copy of the JWT claims — `sub`, `email`, `iss`, `aud`, `exp`,
+	// plus any custom claims the issuer adds (group memberships,
+	// internal IDs, profile fields, sometimes raw PII). Do NOT log
+	// this map verbatim. Filtering belongs in a future authz layer,
+	// not here.
+	Claims map[string]any `json:"claims,omitempty"`
+
 	// Source records which provider verified the identity (e.g., "oidc",
 	// "http_verifier", "static_token"). Useful for audit logs and debugging.
 	Source string `json:"source,omitempty"`

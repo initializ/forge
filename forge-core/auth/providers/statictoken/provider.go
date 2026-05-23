@@ -22,6 +22,7 @@ package statictoken
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"fmt"
 	"maps"
@@ -96,8 +97,18 @@ func (p *Provider) Name() string { return ProviderName }
 
 // Verify implements auth.Provider. Constant-time compare against the
 // configured token. Mismatch yields to the next provider via ErrTokenNotForMe.
+//
+// Length-leak guard (review #11a): subtle.ConstantTimeCompare returns 0
+// immediately when the two slices have different lengths, without
+// inspecting any bytes — that early return leaks the expected token's
+// length via measurable timing differences over many trials. We hash
+// both sides to SHA-256 first so the comparison is always over
+// equal-length (32-byte) digests. Hash → constant-time compare is the
+// standard mitigation for this class.
 func (p *Provider) Verify(_ context.Context, token string, _ auth.Headers) (*auth.Identity, error) {
-	if subtle.ConstantTimeCompare([]byte(token), p.expected) != 1 {
+	presented := sha256.Sum256([]byte(token))
+	expected := sha256.Sum256(p.expected)
+	if subtle.ConstantTimeCompare(presented[:], expected[:]) != 1 {
 		return nil, auth.ErrTokenNotForMe
 	}
 	// Return a defensive copy so callers can't mutate the configured identity.

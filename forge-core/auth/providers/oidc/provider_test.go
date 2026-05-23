@@ -138,6 +138,55 @@ func TestVerify_RejectsHMAC(t *testing.T) {
 	}
 }
 
+func TestVerify_JWKWithoutAlgAcceptsAnyAsymmetric(t *testing.T) {
+	// Review #11b: when the JWKS entry omits the `alg` field (RFC 7518
+	// says "infer from context"), the provider must NOT lock the key
+	// to "RS256" — that rejected legitimate PS256 tokens signed by the
+	// same RSA key. The fix preserves empty alg and falls back to the
+	// header's alg as long as it's in the asymmetric whitelist.
+	fi := newFakeIssuer(t)
+	// Override the JWKS entry to omit its alg advertisement.
+	fi.keys["key-1"].algInJWKS = ""
+
+	p := newProvider(t, fi, nil)
+
+	// Token signed with RS256 — works (the key was generated as RSA-2048).
+	tok := fi.SignWith("key-1", fi.DefaultClaims(testAudience))
+	if _, err := p.Verify(context.Background(), tok, nil); err != nil {
+		t.Fatalf("RS256 token with empty-alg JWK rejected: %v", err)
+	}
+
+	// Now switch the signing method to PS256 (uses the same key
+	// material — RSA-PSS just changes the padding) and verify the
+	// provider accepts it.
+	fi.keys["key-1"].method = jwt.SigningMethodPS256
+	tok = fi.SignWith("key-1", fi.DefaultClaims(testAudience))
+	if _, err := p.Verify(context.Background(), tok, nil); err != nil {
+		t.Errorf("PS256 token with empty-alg JWK rejected (regression of #11b): %v", err)
+	}
+}
+
+func TestVerify_JWKExplicitAlgStillStrict(t *testing.T) {
+	// Counterpart: when the JWKS entry DOES declare an alg, the
+	// cross-check must still enforce it. This guards the
+	// algorithm-confusion defense — if a JWK says "this key is for
+	// RS256 only", a token claiming PS256 against that key is
+	// rejected.
+	fi := newFakeIssuer(t)
+	fi.keys["key-1"].algInJWKS = "RS256" // explicit
+
+	p := newProvider(t, fi, nil)
+
+	// Sign with PS256 against the same key material.
+	fi.keys["key-1"].method = jwt.SigningMethodPS256
+	tok := fi.SignWith("key-1", fi.DefaultClaims(testAudience))
+
+	_, err := p.Verify(context.Background(), tok, nil)
+	if !errors.Is(err, auth.ErrInvalidToken) {
+		t.Errorf("explicit JWK alg=RS256 must reject PS256 token; got err = %v", err)
+	}
+}
+
 func TestVerify_AlgInHeaderMustMatchJWKS(t *testing.T) {
 	// Algorithm-confusion defense: if the token claims an alg that
 	// differs from the JWKS-declared alg for that kid, reject.

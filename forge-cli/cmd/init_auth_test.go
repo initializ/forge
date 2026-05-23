@@ -11,16 +11,16 @@ import (
 // --- renderAuthBlock ---
 
 func TestRenderAuthBlock_EmptyAndNone(t *testing.T) {
-	if got := renderAuthBlock("", "", nil); got != "" {
+	if got := renderAuthBlock("", nil); got != "" {
 		t.Errorf("mode='' → %q, want empty", got)
 	}
-	if got := renderAuthBlock("none", "", nil); got != "" {
+	if got := renderAuthBlock("none", nil); got != "" {
 		t.Errorf("mode='none' → %q, want empty", got)
 	}
 }
 
 func TestRenderAuthBlock_Custom(t *testing.T) {
-	got := renderAuthBlock("custom", "", nil)
+	got := renderAuthBlock("custom", nil)
 	if !strings.HasPrefix(got, "# Auth provider chain") {
 		t.Errorf("custom mode should start with comment header, got: %s", got)
 	}
@@ -30,7 +30,7 @@ func TestRenderAuthBlock_Custom(t *testing.T) {
 }
 
 func TestRenderAuthBlock_OIDC(t *testing.T) {
-	got := renderAuthBlock("oidc", "corporate-sso", map[string]any{
+	got := renderAuthBlock("oidc", map[string]any{
 		"issuer":   "https://login.example.com",
 		"audience": "api://forge",
 	})
@@ -40,7 +40,6 @@ func TestRenderAuthBlock_OIDC(t *testing.T) {
 		"  required: true",
 		"  providers:",
 		"    - type: oidc",
-		"      name: corporate-sso",
 		"      settings:",
 		"        audience: api://forge",
 		"        issuer: https://login.example.com",
@@ -52,20 +51,22 @@ func TestRenderAuthBlock_OIDC(t *testing.T) {
 	}
 }
 
-func TestRenderAuthBlock_NameSameAsModeSuppressed(t *testing.T) {
-	// When the name equals the mode (the default the wizard supplies),
-	// don't emit a redundant `name:` line.
-	got := renderAuthBlock("oidc", "oidc", map[string]any{
+func TestRenderAuthBlock_NoNameEverEmitted(t *testing.T) {
+	// Review #11d: the wizard doesn't capture an explicit provider
+	// name, so the rendered YAML must never include a `name:` line.
+	// If a future wizard step adds name capture, this test changes
+	// at the same time as the function signature.
+	got := renderAuthBlock("oidc", map[string]any{
 		"issuer":   "https://x",
 		"audience": "y",
 	})
-	if strings.Contains(got, "name: oidc") {
-		t.Errorf("expected name: line suppressed when same as type, got:\n%s", got)
+	if strings.Contains(got, "name:") {
+		t.Errorf("expected no name: line in output, got:\n%s", got)
 	}
 }
 
 func TestRenderAuthBlock_NestedClaimMap(t *testing.T) {
-	got := renderAuthBlock("oidc", "", map[string]any{
+	got := renderAuthBlock("oidc", map[string]any{
 		"issuer":    "https://login.example.com",
 		"audience":  "api://forge",
 		"claim_map": map[string]any{"groups": "roles"},
@@ -80,7 +81,7 @@ func TestRenderAuthBlock_NestedClaimMap(t *testing.T) {
 }
 
 func TestRenderAuthBlock_HTTPVerifier(t *testing.T) {
-	got := renderAuthBlock("http_verifier", "", map[string]any{
+	got := renderAuthBlock("http_verifier", map[string]any{
 		"url":         "https://verify.example.com",
 		"default_org": "acme",
 	})
@@ -95,11 +96,11 @@ func TestRenderAuthBlock_HTTPVerifier(t *testing.T) {
 func TestRenderAuthBlock_DeterministicOrdering(t *testing.T) {
 	// Settings keys should always emit in alphabetical order so diffs
 	// of generated files are stable.
-	got1 := renderAuthBlock("oidc", "", map[string]any{
+	got1 := renderAuthBlock("oidc", map[string]any{
 		"audience": "a",
 		"issuer":   "i",
 	})
-	got2 := renderAuthBlock("oidc", "", map[string]any{
+	got2 := renderAuthBlock("oidc", map[string]any{
 		"issuer":   "i",
 		"audience": "a",
 	})
@@ -318,5 +319,20 @@ func TestMergeEgressDomains_EmptyInputs(t *testing.T) {
 	}
 	if got := mergeEgressDomains(nil, []string{"b"}); !reflect.DeepEqual(got, []string{"b"}) {
 		t.Errorf("got %v", got)
+	}
+}
+
+func TestMergeEgressDomains_SortedOutput(t *testing.T) {
+	// Review #11c — review of #11 batch: the function returns sorted
+	// output so the generated forge.yaml stays stable across runs even
+	// when AuthEgressHosts arrive in non-deterministic order (e.g.,
+	// derived from map iteration).
+	got := mergeEgressDomains(
+		[]string{"api.openai.com", "api.anthropic.com"},
+		[]string{"login.example.com", "graph.microsoft.com"},
+	)
+	want := []string{"api.anthropic.com", "api.openai.com", "graph.microsoft.com", "login.example.com"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("output not sorted:\n  got  %v\n  want %v", got, want)
 	}
 }

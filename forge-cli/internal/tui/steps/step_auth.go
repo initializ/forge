@@ -270,7 +270,14 @@ func (s *AuthStep) View(width int) string {
 	case authDonePhase:
 		return ""
 	default:
-		return s.input.View(width)
+		// Inline the "Backspace at empty: back" hint with the input
+		// so the escape hatch is discoverable from within the sub-step
+		// (review #11e — the documented behavior was undiscoverable
+		// because no kbd hint surfaced it).
+		hint := "  " +
+			s.styles.KbdKey.Render("Backspace at empty") + " " +
+			s.styles.KbdDesc.Render("back to picker")
+		return s.input.View(width) + "\n" + hint
 	}
 }
 

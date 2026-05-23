@@ -241,6 +241,61 @@ func TestBuildAuthFromFlags_UnknownMode(t *testing.T) {
 	}
 }
 
+// --- authEgressHostsFromSettings (PR6) ---
+
+func TestAuthEgressHostsFromSettings_OIDC(t *testing.T) {
+	got := authEgressHostsFromSettings("oidc", map[string]any{
+		"issuer":   "https://login.example.com/realms/x",
+		"audience": "api://forge",
+	})
+	if !reflect.DeepEqual(got, []string{"login.example.com"}) {
+		t.Errorf("got %v, want [login.example.com]", got)
+	}
+}
+
+func TestAuthEgressHostsFromSettings_OIDCWithJWKSURL(t *testing.T) {
+	got := authEgressHostsFromSettings("oidc", map[string]any{
+		"issuer":   "https://login.example.com",
+		"audience": "api://forge",
+		"jwks_url": "https://keys.example.com/jwks",
+	})
+	want := []string{"login.example.com", "keys.example.com"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestAuthEgressHostsFromSettings_HTTPVerifier(t *testing.T) {
+	got := authEgressHostsFromSettings("http_verifier", map[string]any{
+		"url": "https://verify.example.com/verify",
+	})
+	if !reflect.DeepEqual(got, []string{"verify.example.com"}) {
+		t.Errorf("got %v, want [verify.example.com]", got)
+	}
+}
+
+func TestAuthEgressHostsFromSettings_NoNetworkModes(t *testing.T) {
+	for _, mode := range []string{"none", "custom", "static_token", "unknown"} {
+		if got := authEgressHostsFromSettings(mode, map[string]any{"x": "y"}); got != nil {
+			t.Errorf("mode %q returned %v, want nil", mode, got)
+		}
+	}
+}
+
+func TestAuthEgressHostsFromSettings_NilSettings(t *testing.T) {
+	if got := authEgressHostsFromSettings("oidc", nil); got != nil {
+		t.Errorf("got %v, want nil for nil settings", got)
+	}
+}
+
+func TestAuthEgressHostsFromSettings_MalformedURL(t *testing.T) {
+	if got := authEgressHostsFromSettings("oidc", map[string]any{
+		"issuer": "::not a url",
+	}); got != nil {
+		t.Errorf("got %v, want nil for malformed URL", got)
+	}
+}
+
 // --- mergeEgressDomains ---
 
 func TestMergeEgressDomains_Dedupe(t *testing.T) {

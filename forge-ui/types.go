@@ -167,6 +167,17 @@ type AgentCreateOptions struct {
 	Passphrase        string             `json:"passphrase,omitempty"`
 	EnvVars           map[string]string  `json:"env_vars,omitempty"`
 	Force             bool               `json:"force,omitempty"`
+	Auth              *AuthCreateOptions `json:"auth,omitempty"` // A2A server auth chain (PR6+)
+}
+
+// AuthCreateOptions describes the auth chain selection the web wizard
+// captured. Mode is one of "none", "oidc", "http_verifier", "custom".
+// Settings is the provider-type-specific settings block (issuer, audience,
+// url, default_org, claim_map, …). Mirrors the TUI wizard's contract so
+// both surfaces feed the same scaffold path.
+type AuthCreateOptions struct {
+	Mode     string         `json:"mode"`
+	Settings map[string]any `json:"settings,omitempty"`
 }
 
 // FallbackProvider describes a fallback LLM provider with its API key.
@@ -250,4 +261,15 @@ type WizardMetadata struct {
 	Skills             []SkillBrowserEntry       `json:"skills"`
 	ProviderModels     map[string]ProviderModels `json:"provider_models"`
 	WebSearchProviders []WebSearchProviderOption `json:"web_search_providers"`
+	AuthProviderTypes  []AuthProviderTypeMeta    `json:"auth_provider_types"`
+}
+
+// AuthProviderTypeMeta describes one selectable auth provider type so the
+// frontend renders its picker from server-driven metadata (no hardcoded
+// provider list in JavaScript). When a new provider ships (e.g., Okta in
+// Phase 3), append one entry here and the wizard picks it up.
+type AuthProviderTypeMeta struct {
+	Type        string `json:"type"`        // "none", "oidc", "http_verifier", "custom"
+	Label       string `json:"label"`       // human-readable label for the picker
+	Description string `json:"description"` // single-line description under the label
 }

@@ -118,6 +118,16 @@ func (s *UIServer) handleGetWizardMeta(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 
+	// Auth provider types — server-driven list. Adding a new provider
+	// (e.g., Okta in Phase 3) means appending one entry here; the
+	// frontend renders the picker from this metadata.
+	meta.AuthProviderTypes = []AuthProviderTypeMeta{
+		{Type: "none", Label: "None", Description: "Anonymous access — no auth: block written"},
+		{Type: "oidc", Label: "OIDC (JWT)", Description: "Auth0, Keycloak, Azure AD, Google, Okta-OIDC, …"},
+		{Type: "http_verifier", Label: "HTTP Verifier", Description: "Legacy — POST tokens to your own /verify endpoint"},
+		{Type: "custom", Label: "Custom", Description: "Write a commented stub, edit forge.yaml manually"},
+	}
+
 	writeJSON(w, http.StatusOK, meta)
 }
 

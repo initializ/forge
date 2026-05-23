@@ -453,6 +453,10 @@ func TestClassifyAuthFailure(t *testing.T) {
 		{"not for me", ErrTokenNotForMe, "valid bearer token required"},
 		{"rejected", ErrTokenRejected, "token rejected by auth provider"},
 		{"invalid", ErrInvalidToken, "invalid token"},
+		// Review #6: ErrProviderUnavailable gets its own user-visible
+		// message — distinct from "invalid token" so client retry logic
+		// and operator alerting can differentiate.
+		{"provider unavailable", ErrProviderUnavailable, "auth provider unavailable"},
 		{"unexpected", context.Canceled, "auth provider error"},
 	}
 	for _, tt := range tests {

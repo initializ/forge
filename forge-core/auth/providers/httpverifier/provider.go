@@ -105,11 +105,16 @@ type verifyResponse struct {
 // caller's org_id) to the configured verifier URL and translates the
 // response into an Identity or one of the sentinel errors.
 //
-// Mapping:
-//   - HTTP 200 + valid:true   → (Identity, nil)
-//   - HTTP 200 + valid:false  → ErrTokenRejected
-//   - HTTP 401                → ErrTokenRejected
-//   - HTTP other / I/O error  → ErrInvalidToken (wrapped cause)
+// Mapping (review #6 — separated "token bad" from "verifier down"):
+//
+//   - HTTP 200 + valid:true              → (Identity, nil)
+//   - HTTP 200 + valid:false             → ErrTokenRejected
+//   - HTTP 401                           → ErrTokenRejected
+//   - HTTP 4xx (other)                   → ErrTokenRejected (verifier denied — token-side)
+//   - HTTP 5xx                           → ErrProviderUnavailable (server-side failure)
+//   - Network / transport error          → ErrProviderUnavailable
+//   - Response body undecodable          → ErrProviderUnavailable (verifier returned garbage)
+//   - Local marshal / request-build err  → ErrInvalidToken (extremely rare; bug in caller path)
 //
 // This provider does not return ErrTokenNotForMe.
 func (p *Provider) Verify(ctx context.Context, token string, headers auth.Headers) (*auth.Identity, error) {
@@ -117,6 +122,9 @@ func (p *Provider) Verify(ctx context.Context, token string, headers auth.Header
 
 	body, err := json.Marshal(verifyRequest{Token: token, OrgID: orgID})
 	if err != nil {
+		// Local marshal failure — should never happen with the fixed
+		// struct shape. Keep ErrInvalidToken since this isn't the
+		// verifier's fault.
 		return nil, fmt.Errorf("%w: marshal request: %w", auth.ErrInvalidToken, err)
 	}
 
@@ -128,24 +136,38 @@ func (p *Provider) Verify(ctx context.Context, token string, headers auth.Header
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%w: call verifier: %w", auth.ErrInvalidToken, err)
+		// Network error reaching the verifier — provider is unreachable.
+		// Distinct from a token problem; audit reflects this.
+		return nil, fmt.Errorf("%w: call verifier: %w", auth.ErrProviderUnavailable, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	switch resp.StatusCode {
-	case http.StatusOK:
+	switch {
+	case resp.StatusCode == http.StatusOK:
 		// fall through to decode body
-	case http.StatusUnauthorized:
+	case resp.StatusCode == http.StatusUnauthorized:
 		return nil, auth.ErrTokenRejected
-	default:
-		// Drain a bounded amount of body for diagnostics, then fail.
+	case resp.StatusCode >= 500 && resp.StatusCode < 600:
+		// 5xx — verifier broken or overloaded. We can't say whether the
+		// token is valid; surface as provider unavailable.
 		_, _ = io.CopyN(io.Discard, resp.Body, 1024)
-		return nil, fmt.Errorf("%w: verifier returned status %d", auth.ErrInvalidToken, resp.StatusCode)
+		return nil, fmt.Errorf("%w: verifier returned status %d", auth.ErrProviderUnavailable, resp.StatusCode)
+	case resp.StatusCode >= 400 && resp.StatusCode < 500:
+		// Non-401 4xx — verifier explicitly refused the request (e.g.,
+		// 400 bad request, 403 forbidden). Treat as token-side rejection.
+		_, _ = io.CopyN(io.Discard, resp.Body, 1024)
+		return nil, fmt.Errorf("%w: verifier returned status %d", auth.ErrTokenRejected, resp.StatusCode)
+	default:
+		// 1xx / 3xx — undefined for this contract. Treat as unavailable.
+		_, _ = io.CopyN(io.Discard, resp.Body, 1024)
+		return nil, fmt.Errorf("%w: verifier returned unexpected status %d", auth.ErrProviderUnavailable, resp.StatusCode)
 	}
 
 	var result verifyResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("%w: decode response: %w", auth.ErrInvalidToken, err)
+		// Verifier returned 200 but the body isn't the contract shape —
+		// provider misbehavior, not a token issue.
+		return nil, fmt.Errorf("%w: decode response: %w", auth.ErrProviderUnavailable, err)
 	}
 	if !result.Valid {
 		return nil, auth.ErrTokenRejected

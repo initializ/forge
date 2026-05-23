@@ -150,6 +150,11 @@ func classifyAuthFailure(err error) string {
 		return "token rejected by auth provider"
 	case errors.Is(err, ErrInvalidToken):
 		return "invalid token"
+	case errors.Is(err, ErrProviderUnavailable):
+		// Surface a distinct user-visible message so retry behavior on
+		// the client can be different from "invalid token". This is also
+		// the operator-facing signal in /healthz-style probes.
+		return "auth provider unavailable"
 	default:
 		return "auth provider error"
 	}

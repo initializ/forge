@@ -127,6 +127,14 @@ func (r *Runner) SetScheduleNotifier(fn ScheduleNotifier) {
 // ResolveAuth resolves the auth token early (before Run). This is needed so
 // channel adapters can be configured with the token before Run() blocks.
 // Safe to call multiple times — subsequent calls are no-ops.
+//
+// Invariant: after this returns nil, EITHER r.authToken is non-empty OR
+// r.cfg.NoAuth is true. resolveAuth() relies on this when it conditionally
+// prepends the loopback static_token (review #10). If a future refactor
+// adds a return path that violates this invariant, channel-adapter
+// callbacks will silently break — the test
+// TestResolveAuth_InvariantMintsTokenInNonNoAuthPath in
+// auth_chain_test.go pins the property.
 func (r *Runner) ResolveAuth() error {
 	if r.authToken != "" || r.cfg.NoAuth {
 		return nil // already resolved
@@ -1741,9 +1749,17 @@ func (r *Runner) printBanner(proxyURL string) {
 // If BOTH forge.yaml auth: AND --auth-url are configured, the YAML block
 // wins and a warning is logged — silent merging would be surprising.
 //
-// The internal loopback static_token is ALWAYS prepended at the chain
-// head (regardless of source) so channel-adapter callbacks short-circuit
-// before any external provider is invoked.
+// Loopback static_token prepending:
+//   - The internal loopback token is prepended at the chain head WHEN
+//     ResolveAuth() has minted one (i.e., r.authToken != ""). In the
+//     non-NoAuth path that's an invariant ResolveAuth maintains (review
+//     #10). When --no-auth is in effect we return early via the
+//     AllowAnonymous path above and never reach the prepend.
+//   - Channel adapter callbacks rely on the loopback short-circuit; if
+//     ResolveAuth is ever refactored to skip token minting on the
+//     non-NoAuth path, channels will silently break. TestResolveAuth_
+//     InvariantMintsTokenInNonNoAuthPath in auth_chain_test.go pins
+//     that invariant.
 func (r *Runner) resolveAuth(auditLogger *coreruntime.AuditLogger) (auth.MiddlewareOptions, error) {
 	// Ensure token is resolved (no-op if already done by ResolveAuth).
 	if err := r.ResolveAuth(); err != nil {
@@ -1788,6 +1804,15 @@ func (r *Runner) resolveAuth(auditLogger *coreruntime.AuditLogger) (auth.Middlew
 
 	// Prepend the loopback static_token so channel adapter callbacks
 	// short-circuit before any user-configured provider runs.
+	//
+	// PRECONDITION: r.authToken is non-empty on this branch because
+	// ResolveAuth() always mints one in the non-NoAuth path. The
+	// conditional here is defensive — if someone refactors ResolveAuth
+	// to skip minting (and forgets to update channels), we'd want the
+	// rest of the function to still produce a coherent middleware
+	// (without a loopback) rather than panic. The invariant itself is
+	// pinned by TestResolveAuth_InvariantMintsTokenInNonNoAuthPath
+	// (review #10).
 	chain := userChain
 	if r.authToken != "" {
 		loopback, err := statictoken.New(statictoken.Config{

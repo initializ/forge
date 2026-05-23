@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/initializ/forge/forge-core/auth"
+	"github.com/initializ/forge/forge-core/types"
 )
 
 // E2E tests covering the auth chain that the runner builds from legacy
@@ -293,6 +294,49 @@ func TestE2E_VerifierUnreachable_ReturnsInvalidNot500(t *testing.T) {
 	rr := runMiddleware(t, chain, "POST", "/tasks/send", "Bearer x")
 	if rr.Code != http.StatusUnauthorized {
 		t.Errorf("verifier-unreachable status = %d, want 401", rr.Code)
+	}
+}
+
+// --- ResolveAuth invariant pin (review #10) ---
+//
+// The loopback-token prepend in resolveAuth() is conditional on
+// r.authToken != "" — which works because ResolveAuth() always mints
+// one in the non-NoAuth path. If that invariant ever breaks (refactor
+// of ResolveAuth that skips minting), channel adapters silently lose
+// their loopback. This test pins the invariant directly.
+
+func TestResolveAuth_InvariantMintsTokenInNonNoAuthPath(t *testing.T) {
+	tmp := t.TempDir()
+	r := &Runner{logger: nopLogger{}}
+	r.cfg.Config = &types.ForgeConfig{}
+	r.cfg.NoAuth = false
+	r.cfg.Host = "127.0.0.1" // localhost so the !local + NoAuth check doesn't trip
+	r.cfg.WorkDir = tmp      // ResolveAuth stores the token under <WorkDir>/.forge/
+
+	if err := r.ResolveAuth(); err != nil {
+		t.Fatalf("ResolveAuth: %v", err)
+	}
+	if r.authToken == "" {
+		t.Fatal("invariant broken: ResolveAuth() returned nil but did not mint a token " +
+			"(non-NoAuth path MUST set r.authToken — channels rely on this; " +
+			"see runner.go resolveAuth loopback-prepend comment)")
+	}
+}
+
+func TestResolveAuth_NoAuthPathDoesNotMintToken(t *testing.T) {
+	// Counterpart: in --no-auth mode, no token should be minted. The
+	// AllowAnonymous branch returns before the prepend ever runs, so
+	// the absence of a token is correct.
+	r := &Runner{logger: nopLogger{}}
+	r.cfg.Config = &types.ForgeConfig{}
+	r.cfg.NoAuth = true
+	r.cfg.Host = "127.0.0.1"
+
+	if err := r.ResolveAuth(); err != nil {
+		t.Fatalf("ResolveAuth: %v", err)
+	}
+	if r.authToken != "" {
+		t.Errorf("--no-auth path should not mint a token, got %q", r.authToken)
 	}
 }
 

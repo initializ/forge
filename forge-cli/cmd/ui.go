@@ -112,6 +112,15 @@ func runUI(cmd *cobra.Command, args []string) error {
 			_ = os.Setenv("FORGE_PASSPHRASE", opts.Passphrase)
 		}
 
+		// Web UI auth chain selection (PR6). Translate the wizard payload
+		// into the same fields the TUI wizard / non-interactive flags use,
+		// so scaffold() has a single source of truth.
+		if opts.Auth != nil && opts.Auth.Mode != "" {
+			initOpts.AuthMode = opts.Auth.Mode
+			initOpts.AuthSettings = opts.Auth.Settings
+			initOpts.AuthEgressHosts = authEgressHostsFromSettings(opts.Auth.Mode, opts.Auth.Settings)
+		}
+
 		storeProviderEnvVar(initOpts)
 		checkSkillRequirements(initOpts)
 

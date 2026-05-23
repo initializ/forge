@@ -57,3 +57,7 @@ secrets:
     - encrypted-file
     - env
 {{- end}}
+{{- if .AuthBlock}}
+
+{{.AuthBlock}}
+{{- end}}

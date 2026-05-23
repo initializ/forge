@@ -22,10 +22,40 @@ type ForgeConfig struct {
 	Skills         SkillsRef        `yaml:"skills,omitempty"`
 	Memory         MemoryConfig     `yaml:"memory,omitempty"`
 	Secrets        SecretsConfig    `yaml:"secrets,omitempty"`
+	Auth           AuthConfig       `yaml:"auth,omitempty"`
 	Schedules      []ScheduleConfig `yaml:"schedules,omitempty"`
 	CORSOrigins    []string         `yaml:"cors_origins,omitempty"`
 	Package        PackageConfig    `yaml:"package,omitempty"`
 	GuardrailsPath string           `yaml:"guardrails_path,omitempty"` // path to guardrails.json (default: "guardrails.json")
+}
+
+// AuthConfig declares the auth provider chain for the A2A server. Mirrors
+// the secrets.providers pattern: each entry is { type, settings } and the
+// runner builds them in order via auth.Registry.BuildChain.
+//
+// Backward compatibility: if AuthConfig.Providers is empty, the legacy
+// --auth-url / FORGE_AUTH_URL / FORGE_AUTH_ORG_ID flow synthesizes a
+// single-element http_verifier chain (unchanged from pre-PR3 behavior).
+type AuthConfig struct {
+	// Required indicates whether auth is mandatory. When false (default),
+	// the runtime treats Providers as the source of truth — operators may
+	// still opt out via --no-auth on localhost. Reserved for future
+	// TUI/UI gating logic.
+	Required bool `yaml:"required,omitempty"`
+
+	// Providers is the ordered list of auth providers that compose into
+	// the A2A server's auth chain. First-match wins.
+	Providers []AuthProvider `yaml:"providers,omitempty"`
+}
+
+// AuthProvider is one entry in AuthConfig.Providers. The Type names a
+// factory registered with the auth package (e.g., "oidc", "http_verifier",
+// "static_token", and — in Phase 3 — "okta"). Settings is unmarshaled
+// into the provider-specific Config struct via auth.UnmarshalSettings.
+type AuthProvider struct {
+	Type     string         `yaml:"type"`
+	Name     string         `yaml:"name,omitempty"`
+	Settings map[string]any `yaml:"settings,omitempty"`
 }
 
 // ScheduleConfig defines a recurring scheduled task in forge.yaml.

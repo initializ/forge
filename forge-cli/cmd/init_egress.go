@@ -15,6 +15,32 @@ var providerDomains = map[string]string{
 	// ollama is local, no egress needed
 }
 
+// mergeEgressDomains returns the deduplicated, sorted union of `base`
+// and `extra`. Sorting is intentional — `deriveEgressDomains` produces
+// sorted output, and appending auth hosts unsorted at the tail (the
+// pre-sort behavior of this function) made the rendered forge.yaml
+// produce noisy diffs across runs when the auth host set changed.
+// Review #11c.
+//
+// Used by the init scaffold to fold auth-provider hosts (from the
+// wizard or --auth flags) into the egress allowlist while keeping the
+// generated forge.yaml stable.
+func mergeEgressDomains(base, extra []string) []string {
+	seen := make(map[string]bool, len(base)+len(extra))
+	out := make([]string, 0, len(base)+len(extra))
+	for _, slice := range [][]string{base, extra} {
+		for _, d := range slice {
+			if d == "" || seen[d] {
+				continue
+			}
+			seen[d] = true
+			out = append(out, d)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // deriveEgressDomains computes the full set of egress domains needed based on
 // the provider, channels, builtin tools, and selected registry skills.
 func deriveEgressDomains(opts *initOptions, skills []contract.SkillDescriptor) []string {

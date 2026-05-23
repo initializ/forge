@@ -30,6 +30,26 @@ type WizardContext struct {
 	CustomModel    string
 	CustomAPIKey   string
 	EnvVars        map[string]string
+
+	// AuthMode is the user's selection from the auth step:
+	//   ""             — wizard step did not run
+	//   "none"         — anonymous access (no auth: block written)
+	//   "oidc"         — OIDC provider
+	//   "http_verifier" — legacy external verifier
+	//   "custom"       — write a commented stub; user edits manually
+	AuthMode string
+
+	// AuthSettings is the type-specific settings block for the chosen
+	// provider, ready to plug into `auth.providers[0].settings` in
+	// forge.yaml. Keys: "issuer", "audience", "url", "default_org",
+	// "claim_map" (a nested map), etc.
+	AuthSettings map[string]any
+
+	// AuthEgressHosts is the list of bare hosts (no port) that should be
+	// auto-added to the egress allowlist because the auth step requires
+	// them — e.g. an OIDC issuer or http_verifier URL. The init scaffold
+	// merges these into the rendered forge.yaml egress.allowed_domains.
+	AuthEgressHosts []string
 }
 
 // NewWizardContext creates an initialized WizardContext.
@@ -37,6 +57,7 @@ func NewWizardContext() *WizardContext {
 	return &WizardContext{
 		ChannelTokens: make(map[string]string),
 		EnvVars:       make(map[string]string),
+		AuthSettings:  make(map[string]any),
 	}
 }
 

@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -16,6 +17,12 @@ import (
 	"github.com/initializ/forge/forge-core/a2a"
 	"github.com/initializ/forge/forge-core/agentspec"
 	"github.com/initializ/forge/forge-core/auth"
+	"github.com/initializ/forge/forge-core/auth/providers/httpverifier"
+	// Side-effect import: registers the "oidc" provider with the auth registry
+	// so forge.yaml `auth: { type: oidc }` blocks construct successfully via
+	// auth.Build("oidc", settings). The package is not referenced directly.
+	_ "github.com/initializ/forge/forge-core/auth/providers/oidc"
+	"github.com/initializ/forge/forge-core/auth/providers/statictoken"
 	"github.com/initializ/forge/forge-core/llm"
 	"github.com/initializ/forge/forge-core/llm/oauth"
 	"github.com/initializ/forge/forge-core/llm/providers"
@@ -120,6 +127,14 @@ func (r *Runner) SetScheduleNotifier(fn ScheduleNotifier) {
 // ResolveAuth resolves the auth token early (before Run). This is needed so
 // channel adapters can be configured with the token before Run() blocks.
 // Safe to call multiple times — subsequent calls are no-ops.
+//
+// Invariant: after this returns nil, EITHER r.authToken is non-empty OR
+// r.cfg.NoAuth is true. resolveAuth() relies on this when it conditionally
+// prepends the loopback static_token (review #10). If a future refactor
+// adds a return path that violates this invariant, channel-adapter
+// callbacks will silently break — the test
+// TestResolveAuth_InvariantMintsTokenInNonNoAuthPath in
+// auth_chain_test.go pins the property.
 func (r *Runner) ResolveAuth() error {
 	if r.authToken != "" || r.cfg.NoAuth {
 		return nil // already resolved
@@ -246,6 +261,10 @@ func (r *Runner) Run(ctx context.Context) error {
 			egressDomains = append(egressDomains, expandEgressDomains(d, envVars)...)
 		}
 	}
+	// Auto-merge auth-provider issuer/verifier hosts. Without this, an
+	// OIDC issuer or http_verifier URL configured in forge.yaml would be
+	// silently blocked at runtime by the egress enforcer.
+	egressDomains = append(egressDomains, security.AuthDomains(r.cfg.Config.Auth)...)
 	egressCfg, egressErr := security.Resolve(
 		r.cfg.Config.Egress.Profile,
 		r.cfg.Config.Egress.Mode,
@@ -1719,44 +1738,299 @@ func (r *Runner) printBanner(proxyURL string) {
 	fmt.Fprintf(os.Stderr, "  Press Ctrl+C to stop\n\n")
 }
 
-// resolveAuth builds the auth middleware config. Token resolution is done by
-// ResolveAuth() (called early so channel adapters can use it); this method
-// just wires the already-resolved token into a middleware Config with the audit callback.
-func (r *Runner) resolveAuth(auditLogger *coreruntime.AuditLogger) (auth.Config, error) {
+// resolveAuth builds the auth middleware options for the A2A server.
+//
+// Source precedence (highest first):
+//  1. --no-auth flag       → nil chain, anonymous access
+//  2. forge.yaml auth:     → Registry.BuildChain(cfg.Auth.Providers)
+//  3. --auth-url / env     → legacy http_verifier chain
+//  4. nothing              → loopback-token-only chain (or nil if also no channels)
+//
+// If BOTH forge.yaml auth: AND --auth-url are configured, the YAML block
+// wins and a warning is logged — silent merging would be surprising.
+//
+// Loopback static_token prepending:
+//   - The internal loopback token is prepended at the chain head WHEN
+//     ResolveAuth() has minted one (i.e., r.authToken != ""). In the
+//     non-NoAuth path that's an invariant ResolveAuth maintains (review
+//     #10). When --no-auth is in effect we return early via the
+//     AllowAnonymous path above and never reach the prepend.
+//   - Channel adapter callbacks rely on the loopback short-circuit; if
+//     ResolveAuth is ever refactored to skip token minting on the
+//     non-NoAuth path, channels will silently break. TestResolveAuth_
+//     InvariantMintsTokenInNonNoAuthPath in auth_chain_test.go pins
+//     that invariant.
+func (r *Runner) resolveAuth(auditLogger *coreruntime.AuditLogger) (auth.MiddlewareOptions, error) {
 	// Ensure token is resolved (no-op if already done by ResolveAuth).
 	if err := r.ResolveAuth(); err != nil {
-		return auth.Config{}, err
+		return auth.MiddlewareOptions{}, err
 	}
 
 	if r.cfg.NoAuth {
-		return auth.Config{Enabled: false}, nil
+		// Cross-check --no-auth against the forge.yaml auth block. The
+		// flag and the YAML have historically been treated independently;
+		// review #4 closes the gap so a misaligned pair fails loudly
+		// instead of silently serving anonymous traffic on what the
+		// operator declared a required-auth deployment.
+		if r.cfg.Config != nil {
+			authCfg := r.cfg.Config.Auth
+			if authCfg.Required {
+				return auth.MiddlewareOptions{}, fmt.Errorf(
+					"--no-auth conflicts with forge.yaml 'auth.required: true' — " +
+						"either remove --no-auth, set 'auth.required: false', or " +
+						"delete the 'auth:' block to confirm anonymous access is intended")
+			}
+			if len(authCfg.Providers) > 0 {
+				r.logger.Warn(
+					"--no-auth overrides forge.yaml 'auth.providers' — configured "+
+						"providers will be ignored and the agent will accept anonymous "+
+						"traffic. Remove --no-auth to enforce the configured chain.",
+					map[string]any{"providers_configured": len(authCfg.Providers)},
+				)
+			}
+		}
+		// Operator explicitly chose anonymous via --no-auth. AllowAnonymous
+		// makes that choice visible at the middleware boundary (review #3).
+		return auth.MiddlewareOptions{
+			AllowAnonymous: true,
+			SkipPaths:      auth.DefaultSkipPaths(),
+		}, nil
 	}
 
-	cfg := auth.Config{
-		Enabled:   true,
-		Token:     r.authToken,
-		AuthURL:   r.cfg.AuthURL,
-		AuthOrgID: r.cfg.AuthOrgID,
+	userChain, err := r.buildUserAuthChain()
+	if err != nil {
+		return auth.MiddlewareOptions{}, fmt.Errorf("building auth chain: %w", err)
+	}
+
+	// Prepend the loopback static_token so channel adapter callbacks
+	// short-circuit before any user-configured provider runs.
+	//
+	// PRECONDITION: r.authToken is non-empty on this branch because
+	// ResolveAuth() always mints one in the non-NoAuth path. The
+	// conditional here is defensive — if someone refactors ResolveAuth
+	// to skip minting (and forgets to update channels), we'd want the
+	// rest of the function to still produce a coherent middleware
+	// (without a loopback) rather than panic. The invariant itself is
+	// pinned by TestResolveAuth_InvariantMintsTokenInNonNoAuthPath
+	// (review #10).
+	chain := userChain
+	if r.authToken != "" {
+		loopback, err := statictoken.New(statictoken.Config{
+			Token: r.authToken,
+			Identity: auth.Identity{
+				UserID: "forge-internal",
+				Source: "internal",
+			},
+		})
+		if err != nil {
+			return auth.MiddlewareOptions{}, fmt.Errorf("loopback static_token: %w", err)
+		}
+		chain = auth.PrependChain(userChain, loopback)
+	}
+
+	// No user chain AND no loopback token → legacy "no auth config, no
+	// channels" default. Preserve backward compat by allowing anonymous,
+	// but flag it explicitly so the middleware's nil-chain panic guard
+	// is satisfied (review #3).
+	if chain == nil {
+		return auth.MiddlewareOptions{
+			AllowAnonymous: true,
+			SkipPaths:      auth.DefaultSkipPaths(),
+			OnAuth:         makeAuthAuditCallback(auditLogger),
+		}, nil
+	}
+
+	return auth.MiddlewareOptions{
+		Chain:     chain,
 		SkipPaths: auth.DefaultSkipPaths(),
-		OnAuth: func(req *http.Request, success bool) {
-			if auditLogger == nil {
-				return
-			}
-			event := coreruntime.AuditAuthSuccess
-			if !success {
-				event = coreruntime.AuditAuthFailure
+		OnAuth:    makeAuthAuditCallback(auditLogger),
+	}, nil
+}
+
+// makeAuthAuditCallback returns the OnAuth callback that emits structured
+// auth_verify / auth_fail audit events.
+//
+// Fields emitted (NO PII — never email, claims, token bytes, or secrets):
+//
+//	auth_verify: { provider, user_id, org_id, groups_count, token_kind, method, path, remote_addr }
+//	auth_fail:   { reason, token_kind, method, path, remote_addr }
+//
+// Reason codes for auth_fail:
+//
+//	missing_token   → no Authorization header
+//	rejected        → provider recognized + denied (revoked, expired, wrong iss/aud)
+//	invalid         → token malformed or cryptographically invalid
+//	not_for_me      → chain exhausted (no provider claimed the token)
+//	infrastructure  → transient provider error (network, etc.)
+func makeAuthAuditCallback(auditLogger *coreruntime.AuditLogger) func(*http.Request, *auth.Identity, error, string) {
+	if auditLogger == nil {
+		return nil
+	}
+	return func(req *http.Request, id *auth.Identity, err error, tokenKind string) {
+		correlationID := coreruntime.CorrelationIDFromContext(req.Context())
+
+		if err == nil && id != nil {
+			// Success → auth_verify.
+			fields := map[string]any{
+				"provider":     id.Source,
+				"user_id":      id.UserID,
+				"org_id":       id.OrgID,
+				"groups_count": len(id.Groups),
+				"token_kind":   tokenKind,
+				"method":       req.Method,
+				"path":         req.URL.Path,
+				"remote_addr":  req.RemoteAddr,
 			}
 			auditLogger.Emit(coreruntime.AuditEvent{
-				Event: event,
-				Fields: map[string]any{
-					"method":      req.Method,
-					"path":        req.URL.Path,
-					"remote_addr": req.RemoteAddr,
-				},
+				Event:         coreruntime.EventAuthVerify,
+				CorrelationID: correlationID,
+				Fields:        fields,
 			})
-		},
+			return
+		}
+
+		// Failure → auth_fail with reason code.
+		auditLogger.Emit(coreruntime.AuditEvent{
+			Event:         coreruntime.EventAuthFail,
+			CorrelationID: correlationID,
+			Fields: map[string]any{
+				"reason":      authFailReason(err),
+				"token_kind":  tokenKind,
+				"method":      req.Method,
+				"path":        req.URL.Path,
+				"remote_addr": req.RemoteAddr,
+			},
+		})
 	}
-	return cfg, nil
+}
+
+// authFailReason maps a chain error to a stable, low-cardinality reason
+// code suitable for dashboarding and alerting. Reason strings are part
+// of the audit-event contract — changing them is a breaking change for
+// downstream consumers.
+//
+// Reason codes:
+//
+//	missing_token        - no Authorization header
+//	rejected             - provider recognized + denied (revoked, expired, 401, 4xx)
+//	invalid              - token malformed or cryptographically invalid
+//	not_for_me           - chain exhausted, no provider claimed the token
+//	provider_unavailable - verifier/IdP unreachable (5xx, network, undecodable)
+//	infrastructure       - other unexpected error
+//
+// provider_unavailable was added in review #6 so operators can
+// distinguish "the token is bad" alerts from "the IdP is down" alerts
+// in their dashboards — the response and the runbook are different.
+func authFailReason(err error) string {
+	switch {
+	case err == nil:
+		return "unknown"
+	case errors.Is(err, auth.ErrMissingBearer):
+		return "missing_token"
+	case errors.Is(err, auth.ErrTokenRejected):
+		return "rejected"
+	case errors.Is(err, auth.ErrInvalidToken):
+		return "invalid"
+	case errors.Is(err, auth.ErrProviderUnavailable):
+		return "provider_unavailable"
+	case errors.Is(err, auth.ErrTokenNotForMe):
+		return "not_for_me"
+	default:
+		return "infrastructure"
+	}
+}
+
+// buildUserAuthChain returns the user-facing portion of the auth chain
+// (everything EXCEPT the loopback static_token, which the caller prepends).
+//
+//   - forge.yaml auth.providers populated → Registry.BuildChain
+//   - --auth-url / FORGE_AUTH_URL only     → legacy http_verifier
+//   - neither                              → nil (no user chain)
+func (r *Runner) buildUserAuthChain() (auth.Provider, error) {
+	hasYAMLAuth := len(r.cfg.Config.Auth.Providers) > 0
+	hasLegacyURL := r.cfg.AuthURL != ""
+
+	if hasYAMLAuth && hasLegacyURL {
+		r.logger.Warn("both --auth-url and forge.yaml 'auth:' block configured; preferring 'auth:' block (--auth-url ignored)", nil)
+	}
+
+	if hasYAMLAuth {
+		return buildChainFromConfig(r.cfg.Config.Auth)
+	}
+	if hasLegacyURL {
+		return buildLegacyHTTPVerifierChain(r.cfg.AuthURL, r.cfg.AuthOrgID)
+	}
+	return nil, nil
+}
+
+// buildChainFromConfig builds a ChainProvider from a typed AuthConfig by
+// delegating to the package-level registry. Each AuthProvider entry is
+// constructed via its registered factory.
+func buildChainFromConfig(cfg types.AuthConfig) (auth.Provider, error) {
+	if len(cfg.Providers) == 0 {
+		return nil, nil
+	}
+	providers := make([]auth.Provider, 0, len(cfg.Providers))
+	for i, spec := range cfg.Providers {
+		p, err := auth.Build(spec.Type, spec.Settings)
+		if err != nil {
+			return nil, fmt.Errorf("auth.providers[%d] (%s): %w", i, spec.Type, err)
+		}
+		providers = append(providers, p)
+	}
+	return auth.NewChainProvider(providers...), nil
+}
+
+// buildLegacyHTTPVerifierChain constructs the legacy --auth-url chain
+// (single http_verifier provider). Kept separate from
+// buildChainFromConfig so the legacy code path is obvious.
+func buildLegacyHTTPVerifierChain(authURL, authOrgID string) (auth.Provider, error) {
+	p, err := httpverifier.New(httpverifier.Config{
+		URL:        authURL,
+		DefaultOrg: authOrgID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("legacy http_verifier: %w", err)
+	}
+	return auth.NewChainProvider(p), nil
+}
+
+// buildLegacyAuthChain is a test-friendly helper that combines the
+// loopback-token prepend and the legacy http_verifier chain. Mirrors the
+// production wiring in resolveAuth so PR1's e2e tests keep working
+// unchanged.
+//
+// Order:
+//  1. static_token (loopback) — if internalToken non-empty
+//  2. http_verifier — if authURL non-empty
+//
+// Returns nil chain when both inputs are empty.
+func buildLegacyAuthChain(internalToken, authURL, authOrgID string) (auth.Provider, error) {
+	var userChain auth.Provider
+	if authURL != "" {
+		c, err := buildLegacyHTTPVerifierChain(authURL, authOrgID)
+		if err != nil {
+			return nil, err
+		}
+		userChain = c
+	}
+	if internalToken != "" {
+		loopback, err := statictoken.New(statictoken.Config{
+			Token: internalToken,
+			Identity: auth.Identity{
+				UserID: "forge-internal",
+				Source: "internal",
+			},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("static_token provider: %w", err)
+		}
+		if userChain == nil {
+			return auth.NewChainProvider(loopback), nil
+		}
+		return auth.PrependChain(userChain, loopback), nil
+	}
+	return userChain, nil
 }
 
 // ensureGitignore makes sure .forge/ is listed in the project's .gitignore.

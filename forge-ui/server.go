@@ -3,7 +3,6 @@ package forgeui
 import (
 	"context"
 	"fmt"
-	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -103,12 +102,10 @@ func (s *UIServer) Start(ctx context.Context) error {
 	mux.HandleFunc("GET /api/agents/{id}/skill-builder/context", s.handleSkillBuilderContext)
 	mux.HandleFunc("GET /api/agents/{id}/skill-builder/provider", s.handleSkillBuilderProvider)
 
-	// Static file serving with SPA fallback
-	distFS, err := fs.Sub(static.FS, "dist")
-	if err != nil {
-		return fmt.Errorf("creating sub filesystem: %w", err)
-	}
-	fileServer := http.FileServer(http.FS(distFS))
+	// Static file serving with SPA fallback. The embedded FS is rooted
+	// directly at the static assets — no "dist/" subdirectory (review #8
+	// removed the misleading dist/ naming).
+	fileServer := http.FileServer(http.FS(static.FS))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// Try to serve the file directly
 		path := r.URL.Path
@@ -117,8 +114,8 @@ func (s *UIServer) Start(ctx context.Context) error {
 			return
 		}
 
-		// Check if the file exists
-		f, err := distFS.Open(strings.TrimPrefix(path, "/"))
+		// Check if the file exists in the embedded FS.
+		f, err := static.FS.Open(strings.TrimPrefix(path, "/"))
 		if err == nil {
 			_ = f.Close()
 			fileServer.ServeHTTP(w, r)

@@ -129,8 +129,15 @@ func (c *jwksCache) ttlExpired() bool {
 
 // backoffActive reports whether we should suppress a refresh attempt
 // because a recent one failed. Prevents a dead JWKS endpoint from being
-// hit on every request during an outage. Must be called with at least
-// an RLock held.
+// hit on every request during an outage — without this gate, N concurrent
+// callers against a flapping IdP would amplify into N IdP hits per
+// request burst (a DDoS amplifier). Must be called with at least an
+// RLock held.
+//
+// Test coverage: TestJWKS_FailedRefreshDoesNotHammerIdP in provider_test.go
+// pins the "exactly one IdP hit per refetchGrace window during failure"
+// contract — fires 50 unknown-kid requests in a backoff window and asserts
+// JWKS endpoint is called once.
 func (c *jwksCache) backoffActive() bool {
 	if c.lastErr == nil {
 		return false

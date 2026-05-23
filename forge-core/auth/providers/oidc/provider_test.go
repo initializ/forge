@@ -997,6 +997,105 @@ func TestJWKS_RevokedKeyEventuallyRejected(t *testing.T) {
 	}
 }
 
+func TestJWKS_FailedRefreshDoesNotHammerIdP(t *testing.T) {
+	// Review #5 explicit guard: when refreshLocked fails, every
+	// subsequent unknown-kid (or any miss) request inside the same
+	// refetchGrace window must NOT trigger another IdP fetch. A
+	// flapping IdP otherwise turns into a DDoS amplifier — N concurrent
+	// callers × broken IdP = N IdP hits per request burst.
+	//
+	// The mechanism is in jwks.go's backoffActive(): on any refresh
+	// error, lastErr+lastAttempt are set; subsequent Get calls within
+	// refetchGrace short-circuit with ErrKeyNotFound, without re-calling
+	// refreshLocked. This test pins that behavior.
+	fi := newFakeIssuer(t)
+	var jwksHits atomic.Int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/jwks" {
+			jwksHits.Add(1)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		fi.serve(w, r)
+	}))
+	defer srv.Close()
+
+	p, err := oidc.New(oidc.Config{
+		Issuer:       srv.URL,
+		Audience:     testAudience,
+		JWKSURL:      srv.URL + "/jwks",
+		JWKSCacheTTL: 10 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	clk := &virtualClock{now: time.Now()}
+	oidc.SetCacheClockForTest(p, clk.Now)
+
+	// Build a syntactically-valid JWT pointing at a kid the broken
+	// JWKS would never produce — guarantees we hit the refresh path
+	// (cache miss + TTL expired since lastSuccessful is zero).
+	tok := buildJWTWithKid(t, fi.keys["key-1"].priv, "unknown-kid")
+
+	// First call attempts to refresh, fails (500), records the error
+	// and bumps lastAttempt → from now backoff is active.
+	_, _ = p.Verify(context.Background(), tok, nil)
+	firstWindowHits := jwksHits.Load()
+	if firstWindowHits != 1 {
+		t.Fatalf("first Verify did not attempt JWKS (hits=%d)", firstWindowHits)
+	}
+
+	// Fire a burst of requests inside the backoff window. NONE of these
+	// should reach the JWKS endpoint — backoffActive() short-circuits.
+	for range 50 {
+		_, _ = p.Verify(context.Background(), tok, nil)
+	}
+	if got := jwksHits.Load(); got != firstWindowHits {
+		t.Errorf("DDoS amplifier: 50 unknown-kid requests during backoff produced %d IdP hits (want %d)",
+			got, firstWindowHits)
+	}
+
+	// Advance past refetchGrace (default 30s). The next request should
+	// be allowed to re-attempt the IdP exactly once.
+	clk.advance(35 * time.Second)
+	_, _ = p.Verify(context.Background(), tok, nil)
+	if got := jwksHits.Load(); got != firstWindowHits+1 {
+		t.Errorf("post-grace retry: hits = %d, want %d (one retry per grace window)",
+			got, firstWindowHits+1)
+	}
+
+	// And another burst still inside the new grace window — same lock-out.
+	for range 50 {
+		_, _ = p.Verify(context.Background(), tok, nil)
+	}
+	if got := jwksHits.Load(); got != firstWindowHits+1 {
+		t.Errorf("second backoff window leaked: hits = %d, want %d",
+			got, firstWindowHits+1)
+	}
+}
+
+// buildJWTWithKid signs a token with the given private key but stamps an
+// arbitrary kid in the header. Used by the JWKS hammer test to force the
+// provider into the unknown-kid + refresh path.
+func buildJWTWithKid(t *testing.T, priv any, kid string) string {
+	t.Helper()
+	claims := jwt.MapClaims{
+		"iss": "x",
+		"aud": testAudience,
+		"sub": "x",
+		"exp": time.Now().Add(15 * time.Minute).Unix(),
+	}
+	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	tok.Header["kid"] = kid
+	s, err := tok.SignedString(priv)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	return s
+}
+
 func TestJWKS_FailedRefreshDoesNotExtendTTL(t *testing.T) {
 	// Bug guard: a failed refresh must not bump lastSuccessful. Otherwise
 	// an IdP outage during a TTL-refresh window would silently extend

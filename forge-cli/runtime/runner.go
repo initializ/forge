@@ -17,10 +17,13 @@ import (
 	"github.com/initializ/forge/forge-core/a2a"
 	"github.com/initializ/forge/forge-core/agentspec"
 	"github.com/initializ/forge/forge-core/auth"
+	// Side-effect imports: each provider sub-package registers its factory
+	// with the auth registry via init() so forge.yaml `auth.providers[]`
+	// blocks construct successfully via auth.Build("<type>", settings).
+	// Listed here even when the package is also referenced directly
+	// (httpverifier, statictoken) for grep-ability.
+	_ "github.com/initializ/forge/forge-core/auth/providers/aws_sigv4"
 	"github.com/initializ/forge/forge-core/auth/providers/httpverifier"
-	// Side-effect import: registers the "oidc" provider with the auth registry
-	// so forge.yaml `auth: { type: oidc }` blocks construct successfully via
-	// auth.Build("oidc", settings). The package is not referenced directly.
 	_ "github.com/initializ/forge/forge-core/auth/providers/oidc"
 	"github.com/initializ/forge/forge-core/auth/providers/statictoken"
 	"github.com/initializ/forge/forge-core/llm"

@@ -45,6 +45,11 @@ type initOptions struct {
 	Force          bool   // overwrite existing directory
 	CustomModel    string // custom provider model name
 	AuthMethod     string // "apikey" or "oauth"
+
+	// A2A auth chain (from the wizard's Authentication step or CLI flags).
+	AuthMode        string         // "", "none", "oidc", "http_verifier", "custom"
+	AuthSettings    map[string]any // provider-specific settings block
+	AuthEgressHosts []string       // hosts to merge into egress allowlist
 }
 
 // toolEntry represents a tool parsed from a skills file.
@@ -71,6 +76,12 @@ type templateData struct {
 	EgressDomains  []string
 	EnvVars        []envVarEntry
 	HasSecrets     bool
+
+	// Auth chain rendering (see forge.yaml.tmpl). Pre-rendered as a YAML
+	// fragment because nested maps in the settings block (e.g. claim_map)
+	// would otherwise require non-trivial template helpers. Empty when
+	// the user picked "none" or skipped the auth step.
+	AuthBlock string
 }
 
 // fallbackTmplData holds template data for a fallback provider.
@@ -121,6 +132,15 @@ func init() {
 	initCmd.Flags().String("org-id", "", "OpenAI organization ID (enterprise)")
 	initCmd.Flags().StringSlice("fallbacks", nil, "fallback LLM providers (e.g., openai,gemini)")
 	initCmd.Flags().Bool("force", false, "overwrite existing directory")
+
+	// Auth chain (PR5+). All optional. When --auth is unset or "none", no
+	// auth: block is written and the agent runs anonymously.
+	initCmd.Flags().String("auth", "", "auth mode: none, oidc, http_verifier, custom")
+	initCmd.Flags().String("auth-issuer", "", "OIDC issuer URL (required with --auth=oidc)")
+	initCmd.Flags().String("auth-audience", "", "OIDC audience (required with --auth=oidc)")
+	initCmd.Flags().String("auth-url", "", "verifier URL (required with --auth=http_verifier)")
+	initCmd.Flags().String("auth-default-org", "", "default org_id for http_verifier (optional)")
+	initCmd.Flags().String("auth-groups-claim", "", "claim name for groups (oidc, default: groups)")
 }
 
 func runInit(cmd *cobra.Command, args []string) error {
@@ -154,6 +174,18 @@ func runInit(cmd *cobra.Command, args []string) error {
 	nonInteractive, _ := cmd.Flags().GetBool("non-interactive")
 	opts.NonInteractive = nonInteractive
 	opts.Force, _ = cmd.Flags().GetBool("force")
+
+	// Auth chain flags.
+	authMode, _ := cmd.Flags().GetString("auth")
+	if authMode != "" {
+		settings, hosts, err := buildAuthFromFlags(cmd, authMode)
+		if err != nil {
+			return err
+		}
+		opts.AuthMode = authMode
+		opts.AuthSettings = settings
+		opts.AuthEgressHosts = hosts
+	}
 
 	// TTY detection: require a terminal for interactive mode
 	if !nonInteractive && !term.IsTerminal(int(os.Stdout.Fd())) {
@@ -258,6 +290,7 @@ func collectInteractive(opts *initOptions) error {
 		steps.NewToolsStep(styles, toolInfos, validateWebSearchKeyFn),
 		steps.NewSkillsStep(styles, skillInfos),
 		steps.NewEgressStep(styles, deriveEgressFn),
+		steps.NewAuthStep(styles),
 		steps.NewReviewStep(styles), // scaffold is handled by the caller after collectInteractive returns
 	}
 
@@ -327,10 +360,17 @@ func collectInteractive(opts *initOptions) error {
 		opts.EnvVars["MODEL_API_KEY"] = ctx.CustomAPIKey
 	}
 
-	// Store egress domains
-	if len(ctx.EgressDomains) > 0 {
-		opts.EnvVars["__egress_domains"] = strings.Join(ctx.EgressDomains, ",")
+	// Store egress domains, merging in any auth-provider hosts so the
+	// agent can reach its IdP / verifier at runtime.
+	mergedEgress := mergeEgressDomains(ctx.EgressDomains, ctx.AuthEgressHosts)
+	if len(mergedEgress) > 0 {
+		opts.EnvVars["__egress_domains"] = strings.Join(mergedEgress, ",")
 	}
+
+	// Auth chain selection.
+	opts.AuthMode = ctx.AuthMode
+	opts.AuthSettings = ctx.AuthSettings
+	opts.AuthEgressHosts = ctx.AuthEgressHosts
 
 	// Check skill requirements
 	checkSkillRequirements(opts)
@@ -1001,6 +1041,16 @@ func buildTemplateData(opts *initOptions) templateData {
 	if stored, ok := opts.EnvVars["__egress_domains"]; ok && stored != "" {
 		data.EgressDomains = strings.Split(stored, ",")
 	}
+
+	// Merge any auth-provider hosts (PR5 wizard / --auth flags) into the
+	// allowlist so the agent's runtime can reach its IdP/verifier.
+	if len(opts.AuthEgressHosts) > 0 {
+		data.EgressDomains = mergeEgressDomains(data.EgressDomains, opts.AuthEgressHosts)
+	}
+
+	// Auth chain rendering: pre-render the YAML fragment in Go so nested
+	// maps (claim_map) emit correctly.
+	data.AuthBlock = renderAuthBlock(opts.AuthMode, opts.AuthMode, opts.AuthSettings)
 
 	// Build env vars
 	data.EnvVars = buildEnvVars(opts)

@@ -23,6 +23,7 @@ import (
 	// Listed here even when the package is also referenced directly
 	// (httpverifier, statictoken) for grep-ability.
 	_ "github.com/initializ/forge/forge-core/auth/providers/aws_sigv4"
+	_ "github.com/initializ/forge/forge-core/auth/providers/azure_ad"
 	_ "github.com/initializ/forge/forge-core/auth/providers/gcp_iap"
 	"github.com/initializ/forge/forge-core/auth/providers/httpverifier"
 	_ "github.com/initializ/forge/forge-core/auth/providers/oidc"

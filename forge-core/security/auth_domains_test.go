@@ -185,6 +185,34 @@ func TestAuthDomains_AWSSigv4_MissingRegionReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestAuthDomains_GCPIAP(t *testing.T) {
+	// Decision §9.4: IAP JWKS host is hardcoded — same domain returned
+	// regardless of audience or any other config.
+	got := security.AuthDomains(types.AuthConfig{
+		Providers: []types.AuthProvider{
+			{Type: "gcp_iap", Settings: map[string]any{
+				"audience": "/projects/12345/global/backendServices/67890",
+			}},
+		},
+	})
+	if len(got) != 1 || got[0] != "www.gstatic.com" {
+		t.Errorf("AuthDomains = %v, want [www.gstatic.com]", got)
+	}
+}
+
+func TestAuthDomains_GCPIAP_MultipleEntriesDedup(t *testing.T) {
+	// Even with two IAP entries, the host appears once (dedup).
+	got := security.AuthDomains(types.AuthConfig{
+		Providers: []types.AuthProvider{
+			{Type: "gcp_iap", Settings: map[string]any{"audience": "a"}},
+			{Type: "gcp_iap", Settings: map[string]any{"audience": "b"}},
+		},
+	})
+	if len(got) != 1 || got[0] != "www.gstatic.com" {
+		t.Errorf("AuthDomains = %v, want [www.gstatic.com] (dedup)", got)
+	}
+}
+
 func TestAuthDomains_UnknownProviderTypeReturnsEmpty(t *testing.T) {
 	got := security.AuthDomains(types.AuthConfig{
 		Providers: []types.AuthProvider{

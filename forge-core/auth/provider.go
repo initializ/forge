@@ -89,26 +89,49 @@ func (h Headers) Get(key string) string {
 
 // HeadersFromRequest extracts the well-known headers providers may use.
 // Keep this list narrow — providers should be explicit about the contract.
+//
+// Authorization is included verbatim (in addition to the middleware's Bearer
+// extraction) so providers that speak non-Bearer formats can read it — e.g.
+// AWS Sigv4 (Authorization: AWS4-HMAC-SHA256 …). Adding a new header here is
+// a deliberate widening of the contract; providers must not assume any header
+// is present.
+//
+// Phase 2 additions (Authorization, X-Goog-Iap-Jwt-Assertion, X-Amz-Date,
+// X-Amz-Security-Token) are consumed by aws_sigv4 and gcp_iap providers.
 func HeadersFromRequest(r *http.Request) Headers {
 	return Headers{
 		"X-Org-ID":     r.Header.Get("X-Org-ID"),
 		"X-Request-ID": r.Header.Get("X-Request-ID"),
 		"org-id":       r.Header.Get("org-id"),
 		"org_id":       r.Header.Get("org_id"),
+
+		"Authorization":            r.Header.Get("Authorization"),
+		"X-Goog-Iap-Jwt-Assertion": r.Header.Get("X-Goog-Iap-Jwt-Assertion"),
+		"X-Amz-Date":               r.Header.Get("X-Amz-Date"),
+		"X-Amz-Security-Token":     r.Header.Get("X-Amz-Security-Token"),
 	}
 }
 
 // TokenKind classifies a presented bearer token structurally — useful for
 // audit logging without leaking the token itself.
 //
-// "jwt"     → three base64url segments separated by dots
-// "opaque"  → anything else (Okta access tokens, custom verifier tokens, dev secrets)
+// "empty"  → empty token
+// "sigv4"  → starts with "AWS4-HMAC-SHA256 " (the AWS Sigv4 algorithm prefix).
+//
+//	Callers route the raw Authorization header through TokenKind for
+//	this case, since extractBearerToken returns "" for non-Bearer auth.
+//
+// "jwt"    → three base64url segments separated by dots
+// "opaque" → anything else (Okta access tokens, custom verifier tokens, dev secrets)
 //
 // This is a CHEAP structural check — it does not parse or validate.
 // Never log the token; this helper is safe to log.
 func TokenKind(token string) string {
 	if token == "" {
 		return "empty"
+	}
+	if strings.HasPrefix(token, "AWS4-HMAC-SHA256 ") {
+		return "sigv4"
 	}
 	dots := 0
 	for i := 0; i < len(token); i++ {

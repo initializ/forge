@@ -178,11 +178,14 @@ func TestBuildLegacyAuthChain_OrgIDPropagation(t *testing.T) {
 
 // runMiddleware is a small driver that runs an http.Handler chain through
 // the auth.Middleware with a given chain and returns the recorded response.
+// When chain is nil, the test explicitly opts the middleware into
+// anonymous mode (review #3 — nil Chain without AllowAnonymous panics).
 func runMiddleware(t *testing.T, chain auth.Provider, method, path, authHeader string) *httptest.ResponseRecorder {
 	t.Helper()
 	handler := auth.Middleware(auth.MiddlewareOptions{
-		Chain:     chain,
-		SkipPaths: auth.DefaultSkipPaths(),
+		Chain:          chain,
+		AllowAnonymous: chain == nil,
+		SkipPaths:      auth.DefaultSkipPaths(),
 	})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))

@@ -68,8 +68,8 @@ func TestMiddleware(t *testing.T) {
 		wantStatus int
 	}{
 		{
-			name:       "nil chain passes through",
-			opts:       MiddlewareOptions{Chain: nil},
+			name:       "nil chain with AllowAnonymous passes through",
+			opts:       MiddlewareOptions{Chain: nil, AllowAnonymous: true},
 			method:     "POST",
 			path:       "/",
 			wantStatus: http.StatusOK,
@@ -360,6 +360,87 @@ func TestMiddleware_TokenKindDetection(t *testing.T) {
 	if gotKind != "jwt" {
 		t.Errorf("token kind = %q, want jwt", gotKind)
 	}
+}
+
+// --- Nil chain panic guard (review finding #3) ---
+
+func TestMiddleware_NilChainPanicsWithoutAllowAnonymous(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic when Chain==nil and AllowAnonymous==false")
+		}
+		msg, _ := r.(string)
+		if msg == "" {
+			t.Fatalf("panic value = %v, want a descriptive string", r)
+		}
+		// The message should mention the option name so callers know
+		// how to opt in.
+		if !contains(msg, "AllowAnonymous") {
+			t.Errorf("panic message %q does not reference AllowAnonymous", msg)
+		}
+	}()
+
+	// This call MUST panic — silent anonymous passthrough is the bug
+	// the AllowAnonymous flag exists to prevent.
+	_ = Middleware(MiddlewareOptions{Chain: nil, AllowAnonymous: false})
+}
+
+func TestMiddleware_NilChainWithAllowAnonymousPassesThrough(t *testing.T) {
+	// Counterpart: explicit opt-in does NOT panic; serves all requests.
+	handler := Middleware(MiddlewareOptions{
+		Chain:          nil,
+		AllowAnonymous: true,
+	})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("POST", "/anything", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d (AllowAnonymous should pass through)", rr.Code, http.StatusOK)
+	}
+}
+
+func TestMiddleware_NonNilChainIgnoresAllowAnonymous(t *testing.T) {
+	// AllowAnonymous is only consulted when Chain == nil. When a chain
+	// is configured, the flag has no effect — requests are still
+	// validated through the chain.
+	const goodToken = "ok"
+	chain := NewChainProvider(&tokenProvider{
+		expected: goodToken,
+		identity: Identity{UserID: "u", Source: "test"},
+	})
+	handler := Middleware(MiddlewareOptions{
+		Chain:          chain,
+		AllowAnonymous: true, // should be ignored
+		SkipPaths:      DefaultSkipPaths(),
+	})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// No token → 401 (chain still enforced).
+	req := httptest.NewRequest("POST", "/tasks", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("non-nil chain + AllowAnonymous=true: status = %d, want 401 (chain must still enforce)", rr.Code)
+	}
+}
+
+// contains is a tiny strings.Contains substitute for the panic-message test
+// (kept inline to avoid pulling in strings just for the assertion).
+func contains(s, sub string) bool {
+	if len(sub) == 0 {
+		return true
+	}
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }
 
 func TestClassifyAuthFailure(t *testing.T) {

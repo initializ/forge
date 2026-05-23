@@ -30,9 +30,25 @@ func DefaultSkipPaths() map[string]bool {
 
 // MiddlewareOptions configures Middleware.
 type MiddlewareOptions struct {
-	// Chain is the provider chain that verifies bearer tokens. If nil,
-	// the middleware behaves as a passthrough (anonymous access).
+	// Chain is the provider chain that verifies bearer tokens. May only
+	// be nil when AllowAnonymous is true (see below).
 	Chain Provider
+
+	// AllowAnonymous explicitly opts the middleware into running without
+	// authentication. Required whenever Chain is nil — otherwise
+	// Middleware() panics at construction. This prevents a misconfigured
+	// runner from silently serving unauthenticated requests because
+	// someone forgot to wire a chain.
+	//
+	// Set this to true when:
+	//   - --no-auth flag is in effect (operator explicitly chose anon)
+	//   - No auth: block AND no --auth-url AND no channels (legacy local
+	//     dev default — preserved for backward compat)
+	//
+	// Leave this false for any production deployment that intends to
+	// enforce auth; a nil chain will then panic loudly at startup
+	// instead of running open.
+	AllowAnonymous bool
 
 	// SkipPaths maps "METHOD /path" keys that bypass authentication.
 	// If nil, DefaultSkipPaths() is used.
@@ -63,10 +79,20 @@ type errorString string
 func (e errorString) Error() string { return string(e) }
 
 // Middleware returns an http.Handler that enforces bearer token authentication
-// via the provided Provider chain. If opts.Chain is nil, requests pass through
-// without checks (anonymous access).
+// via the provided Provider chain.
+//
+// Panics at construction if opts.Chain is nil and opts.AllowAnonymous is
+// false. This is intentional — silently passing through requests when the
+// caller forgot to wire a chain is the highest-impact misconfiguration in
+// the auth subsystem (open prod endpoint). Fail-loud catches it at startup,
+// not at the first request from a real user.
 func Middleware(opts MiddlewareOptions) func(http.Handler) http.Handler {
 	if opts.Chain == nil {
+		if !opts.AllowAnonymous {
+			panic("auth: Middleware called with nil Chain and AllowAnonymous=false. " +
+				"Set MiddlewareOptions.AllowAnonymous: true to explicitly allow " +
+				"unauthenticated access, or provide a Chain.")
+		}
 		return func(next http.Handler) http.Handler { return next }
 	}
 	skip := opts.SkipPaths

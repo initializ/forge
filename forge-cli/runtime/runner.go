@@ -1751,7 +1751,12 @@ func (r *Runner) resolveAuth(auditLogger *coreruntime.AuditLogger) (auth.Middlew
 	}
 
 	if r.cfg.NoAuth {
-		return auth.MiddlewareOptions{}, nil // nil chain → passthrough
+		// Operator explicitly chose anonymous via --no-auth. AllowAnonymous
+		// makes that choice visible at the middleware boundary (review #3).
+		return auth.MiddlewareOptions{
+			AllowAnonymous: true,
+			SkipPaths:      auth.DefaultSkipPaths(),
+		}, nil
 	}
 
 	userChain, err := r.buildUserAuthChain()
@@ -1774,6 +1779,18 @@ func (r *Runner) resolveAuth(auditLogger *coreruntime.AuditLogger) (auth.Middlew
 			return auth.MiddlewareOptions{}, fmt.Errorf("loopback static_token: %w", err)
 		}
 		chain = auth.PrependChain(userChain, loopback)
+	}
+
+	// No user chain AND no loopback token → legacy "no auth config, no
+	// channels" default. Preserve backward compat by allowing anonymous,
+	// but flag it explicitly so the middleware's nil-chain panic guard
+	// is satisfied (review #3).
+	if chain == nil {
+		return auth.MiddlewareOptions{
+			AllowAnonymous: true,
+			SkipPaths:      auth.DefaultSkipPaths(),
+			OnAuth:         makeAuthAuditCallback(auditLogger),
+		}, nil
 	}
 
 	return auth.MiddlewareOptions{

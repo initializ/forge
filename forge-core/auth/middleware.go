@@ -59,9 +59,9 @@ type MiddlewareOptions struct {
 	//   - identity is non-nil and err is nil on success.
 	//   - identity is nil and err carries the chain error on failure
 	//     (or auth.ErrMissingBearer when the header was absent).
-	//   - tokenKind is "jwt", "opaque", or "empty" — structural metadata
-	//     safe to log. The token itself is NOT passed; callers must not
-	//     try to recover it from the request.
+	//   - tokenKind is "jwt", "opaque", "sigv4", or "empty" — structural
+	//     metadata safe to log. The token itself is NOT passed; callers
+	//     must not try to recover it from the request.
 	//
 	// Callbacks should be cheap — they run on the request hot path.
 	OnAuth func(r *http.Request, identity *Identity, err error, tokenKind string)
@@ -109,7 +109,33 @@ func Middleware(opts MiddlewareOptions) func(http.Handler) http.Handler {
 			token := extractBearerToken(r)
 			kind := TokenKind(token)
 
+			// Phase 2: when no Bearer token was extracted, classify the
+			// audit kind from the raw Authorization header. Lets aws_sigv4
+			// emit the right token_kind value even though there's no Bearer.
+			rawAuth := r.Header.Get("Authorization")
+			if kind == "empty" && strings.HasPrefix(rawAuth, "AWS4-HMAC-SHA256 ") {
+				kind = "sigv4"
+			}
+
+			// hasNonBearerAuth signals "the caller IS attempting auth, just
+			// not via Bearer." Used to differentiate "missing_token" (no
+			// auth headers at all) from "chain rejected/didn't match" in
+			// the audit reason.
+			hasNonBearerAuth := false
 			if token == "" {
+				if rawAuth != "" {
+					hasNonBearerAuth = true
+				}
+				if r.Header.Get("X-Goog-Iap-Jwt-Assertion") != "" {
+					hasNonBearerAuth = true
+				}
+			}
+
+			// Phase 2 change: consult the chain even on empty Bearer, so
+			// providers that speak non-Bearer formats (aws_sigv4, gcp_iap)
+			// get a chance. Phase 1 short-circuit (empty bearer → 401)
+			// preserved only when there are no auth-shaped headers at all.
+			if token == "" && !hasNonBearerAuth {
 				notifyAuth(opts.OnAuth, r, nil, ErrMissingBearer, kind)
 				writeAuthError(w, "valid bearer token required")
 				return

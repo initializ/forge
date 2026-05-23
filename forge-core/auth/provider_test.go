@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"net/http"
 	"reflect"
 	"sort"
 	"sync"
@@ -464,6 +465,14 @@ func TestTokenKind(t *testing.T) {
 		{"opaque one dot", "abc.def", "opaque"},
 		{"opaque four segments", "a.b.c.d", "opaque"},
 		{"jwt with empty segments still has 2 dots", "..", "jwt"},
+		// Phase 2: aws_sigv4 — the Authorization header's algorithm prefix
+		// is enough to classify; middleware routes the raw header here when
+		// the Bearer extractor returns "".
+		{"sigv4 prefix", "AWS4-HMAC-SHA256 Credential=AKIA.../20260523/us-east-1/sts/aws4_request, SignedHeaders=host;x-amz-date, Signature=abc", "sigv4"},
+		{"sigv4 prefix only", "AWS4-HMAC-SHA256 ", "sigv4"},
+		// Defensive: a token that LOOKS like Sigv4 but lacks the trailing
+		// space must NOT be classified as sigv4 — we want a clean prefix match.
+		{"sigv4-like without trailing space", "AWS4-HMAC-SHA256xyz", "opaque"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -472,6 +481,74 @@ func TestTokenKind(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- HeadersFromRequest ---
+
+func TestHeadersFromRequest_Phase1Headers(t *testing.T) {
+	req, _ := http.NewRequest("POST", "/", nil)
+	req.Header.Set("X-Org-ID", "acme")
+	req.Header.Set("X-Request-ID", "req-1")
+	req.Header.Set("org-id", "lower")
+	req.Header.Set("org_id", "snake")
+
+	h := HeadersFromRequest(req)
+	if h["X-Org-ID"] != "acme" {
+		t.Errorf("X-Org-ID = %q, want acme", h["X-Org-ID"])
+	}
+	if h["X-Request-ID"] != "req-1" {
+		t.Errorf("X-Request-ID = %q, want req-1", h["X-Request-ID"])
+	}
+	if h["org-id"] != "lower" {
+		t.Errorf("org-id = %q, want lower", h["org-id"])
+	}
+	if h["org_id"] != "snake" {
+		t.Errorf("org_id = %q, want snake", h["org_id"])
+	}
+}
+
+func TestHeadersFromRequest_Phase2Headers(t *testing.T) {
+	// Phase 2: HeadersFromRequest widened so providers consuming non-Bearer
+	// formats (aws_sigv4, gcp_iap) can read what they need without breaking
+	// the Provider.Verify signature. See PHASE2_TEST_STRATEGY.md §4 PR1.
+	req, _ := http.NewRequest("POST", "/", nil)
+	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential=AKIA.../20260523/us-east-1/sts/aws4_request, SignedHeaders=host, Signature=ab")
+	req.Header.Set("X-Goog-Iap-Jwt-Assertion", "eyJabc.eyJdef.sig")
+	req.Header.Set("X-Amz-Date", "20260523T120000Z")
+	req.Header.Set("X-Amz-Security-Token", "FwoGZX...")
+
+	h := HeadersFromRequest(req)
+
+	if got := h.Get("Authorization"); got == "" || !startsWith(got, "AWS4-HMAC-SHA256 ") {
+		t.Errorf("Authorization = %q, want Sigv4-shaped string", got)
+	}
+	if got := h.Get("X-Goog-Iap-Jwt-Assertion"); got != "eyJabc.eyJdef.sig" {
+		t.Errorf("X-Goog-Iap-Jwt-Assertion = %q, want eyJabc.eyJdef.sig", got)
+	}
+	if got := h.Get("X-Amz-Date"); got != "20260523T120000Z" {
+		t.Errorf("X-Amz-Date = %q, want 20260523T120000Z", got)
+	}
+	if got := h.Get("X-Amz-Security-Token"); got == "" {
+		t.Error("X-Amz-Security-Token not extracted")
+	}
+}
+
+func TestHeadersFromRequest_AbsentHeadersAreEmpty(t *testing.T) {
+	// Providers must not assume any header is present — absence is normal
+	// and means "this format isn't here, yield to the next provider."
+	req, _ := http.NewRequest("POST", "/", nil)
+	h := HeadersFromRequest(req)
+	for _, k := range []string{
+		"Authorization", "X-Goog-Iap-Jwt-Assertion", "X-Amz-Date", "X-Amz-Security-Token",
+	} {
+		if got := h.Get(k); got != "" {
+			t.Errorf("%s should be empty on request with no headers, got %q", k, got)
+		}
+	}
+}
+
+func startsWith(s, prefix string) bool {
+	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
 }
 
 // --- helpers ---

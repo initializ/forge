@@ -17,7 +17,10 @@ var knownAuthProviderTypes = map[string]bool{
 	"http_verifier": true,
 	"static_token":  true,
 	"oidc":          true,
-	// "okta": true,  // Phase 3 (v0.11.0)
+	// Phase 2 (v0.11.0):
+	"aws_sigv4": true,
+	"gcp_iap":   true,
+	"azure_ad":  true,
 }
 
 // ValidateAuthConfig adds errors and warnings for a forge.yaml auth: block.
@@ -39,7 +42,7 @@ func ValidateAuthConfig(cfg types.AuthConfig, r *ValidationResult) {
 			continue
 		}
 		if !knownAuthProviderTypes[p.Type] {
-			r.Errors = append(r.Errors, fmt.Sprintf("%s: unknown type %q (known: http_verifier, static_token, oidc)", prefix, p.Type))
+			r.Errors = append(r.Errors, fmt.Sprintf("%s: unknown type %q (known: http_verifier, static_token, oidc, aws_sigv4, gcp_iap, azure_ad)", prefix, p.Type))
 			continue
 		}
 
@@ -77,6 +80,26 @@ func validateProviderSettings(prefix string, p types.AuthProvider, r *Validation
 		}
 		if asString(p.Settings, "audience") == "" {
 			r.Errors = append(r.Errors, prefix+" (oidc): settings.audience is required")
+		}
+	case "aws_sigv4":
+		if asString(p.Settings, "region") == "" {
+			r.Errors = append(r.Errors, prefix+" (aws_sigv4): settings.region is required")
+		}
+	case "gcp_iap":
+		if asString(p.Settings, "audience") == "" {
+			r.Errors = append(r.Errors, prefix+" (gcp_iap): settings.audience is required (GCP backend service ID)")
+		}
+	case "azure_ad":
+		if asString(p.Settings, "audience") == "" {
+			r.Errors = append(r.Errors, prefix+" (azure_ad): settings.audience is required")
+		}
+		// tenant_id may be omitted ONLY when allow_multi_tenant is true.
+		multi, _ := p.Settings["allow_multi_tenant"].(bool)
+		if !multi && asString(p.Settings, "tenant_id") == "" {
+			r.Errors = append(r.Errors, prefix+" (azure_ad): settings.tenant_id is required unless allow_multi_tenant=true")
+		}
+		if mode := asString(p.Settings, "groups_mode"); mode != "" && mode != "claim" && mode != "graph" {
+			r.Errors = append(r.Errors, fmt.Sprintf("%s (azure_ad): groups_mode must be 'claim' or 'graph', got %q", prefix, mode))
 		}
 	}
 }

@@ -49,8 +49,63 @@ func buildAuthFromFlags(cmd *cobra.Command, mode string) (settings map[string]an
 			egressHosts = []string{host}
 		}
 		return settings, egressHosts, nil
+	case "aws_sigv4":
+		region, _ := cmd.Flags().GetString("auth-aws-region")
+		audience, _ := cmd.Flags().GetString("auth-aws-audience")
+		allowedPrincipals, _ := cmd.Flags().GetStringSlice("auth-aws-allowed-principal")
+		cacheTTL, _ := cmd.Flags().GetString("auth-aws-cache-ttl")
+		if region == "" {
+			return nil, nil, fmt.Errorf("--auth=aws_sigv4 requires --auth-aws-region")
+		}
+		settings = map[string]any{"region": region}
+		if audience != "" {
+			settings["audience"] = audience
+		}
+		if len(allowedPrincipals) > 0 {
+			settings["allowed_principals"] = allowedPrincipals
+		}
+		if cacheTTL != "" {
+			settings["identity_cache_ttl"] = cacheTTL
+		}
+		egressHosts = []string{"sts." + region + ".amazonaws.com"}
+		return settings, egressHosts, nil
+	case "gcp_iap":
+		audience, _ := cmd.Flags().GetString("auth-gcp-iap-audience")
+		if audience == "" {
+			return nil, nil, fmt.Errorf("--auth=gcp_iap requires --auth-gcp-iap-audience")
+		}
+		settings = map[string]any{"audience": audience}
+		// IAP JWKS host is hardcoded (decision §9.4).
+		egressHosts = []string{"www.gstatic.com"}
+		return settings, egressHosts, nil
+	case "azure_ad":
+		tenant, _ := cmd.Flags().GetString("auth-azure-tenant")
+		audience, _ := cmd.Flags().GetString("auth-azure-audience")
+		multiTenant, _ := cmd.Flags().GetBool("auth-azure-multi-tenant")
+		groupsMode, _ := cmd.Flags().GetString("auth-azure-groups-mode")
+		if audience == "" {
+			return nil, nil, fmt.Errorf("--auth=azure_ad requires --auth-azure-audience")
+		}
+		if !multiTenant && tenant == "" {
+			return nil, nil, fmt.Errorf("--auth=azure_ad requires --auth-azure-tenant unless --auth-azure-multi-tenant=true")
+		}
+		settings = map[string]any{"audience": audience}
+		if tenant != "" {
+			settings["tenant_id"] = tenant
+		}
+		if multiTenant {
+			settings["allow_multi_tenant"] = true
+		}
+		if groupsMode != "" {
+			settings["groups_mode"] = groupsMode
+		}
+		egressHosts = []string{"login.microsoftonline.com"}
+		if groupsMode == "graph" {
+			egressHosts = append(egressHosts, "graph.microsoft.com")
+		}
+		return settings, egressHosts, nil
 	default:
-		return nil, nil, fmt.Errorf("unknown --auth value %q (supported: none, oidc, http_verifier, custom)", mode)
+		return nil, nil, fmt.Errorf("unknown --auth value %q (supported: none, oidc, http_verifier, aws_sigv4, gcp_iap, azure_ad, custom)", mode)
 	}
 }
 
@@ -76,6 +131,19 @@ func authEgressHostsFromSettings(mode string, settings map[string]any) []string 
 	case "http_verifier":
 		if h := hostFromURL(asStringSetting(settings, "url")); h != "" {
 			hosts = append(hosts, h)
+		}
+	case "aws_sigv4":
+		region := asStringSetting(settings, "region")
+		if region != "" {
+			hosts = append(hosts, "sts."+region+".amazonaws.com")
+		}
+	case "gcp_iap":
+		// Decision §9.4: hardcoded JWKS host.
+		hosts = append(hosts, "www.gstatic.com")
+	case "azure_ad":
+		hosts = append(hosts, "login.microsoftonline.com")
+		if asStringSetting(settings, "groups_mode") == "graph" {
+			hosts = append(hosts, "graph.microsoft.com")
 		}
 	}
 	return hosts
@@ -196,6 +264,25 @@ func writeYAMLMap(b *strings.Builder, m map[string]any, indent string) {
 		case map[string]any:
 			fmt.Fprintf(b, "%s%s:\n", indent, k)
 			writeYAMLMap(b, val, indent+"  ")
+		case []string:
+			// Phase 2: aws_sigv4's allowed_principals is the only []string
+			// currently in the auth settings schema. ARNs frequently contain
+			// `:` so each entry goes through yamlScalar for proper quoting.
+			fmt.Fprintf(b, "%s%s:\n", indent, k)
+			for _, item := range val {
+				fmt.Fprintf(b, "%s  - %s\n", indent, yamlScalar(item))
+			}
+		case []any:
+			// Defensive: when settings come from YAML unmarshal, lists land
+			// as []any. Coerce per-element and reuse the string path.
+			fmt.Fprintf(b, "%s%s:\n", indent, k)
+			for _, item := range val {
+				if s, ok := item.(string); ok {
+					fmt.Fprintf(b, "%s  - %s\n", indent, yamlScalar(s))
+				} else {
+					fmt.Fprintf(b, "%s  - %v\n", indent, item)
+				}
+			}
 		case string:
 			fmt.Fprintf(b, "%s%s: %s\n", indent, k, yamlScalar(val))
 		default:

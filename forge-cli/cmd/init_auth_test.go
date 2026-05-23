@@ -216,6 +216,16 @@ func mockInitCmdWithFlags() *cobra.Command {
 	c.Flags().String("auth-url", "", "")
 	c.Flags().String("auth-default-org", "", "")
 	c.Flags().String("auth-groups-claim", "", "")
+	// Phase 2 flags:
+	c.Flags().String("auth-aws-region", "", "")
+	c.Flags().String("auth-aws-audience", "", "")
+	c.Flags().StringSlice("auth-aws-allowed-principal", nil, "")
+	c.Flags().String("auth-aws-cache-ttl", "", "")
+	c.Flags().String("auth-gcp-iap-audience", "", "")
+	c.Flags().String("auth-azure-tenant", "", "")
+	c.Flags().String("auth-azure-audience", "", "")
+	c.Flags().Bool("auth-azure-multi-tenant", false, "")
+	c.Flags().String("auth-azure-groups-mode", "", "")
 	return c
 }
 
@@ -425,5 +435,225 @@ func TestMergeEgressDomains_SortedOutput(t *testing.T) {
 	want := []string{"api.anthropic.com", "api.openai.com", "graph.microsoft.com", "login.example.com"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("output not sorted:\n  got  %v\n  want %v", got, want)
+	}
+}
+
+// --- Phase 2 renderer + flag tests ---
+
+func TestRenderAuthBlock_AWSSigv4_Minimal(t *testing.T) {
+	got := renderAuthBlock("aws_sigv4", map[string]any{"region": "us-east-1"})
+	if !strings.Contains(got, "type: aws_sigv4") {
+		t.Errorf("missing type line:\n%s", got)
+	}
+	if !strings.Contains(got, "region: us-east-1") {
+		t.Errorf("missing region:\n%s", got)
+	}
+	if strings.Contains(got, "audience:") {
+		t.Errorf("audience should not be emitted when unset:\n%s", got)
+	}
+}
+
+func TestRenderAuthBlock_AWSSigv4_ARNsList(t *testing.T) {
+	wantARNs := []string{
+		"arn:aws:sts::123:assumed-role/ci-deploy/*",
+		"arn:aws:sts::123:assumed-role/forge-runner/*",
+	}
+	got := renderAuthBlock("aws_sigv4", map[string]any{
+		"region":             "us-east-1",
+		"allowed_principals": wantARNs,
+	})
+	if !strings.Contains(got, "allowed_principals:") {
+		t.Errorf("missing allowed_principals header:\n%s", got)
+	}
+	// ARN contains ":" but not ": " (colon-space), so YAML doesn't need
+	// to quote it — verify round-trip parse instead of insisting on quotes.
+	parsed := parseAuthBlockYAML(t, got)
+	provs, _ := parsed["auth"].(map[string]any)["providers"].([]any)
+	settings := provs[0].(map[string]any)["settings"].(map[string]any)
+	gotARNs := toStringSlice(settings["allowed_principals"])
+	if !reflect.DeepEqual(gotARNs, wantARNs) {
+		t.Errorf("ARN round-trip mismatch:\n  got  %v\n  want %v", gotARNs, wantARNs)
+	}
+}
+
+func TestRenderAuthBlock_GCPIAP(t *testing.T) {
+	wantAud := "/projects/12345/global/backendServices/67890"
+	got := renderAuthBlock("gcp_iap", map[string]any{
+		"audience": wantAud,
+	})
+	if !strings.Contains(got, "type: gcp_iap") {
+		t.Errorf("missing type:\n%s", got)
+	}
+	parsed := parseAuthBlockYAML(t, got)
+	provs, _ := parsed["auth"].(map[string]any)["providers"].([]any)
+	gotAud := provs[0].(map[string]any)["settings"].(map[string]any)["audience"]
+	if gotAud != wantAud {
+		t.Errorf("audience round-trip mismatch:\n  got  %v\n  want %v", gotAud, wantAud)
+	}
+}
+
+func parseAuthBlockYAML(t *testing.T, block string) map[string]any {
+	t.Helper()
+	var out map[string]any
+	if err := yaml.Unmarshal([]byte(block), &out); err != nil {
+		t.Fatalf("renderAuthBlock output is not valid YAML: %v\n%s", err, block)
+	}
+	return out
+}
+
+func toStringSlice(v any) []string {
+	arr, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, len(arr))
+	for i, x := range arr {
+		out[i], _ = x.(string)
+	}
+	return out
+}
+
+func TestRenderAuthBlock_AzureAD_SingleTenant(t *testing.T) {
+	got := renderAuthBlock("azure_ad", map[string]any{
+		"tenant_id": "00000000-1111-2222-3333-444444444444",
+		"audience":  "api://forge",
+	})
+	if !strings.Contains(got, "tenant_id: 00000000-1111-2222-3333-444444444444") {
+		t.Errorf("missing tenant_id:\n%s", got)
+	}
+	if strings.Contains(got, "allow_multi_tenant") {
+		t.Errorf("allow_multi_tenant should be omitted when not set:\n%s", got)
+	}
+}
+
+func TestRenderAuthBlock_AzureAD_MultiTenant(t *testing.T) {
+	got := renderAuthBlock("azure_ad", map[string]any{
+		"audience":           "api://forge",
+		"allow_multi_tenant": true,
+	})
+	if !strings.Contains(got, "allow_multi_tenant: true") {
+		t.Errorf("missing allow_multi_tenant true:\n%s", got)
+	}
+	if strings.Contains(got, "tenant_id") {
+		t.Errorf("tenant_id should not appear when multi-tenant:\n%s", got)
+	}
+}
+
+func TestRenderAuthBlock_AzureAD_GroupsModeGraph(t *testing.T) {
+	got := renderAuthBlock("azure_ad", map[string]any{
+		"tenant_id":   "abc",
+		"audience":    "api://forge",
+		"groups_mode": "graph",
+	})
+	if !strings.Contains(got, "groups_mode: graph") {
+		t.Errorf("missing groups_mode:\n%s", got)
+	}
+}
+
+func TestBuildAuthFromFlags_AWSSigv4_HappyPath(t *testing.T) {
+	c := mockInitCmdWithFlags()
+	_ = c.Flags().Set("auth-aws-region", "us-east-1")
+	_ = c.Flags().Set("auth-aws-audience", "api://forge")
+	_ = c.Flags().Set("auth-aws-allowed-principal", "arn:aws:sts::123:assumed-role/x/*")
+
+	settings, hosts, err := buildAuthFromFlags(c, "aws_sigv4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings["region"] != "us-east-1" {
+		t.Errorf("region = %v", settings["region"])
+	}
+	if !reflect.DeepEqual(hosts, []string{"sts.us-east-1.amazonaws.com"}) {
+		t.Errorf("hosts = %v", hosts)
+	}
+}
+
+func TestBuildAuthFromFlags_AWSSigv4_MissingRegion(t *testing.T) {
+	c := mockInitCmdWithFlags()
+	_, _, err := buildAuthFromFlags(c, "aws_sigv4")
+	if err == nil {
+		t.Fatal("expected error when region missing")
+	}
+}
+
+func TestBuildAuthFromFlags_GCPIAP_HappyPath(t *testing.T) {
+	c := mockInitCmdWithFlags()
+	_ = c.Flags().Set("auth-gcp-iap-audience", "/projects/12345/...")
+	settings, hosts, err := buildAuthFromFlags(c, "gcp_iap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings["audience"] == "" {
+		t.Error("audience not captured")
+	}
+	if !reflect.DeepEqual(hosts, []string{"www.gstatic.com"}) {
+		t.Errorf("hosts = %v", hosts)
+	}
+}
+
+func TestBuildAuthFromFlags_GCPIAP_MissingAudience(t *testing.T) {
+	c := mockInitCmdWithFlags()
+	_, _, err := buildAuthFromFlags(c, "gcp_iap")
+	if err == nil {
+		t.Fatal("expected error when audience missing")
+	}
+}
+
+func TestBuildAuthFromFlags_AzureAD_RequiresTenant(t *testing.T) {
+	c := mockInitCmdWithFlags()
+	_ = c.Flags().Set("auth-azure-audience", "api://forge")
+	_, _, err := buildAuthFromFlags(c, "azure_ad")
+	if err == nil {
+		t.Fatal("expected error when tenant + non-multi-tenant")
+	}
+}
+
+func TestBuildAuthFromFlags_AzureAD_MultiTenantOK(t *testing.T) {
+	c := mockInitCmdWithFlags()
+	_ = c.Flags().Set("auth-azure-audience", "api://forge")
+	_ = c.Flags().Set("auth-azure-multi-tenant", "true")
+	settings, hosts, err := buildAuthFromFlags(c, "azure_ad")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings["allow_multi_tenant"] != true {
+		t.Errorf("allow_multi_tenant not set: %v", settings)
+	}
+	if !reflect.DeepEqual(hosts, []string{"login.microsoftonline.com"}) {
+		t.Errorf("hosts = %v", hosts)
+	}
+}
+
+func TestBuildAuthFromFlags_AzureAD_GraphModeAddsGraphHost(t *testing.T) {
+	c := mockInitCmdWithFlags()
+	_ = c.Flags().Set("auth-azure-audience", "api://forge")
+	_ = c.Flags().Set("auth-azure-tenant", "abc-tid")
+	_ = c.Flags().Set("auth-azure-groups-mode", "graph")
+	_, hosts, err := buildAuthFromFlags(c, "azure_ad")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"login.microsoftonline.com", "graph.microsoft.com"}
+	if !reflect.DeepEqual(hosts, want) {
+		t.Errorf("hosts = %v, want %v", hosts, want)
+	}
+}
+
+func TestAuthEgressHostsFromSettings_Phase2(t *testing.T) {
+	cases := []struct {
+		mode     string
+		settings map[string]any
+		want     []string
+	}{
+		{"aws_sigv4", map[string]any{"region": "us-east-1"}, []string{"sts.us-east-1.amazonaws.com"}},
+		{"gcp_iap", map[string]any{"audience": "x"}, []string{"www.gstatic.com"}},
+		{"azure_ad", map[string]any{"audience": "x"}, []string{"login.microsoftonline.com"}},
+		{"azure_ad", map[string]any{"audience": "x", "groups_mode": "graph"}, []string{"login.microsoftonline.com", "graph.microsoft.com"}},
+	}
+	for _, tc := range cases {
+		got := authEgressHostsFromSettings(tc.mode, tc.settings)
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s %v: got %v, want %v", tc.mode, tc.settings, got, tc.want)
+		}
 	}
 }

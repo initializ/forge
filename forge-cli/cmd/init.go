@@ -135,12 +135,25 @@ func init() {
 
 	// Auth chain (PR5+). All optional. When --auth is unset or "none", no
 	// auth: block is written and the agent runs anonymously.
-	initCmd.Flags().String("auth", "", "auth mode: none, oidc, http_verifier, custom")
+	initCmd.Flags().String("auth", "", "auth mode: none, oidc, http_verifier, aws_sigv4, gcp_iap, azure_ad, custom")
 	initCmd.Flags().String("auth-issuer", "", "OIDC issuer URL (required with --auth=oidc)")
 	initCmd.Flags().String("auth-audience", "", "OIDC audience (required with --auth=oidc)")
 	initCmd.Flags().String("auth-url", "", "verifier URL (required with --auth=http_verifier)")
 	initCmd.Flags().String("auth-default-org", "", "default org_id for http_verifier (optional)")
 	initCmd.Flags().String("auth-groups-claim", "", "claim name for groups (oidc, default: groups)")
+
+	// Phase 2: per-provider flags. Namespaced so help text stays grouped.
+	initCmd.Flags().String("auth-aws-region", "", "AWS region for aws_sigv4 (e.g. us-east-1)")
+	initCmd.Flags().String("auth-aws-audience", "", "informational audience for aws_sigv4")
+	initCmd.Flags().StringSlice("auth-aws-allowed-principal", nil, "allowed principal glob for aws_sigv4 (repeatable)")
+	initCmd.Flags().String("auth-aws-cache-ttl", "", "aws_sigv4 identity cache TTL (default 60s)")
+
+	initCmd.Flags().String("auth-gcp-iap-audience", "", "audience for gcp_iap (backend service ID)")
+
+	initCmd.Flags().String("auth-azure-tenant", "", "Entra tenant GUID (required unless --auth-azure-multi-tenant)")
+	initCmd.Flags().String("auth-azure-audience", "", "Entra application ID URI / audience")
+	initCmd.Flags().Bool("auth-azure-multi-tenant", false, "accept tokens from any Entra tenant (default false)")
+	initCmd.Flags().String("auth-azure-groups-mode", "", "azure_ad groups mode: claim (default) or graph")
 }
 
 func runInit(cmd *cobra.Command, args []string) error {

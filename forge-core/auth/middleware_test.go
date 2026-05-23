@@ -443,6 +443,173 @@ func contains(s, sub string) bool {
 	return false
 }
 
+// --- Phase 2: non-Bearer auth formats reach the chain ---
+
+// headerCapturingProvider records the headers it sees and lets the test
+// script the response. Used by Phase 2 middleware tests to assert that
+// providers consuming non-Bearer formats (Sigv4, IAP) actually receive
+// what they need.
+type headerCapturingProvider struct {
+	sawToken   string
+	sawHeaders Headers
+	identity   *Identity
+	err        error
+}
+
+func (p *headerCapturingProvider) Name() string { return "test_capture" }
+func (p *headerCapturingProvider) Verify(_ context.Context, token string, h Headers) (*Identity, error) {
+	p.sawToken = token
+	p.sawHeaders = h
+	return p.identity, p.err
+}
+
+func TestMiddleware_Sigv4HeaderReachesChain(t *testing.T) {
+	// Phase 2 change: a Sigv4-shaped Authorization reaches the chain even
+	// though extractBearerToken returns "". The middleware no longer
+	// short-circuits to 401 when there's an auth-shaped header present.
+	spy := &headerCapturingProvider{err: ErrTokenNotForMe}
+	opts := MiddlewareOptions{
+		Chain:     NewChainProvider(spy),
+		SkipPaths: DefaultSkipPaths(),
+	}
+	handler := Middleware(opts)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("POST", "/tasks", nil)
+	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential=AKIA.../20260523/us-east-1/sts/aws4_request, SignedHeaders=host, Signature=ab")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if spy.sawHeaders == nil {
+		t.Fatal("chain was never invoked — middleware short-circuited on empty Bearer")
+	}
+	got := spy.sawHeaders.Get("Authorization")
+	if got == "" || !startsWithLocal(got, "AWS4-HMAC-SHA256 ") {
+		t.Errorf("chain saw Authorization = %q, want Sigv4-prefixed value", got)
+	}
+}
+
+func TestMiddleware_IAPHeaderReachesChain(t *testing.T) {
+	// Phase 2 change: gcp_iap's X-Goog-Iap-Jwt-Assertion is enough — no
+	// Authorization header at all is needed for the chain to be consulted.
+	spy := &headerCapturingProvider{err: ErrTokenNotForMe}
+	opts := MiddlewareOptions{
+		Chain:     NewChainProvider(spy),
+		SkipPaths: DefaultSkipPaths(),
+	}
+	handler := Middleware(opts)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("POST", "/tasks", nil)
+	req.Header.Set("X-Goog-Iap-Jwt-Assertion", "eyJ.eyJ.sig")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if spy.sawHeaders == nil {
+		t.Fatal("chain was never invoked — middleware short-circuited on empty Bearer")
+	}
+	if got := spy.sawHeaders.Get("X-Goog-Iap-Jwt-Assertion"); got != "eyJ.eyJ.sig" {
+		t.Errorf("chain saw IAP header = %q, want eyJ.eyJ.sig", got)
+	}
+}
+
+func TestMiddleware_NoAuthHeaders_PreservesMissingTokenReason(t *testing.T) {
+	// Review #4 contract regression check: when the caller did NOT attempt
+	// auth at all (no Bearer, no Sigv4 Authorization, no IAP header), the
+	// audit reason MUST stay ErrMissingBearer — not be widened to "not_for_me".
+	// This lets ops dashboards still differentiate "client didn't auth" from
+	// "client tried a format we don't speak."
+	spyCalled := false
+	chain := NewChainProvider(&headerCapturingProvider{
+		err:      ErrTokenNotForMe,
+		identity: nil,
+	})
+
+	var gotErr error
+	opts := MiddlewareOptions{
+		Chain:     chain,
+		SkipPaths: DefaultSkipPaths(),
+		OnAuth: func(_ *http.Request, _ *Identity, err error, _ string) {
+			spyCalled = true
+			gotErr = err
+		},
+	}
+	handler := Middleware(opts)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Request with NO auth-shaped headers at all.
+	req := httptest.NewRequest("POST", "/tasks", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if !spyCalled {
+		t.Fatal("OnAuth callback never fired")
+	}
+	if !errors.Is(gotErr, ErrMissingBearer) {
+		t.Errorf("OnAuth err = %v, want ErrMissingBearer (review #4 regression)", gotErr)
+	}
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", rr.Code)
+	}
+}
+
+func TestMiddleware_TokenKind_Sigv4OnEmptyBearer(t *testing.T) {
+	// Phase 2: the audit token_kind reads "sigv4" when the request has a
+	// Sigv4-shaped Authorization header, even though Bearer extraction
+	// returned "". Audit dashboards need this signal to count Sigv4
+	// requests distinctly from "empty" (no auth attempt at all).
+	var gotKind string
+	opts := MiddlewareOptions{
+		Chain:     NewChainProvider(&headerCapturingProvider{err: ErrTokenNotForMe}),
+		SkipPaths: DefaultSkipPaths(),
+		OnAuth: func(_ *http.Request, _ *Identity, _ error, kind string) {
+			gotKind = kind
+		},
+	}
+	handler := Middleware(opts)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("POST", "/tasks", nil)
+	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential=AKIA, SignedHeaders=host, Signature=ab")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if gotKind != "sigv4" {
+		t.Errorf("token kind = %q, want sigv4", gotKind)
+	}
+}
+
+func TestMiddleware_TokenKind_EmptyWhenTrulyNoAuth(t *testing.T) {
+	// Counterpart to the test above: when the caller didn't attempt auth
+	// at all, token_kind should be "empty" — not silently widened.
+	var gotKind string
+	opts := MiddlewareOptions{
+		Chain:     NewChainProvider(&headerCapturingProvider{err: ErrTokenNotForMe}),
+		SkipPaths: DefaultSkipPaths(),
+		OnAuth: func(_ *http.Request, _ *Identity, _ error, kind string) {
+			gotKind = kind
+		},
+	}
+	handler := Middleware(opts)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("POST", "/tasks", nil)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if gotKind != "empty" {
+		t.Errorf("token kind = %q, want empty", gotKind)
+	}
+}
+
+// startsWithLocal is the middleware_test.go equivalent of provider_test.go's
+// startsWith helper. Kept local so the two test files don't depend on each
+// other's helpers.
+func startsWithLocal(s, prefix string) bool {
+	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
+}
+
 func TestClassifyAuthFailure(t *testing.T) {
 	tests := []struct {
 		name string

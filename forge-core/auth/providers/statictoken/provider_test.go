@@ -155,11 +155,11 @@ func TestVerify_MismatchedLengths_AreRejected(t *testing.T) {
 	p, _ := statictoken.New(statictoken.Config{Token: "abcdef0123456789"})
 
 	for _, candidate := range []string{
-		"",                            // empty
-		"abcdef",                      // prefix
+		"",                             // empty
+		"abcdef",                       // prefix
 		"abcdef0123456789-extra-bytes", // longer
 		"different-but-same-length-as-real-secret", // same-length mismatch
-		"abcdef0123456788",                          // off-by-one in last char
+		"abcdef0123456788",                         // off-by-one in last char
 	} {
 		if _, err := p.Verify(context.Background(), candidate, nil); !errors.Is(err, auth.ErrTokenNotForMe) {
 			t.Errorf("candidate %q: err = %v, want ErrTokenNotForMe", candidate, err)

@@ -124,8 +124,11 @@ func (s *UIServer) handleGetWizardMeta(w http.ResponseWriter, _ *http.Request) {
 	// frontend renders the picker from this metadata.
 	meta.AuthProviderTypes = []AuthProviderTypeMeta{
 		{Type: "none", Label: "None", Description: "Anonymous access — no auth: block written"},
-		{Type: "oidc", Label: "OIDC (JWT)", Description: "Auth0, Keycloak, Azure AD, Google, Okta-OIDC, …"},
+		{Type: "oidc", Label: "OIDC (JWT)", Description: "Generic OIDC issuer (Keycloak, Auth0, Okta, Google …)"},
 		{Type: "http_verifier", Label: "HTTP Verifier", Description: "Legacy — POST tokens to your own /verify endpoint"},
+		{Type: "aws_sigv4", Label: "AWS Sigv4 (IAM)", Description: "Auth AWS-IAM callers via STS GetCallerIdentity (Phase 2)"},
+		{Type: "gcp_iap", Label: "GCP Identity-Aware Proxy", Description: "Forge behind a GCP HTTPS LB+IAP (Phase 2)"},
+		{Type: "azure_ad", Label: "Azure AD / Entra ID", Description: "Entra tenant tokens with optional Graph enrichment (Phase 2)"},
 		{Type: "custom", Label: "Custom", Description: "Write a commented stub, edit forge.yaml manually"},
 	}
 

@@ -213,6 +213,59 @@ func TestAuthDomains_GCPIAP_MultipleEntriesDedup(t *testing.T) {
 	}
 }
 
+func TestAuthDomains_AzureAD_ClaimMode(t *testing.T) {
+	got := security.AuthDomains(types.AuthConfig{
+		Providers: []types.AuthProvider{
+			{Type: "azure_ad", Settings: map[string]any{
+				"tenant_id": "00000000-...",
+				"audience":  "api://forge",
+			}},
+		},
+	})
+	if len(got) != 1 || got[0] != "login.microsoftonline.com" {
+		t.Errorf("AuthDomains = %v, want [login.microsoftonline.com]", got)
+	}
+}
+
+func TestAuthDomains_AzureAD_GraphModeAddsGraphHost(t *testing.T) {
+	got := security.AuthDomains(types.AuthConfig{
+		Providers: []types.AuthProvider{
+			{Type: "azure_ad", Settings: map[string]any{
+				"tenant_id":   "00000000-...",
+				"audience":    "api://forge",
+				"groups_mode": "graph",
+			}},
+		},
+	})
+	have := map[string]bool{}
+	for _, d := range got {
+		have[d] = true
+	}
+	if !have["login.microsoftonline.com"] {
+		t.Errorf("missing login.microsoftonline.com: %v", got)
+	}
+	if !have["graph.microsoft.com"] {
+		t.Errorf("groups_mode=graph should add graph.microsoft.com: %v", got)
+	}
+}
+
+func TestAuthDomains_AzureAD_ClaimMode_DoesNotAddGraph(t *testing.T) {
+	got := security.AuthDomains(types.AuthConfig{
+		Providers: []types.AuthProvider{
+			{Type: "azure_ad", Settings: map[string]any{
+				"tenant_id":   "00000000-...",
+				"audience":    "api://forge",
+				"groups_mode": "claim",
+			}},
+		},
+	})
+	for _, d := range got {
+		if d == "graph.microsoft.com" {
+			t.Errorf("claim mode should NOT add graph.microsoft.com: %v", got)
+		}
+	}
+}
+
 func TestAuthDomains_UnknownProviderTypeReturnsEmpty(t *testing.T) {
 	got := security.AuthDomains(types.AuthConfig{
 		Providers: []types.AuthProvider{

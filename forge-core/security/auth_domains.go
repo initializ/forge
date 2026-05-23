@@ -68,6 +68,9 @@ func authProviderURLs(p types.AuthProvider) []string {
 			out = append(out, override)
 		}
 		return out
+	case "gcp_iap":
+		// Decision §9.4: IAP JWKS host is hardcoded.
+		return []string{"https://www.gstatic.com/iap/verify/public_key-jwk"}
 	// static_token has no outbound; not listed
 	default:
 		return nil

@@ -388,11 +388,15 @@ func TestHandleGetWizardMeta(t *testing.T) {
 	}
 
 	// PR6: auth_provider_types is server-driven so the frontend doesn't
-	// hardcode the list. Must include the four founding types.
-	if len(meta.AuthProviderTypes) != 4 {
-		t.Errorf("auth_provider_types len = %d, want 4", len(meta.AuthProviderTypes))
+	// hardcode the list. Phase 2 adds aws_sigv4, gcp_iap, azure_ad — the
+	// founding four still appear.
+	if len(meta.AuthProviderTypes) != 7 {
+		t.Errorf("auth_provider_types len = %d, want 7", len(meta.AuthProviderTypes))
 	}
-	wantTypes := map[string]bool{"none": false, "oidc": false, "http_verifier": false, "custom": false}
+	wantTypes := map[string]bool{
+		"none": false, "oidc": false, "http_verifier": false, "custom": false,
+		"aws_sigv4": false, "gcp_iap": false, "azure_ad": false,
+	}
 	for _, a := range meta.AuthProviderTypes {
 		if _, ok := wantTypes[a.Type]; !ok {
 			t.Errorf("unexpected auth type %q", a.Type)

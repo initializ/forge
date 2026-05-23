@@ -119,10 +119,16 @@ func TokenKind(token string) string {
 //     ChainProvider stops and the middleware writes 401.
 //   - ErrInvalidToken          → token is malformed or cryptographically invalid;
 //     ChainProvider stops and the middleware writes 401.
+//   - ErrProviderUnavailable   → the verifier / IdP is unreachable or returned
+//     a transport-layer error (5xx, network timeout, garbage response). The
+//     token MAY be valid — we just can't say. ChainProvider stops (fail-closed,
+//     same as ErrInvalidToken), but the audit signal is distinct so operators
+//     don't chase a token issue when the actual problem is provider downtime.
 //   - ErrProviderNotConfigured → returned by New(); never by Verify().
 var (
 	ErrTokenNotForMe         = errors.New("auth: token not for this provider")
 	ErrTokenRejected         = errors.New("auth: token rejected")
 	ErrInvalidToken          = errors.New("auth: invalid token")
+	ErrProviderUnavailable   = errors.New("auth: provider unavailable")
 	ErrProviderNotConfigured = errors.New("auth: provider not configured")
 )

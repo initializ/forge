@@ -1883,6 +1883,19 @@ func makeAuthAuditCallback(auditLogger *coreruntime.AuditLogger) func(*http.Requ
 // code suitable for dashboarding and alerting. Reason strings are part
 // of the audit-event contract — changing them is a breaking change for
 // downstream consumers.
+//
+// Reason codes:
+//
+//	missing_token        - no Authorization header
+//	rejected             - provider recognized + denied (revoked, expired, 401, 4xx)
+//	invalid              - token malformed or cryptographically invalid
+//	not_for_me           - chain exhausted, no provider claimed the token
+//	provider_unavailable - verifier/IdP unreachable (5xx, network, undecodable)
+//	infrastructure       - other unexpected error
+//
+// provider_unavailable was added in review #6 so operators can
+// distinguish "the token is bad" alerts from "the IdP is down" alerts
+// in their dashboards — the response and the runbook are different.
 func authFailReason(err error) string {
 	switch {
 	case err == nil:
@@ -1893,6 +1906,8 @@ func authFailReason(err error) string {
 		return "rejected"
 	case errors.Is(err, auth.ErrInvalidToken):
 		return "invalid"
+	case errors.Is(err, auth.ErrProviderUnavailable):
+		return "provider_unavailable"
 	case errors.Is(err, auth.ErrTokenNotForMe):
 		return "not_for_me"
 	default:

@@ -91,6 +91,9 @@ func TestAuthAudit_EmitsAuthFailOnError(t *testing.T) {
 		{"rejected", auth.ErrTokenRejected, "rejected"},
 		{"invalid", auth.ErrInvalidToken, "invalid"},
 		{"not for me", auth.ErrTokenNotForMe, "not_for_me"},
+		// Review #6: provider downtime gets its own stable reason code
+		// so operators can dashboard "IdP down" separately from "token bad".
+		{"provider unavailable", auth.ErrProviderUnavailable, "provider_unavailable"},
 		{"infrastructure", errBoom, "infrastructure"},
 	}
 

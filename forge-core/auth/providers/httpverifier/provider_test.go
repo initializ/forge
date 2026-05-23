@@ -109,26 +109,75 @@ func TestVerify_401_ReturnsRejected(t *testing.T) {
 	}
 }
 
-func TestVerify_500_ReturnsInvalidToken(t *testing.T) {
+func TestVerify_500_ReturnsProviderUnavailable(t *testing.T) {
+	// Review #6: 5xx is the verifier's fault, not the token's. Distinct
+	// sentinel so operators triaging audit logs don't chase token issues
+	// when the actual problem is verifier downtime.
 	srv := fakeVerifier(t, func(map[string]any) (int, any) {
 		return http.StatusInternalServerError, map[string]any{"error": "boom"}
 	})
 
 	p, _ := httpverifier.New(httpverifier.Config{URL: srv.URL})
 	_, err := p.Verify(context.Background(), "x", nil)
-	if !errors.Is(err, auth.ErrInvalidToken) {
-		t.Fatalf("err = %v, want ErrInvalidToken", err)
+	if !errors.Is(err, auth.ErrProviderUnavailable) {
+		t.Fatalf("err = %v, want ErrProviderUnavailable", err)
+	}
+	if errors.Is(err, auth.ErrInvalidToken) {
+		t.Errorf("err also matched ErrInvalidToken — sentinels must not overlap: %v", err)
 	}
 }
 
-func TestVerify_NetworkError_ReturnsInvalidToken(t *testing.T) {
+func TestVerify_502BadGateway_ReturnsProviderUnavailable(t *testing.T) {
+	// Other 5xx codes — same classification.
+	srv := fakeVerifier(t, func(map[string]any) (int, any) {
+		return http.StatusBadGateway, nil
+	})
+	p, _ := httpverifier.New(httpverifier.Config{URL: srv.URL})
+	_, err := p.Verify(context.Background(), "x", nil)
+	if !errors.Is(err, auth.ErrProviderUnavailable) {
+		t.Fatalf("err = %v, want ErrProviderUnavailable", err)
+	}
+}
+
+func TestVerify_NetworkError_ReturnsProviderUnavailable(t *testing.T) {
 	p, _ := httpverifier.New(httpverifier.Config{
 		URL:     "http://127.0.0.1:0/never", // port 0 is invalid, will fail to connect
 		Timeout: 100 * time.Millisecond,
 	})
 	_, err := p.Verify(context.Background(), "x", nil)
-	if !errors.Is(err, auth.ErrInvalidToken) {
-		t.Fatalf("err = %v, want ErrInvalidToken", err)
+	if !errors.Is(err, auth.ErrProviderUnavailable) {
+		t.Fatalf("err = %v, want ErrProviderUnavailable", err)
+	}
+}
+
+func TestVerify_Non401_4xx_ReturnsRejected(t *testing.T) {
+	// 4xx other than 401 (e.g., 400, 403) means the verifier
+	// explicitly refused the request — token-side, not server-side.
+	for _, code := range []int{http.StatusBadRequest, http.StatusForbidden} {
+		t.Run(http.StatusText(code), func(t *testing.T) {
+			srv := fakeVerifier(t, func(map[string]any) (int, any) { return code, nil })
+			p, _ := httpverifier.New(httpverifier.Config{URL: srv.URL})
+			_, err := p.Verify(context.Background(), "x", nil)
+			if !errors.Is(err, auth.ErrTokenRejected) {
+				t.Fatalf("status %d → err = %v, want ErrTokenRejected", code, err)
+			}
+		})
+	}
+}
+
+func TestVerify_UndecodableBody_ReturnsProviderUnavailable(t *testing.T) {
+	// 200 OK but body isn't the contract JSON — verifier misbehavior,
+	// not a token issue.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("not even close to JSON {{{}"))
+	}))
+	defer srv.Close()
+
+	p, _ := httpverifier.New(httpverifier.Config{URL: srv.URL})
+	_, err := p.Verify(context.Background(), "x", nil)
+	if !errors.Is(err, auth.ErrProviderUnavailable) {
+		t.Fatalf("err = %v, want ErrProviderUnavailable", err)
 	}
 }
 

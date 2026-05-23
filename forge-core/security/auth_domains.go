@@ -71,6 +71,14 @@ func authProviderURLs(p types.AuthProvider) []string {
 	case "gcp_iap":
 		// Decision §9.4: IAP JWKS host is hardcoded.
 		return []string{"https://www.gstatic.com/iap/verify/public_key-jwk"}
+	case "azure_ad":
+		// AAD authority host is fixed (login.microsoftonline.com).
+		// Graph host added ONLY when groups_mode=graph.
+		out := []string{"https://login.microsoftonline.com"}
+		if mode, _ := p.Settings["groups_mode"].(string); mode == "graph" {
+			out = append(out, "https://graph.microsoft.com")
+		}
+		return out
 	// static_token has no outbound; not listed
 	default:
 		return nil

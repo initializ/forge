@@ -86,6 +86,19 @@ type Config struct {
 
 	// HTTPClient overrides the default client. Injectable for tests.
 	HTTPClient *http.Client `yaml:"-"`
+
+	// SkipIssuerCheck disables the iss-claim equality check. INTERNAL —
+	// the yaml:"-" tag means this CANNOT be set via forge.yaml; it is
+	// only reachable when another Go package constructs oidc.Config
+	// directly (currently only azure_ad's multi-tenant mode).
+	//
+	// Reason it exists: AAD's "common" / multi-tenant issuer template
+	// uses a per-token tenant ID that string-equality can't satisfy. The
+	// caller (azure_ad) takes responsibility for tenant enforcement via
+	// the tid claim instead. Surfacing this in forge.yaml would let
+	// operators disable iss validation by accident — which is exactly
+	// the "open verifier" footgun this package is designed to prevent.
+	SkipIssuerCheck bool `yaml:"-"`
 }
 
 // Validate returns ErrProviderNotConfigured when required fields are
@@ -255,8 +268,15 @@ func (p *Provider) Verify(ctx context.Context, tokenStr string, headers auth.Hea
 	// IdPs that emit iss with/without a trailing slash interop with
 	// configs that use the opposite form). See Config.normalize and
 	// review finding #2.
-	if err := p.checkIssuer(claims); err != nil {
-		return nil, err
+	//
+	// SkipIssuerCheck is INTERNAL — only set when another Go package
+	// (currently azure_ad multi-tenant) takes responsibility for
+	// tenant/issuer enforcement via a different claim. Never reachable
+	// via forge.yaml — the field carries a yaml:"-" tag.
+	if !p.cfg.SkipIssuerCheck {
+		if err := p.checkIssuer(claims); err != nil {
+			return nil, err
+		}
 	}
 
 	// Audience validation (with azp fallback).

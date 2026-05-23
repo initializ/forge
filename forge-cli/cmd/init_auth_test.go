@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 // --- renderAuthBlock ---
@@ -91,6 +92,96 @@ func TestRenderAuthBlock_HTTPVerifier(t *testing.T) {
 	if !strings.Contains(got, "default_org: acme") {
 		t.Errorf("missing default_org:\n%s", got)
 	}
+}
+
+func TestRenderAuthBlock_QuotesUnsafeValues(t *testing.T) {
+	// Review #12.8: writeYAMLMap used to emit "key: value" raw. Values
+	// containing ": " or starting with YAML-significant chars could
+	// break the parser. The hardening adds quoting; this test pins it.
+	tests := []struct {
+		name      string
+		value     string
+		wantQuote bool
+	}{
+		{"plain url", "https://login.example.com", false},
+		{"audience uri", "api://forge", false},
+		{"plain identifier", "my-org", false},
+		{"contains ': ' (colon-space — splits as map)", "title: subtitle", true},
+		{"contains ' #' (comment marker)", "value #with comment", true},
+		{"trailing colon", "foo:", true},
+		{"leading ! (tag)", "!secret", true},
+		{"leading * (alias)", "*ref", true},
+		{"leading - (sequence)", "-name", true},
+		{"leading [ (flow seq)", "[item]", true},
+		{"leading { (flow map)", "{key: val}", true},
+		{"leading # (comment)", "#commented", true},
+		{"empty", "", true},
+		{"YAML 1.1 boolean 'true'", "true", true},
+		{"YAML 1.1 boolean 'YES'", "YES", true},
+		{"YAML null literal", "null", true},
+		{"YAML tilde null", "~", true},
+		{"contains newline", "line1\nline2", true},
+		{"contains tab", "with\ttab", true},
+		{"leading whitespace", " starts with space", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := renderAuthBlock("oidc", map[string]any{
+				"issuer":   "https://x", // anchor that's never quoted
+				"audience": "y",
+				"probe":    tt.value,
+			})
+			line := findSettingsLine(got, "probe")
+			if line == "" {
+				t.Fatalf("no probe: line in output:\n%s", got)
+			}
+			isQuoted := strings.Contains(line, `"`)
+			if isQuoted != tt.wantQuote {
+				t.Errorf("value=%q quoted=%v, want=%v\nrendered: %q",
+					tt.value, isQuoted, tt.wantQuote, line)
+			}
+		})
+	}
+}
+
+func TestRenderAuthBlock_QuotedValueIsParseable(t *testing.T) {
+	// Round-trip check: the quoted output must parse back via yaml.v3
+	// as the original string. Catches escaping bugs.
+	weird := `weird: value # with comment ! and "quote"`
+	got := renderAuthBlock("oidc", map[string]any{
+		"issuer":   "https://x",
+		"audience": "y",
+		"probe":    weird,
+	})
+
+	// Find the probe: line, extract the value, parse via yaml.v3.
+	line := findSettingsLine(got, "probe")
+	if line == "" {
+		t.Fatalf("no probe line:\n%s", got)
+	}
+	// "        probe: \"…\""  →  yaml.Unmarshal of "value: <quoted>"
+	idx := strings.Index(line, "probe:")
+	docFragment := line[idx:]
+	var parsed map[string]string
+	if err := yaml.Unmarshal([]byte(docFragment), &parsed); err != nil {
+		t.Fatalf("rendered line %q is not valid YAML: %v", line, err)
+	}
+	if parsed["probe"] != weird {
+		t.Errorf("round-trip mismatch:\n  got  %q\n  want %q", parsed["probe"], weird)
+	}
+}
+
+// findSettingsLine returns the first line in `block` whose key is `key`.
+// Used by the quoting tests to inspect a single rendered key/value pair.
+func findSettingsLine(block, key string) string {
+	prefix := key + ":"
+	for _, line := range strings.Split(block, "\n") {
+		trimmed := strings.TrimLeft(line, " ")
+		if strings.HasPrefix(trimmed, prefix) {
+			return line
+		}
+	}
+	return ""
 }
 
 func TestRenderAuthBlock_DeterministicOrdering(t *testing.T) {

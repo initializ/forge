@@ -180,6 +180,10 @@ func customAuthStub() string {
 // writeYAMLMap renders a `map[string]any` as YAML lines, recursing into
 // nested maps. Only string / number / bool / map values are supported —
 // the auth-settings schema doesn't use anything else.
+//
+// String values are conservatively quoted (review #12.8) when they
+// contain YAML-significant characters. Otherwise the unquoted form is
+// emitted to keep generated forge.yaml readable.
 func writeYAMLMap(b *strings.Builder, m map[string]any, indent string) {
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -193,9 +197,78 @@ func writeYAMLMap(b *strings.Builder, m map[string]any, indent string) {
 			fmt.Fprintf(b, "%s%s:\n", indent, k)
 			writeYAMLMap(b, val, indent+"  ")
 		case string:
-			fmt.Fprintf(b, "%s%s: %s\n", indent, k, val)
+			fmt.Fprintf(b, "%s%s: %s\n", indent, k, yamlScalar(val))
 		default:
 			fmt.Fprintf(b, "%s%s: %v\n", indent, k, val)
 		}
 	}
+}
+
+// yamlScalar returns a YAML-safe rendering of a string value. Plain
+// values pass through unchanged; values containing characters that
+// would break the YAML parser (": " sequences, leading specials,
+// reserved tokens, control chars) are emitted as double-quoted strings
+// with the minimum necessary escaping.
+//
+// This is deliberately not a general YAML serializer — it covers the
+// subset that appears in auth provider settings (issuer URLs, audiences,
+// claim names, default org strings). If we ever need richer values,
+// switch to gopkg.in/yaml.v3 for the whole block.
+func yamlScalar(s string) string {
+	if !needsYAMLQuoting(s) {
+		return s
+	}
+	var out strings.Builder
+	out.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '"':
+			out.WriteString(`\"`)
+		case '\\':
+			out.WriteString(`\\`)
+		case '\n':
+			out.WriteString(`\n`)
+		case '\r':
+			out.WriteString(`\r`)
+		case '\t':
+			out.WriteString(`\t`)
+		default:
+			out.WriteRune(r)
+		}
+	}
+	out.WriteByte('"')
+	return out.String()
+}
+
+// needsYAMLQuoting reports whether a string would change meaning when
+// emitted unquoted in a YAML block-scalar context. Conservative —
+// false positives are fine (extra quotes), false negatives are bugs
+// (broken YAML).
+func needsYAMLQuoting(s string) bool {
+	if s == "" {
+		return true
+	}
+	// Leading characters that begin YAML indicators (tags, anchors,
+	// aliases, folded/literal block markers, flow markers, directives,
+	// quotes, comments, leading whitespace).
+	switch s[0] {
+	case '!', '&', '*', '>', '|', '%', '@', '`', '"', '\'', '#', ' ', '\t', '[', ']', '{', '}', ',', '?', ':', '-':
+		return true
+	}
+	// Trailing colon (key-like form) or any unquoted ": " (mapping
+	// indicator inside a scalar would split into key/value).
+	if strings.HasSuffix(s, ":") || strings.Contains(s, ": ") || strings.Contains(s, " #") {
+		return true
+	}
+	// Control / newline characters.
+	if strings.ContainsAny(s, "\n\r\t\v\f") {
+		return true
+	}
+	// YAML 1.1 boolean / null literals — unquoted they decode to bool/nil.
+	// We keep this case-insensitive to match yaml.v3 defaults.
+	switch strings.ToLower(s) {
+	case "true", "false", "yes", "no", "on", "off", "null", "~":
+		return true
+	}
+	return false
 }

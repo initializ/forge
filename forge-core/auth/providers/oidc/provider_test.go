@@ -757,6 +757,149 @@ func TestVerify_TokenWithoutAudClaim(t *testing.T) {
 	}
 }
 
+// --- Issuer trailing-slash normalization (review finding #2) ---
+//
+// IdPs disagree on whether the canonical issuer has a trailing slash.
+// Auth0 emits "iss": "https://tenant.auth0.com/"; most Okta deployments
+// do not. Operators paste whatever they see into forge.yaml. These
+// tests guarantee both directions interop.
+
+func TestIssuer_ConfigWithoutSlash_TokenWithSlash(t *testing.T) {
+	fi := newFakeIssuer(t)
+	// Config the user-facing way: no trailing slash.
+	p := newProvider(t, fi, func(c *oidc.Config) {
+		c.Issuer = fi.IssuerURL() // already no slash
+	})
+
+	// Mint a token whose iss has a trailing slash (mimics Auth0).
+	claims := fi.DefaultClaims(testAudience)
+	claims["iss"] = fi.IssuerURL() + "/"
+	tok := fi.SignWith("key-1", claims)
+
+	id, err := p.Verify(context.Background(), tok, nil)
+	if err != nil {
+		t.Fatalf("token iss with slash, config without — should accept, got: %v", err)
+	}
+	if id == nil {
+		t.Fatal("Verify returned nil identity")
+	}
+}
+
+func TestIssuer_ConfigWithSlash_TokenWithoutSlash(t *testing.T) {
+	fi := newFakeIssuer(t)
+	// Config the other way: user pastes with trailing slash.
+	p := newProvider(t, fi, func(c *oidc.Config) {
+		c.Issuer = fi.IssuerURL() + "/"
+	})
+
+	// Token has no slash (the more common case).
+	tok := fi.SignWith("key-1", fi.DefaultClaims(testAudience))
+
+	if _, err := p.Verify(context.Background(), tok, nil); err != nil {
+		t.Fatalf("config with slash, token without — should accept, got: %v", err)
+	}
+}
+
+func TestIssuer_BothWithoutSlash_StillWorks(t *testing.T) {
+	// Regression: ensure the trim didn't break the most common case.
+	fi := newFakeIssuer(t)
+	p := newProvider(t, fi, nil)
+	tok := fi.SignWith("key-1", fi.DefaultClaims(testAudience))
+	if _, err := p.Verify(context.Background(), tok, nil); err != nil {
+		t.Fatalf("config without slash + token without slash should accept: %v", err)
+	}
+}
+
+func TestIssuer_BothWithSlash_StillWorks(t *testing.T) {
+	fi := newFakeIssuer(t)
+	p := newProvider(t, fi, func(c *oidc.Config) {
+		c.Issuer = fi.IssuerURL() + "/"
+	})
+	claims := fi.DefaultClaims(testAudience)
+	claims["iss"] = fi.IssuerURL() + "/"
+	tok := fi.SignWith("key-1", claims)
+	if _, err := p.Verify(context.Background(), tok, nil); err != nil {
+		t.Fatalf("config + token both with slash should accept: %v", err)
+	}
+}
+
+func TestIssuer_GenuineMismatchStillRejected(t *testing.T) {
+	// Security guard: trimming trailing slashes must not collapse
+	// genuinely-different issuers into the same comparison value.
+	fi := newFakeIssuer(t)
+	p := newProvider(t, fi, nil)
+
+	claims := fi.DefaultClaims(testAudience)
+	claims["iss"] = "https://attacker.example.com/" // completely different host
+	tok := fi.SignWith("key-1", claims)
+
+	_, err := p.Verify(context.Background(), tok, nil)
+	if !errors.Is(err, auth.ErrTokenRejected) {
+		t.Errorf("genuine issuer mismatch err = %v, want ErrTokenRejected", err)
+	}
+}
+
+func TestIssuer_TokenMissingIssClaim(t *testing.T) {
+	fi := newFakeIssuer(t)
+	p := newProvider(t, fi, nil)
+
+	claims := fi.DefaultClaims(testAudience)
+	delete(claims, "iss")
+	tok := fi.SignWith("key-1", claims)
+
+	_, err := p.Verify(context.Background(), tok, nil)
+	if !errors.Is(err, auth.ErrTokenRejected) {
+		t.Errorf("missing iss err = %v, want ErrTokenRejected", err)
+	}
+}
+
+func TestDiscovery_TrailingSlashTolerated(t *testing.T) {
+	// Discovery side: IdP's doc has issuer with trailing slash;
+	// operator configured without. Must not bomb at startup-ish phase.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Deliberately use a different host than the test server's URL
+		// to simulate normalization-only mismatch — wait, we need it to
+		// be the same host, just different slash form.
+	}))
+	srv.Close() // we just needed the type
+
+	// Build a real fake issuer and add a slash to the doc's response.
+	docHost := ""
+	dynamicSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			// Emit issuer WITH trailing slash even though docHost has none.
+			_, _ = w.Write([]byte(`{"issuer":"` + docHost + `/","jwks_uri":"` + docHost + `/jwks"}`))
+		case "/jwks":
+			_, _ = w.Write([]byte(`{"keys":[]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer dynamicSrv.Close()
+	docHost = dynamicSrv.URL
+
+	p, err := oidc.New(oidc.Config{
+		Issuer:   docHost, // no trailing slash
+		Audience: testAudience,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Trigger the discovery path with a real JWT-shaped string.
+	// Discovery happens lazily on first JWKS lookup. We're testing that
+	// the comparison doesn't reject due to trailing-slash mismatch.
+	dummyJWT := "eyJhbGciOiJSUzI1NiIsImtpZCI6ImsxIn0.eyJpc3MiOiJ4In0.AAAA"
+	_, err = p.Verify(context.Background(), dummyJWT, nil)
+	// Expect an ErrInvalidToken (kid not found in empty JWKS) — NOT a
+	// "discovery issuer mismatch" error. The previous bug surfaced as
+	// the latter.
+	if err != nil && strings.Contains(err.Error(), "discovery issuer") {
+		t.Errorf("discovery rejected due to trailing-slash drift: %v", err)
+	}
+}
+
 // --- TTL-driven refresh (review finding #1) ---
 //
 // These tests guarantee that JWKS keys revoked at the IdP eventually stop

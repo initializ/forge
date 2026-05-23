@@ -15,6 +15,33 @@ var providerDomains = map[string]string{
 	// ollama is local, no egress needed
 }
 
+// mergeEgressDomains returns the union of `base` and `extra`, preserving
+// the order of `base` and appending only previously-unseen items from
+// `extra`. The result is deduplicated and stable.
+//
+// Used by the init scaffold to fold auth-provider hosts (from the wizard
+// or --auth flags) into the egress allowlist without disturbing the
+// existing ordering.
+func mergeEgressDomains(base, extra []string) []string {
+	seen := make(map[string]bool, len(base)+len(extra))
+	out := make([]string, 0, len(base)+len(extra))
+	for _, d := range base {
+		if d == "" || seen[d] {
+			continue
+		}
+		seen[d] = true
+		out = append(out, d)
+	}
+	for _, d := range extra {
+		if d == "" || seen[d] {
+			continue
+		}
+		seen[d] = true
+		out = append(out, d)
+	}
+	return out
+}
+
 // deriveEgressDomains computes the full set of egress domains needed based on
 // the provider, channels, builtin tools, and selected registry skills.
 func deriveEgressDomains(opts *initOptions, skills []contract.SkillDescriptor) []string {

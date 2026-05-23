@@ -54,6 +54,44 @@ func buildAuthFromFlags(cmd *cobra.Command, mode string) (settings map[string]an
 	}
 }
 
+// authEgressHostsFromSettings extracts the outbound hosts implied by an
+// auth provider's settings block. Used by the Web UI path (cmd/ui.go) to
+// derive the same egress hosts the TUI wizard / --auth flags compute.
+//
+// Returns nil for modes that don't require outbound (none, static_token,
+// custom) or for malformed/missing URLs.
+func authEgressHostsFromSettings(mode string, settings map[string]any) []string {
+	if settings == nil {
+		return nil
+	}
+	var hosts []string
+	switch mode {
+	case "oidc":
+		if h := hostFromURL(asStringSetting(settings, "issuer")); h != "" {
+			hosts = append(hosts, h)
+		}
+		if h := hostFromURL(asStringSetting(settings, "jwks_url")); h != "" {
+			hosts = append(hosts, h)
+		}
+	case "http_verifier":
+		if h := hostFromURL(asStringSetting(settings, "url")); h != "" {
+			hosts = append(hosts, h)
+		}
+	}
+	return hosts
+}
+
+// asStringSetting reads a string-valued setting, returning "" for missing
+// or non-string values.
+func asStringSetting(m map[string]any, key string) string {
+	v, ok := m[key]
+	if !ok {
+		return ""
+	}
+	s, _ := v.(string)
+	return s
+}
+
 // hostFromURL extracts the bare host (no port) from a URL string. Returns
 // "" if the URL is malformed — validation happens in the wizard /
 // buildAuthFromFlags above.

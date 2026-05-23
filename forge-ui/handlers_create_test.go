@@ -385,4 +385,101 @@ func TestHandleGetWizardMeta(t *testing.T) {
 	if len(meta.WebSearchProviders) == 0 {
 		t.Error("expected non-empty web_search_providers list")
 	}
+
+	// PR6: auth_provider_types is server-driven so the frontend doesn't
+	// hardcode the list. Must include the four founding types.
+	if len(meta.AuthProviderTypes) != 4 {
+		t.Errorf("auth_provider_types len = %d, want 4", len(meta.AuthProviderTypes))
+	}
+	wantTypes := map[string]bool{"none": false, "oidc": false, "http_verifier": false, "custom": false}
+	for _, a := range meta.AuthProviderTypes {
+		if _, ok := wantTypes[a.Type]; !ok {
+			t.Errorf("unexpected auth type %q", a.Type)
+			continue
+		}
+		wantTypes[a.Type] = true
+		if a.Label == "" || a.Description == "" {
+			t.Errorf("auth type %q missing label/description", a.Type)
+		}
+	}
+	for typ, seen := range wantTypes {
+		if !seen {
+			t.Errorf("missing required auth type %q", typ)
+		}
+	}
+}
+
+// setupCreateWithCapture returns a UIServer whose CreateFunc records the
+// last AgentCreateOptions it received. Used to assert that opts.Auth
+// round-trips through the JSON boundary.
+func setupCreateWithCapture(t *testing.T) (*UIServer, *AgentCreateOptions) {
+	t.Helper()
+	root := t.TempDir()
+	captured := &AgentCreateOptions{}
+	mockCreate := func(opts AgentCreateOptions) (string, error) {
+		*captured = opts
+		return filepath.Join(root, opts.Name), nil
+	}
+	srv := NewUIServer(UIServerConfig{
+		Port:       4200,
+		WorkDir:    root,
+		ExePath:    "/usr/bin/false",
+		CreateFunc: mockCreate,
+		AgentPort:  9100,
+	})
+	return srv, captured
+}
+
+func TestHandleCreateAgent_WithAuthPayload(t *testing.T) {
+	srv, captured := setupCreateWithCapture(t)
+
+	body := []byte(`{
+		"name": "auth-test-agent",
+		"model_provider": "openai",
+		"auth": {
+			"mode": "oidc",
+			"settings": {
+				"issuer": "https://login.example.com",
+				"audience": "api://forge"
+			}
+		}
+	}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/agents", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.handleCreateAgent(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusCreated, w.Body.String())
+	}
+	if captured.Auth == nil {
+		t.Fatal("captured Auth is nil — opts.Auth did not round-trip")
+	}
+	if captured.Auth.Mode != "oidc" {
+		t.Errorf("Auth.Mode = %q, want oidc", captured.Auth.Mode)
+	}
+	if captured.Auth.Settings["issuer"] != "https://login.example.com" {
+		t.Errorf("issuer = %v, want https://login.example.com", captured.Auth.Settings["issuer"])
+	}
+	if captured.Auth.Settings["audience"] != "api://forge" {
+		t.Errorf("audience = %v, want api://forge", captured.Auth.Settings["audience"])
+	}
+}
+
+func TestHandleCreateAgent_WithoutAuthPayload(t *testing.T) {
+	// Omitting `auth` from the request is still a valid create — the
+	// agent gets anonymous access by default.
+	srv, captured := setupCreateWithCapture(t)
+
+	body := []byte(`{"name": "no-auth-agent", "model_provider": "openai"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/agents", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.handleCreateAgent(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusCreated)
+	}
+	if captured.Auth != nil {
+		t.Errorf("Auth = %v, want nil for omitted field", captured.Auth)
+	}
 }

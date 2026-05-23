@@ -2,6 +2,7 @@ package forgeui
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -153,6 +154,16 @@ func (s *UIServer) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Server-side validation of the auth payload before scaffolding the
+	// agent on disk. Without this, a buggy frontend could write a
+	// malformed auth: block into forge.yaml that only fails at
+	// `forge run` — after the agent directory has been created and the
+	// user thinks creation succeeded. Review #9.
+	if err := validateAuthPayload(opts.Auth); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	agentDir, err := s.cfg.CreateFunc(opts)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -172,6 +183,47 @@ func (s *UIServer) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		Directory: agentDir,
 		Message:   "Agent created successfully",
 	})
+}
+
+// validateAuthPayload runs the forge-core validate package over the
+// wizard's auth payload before the agent is scaffolded on disk. Returns
+// nil for benign shapes (absent, "none", "custom") and for valid
+// provider configs; returns an error with the validation messages
+// surfaced when settings are malformed.
+//
+// The translation from the wizard's AuthCreateOptions → types.AuthConfig
+// mirrors exactly what cmd/ui.go's createFunc does later, so this check
+// has the same view of the inputs as the eventual scaffold.
+func validateAuthPayload(a *AuthCreateOptions) error {
+	if a == nil {
+		return nil
+	}
+	switch a.Mode {
+	case "", "none", "custom":
+		// Nothing to validate — these modes don't write a provider entry.
+		return nil
+	}
+
+	authYAML := types.AuthConfig{
+		// Required is set true here because the wizard's renderAuthBlock
+		// always emits required:true when a provider is chosen. Keeping
+		// the validation view aligned with the rendered YAML avoids
+		// drift between "wizard accepts" and "forge validate accepts".
+		Required: true,
+		Providers: []types.AuthProvider{
+			{
+				Type:     a.Mode,
+				Settings: a.Settings,
+			},
+		},
+	}
+
+	result := &validate.ValidationResult{}
+	validate.ValidateAuthConfig(authYAML, result)
+	if !result.IsValid() {
+		return fmt.Errorf("auth: %s", strings.Join(result.Errors, "; "))
+	}
+	return nil
 }
 
 // handleOAuthStart initiates the OAuth browser flow for a provider.

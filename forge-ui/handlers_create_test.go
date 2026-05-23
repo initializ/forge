@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -463,6 +464,153 @@ func TestHandleCreateAgent_WithAuthPayload(t *testing.T) {
 	}
 	if captured.Auth.Settings["audience"] != "api://forge" {
 		t.Errorf("audience = %v, want api://forge", captured.Auth.Settings["audience"])
+	}
+}
+
+// --- Server-side auth payload validation (review #9) ---
+//
+// Without this, the wizard could write malformed auth: blocks to disk
+// (e.g., oidc without issuer/audience) — creation succeeds, `forge run`
+// fails later, user confused.
+
+func TestHandleCreateAgent_OIDCMissingIssuerRejected(t *testing.T) {
+	srv, captured := setupCreateWithCapture(t)
+
+	// Audience set but no issuer — should fail validation before
+	// CreateFunc is invoked.
+	body := []byte(`{
+		"name": "bad-oidc",
+		"model_provider": "openai",
+		"auth": {
+			"mode": "oidc",
+			"settings": { "audience": "api://forge" }
+		}
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/agents", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.handleCreateAgent(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body: %s)", w.Code, w.Body.String())
+	}
+	// CreateFunc must NOT have been called — the agent directory should
+	// never exist on disk for malformed auth.
+	if captured.Name != "" {
+		t.Errorf("CreateFunc was called despite validation failure (captured: %+v)", captured)
+	}
+	if !strings.Contains(w.Body.String(), "issuer is required") {
+		t.Errorf("error body should name the missing field, got: %s", w.Body.String())
+	}
+}
+
+func TestHandleCreateAgent_OIDCMissingAudienceRejected(t *testing.T) {
+	srv, captured := setupCreateWithCapture(t)
+
+	body := []byte(`{
+		"name": "bad-oidc-2",
+		"model_provider": "openai",
+		"auth": {
+			"mode": "oidc",
+			"settings": { "issuer": "https://login.example.com" }
+		}
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/agents", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.handleCreateAgent(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+	if captured.Name != "" {
+		t.Errorf("CreateFunc called despite validation failure")
+	}
+	if !strings.Contains(w.Body.String(), "audience is required") {
+		t.Errorf("error body should name missing audience, got: %s", w.Body.String())
+	}
+}
+
+func TestHandleCreateAgent_OIDCBothFieldsAccepted(t *testing.T) {
+	// Regression: valid oidc payload still works end-to-end.
+	srv, captured := setupCreateWithCapture(t)
+	body := []byte(`{
+		"name": "good-oidc",
+		"model_provider": "openai",
+		"auth": {
+			"mode": "oidc",
+			"settings": {
+				"issuer": "https://login.example.com",
+				"audience": "api://forge"
+			}
+		}
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/agents", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.handleCreateAgent(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (body: %s)", w.Code, w.Body.String())
+	}
+	if captured.Auth == nil || captured.Auth.Mode != "oidc" {
+		t.Errorf("expected captured Auth.Mode = oidc, got %+v", captured.Auth)
+	}
+}
+
+func TestHandleCreateAgent_HTTPVerifierMissingURLRejected(t *testing.T) {
+	srv, _ := setupCreateWithCapture(t)
+	body := []byte(`{
+		"name": "bad-http",
+		"model_provider": "openai",
+		"auth": { "mode": "http_verifier", "settings": {} }
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/agents", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.handleCreateAgent(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "url is required") {
+		t.Errorf("error body should name missing url, got: %s", w.Body.String())
+	}
+}
+
+func TestHandleCreateAgent_UnknownAuthModeRejected(t *testing.T) {
+	srv, _ := setupCreateWithCapture(t)
+	body := []byte(`{
+		"name": "weird",
+		"model_provider": "openai",
+		"auth": { "mode": "ldap", "settings": {} }
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/agents", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.handleCreateAgent(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "unknown type") {
+		t.Errorf("error should name unknown-type, got: %s", w.Body.String())
+	}
+}
+
+func TestHandleCreateAgent_NoneAndCustomSkipValidation(t *testing.T) {
+	// mode "none" and "custom" don't produce providers — there's
+	// nothing to validate. They must round-trip cleanly.
+	for _, mode := range []string{"none", "custom"} {
+		t.Run(mode, func(t *testing.T) {
+			srv, captured := setupCreateWithCapture(t)
+			body := []byte(`{
+				"name": "agent-` + mode + `",
+				"model_provider": "openai",
+				"auth": { "mode": "` + mode + `", "settings": {} }
+			}`)
+			req := httptest.NewRequest(http.MethodPost, "/api/agents", bytes.NewReader(body))
+			w := httptest.NewRecorder()
+			srv.handleCreateAgent(w, req)
+			if w.Code != http.StatusCreated {
+				t.Errorf("mode %q: status = %d, want 201", mode, w.Code)
+			}
+			if captured.Auth == nil || captured.Auth.Mode != mode {
+				t.Errorf("Auth.Mode = %v, want %q", captured.Auth, mode)
+			}
+		})
 	}
 }
 

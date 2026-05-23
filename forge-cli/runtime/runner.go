@@ -1751,6 +1751,28 @@ func (r *Runner) resolveAuth(auditLogger *coreruntime.AuditLogger) (auth.Middlew
 	}
 
 	if r.cfg.NoAuth {
+		// Cross-check --no-auth against the forge.yaml auth block. The
+		// flag and the YAML have historically been treated independently;
+		// review #4 closes the gap so a misaligned pair fails loudly
+		// instead of silently serving anonymous traffic on what the
+		// operator declared a required-auth deployment.
+		if r.cfg.Config != nil {
+			authCfg := r.cfg.Config.Auth
+			if authCfg.Required {
+				return auth.MiddlewareOptions{}, fmt.Errorf(
+					"--no-auth conflicts with forge.yaml 'auth.required: true' — " +
+						"either remove --no-auth, set 'auth.required: false', or " +
+						"delete the 'auth:' block to confirm anonymous access is intended")
+			}
+			if len(authCfg.Providers) > 0 {
+				r.logger.Warn(
+					"--no-auth overrides forge.yaml 'auth.providers' — configured "+
+						"providers will be ignored and the agent will accept anonymous "+
+						"traffic. Remove --no-auth to enforce the configured chain.",
+					map[string]any{"providers_configured": len(authCfg.Providers)},
+				)
+			}
+		}
 		// Operator explicitly chose anonymous via --no-auth. AllowAnonymous
 		// makes that choice visible at the middleware boundary (review #3).
 		return auth.MiddlewareOptions{

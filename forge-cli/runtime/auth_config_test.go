@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/initializ/forge/forge-core/auth"
@@ -250,6 +251,116 @@ func TestBuildUserAuthChain_BothSourcesPrefersYAML(t *testing.T) {
 	if _, err := chain.Verify(context.Background(), "legacy-only", nil); !errors.Is(err, auth.ErrTokenRejected) {
 		t.Errorf("legacy-only token err = %v, want ErrTokenRejected", err)
 	}
+}
+
+// --- --no-auth vs forge.yaml auth: block (review #4) ---
+//
+// Phase 1 + PR3 let --no-auth and the YAML auth block be set
+// independently. Review #4 cross-checks them at resolveAuth time so
+// a contradictory combination fails loudly instead of silently
+// granting anonymous access.
+
+// makeRunnerWithNoAuth returns a Runner with NoAuth=true and the given
+// AuthConfig in forge.yaml. Captures logger output via a recording
+// logger so warning assertions can read what the runner emitted.
+func makeRunnerWithNoAuth(t *testing.T, authYAML types.AuthConfig) (*Runner, *recordLogger) {
+	t.Helper()
+	logger := &recordLogger{}
+	r := &Runner{logger: logger}
+	r.cfg.Config = &types.ForgeConfig{Auth: authYAML}
+	r.cfg.NoAuth = true
+	return r, logger
+}
+
+func TestResolveAuth_NoAuthWithRequiredFails(t *testing.T) {
+	r, _ := makeRunnerWithNoAuth(t, types.AuthConfig{
+		Required: true,
+		Providers: []types.AuthProvider{
+			{Type: "oidc", Settings: map[string]any{"issuer": "https://x", "audience": "y"}},
+		},
+	})
+	_, err := r.resolveAuth(nil)
+	if err == nil {
+		t.Fatal("expected error when --no-auth conflicts with auth.required: true")
+	}
+	if !strings.Contains(err.Error(), "--no-auth conflicts with") {
+		t.Errorf("err = %q, want descriptive --no-auth/required mismatch message", err)
+	}
+}
+
+func TestResolveAuth_NoAuthWithProvidersWarns(t *testing.T) {
+	r, logger := makeRunnerWithNoAuth(t, types.AuthConfig{
+		// Required: false — the operator hasn't asserted that auth is
+		// mandatory; --no-auth should still work but it surprises them
+		// that the YAML providers are ignored, so we warn.
+		Providers: []types.AuthProvider{
+			{Type: "oidc", Settings: map[string]any{"issuer": "https://x", "audience": "y"}},
+		},
+	})
+	opts, err := r.resolveAuth(nil)
+	if err != nil {
+		t.Fatalf("resolveAuth returned error, want warning only: %v", err)
+	}
+	if !opts.AllowAnonymous {
+		t.Error("expected AllowAnonymous=true under --no-auth")
+	}
+	if !logger.warnedAbout("--no-auth overrides") {
+		t.Errorf("expected --no-auth-overrides warning; got: %+v", logger.warnings)
+	}
+}
+
+func TestResolveAuth_NoAuthWithEmptyYAMLConfig_NoWarning(t *testing.T) {
+	// Regression: --no-auth alone (no auth: block at all) must still
+	// work without spamming a warning.
+	r, logger := makeRunnerWithNoAuth(t, types.AuthConfig{})
+	opts, err := r.resolveAuth(nil)
+	if err != nil {
+		t.Fatalf("resolveAuth: %v", err)
+	}
+	if !opts.AllowAnonymous {
+		t.Error("expected AllowAnonymous=true under --no-auth")
+	}
+	if len(logger.warnings) > 0 {
+		t.Errorf("unexpected warnings emitted: %+v", logger.warnings)
+	}
+}
+
+func TestResolveAuth_NoAuthWithRequiredFalseAndProviders_WarnsNotFails(t *testing.T) {
+	// Explicit Required: false + Providers set — operator knows what
+	// they're doing; we warn but don't refuse.
+	r, logger := makeRunnerWithNoAuth(t, types.AuthConfig{
+		Required: false,
+		Providers: []types.AuthProvider{
+			{Type: "oidc", Settings: map[string]any{"issuer": "https://x", "audience": "y"}},
+		},
+	})
+	if _, err := r.resolveAuth(nil); err != nil {
+		t.Fatalf("resolveAuth should not fail when Required=false: %v", err)
+	}
+	if !logger.warnedAbout("--no-auth overrides") {
+		t.Error("expected override warning")
+	}
+}
+
+// recordLogger captures Warn/Info/Debug/Error calls for assertions.
+// Mirrors the no-op nopLogger pattern in auth_config_test.go but
+// records messages so tests can assert on them.
+type recordLogger struct {
+	warnings []string
+	infos    []string
+}
+
+func (r *recordLogger) Debug(msg string, _ map[string]any) {}
+func (r *recordLogger) Info(msg string, _ map[string]any)  { r.infos = append(r.infos, msg) }
+func (r *recordLogger) Warn(msg string, _ map[string]any)  { r.warnings = append(r.warnings, msg) }
+func (r *recordLogger) Error(msg string, _ map[string]any) {}
+func (r *recordLogger) warnedAbout(substr string) bool {
+	for _, w := range r.warnings {
+		if strings.Contains(w, substr) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestBuildUserAuthChain_OIDCFromYAML(t *testing.T) {

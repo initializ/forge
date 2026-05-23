@@ -301,6 +301,91 @@ func TestHostnameOrEmpty(t *testing.T) {
 	}
 }
 
+// --- Wizard interaction tests (review #12.6, #12.7) ---
+
+func TestAuthStep_BackspaceOnEmptyInputReturnsToPicker(t *testing.T) {
+	// Review #12.6: backspace-on-empty is the documented escape hatch
+	// from a sub-step input back to the provider picker, but until
+	// review #11e there was no visible hint AND no test. The hint was
+	// added; this test pins the behavior.
+	s := newTestAuthStep(t)
+
+	// Walk into OIDC issuer phase.
+	s = press(t, s, "down") // OIDC
+	s = press(t, s, "enter")
+	if s.phase != authOIDCIssuerPhase {
+		t.Fatalf("setup: phase = %v, want issuer", s.phase)
+	}
+
+	// Backspace on EMPTY input → returns to picker.
+	s = press(t, s, "backspace")
+	if s.phase != authSelectPhase {
+		t.Errorf("backspace-on-empty: phase = %v, want authSelectPhase", s.phase)
+	}
+	if s.mode != "" {
+		t.Errorf("backspace-on-empty: mode = %q, want \"\" (reset)", s.mode)
+	}
+}
+
+func TestAuthStep_BackspaceWithContentDoesNotReturnToPicker(t *testing.T) {
+	// Counterpart: backspace with TEXT in the input only deletes the
+	// last char — it must not escape out of the sub-step.
+	s := newTestAuthStep(t)
+	s = press(t, s, "down") // OIDC
+	s = press(t, s, "enter")
+	s = typeIn(t, s, "https://example.com")
+	if s.phase != authOIDCIssuerPhase {
+		t.Fatalf("setup: phase = %v, want issuer", s.phase)
+	}
+
+	s = press(t, s, "backspace")
+	if s.phase != authOIDCIssuerPhase {
+		t.Errorf("backspace-with-content escaped to phase %v, expected to stay on issuer", s.phase)
+	}
+}
+
+func TestAuthStep_InvalidIssuerURLBlocksAdvance(t *testing.T) {
+	// Review #12.7: validateHTTPSURL is unit-tested standalone, but
+	// the wizard's gating on bad input was never asserted as an
+	// interaction. Drive the step with a bad URL and confirm Enter
+	// doesn't advance to the audience sub-step.
+	s := newTestAuthStep(t)
+	s = press(t, s, "down") // OIDC
+	s = press(t, s, "enter")
+
+	// Type something that fails validateHTTPSURL (no scheme).
+	s = typeIn(t, s, "login.example.com")
+	s = press(t, s, "enter")
+
+	// MUST still be on the issuer phase — the bad URL blocked advance.
+	if s.phase != authOIDCIssuerPhase {
+		t.Errorf("invalid URL advanced past issuer phase to %v", s.phase)
+	}
+
+	// And the step must not be complete — Review/scaffold MUST NOT run
+	// for a half-configured OIDC entry.
+	if s.Complete() {
+		t.Errorf("step reported complete with invalid issuer URL")
+	}
+
+	// Now type a valid replacement and confirm the gate releases.
+	// Clear the input first by sending backspaces until empty — easier
+	// than reaching into TextInput state.
+	for range len("login.example.com") {
+		s = press(t, s, "backspace")
+	}
+	if s.phase != authOIDCIssuerPhase {
+		// Bug guard: a long sequence of backspaces should NOT escape to
+		// the picker mid-way (only an Enter-after-empty would).
+		t.Fatalf("backspaces escaped to phase %v unexpectedly", s.phase)
+	}
+	s = typeIn(t, s, "https://login.example.com")
+	s = press(t, s, "enter")
+	if s.phase != authOIDCAudiencePhase {
+		t.Errorf("valid URL did not advance: phase = %v, want audience", s.phase)
+	}
+}
+
 func TestAppendUnique(t *testing.T) {
 	out := appendUnique([]string{"a", "b"}, "a")
 	if !reflect.DeepEqual(out, []string{"a", "b"}) {

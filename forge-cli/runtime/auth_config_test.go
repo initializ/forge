@@ -226,30 +226,107 @@ func TestBuildUserAuthChain_OnlyYAMLAuth(t *testing.T) {
 func TestBuildUserAuthChain_BothSourcesPrefersYAML(t *testing.T) {
 	// YAML auth points at srvYAML (accepts "yaml-only").
 	// Legacy --auth-url points at srvLegacy (accepts "legacy-only").
-	// Expect: YAML wins, legacy verifier never consulted.
+	// Expect: YAML wins, legacy verifier never consulted, AND a warning
+	// is emitted (review #12.1 — previously asserted only the chain
+	// behavior; the "we logged a warning" half of the contract was
+	// invisible because the test used the nop logger).
 	srvYAML := fakeVerifierFor(t, "yaml-only")
 	srvLegacy := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Error("legacy verifier should not be called when YAML auth: is present")
 	}))
 	defer srvLegacy.Close()
 
-	r := runnerWith(types.AuthConfig{
+	// Use a capturing logger so we can assert the warning emission too.
+	logger := &recordLogger{}
+	r := &Runner{logger: logger}
+	r.cfg.Config = &types.ForgeConfig{Auth: types.AuthConfig{
 		Providers: []types.AuthProvider{
 			{Type: "http_verifier", Settings: map[string]any{"url": srvYAML.URL}},
 		},
-	}, srvLegacy.URL)
+	}}
+	r.cfg.AuthURL = srvLegacy.URL
 
 	chain, err := r.buildUserAuthChain()
 	if err != nil {
 		t.Fatalf("buildUserAuthChain: %v", err)
 	}
-	// YAML accepts "yaml-only".
 	if _, err := chain.Verify(context.Background(), "yaml-only", nil); err != nil {
 		t.Errorf("yaml-only rejected: %v", err)
 	}
-	// Legacy token rejected because YAML verifier doesn't recognize it.
 	if _, err := chain.Verify(context.Background(), "legacy-only", nil); !errors.Is(err, auth.ErrTokenRejected) {
 		t.Errorf("legacy-only token err = %v, want ErrTokenRejected", err)
+	}
+
+	// The contract: when both YAML auth and --auth-url are configured,
+	// we warn that --auth-url is being ignored. Without this assertion
+	// a refactor that silently drops the warning would never surface.
+	if !logger.warnedAbout("--auth-url and forge.yaml") {
+		t.Errorf("expected warning when both sources configured; got: %+v", logger.warnings)
+	}
+}
+
+// --- Full resolveAuth + YAML auth + loopback prepend (review #12.3) ---
+//
+// auth_chain_test.go exercises buildLegacyAuthChain. This test goes one
+// level higher and exercises resolveAuth() end-to-end with a forge.yaml
+// `auth:` block configured AND an internal token minted by
+// ResolveAuth(). The assertion: the loopback static_token sits at the
+// chain head, AHEAD of the user-configured providers, so channel
+// adapters short-circuit before the OIDC/http_verifier roundtrip.
+
+func TestResolveAuth_YAMLAuth_LoopbackPrependedAtChainHead(t *testing.T) {
+	tmp := t.TempDir()
+
+	// Fake verifier for the YAML-configured http_verifier provider.
+	srvYAML := fakeVerifierFor(t, "external-token")
+
+	logger := &recordLogger{}
+	r := &Runner{logger: logger}
+	r.cfg.Config = &types.ForgeConfig{Auth: types.AuthConfig{
+		Providers: []types.AuthProvider{
+			{Type: "http_verifier", Settings: map[string]any{"url": srvYAML.URL}},
+		},
+	}}
+	r.cfg.NoAuth = false
+	r.cfg.Host = "127.0.0.1" // local — passes the localhost gate in ResolveAuth
+	r.cfg.WorkDir = tmp      // ResolveAuth writes runtime.token here
+
+	opts, err := r.resolveAuth(nil)
+	if err != nil {
+		t.Fatalf("resolveAuth: %v", err)
+	}
+	if opts.Chain == nil {
+		t.Fatal("resolveAuth returned a nil Chain — loopback not prepended")
+	}
+	chain, ok := opts.Chain.(*auth.ChainProvider)
+	if !ok {
+		t.Fatalf("Chain is not a *ChainProvider; got %T", opts.Chain)
+	}
+	providers := chain.Providers()
+	if len(providers) < 2 {
+		t.Fatalf("chain has %d providers; want ≥ 2 (loopback + YAML)", len(providers))
+	}
+
+	// Head MUST be the loopback static_token — channel adapter
+	// short-circuit depends on this. If a refactor inserts a YAML
+	// provider before it, channels start round-tripping to the
+	// external verifier on every callback.
+	if providers[0].Name() != "static_token" {
+		t.Errorf("chain.providers[0].Name() = %q, want %q (loopback)", providers[0].Name(), "static_token")
+	}
+	if providers[1].Name() != "http_verifier" {
+		t.Errorf("chain.providers[1].Name() = %q, want %q (YAML)", providers[1].Name(), "http_verifier")
+	}
+
+	// And smoke-test that the loopback token is actually the one
+	// ResolveAuth minted: Verify with r.authToken must succeed without
+	// touching the YAML verifier.
+	id, err := chain.Verify(context.Background(), r.authToken, nil)
+	if err != nil {
+		t.Fatalf("loopback verify failed: %v", err)
+	}
+	if id.Source != "internal" {
+		t.Errorf("loopback identity Source = %q, want %q", id.Source, "internal")
 	}
 }
 

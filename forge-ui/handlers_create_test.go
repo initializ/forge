@@ -614,6 +614,106 @@ func TestHandleCreateAgent_NoneAndCustomSkipValidation(t *testing.T) {
 	}
 }
 
+// TestHandleCreateAgent_NestedClaimMapShape pins the contract the
+// frontend's buildAuthPayload promises (app.js): a flat `groups_claim`
+// from the wizard is translated client-side into the nested shape
+// `settings.claim_map.groups`. The backend doesn't run that
+// translation — but if the frontend ever regresses (and app.js is
+// hand-edited, so it's plausible), the request shape arriving here
+// would change and downstream YAML rendering would silently drop the
+// custom groups claim.
+//
+// This test documents what the backend EXPECTS to receive after the
+// JS translation runs. If a future contributor changes app.js's
+// buildAuthPayload to send the flat shape, this test still passes
+// (we accept anything in Settings) but a documented JS-side test
+// in app.js would catch the drift. Until JS tests exist, this is the
+// canonical reference for the post-translation payload shape.
+// Review #12.5.
+func TestHandleCreateAgent_NestedClaimMapShape(t *testing.T) {
+	srv, captured := setupCreateWithCapture(t)
+
+	// Shape AFTER the JS translation runs: groups_claim has become
+	// claim_map.groups. This is what the backend should see.
+	body := []byte(`{
+		"name": "agent-with-roles",
+		"model_provider": "openai",
+		"auth": {
+			"mode": "oidc",
+			"settings": {
+				"issuer":   "https://login.example.com",
+				"audience": "api://forge",
+				"claim_map": { "groups": "roles" }
+			}
+		}
+	}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/agents", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.handleCreateAgent(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (body: %s)", w.Code, w.Body.String())
+	}
+	if captured.Auth == nil {
+		t.Fatal("captured Auth is nil")
+	}
+	cm, ok := captured.Auth.Settings["claim_map"].(map[string]any)
+	if !ok {
+		t.Fatalf("claim_map not present or wrong type: %v", captured.Auth.Settings["claim_map"])
+	}
+	if cm["groups"] != "roles" {
+		t.Errorf("claim_map.groups = %v, want roles", cm["groups"])
+	}
+
+	// Negative half: the FLAT shape (pre-translation) should NOT
+	// round-trip as if it had been translated. If the frontend ever
+	// stops calling buildAuthPayload, the backend receives the raw
+	// form and the YAML will be missing claim_map entirely.
+	if _, hasFlat := captured.Auth.Settings["groups_claim"]; hasFlat {
+		t.Errorf("settings contains flat groups_claim — frontend translation may have skipped")
+	}
+}
+
+func TestHandleCreateAgent_FlatGroupsClaim_PreservedAsExtraField(t *testing.T) {
+	// Counterpart: if the frontend sends the FLAT shape by mistake,
+	// the backend accepts the request (no validation rejects unknown
+	// keys) but the claim_map nested mapping is missing — which means
+	// the generated forge.yaml won't include claim_map.groups, and the
+	// agent runtime will fall back to the default "groups" claim.
+	//
+	// This documents the failure mode so if anyone investigates
+	// "my custom group claim isn't being read," this test is the
+	// breadcrumb.
+	srv, captured := setupCreateWithCapture(t)
+
+	body := []byte(`{
+		"name": "agent-flat",
+		"model_provider": "openai",
+		"auth": {
+			"mode": "oidc",
+			"settings": {
+				"issuer": "https://login.example.com",
+				"audience": "api://forge",
+				"groups_claim": "roles"
+			}
+		}
+	}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/agents", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.handleCreateAgent(w, req)
+
+	// Request is structurally valid (issuer + audience present). It just
+	// won't behave as the user expected at runtime.
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", w.Code)
+	}
+	if _, hasNested := captured.Auth.Settings["claim_map"]; hasNested {
+		t.Error("backend should not synthesize claim_map from groups_claim — that's the frontend's job")
+	}
+}
+
 func TestHandleCreateAgent_WithoutAuthPayload(t *testing.T) {
 	// Omitting `auth` from the request is still a valid create — the
 	// agent gets anonymous access by default.

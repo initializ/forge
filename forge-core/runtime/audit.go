@@ -23,8 +23,19 @@ const (
 	AuditScheduleComplete = "schedule_complete"
 	AuditScheduleSkip     = "schedule_skip"
 	AuditScheduleModify   = "schedule_modify"
-	AuditAuthSuccess      = "auth_success"
-	AuditAuthFailure      = "auth_failure"
+
+	// Auth events. Carry no PII (no email, no claims, no token bytes) —
+	// only the audit subject (UserID), tenant (OrgID), and structural
+	// metadata. See the auth-package middleware for the emitter.
+	EventAuthVerify = "auth_verify" // every successful auth decision
+	EventAuthFail   = "auth_fail"   // every failed auth decision (with reason code)
+
+	// Deprecated: use EventAuthVerify. Kept as a string alias so any
+	// audit-log consumer that grep'd for "auth_success" can be migrated.
+	// Scheduled for removal in v0.11.0.
+	AuditAuthSuccess = EventAuthVerify
+	// Deprecated: use EventAuthFail. Same migration window as AuditAuthSuccess.
+	AuditAuthFailure = EventAuthFail
 )
 
 // AuditEvent is a single structured audit record emitted as NDJSON.

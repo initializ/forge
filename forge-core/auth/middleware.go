@@ -1,86 +1,16 @@
 package auth
 
 import (
-	"bytes"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"net/http"
 	"strings"
-	"time"
 )
 
-// Config controls bearer-token authentication for the A2A server.
-type Config struct {
-	// Enabled controls whether authentication is enforced.
-	Enabled bool
-
-	// Token is the expected bearer token value (local validation).
-	Token string
-
-	// AuthURL is an external auth provider endpoint. When set, the middleware
-	// forwards the bearer token to this URL via POST for validation instead
-	// of comparing against the local Token value.
-	AuthURL string
-
-	// AuthOrgID is the default org_id sent to the external auth provider.
-	// Overridden per-request by the X-Org-ID header when present.
-	AuthOrgID string
-
-	// SkipPaths maps "METHOD /path" keys that bypass authentication.
-	// Example: "GET /" → true allows unauthenticated GET on root.
-	SkipPaths map[string]bool
-
-	// OnAuth is an optional callback invoked on every auth decision.
-	// success indicates whether the request was authenticated.
-	OnAuth func(r *http.Request, success bool)
-}
-
-// authHTTPClient is a shared client with reasonable timeouts for auth requests.
-var authHTTPClient = &http.Client{Timeout: 10 * time.Second}
-
-// externalVerifyRequest is the request body sent to the external auth URL.
-type externalVerifyRequest struct {
-	Token string `json:"token"`
-	OrgID string `json:"org_id"`
-}
-
-// externalVerifyResponse is the response from the external auth URL.
-type externalVerifyResponse struct {
-	Valid       bool   `json:"valid"`
-	Error       string `json:"error,omitempty"`
-	UserID      string `json:"user_id,omitempty"`
-	OrgID       string `json:"org_id,omitempty"`
-	Email       string `json:"email,omitempty"`
-	WorkspaceID string `json:"workspace_id,omitempty"`
-}
-
-// validateExternal sends the bearer token to the external auth URL and returns
-// whether the token is valid.
-func validateExternal(authURL, token, orgID string) (bool, error) {
-	body, err := json.Marshal(externalVerifyRequest{Token: token, OrgID: orgID})
-	if err != nil {
-		return false, fmt.Errorf("marshalling auth request: %w", err)
-	}
-
-	resp, err := authHTTPClient.Post(authURL, "application/json", bytes.NewReader(body))
-	if err != nil {
-		return false, fmt.Errorf("calling auth URL: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode == http.StatusUnauthorized {
-		return false, nil
-	}
-	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("auth URL returned status %d", resp.StatusCode)
-	}
-
-	var result externalVerifyResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return false, fmt.Errorf("decoding auth response: %w", err)
-	}
-
-	return result.Valid, nil
+// errorResponse is the JSON body returned for auth failures.
+type errorResponse struct {
+	Error   string `json:"error"`
+	Message string `json:"message"`
 }
 
 // DefaultSkipPaths returns the default set of public endpoints
@@ -98,115 +28,160 @@ func DefaultSkipPaths() map[string]bool {
 	}
 }
 
-// errorResponse is the JSON body returned for auth failures.
-type errorResponse struct {
-	Error   string `json:"error"`
-	Message string `json:"message"`
+// MiddlewareOptions configures Middleware.
+type MiddlewareOptions struct {
+	// Chain is the provider chain that verifies bearer tokens. May only
+	// be nil when AllowAnonymous is true (see below).
+	Chain Provider
+
+	// AllowAnonymous explicitly opts the middleware into running without
+	// authentication. Required whenever Chain is nil — otherwise
+	// Middleware() panics at construction. This prevents a misconfigured
+	// runner from silently serving unauthenticated requests because
+	// someone forgot to wire a chain.
+	//
+	// Set this to true when:
+	//   - --no-auth flag is in effect (operator explicitly chose anon)
+	//   - No auth: block AND no --auth-url AND no channels (legacy local
+	//     dev default — preserved for backward compat)
+	//
+	// Leave this false for any production deployment that intends to
+	// enforce auth; a nil chain will then panic loudly at startup
+	// instead of running open.
+	AllowAnonymous bool
+
+	// SkipPaths maps "METHOD /path" keys that bypass authentication.
+	// If nil, DefaultSkipPaths() is used.
+	SkipPaths map[string]bool
+
+	// OnAuth is an optional callback invoked on every auth decision.
+	//
+	//   - identity is non-nil and err is nil on success.
+	//   - identity is nil and err carries the chain error on failure
+	//     (or auth.ErrMissingBearer when the header was absent).
+	//   - tokenKind is "jwt", "opaque", or "empty" — structural metadata
+	//     safe to log. The token itself is NOT passed; callers must not
+	//     try to recover it from the request.
+	//
+	// Callbacks should be cheap — they run on the request hot path.
+	OnAuth func(r *http.Request, identity *Identity, err error, tokenKind string)
 }
 
-// Middleware returns an http.Handler that enforces bearer token authentication.
-// If cfg.Enabled is false, requests pass through without checks.
-// When cfg.AuthURL is set, tokens are validated against the external provider.
-func Middleware(cfg Config) func(http.Handler) http.Handler {
+// ErrMissingBearer is returned (via OnAuth) when the request lacked an
+// Authorization: Bearer ... header. Distinct from chain-level errors so
+// callers can emit a precise "missing_token" reason code without parsing
+// error strings.
+var ErrMissingBearer = errorString("auth: missing bearer token")
+
+// errorString is a sentinel-friendly error type that compares by identity.
+type errorString string
+
+func (e errorString) Error() string { return string(e) }
+
+// Middleware returns an http.Handler that enforces bearer token authentication
+// via the provided Provider chain.
+//
+// Panics at construction if opts.Chain is nil and opts.AllowAnonymous is
+// false. This is intentional — silently passing through requests when the
+// caller forgot to wire a chain is the highest-impact misconfiguration in
+// the auth subsystem (open prod endpoint). Fail-loud catches it at startup,
+// not at the first request from a real user.
+func Middleware(opts MiddlewareOptions) func(http.Handler) http.Handler {
+	if opts.Chain == nil {
+		if !opts.AllowAnonymous {
+			panic("auth: Middleware called with nil Chain and AllowAnonymous=false. " +
+				"Set MiddlewareOptions.AllowAnonymous: true to explicitly allow " +
+				"unauthenticated access, or provide a Chain.")
+		}
+		return func(next http.Handler) http.Handler { return next }
+	}
+	skip := opts.SkipPaths
+	if skip == nil {
+		skip = DefaultSkipPaths()
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !cfg.Enabled {
+			if skip[r.Method+" "+r.URL.Path] {
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			// Check if this method+path combination is public.
-			key := r.Method + " " + r.URL.Path
-			if cfg.SkipPaths[key] {
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			// Extract bearer token from Authorization header.
 			token := extractBearerToken(r)
+			kind := TokenKind(token)
+
 			if token == "" {
-				authFail(w, r, cfg, "valid bearer token required")
+				notifyAuth(opts.OnAuth, r, nil, ErrMissingBearer, kind)
+				writeAuthError(w, "valid bearer token required")
 				return
 			}
 
-			// When external auth is configured, first check the internal
-			// token (used by channel adapter loopback calls), then fall
-			// through to the external auth provider for other tokens.
-			if cfg.AuthURL != "" {
-				// Accept internal token for loopback (channel adapters)
-				if cfg.Token != "" && ValidateToken(token, cfg.Token) {
-					if cfg.OnAuth != nil {
-						cfg.OnAuth(r, true)
-					}
-					next.ServeHTTP(w, r)
-					return
-				}
-				// Use org_id from request header (multiple header names), fall back to config.
-				orgID := extractOrgID(r, cfg.AuthOrgID)
-				valid, err := validateExternal(cfg.AuthURL, token, orgID)
-				if err != nil {
-					authFail(w, r, cfg, "auth provider error")
-					return
-				}
-				if valid {
-					if cfg.OnAuth != nil {
-						cfg.OnAuth(r, true)
-					}
-					next.ServeHTTP(w, r)
-					return
-				}
-				authFail(w, r, cfg, "token rejected by auth provider")
+			identity, err := opts.Chain.Verify(r.Context(), token, HeadersFromRequest(r))
+			if err != nil || identity == nil {
+				notifyAuth(opts.OnAuth, r, nil, err, kind)
+				writeAuthError(w, classifyAuthFailure(err))
 				return
 			}
 
-			// Local token validation.
-			if ValidateToken(token, cfg.Token) {
-				if cfg.OnAuth != nil {
-					cfg.OnAuth(r, true)
-				}
-				next.ServeHTTP(w, r)
-				return
-			}
+			notifyAuth(opts.OnAuth, r, identity, nil, kind)
 
-			authFail(w, r, cfg, "valid bearer token required")
+			ctx := WithIdentity(r.Context(), identity)
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
 
-// authFail sends a 401 response and fires the OnAuth callback.
-func authFail(w http.ResponseWriter, r *http.Request, cfg Config, msg string) {
-	if cfg.OnAuth != nil {
-		cfg.OnAuth(r, false)
+// notifyAuth invokes the OnAuth callback if set, swallowing the nil check
+// at the call sites so the main middleware body stays readable.
+func notifyAuth(cb func(*http.Request, *Identity, error, string), r *http.Request, id *Identity, err error, kind string) {
+	if cb == nil {
+		return
 	}
+	cb(r, id, err, kind)
+}
+
+// classifyAuthFailure maps a chain error into a user-visible message.
+// Keep messages generic to avoid leaking information about which provider
+// rejected the token or why.
+func classifyAuthFailure(err error) string {
+	switch {
+	case err == nil, errors.Is(err, ErrTokenNotForMe):
+		return "valid bearer token required"
+	case errors.Is(err, ErrTokenRejected):
+		return "token rejected by auth provider"
+	case errors.Is(err, ErrInvalidToken):
+		return "invalid token"
+	case errors.Is(err, ErrProviderUnavailable):
+		// Surface a distinct user-visible message so retry behavior on
+		// the client can be different from "invalid token". This is also
+		// the operator-facing signal in /healthz-style probes.
+		return "auth provider unavailable"
+	default:
+		return "auth provider error"
+	}
+}
+
+// writeAuthError sends a 401 JSON response. The OnAuth callback is fired
+// separately (via notifyAuth) so the audit-emission path can run with the
+// full Identity / error context, not just a bool.
+func writeAuthError(w http.ResponseWriter, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
-	json.NewEncoder(w).Encode(errorResponse{ //nolint:errcheck
+	_ = json.NewEncoder(w).Encode(errorResponse{
 		Error:   "unauthorized",
 		Message: msg,
 	})
 }
 
-// extractOrgID reads the org ID from the request headers, checking multiple
-// common header names: "X-Org-ID", "org-id", "org_id". Falls back to the
-// provided default if none are set.
-func extractOrgID(r *http.Request, fallback string) string {
-	for _, h := range []string{"X-Org-ID", "org-id", "org_id"} {
-		if v := r.Header.Get(h); v != "" {
-			return v
-		}
-	}
-	return fallback
-}
-
 // extractBearerToken extracts the token from "Authorization: Bearer <token>".
+// Case-insensitive on the "Bearer" prefix to preserve historical behavior.
 func extractBearerToken(r *http.Request) string {
-	auth := r.Header.Get("Authorization")
-	if auth == "" {
+	header := r.Header.Get("Authorization")
+	if header == "" {
 		return ""
 	}
 	const prefix = "Bearer "
-	if len(auth) > len(prefix) && strings.EqualFold(auth[:len(prefix)], prefix) {
-		return auth[len(prefix):]
+	if len(header) > len(prefix) && strings.EqualFold(header[:len(prefix)], prefix) {
+		return header[len(prefix):]
 	}
 	return ""
 }

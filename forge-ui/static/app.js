@@ -1121,7 +1121,56 @@ function loadMonaco() {
 
 // ── Create Agent Wizard ──────────────────────────────────────
 
-const WIZARD_STEPS = ['Name', 'Provider', 'Model & Key', 'Channels', 'Tools', 'Skills', 'Fallback', 'Env Vars', 'Review'];
+const WIZARD_STEPS = ['Name', 'Provider', 'Model & Key', 'Channels', 'Tools', 'Skills', 'Fallback', 'Env Vars', 'Authentication', 'Review'];
+
+// buildAuthPayload reshapes the wizard's form.auth into the JSON shape
+// the backend (cmd/ui.go → scaffold) expects. The wizard collects
+// `groups_claim` as a flat field for usability; we translate it into the
+// nested `claim_map: {groups: <name>}` shape here. Empty optional fields
+// are stripped so the generated forge.yaml stays clean.
+// authReviewLabel renders the one-line summary shown on the Review step.
+function authReviewLabel(auth) {
+  const mode = auth?.mode || 'none';
+  const s = auth?.settings || {};
+  if (mode === 'none') return 'Anonymous (no auth)';
+  if (mode === 'custom') return 'Custom (edit forge.yaml)';
+  if (mode === 'oidc') {
+    try {
+      return s.issuer ? 'OIDC · ' + new URL(s.issuer).hostname : 'OIDC';
+    } catch (e) {
+      return 'OIDC';
+    }
+  }
+  if (mode === 'http_verifier') {
+    try {
+      return s.url ? 'HTTP Verifier · ' + new URL(s.url).hostname : 'HTTP Verifier';
+    } catch (e) {
+      return 'HTTP Verifier';
+    }
+  }
+  return mode;
+}
+
+function buildAuthPayload(auth) {
+  const mode = auth?.mode || 'none';
+  const src = auth?.settings || {};
+  if (mode === 'none' || mode === 'custom') {
+    return { mode, settings: {} };
+  }
+  const settings = {};
+  if (mode === 'oidc') {
+    const issuer = (src.issuer || '').replace(/\/+$/, '');
+    if (issuer) settings.issuer = issuer;
+    if (src.audience) settings.audience = src.audience;
+    if (src.groups_claim && src.groups_claim !== 'groups') {
+      settings.claim_map = { groups: src.groups_claim };
+    }
+  } else if (mode === 'http_verifier') {
+    if (src.url) settings.url = src.url;
+    if (src.default_org) settings.default_org = src.default_org;
+  }
+  return { mode, settings };
+}
 
 // Provider-specific API key labels, placeholders, and env var names
 const PROVIDER_KEY_INFO = {
@@ -1168,6 +1217,10 @@ function CreatePage() {
     fallbacks: [], // [{provider, api_key}]
     passphrase: '',
     env_vars: {},
+    // A2A server auth chain (PR6). The wizard's Authentication step
+    // sets `mode` to one of {none, oidc, http_verifier, custom} and
+    // populates `settings` for non-trivial modes.
+    auth: { mode: 'none', settings: {} },
   });
   const [creating, setCreating] = useState(false);
   const [oauthLoading, setOauthLoading] = useState(false);
@@ -1250,6 +1303,15 @@ function CreatePage() {
       }
       return form.model_name.trim().length > 0;
     }
+    // Authentication step: required fields must be filled when a
+    // non-trivial mode is chosen. None / Custom always advance.
+    if (step === 8) {
+      const mode = form.auth?.mode || 'none';
+      const s = form.auth?.settings || {};
+      if (mode === 'oidc') return !!(s.issuer && s.audience);
+      if (mode === 'http_verifier') return !!s.url;
+      return true; // none / custom
+    }
     return true;
   }, [step, form, oauthDone]);
 
@@ -1257,7 +1319,10 @@ function CreatePage() {
     setCreating(true);
     setError(null);
     try {
-      const result = await createAgent(form);
+      // Reshape the auth payload before submission so the backend gets
+      // the typed settings the scaffold expects (e.g., claim_map nesting).
+      const payload = { ...form, auth: buildAuthPayload(form.auth) };
+      const result = await createAgent(payload);
       setSuccess(result);
       setTimeout(() => rescanAgents().catch(() => {}), 500);
     } catch (err) {
@@ -1750,7 +1815,104 @@ function CreatePage() {
           </div>
         `;
       }
-      case 8: { // Review
+      case 8: { // Authentication (A2A server auth chain — PR6)
+        const authTypes = meta?.auth_provider_types || [];
+        const mode = form.auth?.mode || 'none';
+        const settings = form.auth?.settings || {};
+
+        const setAuthMode = (newMode) => {
+          // Switching modes always resets settings so stale fields
+          // (e.g., OIDC issuer when user switches to HTTP Verifier)
+          // don't leak into the submitted payload.
+          updateForm('auth', { mode: newMode, settings: {} });
+        };
+        const setAuthSetting = (key, val) => {
+          updateForm('auth', { mode, settings: { ...settings, [key]: val } });
+        };
+
+        return html`
+          <div class="wizard-step">
+            <div class="wizard-step-title">Authentication</div>
+            <div class="wizard-step-desc">
+              How should the agent's A2A server authenticate incoming requests? Default: anonymous.
+            </div>
+
+            <div class="wizard-radio-group" style="display: flex; flex-direction: column; gap: 8px;">
+              ${authTypes.map(opt => html`
+                <label class="wizard-radio" style="display: flex; align-items: flex-start; gap: 10px; padding: 10px; border: 1px solid var(--border-color); border-radius: 8px; cursor: pointer; ${mode === opt.type ? 'background: rgba(255,154,0,0.08); border-color: var(--accent);' : ''}">
+                  <input type="radio" name="auth_mode" value=${opt.type}
+                    checked=${mode === opt.type}
+                    onChange=${() => setAuthMode(opt.type)}
+                    style="margin-top: 3px;" />
+                  <div style="flex: 1;">
+                    <div style="font-weight: 600; font-size: 14px;">${opt.label}</div>
+                    <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">${opt.description}</div>
+                  </div>
+                </label>
+              `)}
+            </div>
+
+            ${mode === 'oidc' && html`
+              <div style="margin-top: 20px; padding: 16px; background: rgba(139, 148, 158, 0.06); border: 1px solid var(--border-color); border-radius: 8px;">
+                <div style="font-size: 12px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px;">
+                  OIDC Configuration
+                </div>
+                <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">
+                  Issuer URL <span style="color: var(--accent);">*</span>
+                </label>
+                <input class="wizard-input" type="text" placeholder="https://login.example.com"
+                  value=${settings.issuer || ''}
+                  onInput=${(e) => setAuthSetting('issuer', e.target.value)} autocomplete="off" />
+
+                <label style="font-size: 12px; color: var(--text-muted); display: block; margin: 12px 0 4px;">
+                  Audience <span style="color: var(--accent);">*</span>
+                </label>
+                <input class="wizard-input" type="text" placeholder="api://forge"
+                  value=${settings.audience || ''}
+                  onInput=${(e) => setAuthSetting('audience', e.target.value)} autocomplete="off" />
+
+                <label style="font-size: 12px; color: var(--text-muted); display: block; margin: 12px 0 4px;">
+                  Groups claim (optional)
+                </label>
+                <input class="wizard-input" type="text" placeholder="groups"
+                  value=${settings.groups_claim || ''}
+                  onInput=${(e) => setAuthSetting('groups_claim', e.target.value)} autocomplete="off" />
+                <div style="font-size: 11px; color: var(--text-muted); margin-top: 3px;">
+                  Defaults to "groups". Set to e.g. "roles" if your IdP uses a different claim name.
+                </div>
+              </div>
+            `}
+
+            ${mode === 'http_verifier' && html`
+              <div style="margin-top: 20px; padding: 16px; background: rgba(139, 148, 158, 0.06); border: 1px solid var(--border-color); border-radius: 8px;">
+                <div style="font-size: 12px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px;">
+                  HTTP Verifier Configuration
+                </div>
+                <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">
+                  Verifier URL <span style="color: var(--accent);">*</span>
+                </label>
+                <input class="wizard-input" type="text" placeholder="https://verify.example.com/verify"
+                  value=${settings.url || ''}
+                  onInput=${(e) => setAuthSetting('url', e.target.value)} autocomplete="off" />
+
+                <label style="font-size: 12px; color: var(--text-muted); display: block; margin: 12px 0 4px;">
+                  Default org_id (optional)
+                </label>
+                <input class="wizard-input" type="text" placeholder=""
+                  value=${settings.default_org || ''}
+                  onInput=${(e) => setAuthSetting('default_org', e.target.value)} autocomplete="off" />
+              </div>
+            `}
+
+            ${mode === 'custom' && html`
+              <div style="margin-top: 20px; padding: 16px; background: rgba(139, 148, 158, 0.06); border: 1px solid var(--border-color); border-radius: 8px; font-size: 12px; color: var(--text-muted);">
+                A commented stub will be written to forge.yaml. Edit it after creation to plug in providers we don't expose in the wizard (e.g., static_token).
+              </div>
+            `}
+          </div>
+        `;
+      }
+      case 9: { // Review
         const configuredEnvCount = Object.values(form.env_vars).filter(v => v).length;
         const authLabel = form.auth_method === 'oauth' ? 'OAuth' : (form.api_key ? '\u2713 API Key provided' : 'Not set');
         return html`
@@ -1816,6 +1978,10 @@ function CreatePage() {
             <div class="wizard-review-section">
               <div class="wizard-review-label">Secret Encryption</div>
               <div class="wizard-review-value">${form.passphrase ? '\u2713 Passphrase set' : 'None (plaintext .env)'}</div>
+            </div>
+            <div class="wizard-review-section">
+              <div class="wizard-review-label">A2A Auth</div>
+              <div class="wizard-review-value">${authReviewLabel(form.auth)}</div>
             </div>
           </div>
         `;

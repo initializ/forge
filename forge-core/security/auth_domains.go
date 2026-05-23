@@ -77,6 +77,22 @@ func settingString(m map[string]any, key string) string {
 // hostFromURL extracts the bare host (without port) from a URL string.
 // Returns "" for unparseable values — the caller skips those silently
 // since real validation happens in validate.ValidateAuthConfig.
+//
+// Port stripping is intentional and depends on a cross-package contract:
+// the egress matcher itself is port-agnostic at the three callsites
+// where it's consulted —
+//
+//   - egress_enforcer.go: req.URL.Hostname() before matcher.IsAllowed
+//   - egress_proxy.go:    extractHost() via net.SplitHostPort
+//   - safe_dialer.go:     net.SplitHostPort(addr)
+//
+// As long as those callsites strip the port off the OUTBOUND host before
+// matching, a hostname entry in the allowlist suffices for any port. If
+// any of those callsites is ever changed to pass host:port to the
+// matcher, this function (and TestAuthDomains_AssumesPortAgnosticMatcher)
+// must change too — an issuer at https://example.com:8443 would otherwise
+// be silently blocked because the allowlist would contain only
+// "example.com" while the dialer asked for "example.com:8443".
 func hostFromURL(raw string) string {
 	if raw == "" {
 		return ""

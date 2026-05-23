@@ -305,7 +305,15 @@ func (c *jwksCache) refreshLocked(ctx context.Context) error {
 
 // parseJWK extracts the public key material and derives the signing
 // algorithm from the JWK. The returned alg is the value the provider
-// will require the token header to match.
+// will require the token header to match — empty string means
+// "any allowed asymmetric alg permitted by the key type" (only happens
+// for RSA, where the same key can sign RS256/384/512 or PS256/384/512;
+// per RFC 7518 the application is meant to infer the alg from context).
+//
+// Review #11b: we previously defaulted an RSA JWK with no `alg` field
+// to "RS256", which made the cross-check at provider.go reject
+// legitimate PS256-signed tokens against the same key. EC keys aren't
+// affected — their alg is derived from the curve, not advertised.
 func parseJWK(k jwk) (any, string, error) {
 	switch k.Kty {
 	case "RSA":
@@ -313,11 +321,9 @@ func parseJWK(k jwk) (any, string, error) {
 		if err != nil {
 			return nil, "", err
 		}
-		alg := k.Alg
-		if alg == "" {
-			alg = "RS256" // RFC 7518 default for RSA when alg is absent
-		}
-		return pk, alg, nil
+		// Preserve empty alg so the provider can fall back to header-alg
+		// validation against the whitelist (still gated by isAllowedAlg).
+		return pk, k.Alg, nil
 	case "EC":
 		pk, alg, err := parseECDSAPublicKey(k)
 		if err != nil {

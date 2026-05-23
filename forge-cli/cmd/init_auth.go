@@ -127,15 +127,20 @@ func hostFromURL(raw string) string {
 //	     required: true
 //	     providers:
 //	       - type: <mode>
-//	         name: <name>
 //	         settings:
 //	           key: value
 //	           nested:
 //	             k: v
 //
+// The AuthProvider.Name field is intentionally NOT emitted — the wizard
+// doesn't capture one, and the previous signature took a `name` arg
+// that callers always set equal to mode (suppressed). Removed in
+// review #11d. If a future wizard step adds explicit name capture,
+// reintroduce the parameter then.
+//
 // Settings keys are emitted in alphabetical order so the output is
 // deterministic across runs (useful for diffing generated files).
-func renderAuthBlock(mode, name string, settings map[string]any) string {
+func renderAuthBlock(mode string, settings map[string]any) string {
 	switch mode {
 	case "", "none":
 		return ""
@@ -148,9 +153,6 @@ func renderAuthBlock(mode, name string, settings map[string]any) string {
 	b.WriteString("  required: true\n")
 	b.WriteString("  providers:\n")
 	fmt.Fprintf(&b, "    - type: %s\n", mode)
-	if name != "" && name != mode {
-		fmt.Fprintf(&b, "      name: %s\n", name)
-	}
 	if len(settings) > 0 {
 		b.WriteString("      settings:\n")
 		writeYAMLMap(&b, settings, "        ")

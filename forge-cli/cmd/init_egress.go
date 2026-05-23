@@ -15,30 +15,29 @@ var providerDomains = map[string]string{
 	// ollama is local, no egress needed
 }
 
-// mergeEgressDomains returns the union of `base` and `extra`, preserving
-// the order of `base` and appending only previously-unseen items from
-// `extra`. The result is deduplicated and stable.
+// mergeEgressDomains returns the deduplicated, sorted union of `base`
+// and `extra`. Sorting is intentional — `deriveEgressDomains` produces
+// sorted output, and appending auth hosts unsorted at the tail (the
+// pre-sort behavior of this function) made the rendered forge.yaml
+// produce noisy diffs across runs when the auth host set changed.
+// Review #11c.
 //
-// Used by the init scaffold to fold auth-provider hosts (from the wizard
-// or --auth flags) into the egress allowlist without disturbing the
-// existing ordering.
+// Used by the init scaffold to fold auth-provider hosts (from the
+// wizard or --auth flags) into the egress allowlist while keeping the
+// generated forge.yaml stable.
 func mergeEgressDomains(base, extra []string) []string {
 	seen := make(map[string]bool, len(base)+len(extra))
 	out := make([]string, 0, len(base)+len(extra))
-	for _, d := range base {
-		if d == "" || seen[d] {
-			continue
+	for _, slice := range [][]string{base, extra} {
+		for _, d := range slice {
+			if d == "" || seen[d] {
+				continue
+			}
+			seen[d] = true
+			out = append(out, d)
 		}
-		seen[d] = true
-		out = append(out, d)
 	}
-	for _, d := range extra {
-		if d == "" || seen[d] {
-			continue
-		}
-		seen[d] = true
-		out = append(out, d)
-	}
+	sort.Strings(out)
 	return out
 }
 

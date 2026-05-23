@@ -230,9 +230,14 @@ func (p *Provider) Verify(ctx context.Context, tokenStr string, headers auth.Hea
 		return nil, err // transport / decode error — fail-closed via chain
 	}
 
-	// Cross-check: the JWKS-declared alg must match the token's alg.
-	// This is the algorithm-confusion defense.
-	if key.Alg != headerAlg {
+	// Cross-check: when the JWKS entry declares an alg, the token's alg
+	// must match it exactly (algorithm-confusion defense). When the JWKS
+	// entry has no alg (RFC 7518 says "infer from context"), trust the
+	// token's header alg as long as it's in the asymmetric whitelist —
+	// which was already enforced at line ~195 above. Review #11b:
+	// previously the empty-alg case defaulted to "RS256", which rejected
+	// legitimate PS256/PS384/PS512 tokens signed by the same RSA key.
+	if key.Alg != "" && key.Alg != headerAlg {
 		return nil, fmt.Errorf("%w: token alg %q does not match JWKS alg %q for kid %q",
 			auth.ErrInvalidToken, headerAlg, key.Alg, kid)
 	}

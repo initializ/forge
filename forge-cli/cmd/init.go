@@ -1050,7 +1050,7 @@ func buildTemplateData(opts *initOptions) templateData {
 
 	// Auth chain rendering: pre-render the YAML fragment in Go so nested
 	// maps (claim_map) emit correctly.
-	data.AuthBlock = renderAuthBlock(opts.AuthMode, opts.AuthMode, opts.AuthSettings)
+	data.AuthBlock = renderAuthBlock(opts.AuthMode, opts.AuthSettings)
 
 	// Build env vars
 	data.EnvVars = buildEnvVars(opts)

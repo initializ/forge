@@ -117,6 +117,21 @@ func stringSliceClaim(claims jwt.MapClaims, name string) []string {
 // copyClaims returns a shallow copy of the claim map so the caller can
 // expose it on Identity without sharing the underlying map with the
 // parsed-token state.
+//
+// WARNING (review #11f): the returned map contains EVERY claim the IdP
+// emitted on the token — `sub`, `email`, `iss`, `aud`, `exp`, `iat`,
+// `nbf`, plus any custom claims the issuer adds (group memberships,
+// internal IDs, profile fields, sometimes raw PII). Downstream consumers
+// reading Identity.Claims will see all of it.
+//
+// Recommendations for consumers:
+//   - Prefer the mapped, typed fields on Identity (UserID, Email, OrgID,
+//     Groups) where they suffice — those have a fixed contract.
+//   - Treat Identity.Claims as an escape hatch for provider-specific
+//     authorization logic, not as something to log or relay verbatim.
+//   - When a future authz layer needs a claim-allowlist, that's the
+//     right place to add it — not here. This package serves the raw
+//     auth principal; filtering is policy.
 func copyClaims(claims jwt.MapClaims) map[string]any {
 	if len(claims) == 0 {
 		return nil

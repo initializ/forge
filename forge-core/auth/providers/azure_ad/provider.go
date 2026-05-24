@@ -86,6 +86,14 @@ func (c Config) Validate() error {
 	return nil
 }
 
+// ExtractTenantID returns the "tid" claim, or "" if it's missing /
+// non-string. The empty-return form lets callers distinguish "missing"
+// from "wrong tenant" without a typed error.
+func ExtractTenantID(claims map[string]any) string {
+	tid, _ := claims["tid"].(string)
+	return tid
+}
+
 // Provider implements auth.Provider for AAD callers.
 type Provider struct {
 	cfg   Config

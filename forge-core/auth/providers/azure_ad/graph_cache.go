@@ -30,6 +30,10 @@ func NewGraphCache(ttl time.Duration) *GraphCache {
 }
 
 // Get returns the cached groups for userID, or (nil, false) on miss/expiry.
+//
+// The returned slice is a defensive copy — callers that subsequently mutate
+// their Identity.Groups (the auth.Identity layer treats Groups as a freely-
+// mutable field) MUST NOT corrupt the cache. (Review NIT.)
 func (c *GraphCache) Get(userID string) ([]string, bool) {
 	c.mu.RLock()
 	e, ok := c.data[userID]
@@ -37,15 +41,18 @@ func (c *GraphCache) Get(userID string) ([]string, bool) {
 	if !ok || c.now().After(e.expireAt) {
 		return nil, false
 	}
-	return e.groups, true
+	return append([]string(nil), e.groups...), true
 }
 
 // Put stores the groups under userID with a fresh TTL. Overwrites any
 // prior entry (does not extend).
+//
+// Stores a defensive copy so subsequent caller mutations of the input
+// slice don't reach back through cache hits.
 func (c *GraphCache) Put(userID string, groups []string) {
 	c.mu.Lock()
 	c.data[userID] = graphEntry{
-		groups:   groups,
+		groups:   append([]string(nil), groups...),
 		expireAt: c.now().Add(c.ttl),
 	}
 	c.mu.Unlock()

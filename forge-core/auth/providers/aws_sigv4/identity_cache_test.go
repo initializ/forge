@@ -1,6 +1,7 @@
 package aws_sigv4
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -67,7 +68,12 @@ func TestIdentityCache_OpportunisticEviction(t *testing.T) {
 
 	id := &auth.Identity{UserID: "arn"}
 	for i := range 10_001 {
-		c.Put(string(rune(i)), id)
+		// strconv.Itoa(i), NOT string(rune(i)): the rune form maps
+		// surrogate code points to U+FFFD (the replacement char), so
+		// all of {0xD800..0xDFFF} would collide on one cache key and
+		// the map never actually reaches 10_001 entries — the
+		// threshold-eviction test would silently no-op. (Review NIT.)
+		c.Put(strconv.Itoa(i), id)
 	}
 	now = now.Add(2 * time.Second) // expire everything
 

@@ -133,12 +133,44 @@ func Middleware(opts MiddlewareOptions) func(http.Handler) http.Handler {
 				return
 			}
 
+			// Phase 2 (Review M4): refine token_kind from the structural
+			// shape to the actual provider that matched. The structural
+			// kind says "what bytes were on the wire"; the post-verify
+			// kind says "which auth path succeeded." A request with both
+			// a Bearer JWT AND an X-Goog-Iap-Jwt-Assertion would record
+			// kind="jwt" under the structural rule even though gcp_iap
+			// was the verifier — that mis-attributes IAP-fronted traffic
+			// in audit dashboards.
+			kind = refineTokenKind(kind, identity.Source)
+
 			notifyAuth(opts.OnAuth, r, identity, nil, kind)
 
 			ctx := WithIdentity(r.Context(), identity)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// refineTokenKind upgrades the audit token_kind from the pre-verify
+// structural classification to one that reflects which auth path
+// actually succeeded.
+//
+// Today the only refinement is gcp_iap → "iap_jwt": that provider
+// reads X-Goog-Iap-Jwt-Assertion (not the Bearer slot), so the
+// structural rule cannot detect it when a Bearer is ALSO present.
+// Refining post-verify keeps the audit signal clean even when an
+// IAP-fronted Forge instance ALSO carries a Bearer JWT for app-level
+// auth chaining.
+//
+// Other providers (oidc, azure_ad, aws_sigv4, http_verifier,
+// static_token) don't need refinement: their structural kind already
+// matches the auth path (aws_sigv4 has its own "forge-aws-v1." prefix
+// → "sigv4"; everything else is just "jwt"/"opaque").
+func refineTokenKind(structural, providerSource string) string {
+	if providerSource == "gcp_iap" {
+		return "iap_jwt"
+	}
+	return structural
 }
 
 // notifyAuth invokes the OnAuth callback if set, swallowing the nil check

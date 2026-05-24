@@ -51,6 +51,20 @@
   from Go callers (currently only `azure_ad` multi-tenant). Operators see
   no change.
 
+### Client-side requirement for `aws_sigv4`
+
+- AWS Sigv4 binds its signature to the *destination host*. As a consequence,
+  callers cannot just point `awscurl` at Forge and have it work — the
+  signature would be computed for Forge's hostname, not STS's, and STS
+  would reject the reflected request.
+- Callers must use a thin wrapper that signs a hypothetical STS
+  GetCallerIdentity request, then attaches the resulting headers to the
+  POST that goes to Forge. This is the same pattern `aws-iam-authenticator`
+  uses for EKS.
+- A reference implementation in ~30 lines of `boto3` ships at
+  `scripts/forge-aws-sign.py`. Use it as-is or as a template for your
+  CI / Lambda / Go inter-agent integrations.
+
 ### Known deferred work
 
 - The Bubble Tea TUI wizard (`forge init`) does not yet have step-by-step

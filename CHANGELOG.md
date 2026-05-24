@@ -28,12 +28,11 @@
   extracted**, so non-Bearer formats (Sigv4 `Authorization`, IAP
   `X-Goog-Iap-Jwt-Assertion`) can be recognized. Existing Bearer + JWT
   flows are unchanged.
-- `auth.HeadersFromRequest` widened with `Authorization`,
-  `X-Goog-Iap-Jwt-Assertion`, `X-Amz-Date`, and `X-Amz-Security-Token`.
-  Providers that don't consume these keys are unaffected.
-- `auth.TokenKind` recognizes the `AWS4-HMAC-SHA256` prefix and returns
-  `"sigv4"`. The audit `token_kind` field now has five possible values:
-  `empty`, `opaque`, `jwt`, `sigv4`, `iap_jwt`.
+- `auth.HeadersFromRequest` widened with `X-Goog-Iap-Jwt-Assertion`
+  for `gcp_iap`. Providers that don't consume this header are unaffected.
+- `auth.TokenKind` recognizes the `forge-aws-v1.` Bearer prefix and
+  returns `"sigv4"`. The audit `token_kind` field now has five possible
+  values: `empty`, `opaque`, `jwt`, `sigv4`, `iap_jwt`.
 - `validate.ValidateAuthConfig` admits the three new provider types and
   enforces their per-type required keys (`aws_sigv4.region`,
   `gcp_iap.audience`, `azure_ad.audience`, `azure_ad.tenant_id`-unless-
@@ -51,19 +50,23 @@
   from Go callers (currently only `azure_ad` multi-tenant). Operators see
   no change.
 
-### Client-side requirement for `aws_sigv4`
+### Client experience for `aws_sigv4`
 
-- AWS Sigv4 binds its signature to the *destination host*. As a consequence,
-  callers cannot just point `awscurl` at Forge and have it work — the
-  signature would be computed for Forge's hostname, not STS's, and STS
-  would reject the reflected request.
-- Callers must use a thin wrapper that signs a hypothetical STS
-  GetCallerIdentity request, then attaches the resulting headers to the
-  POST that goes to Forge. This is the same pattern `aws-iam-authenticator`
-  uses for EKS.
-- A reference implementation in ~30 lines of `boto3` ships at
-  `scripts/forge-aws-sign.py`. Use it as-is or as a template for your
-  CI / Lambda / Go inter-agent integrations.
+The client side is a Bearer token with a 3-line mint:
+
+```python
+import boto3, base64
+url   = boto3.client('sts', region_name='us-east-1').generate_presigned_url(
+            'get_caller_identity', ExpiresIn=900)
+token = 'forge-aws-v1.' + base64.urlsafe_b64encode(url.encode()).rstrip(b'=').decode()
+
+requests.post(forge_url, headers={'Authorization': f'Bearer {token}'}, data=msg)
+```
+
+Pattern is identical to `aws-iam-authenticator` for EKS. Reference client
+in `scripts/forge-aws-sign.py` — use it directly or as a template for
+Go / Java / Node clients. Wire format is documented in the package
+docstring of `forge-core/auth/providers/aws_sigv4/provider.go`.
 
 ### Known deferred work
 

@@ -210,7 +210,10 @@ func (p *Provider) Verify(ctx context.Context, token string, _ auth.Headers) (*a
 		return id, nil
 	}
 
-	caller, err := p.sts.GetCallerIdentity(ctx, parsed.URL.String())
+	// IMPORTANT: pass RawURL (the byte-for-byte original from the token),
+	// NOT parsed.URL.String(). The latter would re-encode query params
+	// via net/url's rules and invalidate the signature.
+	caller, err := p.sts.GetCallerIdentity(ctx, parsed.RawURL)
 	if err != nil {
 		return nil, err // STSClient already wraps with the right sentinel
 	}

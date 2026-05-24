@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // makeToken builds a forge-aws-v1 token from a complete URL. Helper for
@@ -148,6 +149,102 @@ func TestParseToken_RejectsBadBase64(t *testing.T) {
 	_, err := ParseToken(TokenPrefix+"!!!not-base64!!!", validHost, true)
 	if err == nil {
 		t.Fatal("expected error on malformed base64")
+	}
+}
+
+// --- Review M2: parser surface for freshness ---
+
+func TestParseToken_PopulatesSigTimeAndExpires(t *testing.T) {
+	parsed, err := ParseToken(makeToken(validPresignedURL), validHost, true)
+	if err != nil {
+		t.Fatalf("ParseToken: %v", err)
+	}
+	wantTime := time.Date(2026, 5, 24, 1, 0, 0, 0, time.UTC)
+	if !parsed.SigTime.Equal(wantTime) {
+		t.Errorf("SigTime = %v, want %v", parsed.SigTime, wantTime)
+	}
+	if parsed.Expires != 900*time.Second {
+		t.Errorf("Expires = %v, want 900s", parsed.Expires)
+	}
+}
+
+func TestParseToken_RejectsMissingAmzDate(t *testing.T) {
+	u := strings.Replace(validPresignedURL, "&X-Amz-Date=20260524T010000Z", "", 1)
+	if _, err := ParseToken(makeToken(u), validHost, true); err == nil {
+		t.Fatal("expected error on missing X-Amz-Date")
+	}
+}
+
+func TestParseToken_RejectsMalformedAmzDate(t *testing.T) {
+	u := strings.Replace(validPresignedURL, "X-Amz-Date=20260524T010000Z", "X-Amz-Date=not-a-date", 1)
+	if _, err := ParseToken(makeToken(u), validHost, true); err == nil {
+		t.Fatal("expected error on malformed X-Amz-Date")
+	}
+}
+
+func TestParseToken_RejectsMissingAmzExpires(t *testing.T) {
+	u := strings.Replace(validPresignedURL, "&X-Amz-Expires=900", "", 1)
+	if _, err := ParseToken(makeToken(u), validHost, true); err == nil {
+		t.Fatal("expected error on missing X-Amz-Expires")
+	}
+}
+
+func TestParseToken_RejectsNonNumericExpires(t *testing.T) {
+	u := strings.Replace(validPresignedURL, "X-Amz-Expires=900", "X-Amz-Expires=forever", 1)
+	if _, err := ParseToken(makeToken(u), validHost, true); err == nil {
+		t.Fatal("expected error on non-numeric X-Amz-Expires")
+	}
+}
+
+func TestParseToken_RejectsNonPositiveExpires(t *testing.T) {
+	u := strings.Replace(validPresignedURL, "X-Amz-Expires=900", "X-Amz-Expires=0", 1)
+	if _, err := ParseToken(makeToken(u), validHost, true); err == nil {
+		t.Fatal("expected error on zero X-Amz-Expires")
+	}
+}
+
+func TestCheckFreshness_Expired(t *testing.T) {
+	tok := &PresignedToken{
+		SigTime: time.Date(2026, 5, 24, 1, 0, 0, 0, time.UTC),
+		Expires: 15 * time.Minute,
+	}
+	now := time.Date(2026, 5, 24, 1, 25, 0, 0, time.UTC) // 25min later, beyond 15min+5min skew
+	if err := tok.CheckFreshness(now, 15*time.Minute, 5*time.Minute); err == nil {
+		t.Fatal("expected expired error")
+	}
+}
+
+func TestCheckFreshness_FromTheFuture(t *testing.T) {
+	tok := &PresignedToken{
+		SigTime: time.Date(2026, 5, 24, 2, 0, 0, 0, time.UTC),
+		Expires: 15 * time.Minute,
+	}
+	now := time.Date(2026, 5, 24, 1, 0, 0, 0, time.UTC) // 1h before token's sign time
+	if err := tok.CheckFreshness(now, 15*time.Minute, 5*time.Minute); err == nil {
+		t.Fatal("expected future-token error")
+	}
+}
+
+func TestCheckFreshness_ExceedsExpiresCap(t *testing.T) {
+	tok := &PresignedToken{
+		SigTime: time.Date(2026, 5, 24, 1, 0, 0, 0, time.UTC),
+		Expires: 1 * time.Hour, // exceeds the 15min cap
+	}
+	now := tok.SigTime
+	if err := tok.CheckFreshness(now, 15*time.Minute, 5*time.Minute); err == nil {
+		t.Fatal("expected cap error")
+	}
+}
+
+func TestCheckFreshness_HappyPathInsideSkew(t *testing.T) {
+	tok := &PresignedToken{
+		SigTime: time.Date(2026, 5, 24, 1, 0, 0, 0, time.UTC),
+		Expires: 15 * time.Minute,
+	}
+	// 19 min later: past Expires but within skew tolerance.
+	now := tok.SigTime.Add(19 * time.Minute)
+	if err := tok.CheckFreshness(now, 15*time.Minute, 5*time.Minute); err != nil {
+		t.Errorf("token within skew window should pass, got %v", err)
 	}
 }
 

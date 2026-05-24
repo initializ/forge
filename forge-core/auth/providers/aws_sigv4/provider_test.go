@@ -17,16 +17,26 @@ import (
 	"github.com/initializ/forge/forge-core/auth"
 )
 
+// fixedTestTime is the wall-clock the test helpers pretend it is.
+// Tokens minted by tokenFor() are signed at this instant (X-Amz-Date)
+// and Provider.now is pinned to this instant via newTestProvider, so
+// CheckFreshness sees an in-window token by default. Tests that want
+// to exercise expiry/skew override Provider.now after construction.
+var fixedTestTime = time.Date(2026, 5, 24, 1, 0, 0, 0, time.UTC)
+
 // tokenFor builds a forge-aws-v1 token whose embedded URL points at the
 // test STS server. AKID + date + region + signature are placeholders;
-// the fake STS doesn't validate them.
+// the fake STS doesn't validate them. X-Amz-Date is pinned to
+// fixedTestTime so the freshness check passes by default.
 func tokenFor(stsURL, akid, dateYYYYMMDD, region string) string {
 	q := url.Values{}
 	q.Set("Action", "GetCallerIdentity")
 	q.Set("Version", "2011-06-15")
 	q.Set("X-Amz-Algorithm", "AWS4-HMAC-SHA256")
 	q.Set("X-Amz-Credential", fmt.Sprintf("%s/%s/%s/sts/aws4_request", akid, dateYYYYMMDD, region))
-	q.Set("X-Amz-Date", dateYYYYMMDD+"T010000Z")
+	// Build X-Amz-Date from the (possibly day-rolled) dateYYYYMMDD plus
+	// fixedTestTime's HHMMSS so date-bucket rollover tests still work.
+	q.Set("X-Amz-Date", dateYYYYMMDD+"T"+fixedTestTime.UTC().Format("150405")+"Z")
 	q.Set("X-Amz-Expires", "900")
 	q.Set("X-Amz-SignedHeaders", "host")
 	q.Set("X-Amz-Signature", "fakesig"+akid)
@@ -57,6 +67,9 @@ func newTestProvider(t *testing.T, sts http.Handler, opts ...func(*Config)) (*Pr
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	// Pin the provider's clock to fixedTestTime so tokens minted by
+	// tokenFor() pass the M2 freshness check.
+	p.now = func() time.Time { return fixedTestTime }
 	return p, srv.URL
 }
 
@@ -293,15 +306,92 @@ func TestProvider_DateBucketRollover_TriggersFreshSTSCall(t *testing.T) {
 		calls.Add(1)
 		_, _ = io.WriteString(w, happySTSXML)
 	}))
-	// Day 1 + Day 2 → different cache keys.
+	// Day 1: use the default fixedTestTime clock.
 	if _, err := p.Verify(context.Background(), tokenFor(stsURL, "AKIA", "20260524", "us-east-1"), nil); err != nil {
 		t.Fatal(err)
 	}
+	// Day 2: advance clock by 24h so the day-2 token is fresh under
+	// CheckFreshness (post-M2 freshness gate).
+	p.now = func() time.Time { return fixedTestTime.Add(24 * time.Hour) }
 	if _, err := p.Verify(context.Background(), tokenFor(stsURL, "AKIA", "20260525", "us-east-1"), nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := calls.Load(); got != 2 {
 		t.Errorf("STS calls = %d, want 2 (date bucket rolled)", got)
+	}
+}
+
+// --- Review M2: parser-side freshness ---
+
+func TestProvider_RejectsExpiredToken(t *testing.T) {
+	// Token's X-Amz-Date + Expires window is in the past relative to
+	// Provider.now. STS would also reject this, but we belt-and-brace.
+	p, stsURL := newTestProvider(t, happySTS())
+	p.now = func() time.Time {
+		return fixedTestTime.Add(30 * time.Minute) // far past the 15min lifetime + 5min skew
+	}
+	_, err := p.Verify(context.Background(), defaultToken(stsURL), nil)
+	if !errors.Is(err, auth.ErrTokenRejected) {
+		t.Errorf("err = %v, want ErrTokenRejected", err)
+	}
+	if err != nil && !strings.Contains(err.Error(), "expired") {
+		t.Errorf("err should mention 'expired'; got %v", err)
+	}
+}
+
+func TestProvider_RejectsTokenFromFuture(t *testing.T) {
+	// Token signed beyond skew tolerance in the future.
+	p, stsURL := newTestProvider(t, happySTS())
+	p.now = func() time.Time {
+		return fixedTestTime.Add(-1 * time.Hour) // way before the token's signing instant
+	}
+	_, err := p.Verify(context.Background(), defaultToken(stsURL), nil)
+	if !errors.Is(err, auth.ErrTokenRejected) {
+		t.Errorf("err = %v, want ErrTokenRejected", err)
+	}
+	if err != nil && !strings.Contains(err.Error(), "future") {
+		t.Errorf("err should mention 'future'; got %v", err)
+	}
+}
+
+func TestProvider_RejectsOverlyLongExpiresClaim(t *testing.T) {
+	// Caller crafted a token with X-Amz-Expires > 15min. STS would
+	// also reject the signature, but we belt-and-brace at parse-side.
+	p, stsURL := newTestProvider(t, happySTS())
+
+	// Build the token pointing at the test STS host so we pass the
+	// SSRF-guard host check; the freshness check then catches the
+	// oversized X-Amz-Expires.
+	q := url.Values{}
+	q.Set("Action", "GetCallerIdentity")
+	q.Set("Version", "2011-06-15")
+	q.Set("X-Amz-Algorithm", "AWS4-HMAC-SHA256")
+	q.Set("X-Amz-Credential", "AKIA/20260524/us-east-1/sts/aws4_request")
+	q.Set("X-Amz-Date", "20260524T010000Z")
+	q.Set("X-Amz-Expires", "3600") // 1 hour — exceeds our 15min cap
+	q.Set("X-Amz-SignedHeaders", "host")
+	q.Set("X-Amz-Signature", "abc")
+	full := stsURL + "/?" + q.Encode()
+	tok := TokenPrefix + base64.RawURLEncoding.EncodeToString([]byte(full))
+
+	_, err := p.Verify(context.Background(), tok, nil)
+	if !errors.Is(err, auth.ErrTokenRejected) {
+		t.Errorf("err = %v, want ErrTokenRejected", err)
+	}
+	if err != nil && !strings.Contains(err.Error(), "X-Amz-Expires") {
+		t.Errorf("err should mention X-Amz-Expires cap; got %v", err)
+	}
+}
+
+func TestProvider_AcceptsTokenAtEdgeOfSkewWindow(t *testing.T) {
+	// Just barely fresh: signed at fixedTestTime, expires after 15min,
+	// and now is fixedTestTime + 15min + 4min skew (still within 5min).
+	p, stsURL := newTestProvider(t, happySTS())
+	p.now = func() time.Time {
+		return fixedTestTime.Add(15*time.Minute + 4*time.Minute)
+	}
+	if _, err := p.Verify(context.Background(), defaultToken(stsURL), nil); err != nil {
+		t.Errorf("token within skew window should pass, got %v", err)
 	}
 }
 

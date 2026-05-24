@@ -84,6 +84,16 @@ const ProviderName = "aws_sigv4"
 const (
 	defaultIdentityCacheTTL = 60 * time.Second
 	defaultHTTPTimeout      = 5 * time.Second
+
+	// Cap the token's self-declared lifetime (X-Amz-Expires). AWS allows
+	// up to 7 days for some services; STS GetCallerIdentity in practice
+	// is signed for 15 min by all standard SDKs. Anything longer is
+	// suspect.
+	defaultMaxTokenExpires = 15 * time.Minute
+
+	// Clock skew tolerance between Forge and the caller. Generous enough
+	// for typical NTP drift but tight enough to bound stolen-token replay.
+	defaultClockSkew = 5 * time.Minute
 )
 
 // Config controls the aws_sigv4 provider.
@@ -128,6 +138,16 @@ type Config struct {
 	// without re-checking with STS. Defaults to 60s.
 	IdentityCacheTTL time.Duration `yaml:"identity_cache_ttl,omitempty"`
 
+	// MaxTokenExpires caps the X-Amz-Expires value the caller can stamp
+	// into the pre-signed URL. Defaults to 15min (matches what all
+	// standard AWS SDKs produce for GetCallerIdentity). Belt-and-braces
+	// gate on top of STS's own freshness enforcement.
+	MaxTokenExpires time.Duration `yaml:"max_token_expires,omitempty"`
+
+	// ClockSkew is the tolerance window for clock drift between Forge
+	// and the caller when evaluating token freshness. Defaults to 5min.
+	ClockSkew time.Duration `yaml:"clock_skew,omitempty"`
+
 	// STSEndpoint is a TEST-ONLY override that changes the expected
 	// pre-signed URL host (and relaxes the https requirement). Production
 	// should leave this empty.
@@ -153,6 +173,9 @@ type Provider struct {
 	cache        *IdentityCache
 	sts          *STSClient
 	matcher      *ArnMatcher
+
+	// now is injectable for tests; defaults to time.Now in New().
+	now func() time.Time
 }
 
 // New constructs a Provider after validating cfg.
@@ -165,6 +188,12 @@ func New(cfg Config) (*Provider, error) {
 	}
 	if cfg.HTTPTimeout == 0 {
 		cfg.HTTPTimeout = defaultHTTPTimeout
+	}
+	if cfg.MaxTokenExpires == 0 {
+		cfg.MaxTokenExpires = defaultMaxTokenExpires
+	}
+	if cfg.ClockSkew == 0 {
+		cfg.ClockSkew = defaultClockSkew
 	}
 	// Expand the AllowedAccounts shortcut into canonical globs and merge
 	// with operator-supplied AllowedPrincipals. We expand here (rather
@@ -201,6 +230,7 @@ func New(cfg Config) (*Provider, error) {
 		cache:        NewIdentityCache(cfg.IdentityCacheTTL),
 		sts:          NewSTSClient(cfg.Region, "", cfg.HTTPTimeout),
 		matcher:      matcher,
+		now:          time.Now,
 	}, nil
 }
 
@@ -230,6 +260,15 @@ func (p *Provider) Verify(ctx context.Context, token string, _ auth.Headers) (*a
 	// us-east-1 hitting a Forge instance configured for eu-west-1).
 	if parsed.Region != p.cfg.Region {
 		return nil, fmt.Errorf("%w: token region %q != configured %s", auth.ErrTokenRejected, parsed.Region, p.cfg.Region)
+	}
+
+	// Parser-side freshness check (Review M2). Belt-and-braces on top of
+	// STS's own ~15min enforcement: caps the X-Amz-Expires that any
+	// caller can claim, and rejects already-expired tokens before we
+	// ever round-trip to STS. This bounds the stolen-token replay
+	// window to MaxTokenExpires + ClockSkew, independent of our cache TTL.
+	if err := parsed.CheckFreshness(p.now(), p.cfg.MaxTokenExpires, p.cfg.ClockSkew); err != nil {
+		return nil, fmt.Errorf("%w: %v", auth.ErrTokenRejected, err)
 	}
 
 	cacheKey := dateBucketKey(parsed.AKID, parsed.Date)

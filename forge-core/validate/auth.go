@@ -85,6 +85,18 @@ func validateProviderSettings(prefix string, p types.AuthProvider, r *Validation
 		if asString(p.Settings, "region") == "" {
 			r.Errors = append(r.Errors, prefix+" (aws_sigv4): settings.region is required")
 		}
+		// allowed_accounts entries must be 12-digit AWS account IDs.
+		// Catches typos at validate-time so a misconfig doesn't silently
+		// become an unreachable pattern.
+		if accts, ok := p.Settings["allowed_accounts"].([]any); ok {
+			for i, raw := range accts {
+				s, _ := raw.(string)
+				if len(s) != 12 || !isAllDigits(s) {
+					r.Errors = append(r.Errors,
+						fmt.Sprintf("%s (aws_sigv4): allowed_accounts[%d]=%q must be a 12-digit AWS account ID", prefix, i, s))
+				}
+			}
+		}
 	case "gcp_iap":
 		if asString(p.Settings, "audience") == "" {
 			r.Errors = append(r.Errors, prefix+" (gcp_iap): settings.audience is required (GCP backend service ID)")
@@ -113,4 +125,17 @@ func asString(m map[string]any, key string) string {
 	}
 	s, _ := v.(string)
 	return s
+}
+
+// isAllDigits reports whether s consists only of ASCII digits.
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }

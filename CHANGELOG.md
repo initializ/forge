@@ -50,6 +50,37 @@
   from Go callers (currently only `azure_ad` multi-tenant). Operators see
   no change.
 
+### `allowed_accounts` shortcut for whole-account trust
+
+For "any IAM principal in these AWS accounts" without writing
+glob patterns:
+
+```yaml
+auth:
+  providers:
+    - type: aws_sigv4
+      settings:
+        region: us-east-1
+        allowed_accounts: ["412664885516", "109887654321"]
+```
+
+Internally expands to the canonical glob set covering all identity
+shapes (IAM users, IAM roles, STS assumed-roles, federated users)
+for each account. Composes with `allowed_principals` — you can list
+specific roles AND whole accounts in the same provider entry.
+
+For AWS-Org-wide trust without enumerating accounts, use AWS IAM
+Identity Center (SSO) — SSO permission sets gate Org membership at
+sign-in, and you can match Identity Center-assumed roles with the
+existing `allowed_principals` globs.
+
+### TUI wizard supports Phase 2 providers
+
+`forge init`'s TUI picker now includes `AWS Sigv4 (IAM)`,
+`GCP Identity-Aware Proxy`, and `Azure AD / Entra ID` entries with
+step-by-step input flows. AAD is single-tenant in the TUI;
+multi-tenant remains a deliberate YAML edit (security default).
+
 ### Client experience for `aws_sigv4`
 
 The client side is a Bearer token with a 3-line mint:
@@ -70,7 +101,4 @@ docstring of `forge-core/auth/providers/aws_sigv4/provider.go`.
 
 ### Known deferred work
 
-- The Bubble Tea TUI wizard (`forge init`) does not yet have step-by-step
-  input flows for the three new providers. The non-interactive flag path
-  is the production-critical surface; operators using the TUI can pick
-  "Custom" and edit `forge.yaml` directly until the TUI follow-up lands.
+- (none for Phase 2)

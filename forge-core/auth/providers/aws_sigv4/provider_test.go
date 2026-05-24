@@ -178,6 +178,51 @@ func TestProvider_AllowlistHit_Succeeds(t *testing.T) {
 	}
 }
 
+func TestProvider_AllowedAccounts_AllowsAnyIdentityInAccount(t *testing.T) {
+	// The fake STS returns assumed-role ARN for account 123456789012.
+	// AllowedAccounts=[123456789012] expands to globs covering all
+	// identity shapes in that account → the assumed-role ARN matches.
+	p, stsURL := newTestProvider(t, happySTS(), func(c *Config) {
+		c.AllowedAccounts = []string{"123456789012"}
+	})
+	if _, err := p.Verify(context.Background(), defaultToken(stsURL), nil); err != nil {
+		t.Errorf("Verify: %v", err)
+	}
+}
+
+func TestProvider_AllowedAccounts_DifferentAccountRejected(t *testing.T) {
+	p, stsURL := newTestProvider(t, happySTS(), func(c *Config) {
+		c.AllowedAccounts = []string{"999999999999"}
+	})
+	_, err := p.Verify(context.Background(), defaultToken(stsURL), nil)
+	if !errors.Is(err, auth.ErrTokenRejected) {
+		t.Errorf("err = %v, want ErrTokenRejected", err)
+	}
+}
+
+func TestProvider_AllowedAccounts_RejectsMalformedAtFactory(t *testing.T) {
+	_, err := New(Config{
+		Region:          "us-east-1",
+		AllowedAccounts: []string{"not-an-account"},
+	})
+	if err == nil {
+		t.Fatal("expected error on malformed account ID")
+	}
+}
+
+func TestProvider_AllowedAccounts_MergesWithAllowedPrincipals(t *testing.T) {
+	// Mix: account-wide grant for 123456789012 (covers the test STS
+	// response) + a specific role pattern for some other account.
+	// Verify the account-wide entry takes precedence.
+	p, stsURL := newTestProvider(t, happySTS(), func(c *Config) {
+		c.AllowedPrincipals = []string{"arn:aws:iam::999:role/specific"}
+		c.AllowedAccounts = []string{"123456789012"}
+	})
+	if _, err := p.Verify(context.Background(), defaultToken(stsURL), nil); err != nil {
+		t.Errorf("Verify: %v", err)
+	}
+}
+
 func TestProvider_STSDown_Unavailable(t *testing.T) {
 	p, stsURL := newTestProvider(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

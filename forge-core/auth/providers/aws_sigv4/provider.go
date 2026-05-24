@@ -107,6 +107,23 @@ type Config struct {
 	// IAM role ARN ("arn:aws:iam::ACCOUNT:role/RoleName").
 	AllowedPrincipals []string `yaml:"allowed_principals,omitempty"`
 
+	// AllowedAccounts is an ergonomic shortcut for the common case of
+	// "anyone in these AWS accounts." Each entry is an account ID
+	// (12 digits); New() expands each into the canonical glob set:
+	//
+	//	arn:aws:iam::<acct>:user/*
+	//	arn:aws:iam::<acct>:role/*
+	//	arn:aws:sts::<acct>:assumed-role/*/*
+	//	arn:aws:sts::<acct>:federated-user/*
+	//
+	// covering every shape STS returns. The expansion is appended to
+	// AllowedPrincipals — operators can mix the two: list specific
+	// roles in AllowedPrincipals AND whole accounts in AllowedAccounts.
+	//
+	// For AWS-Org-wide trust without enumerating accounts, see the
+	// docstring section on AWS Identity Center / SSO.
+	AllowedAccounts []string `yaml:"allowed_accounts,omitempty"`
+
 	// IdentityCacheTTL bounds how long a verified Identity is reused
 	// without re-checking with STS. Defaults to 60s.
 	IdentityCacheTTL time.Duration `yaml:"identity_cache_ttl,omitempty"`
@@ -149,7 +166,17 @@ func New(cfg Config) (*Provider, error) {
 	if cfg.HTTPTimeout == 0 {
 		cfg.HTTPTimeout = defaultHTTPTimeout
 	}
-	matcher, err := NewArnMatcher(cfg.AllowedPrincipals)
+	// Expand the AllowedAccounts shortcut into canonical globs and merge
+	// with operator-supplied AllowedPrincipals. We expand here (rather
+	// than at Match time) so the patterns are validated once at Factory.
+	expanded := append([]string(nil), cfg.AllowedPrincipals...)
+	for _, acct := range cfg.AllowedAccounts {
+		if err := validateAccountID(acct); err != nil {
+			return nil, fmt.Errorf("aws_sigv4: allowed_accounts: %w", err)
+		}
+		expanded = append(expanded, expandAccountGlobs(acct)...)
+	}
+	matcher, err := NewArnMatcher(expanded)
 	if err != nil {
 		return nil, fmt.Errorf("aws_sigv4: allowed_principals: %w", err)
 	}

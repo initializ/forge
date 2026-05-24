@@ -1,6 +1,7 @@
 package aws_sigv4
 
 import (
+	"errors"
 	"fmt"
 	"path"
 )
@@ -43,4 +44,40 @@ func (m *ArnMatcher) Match(arn string) bool {
 		}
 	}
 	return false
+}
+
+// validateAccountID checks for an AWS account ID — 12 ASCII digits.
+// Catches typos (region names, role ARNs pasted by mistake) at Factory
+// time so a misconfigured allowed_accounts entry doesn't silently
+// become an unreachable pattern.
+func validateAccountID(s string) error {
+	if len(s) != 12 {
+		return fmt.Errorf("account ID %q: expected 12 digits, got %d chars", s, len(s))
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < '0' || c > '9' {
+			return errors.New("account ID must be 12 digits")
+		}
+	}
+	return nil
+}
+
+// expandAccountGlobs returns the canonical ARN glob set that covers
+// every STS identity shape in a given account. The four shapes:
+//
+//	arn:aws:iam::<acct>:user/<name>           — direct IAM user
+//	arn:aws:iam::<acct>:role/<name>           — direct IAM role (rare; usually only EC2/Lambda)
+//	arn:aws:sts::<acct>:assumed-role/<role>/<session>  — SSO, AssumeRole, IRSA
+//	arn:aws:sts::<acct>:federated-user/<name> — SAML/web-identity federation
+//
+// path.Match's `*` doesn't cross `/`, so the assumed-role glob needs
+// two `*` segments to span both RoleName and SessionName.
+func expandAccountGlobs(acct string) []string {
+	return []string{
+		"arn:aws:iam::" + acct + ":user/*",
+		"arn:aws:iam::" + acct + ":role/*",
+		"arn:aws:sts::" + acct + ":assumed-role/*/*",
+		"arn:aws:sts::" + acct + ":federated-user/*",
+	}
 }

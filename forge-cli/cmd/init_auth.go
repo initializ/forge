@@ -53,6 +53,7 @@ func buildAuthFromFlags(cmd *cobra.Command, mode string) (settings map[string]an
 		region, _ := cmd.Flags().GetString("auth-aws-region")
 		audience, _ := cmd.Flags().GetString("auth-aws-audience")
 		allowedPrincipals, _ := cmd.Flags().GetStringSlice("auth-aws-allowed-principal")
+		allowedAccounts, _ := cmd.Flags().GetStringSlice("auth-aws-allowed-account")
 		cacheTTL, _ := cmd.Flags().GetString("auth-aws-cache-ttl")
 		if region == "" {
 			return nil, nil, fmt.Errorf("--auth=aws_sigv4 requires --auth-aws-region")
@@ -63,6 +64,9 @@ func buildAuthFromFlags(cmd *cobra.Command, mode string) (settings map[string]an
 		}
 		if len(allowedPrincipals) > 0 {
 			settings["allowed_principals"] = allowedPrincipals
+		}
+		if len(allowedAccounts) > 0 {
+			settings["allowed_accounts"] = allowedAccounts
 		}
 		if cacheTTL != "" {
 			settings["identity_cache_ttl"] = cacheTTL

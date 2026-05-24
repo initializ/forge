@@ -23,6 +23,7 @@ package azure_ad
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/initializ/forge/forge-core/auth"
@@ -50,10 +51,28 @@ type Config struct {
 	// app registration (e.g. "api://forge").
 	Audience string `yaml:"audience"`
 
-	// AllowMultiTenant enables accepting tokens from ANY Entra tenant.
-	// Defaults to false (single-tenant — safe choice). PR6 docs flag the
-	// security implications of flipping this on in production.
+	// AllowMultiTenant enables accepting tokens from Entra tenants other
+	// than the one in TenantID. Defaults to false (single-tenant — safe
+	// choice). When true:
+	//   - the composed oidc.Provider's issuer-equality check is
+	//     suppressed (the "common" issuer template has a {tenantid}
+	//     placeholder that string-equality can't satisfy)
+	//   - tenancy enforcement moves to AllowedTenants (below); see
+	//     CHANGELOG for the security implications
 	AllowMultiTenant bool `yaml:"allow_multi_tenant,omitempty"`
+
+	// AllowedTenants is an optional allowlist of Entra tenant GUIDs,
+	// matched against the JWT's `tid` claim. Only meaningful when
+	// AllowMultiTenant=true; ignored in single-tenant mode (TenantID
+	// is the gate there).
+	//
+	// Empty list + AllowMultiTenant=true = "any tenant globally" —
+	// the documented but high-risk shape. Set this list for the safer
+	// "these specific tenants only" semantic.
+	//
+	// Effort to set: customers know their partner tenants; operators
+	// just copy GUIDs in. There is no API to enumerate them.
+	AllowedTenants []string `yaml:"allowed_tenants,omitempty"`
 
 	// GroupsMode is "claim" (default — uses the in-JWT groups/roles
 	// claim) or "graph" (queries Microsoft Graph when groups are missing,
@@ -82,6 +101,12 @@ func (c Config) Validate() error {
 	}
 	if c.GroupsMode != "" && c.GroupsMode != "claim" && c.GroupsMode != "graph" {
 		return fmt.Errorf("%w: groups_mode must be 'claim' or 'graph', got %q", auth.ErrProviderNotConfigured, c.GroupsMode)
+	}
+	// allowed_tenants only makes sense with multi-tenant. Reject the
+	// combination at factory time so a typo'd config doesn't silently
+	// degrade to single-tenant behavior the operator didn't intend.
+	if !c.AllowMultiTenant && len(c.AllowedTenants) > 0 {
+		return fmt.Errorf("%w: allowed_tenants is only meaningful when allow_multi_tenant=true (single-tenant mode uses tenant_id directly)", auth.ErrProviderNotConfigured)
 	}
 	return nil
 }
@@ -149,7 +174,15 @@ func (p *Provider) Verify(ctx context.Context, token string, headers auth.Header
 		return nil, err
 	}
 
-	// Tenant gate (single-tenant default).
+	// Tenant gate. Three modes:
+	//
+	//   - single-tenant (AllowMultiTenant=false): tid MUST equal TenantID
+	//   - multi-tenant + AllowedTenants set:      tid MUST be in the list
+	//   - multi-tenant + AllowedTenants empty:    no tid check at all
+	//                                             ("any tenant globally"
+	//                                             — the documented high-risk
+	//                                             shape, explicitly opted into
+	//                                             by leaving the list empty)
 	if !p.cfg.AllowMultiTenant {
 		tid := ExtractTenantID(id.Claims)
 		if tid == "" {
@@ -157,6 +190,18 @@ func (p *Provider) Verify(ctx context.Context, token string, headers auth.Header
 		}
 		if tid != p.cfg.TenantID {
 			return nil, fmt.Errorf("%w: tid mismatch", auth.ErrTokenRejected)
+		}
+	} else if len(p.cfg.AllowedTenants) > 0 {
+		// Multi-tenant with an explicit allowlist (Review M3): the
+		// composed oidc.Provider's iss check is suppressed and the
+		// single-tenant arm above is skipped, but operators who set
+		// AllowedTenants want explicit per-tenant trust — enforce it.
+		tid := ExtractTenantID(id.Claims)
+		if tid == "" {
+			return nil, fmt.Errorf("%w: AAD token missing tid claim", auth.ErrInvalidToken)
+		}
+		if !tenantInAllowlist(tid, p.cfg.AllowedTenants) {
+			return nil, fmt.Errorf("%w: tid %q not in allowed_tenants", auth.ErrTokenRejected, tid)
 		}
 	}
 
@@ -175,15 +220,40 @@ func (p *Provider) Verify(ctx context.Context, token string, headers auth.Header
 }
 
 // resolveIssuer picks the issuer URL passed to the composed OIDC
-// provider. For single-tenant, that's the full per-tenant authority.
-// For multi-tenant, the "common" endpoint serves JWKS for all tenants
-// — we point OIDC there and disable iss equality (azure_ad enforces
-// tenant via the tid claim instead).
+// provider.
+//
+// For SINGLE-TENANT (AllowMultiTenant=false): the full per-tenant
+// authority URL. oidc.Provider's iss-equality check is in force, AND
+// Verify() additionally enforces tid == TenantID. Double-gate.
+//
+// For MULTI-TENANT (AllowMultiTenant=true): the "common" endpoint,
+// which serves JWKS for all Entra tenants. oidc.Provider's iss check
+// is suppressed via SkipIssuerCheck because "common"'s issuer template
+// (`https://login.microsoftonline.com/{tenantid}/v2.0`) cannot be
+// satisfied by string equality. Tenancy gating then depends on
+// AllowedTenants:
+//   - non-empty list: Verify() enforces tid ∈ AllowedTenants
+//   - empty list:     no tid check anywhere — ANY Entra tenant in the
+//     world is accepted ("any-tenant" mode, opted into
+//     by deliberately omitting the list)
 func resolveIssuer(cfg Config) string {
 	if cfg.AllowMultiTenant {
 		return aadAuthorityBase + "/common/v2.0"
 	}
 	return fmt.Sprintf("%s/%s/v2.0", aadAuthorityBase, cfg.TenantID)
+}
+
+// tenantInAllowlist reports whether tid is one of the configured
+// AllowedTenants entries. Match is case-insensitive because Entra
+// emits GUIDs in lowercase but operators commonly paste them in
+// either case from the Azure portal.
+func tenantInAllowlist(tid string, allowed []string) bool {
+	for _, a := range allowed {
+		if strings.EqualFold(tid, a) {
+			return true
+		}
+	}
+	return false
 }
 
 // needsEnrichment returns true when Graph should be consulted. AAD

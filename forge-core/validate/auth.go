@@ -110,6 +110,27 @@ func validateProviderSettings(prefix string, p types.AuthProvider, r *Validation
 		if !multi && asString(p.Settings, "tenant_id") == "" {
 			r.Errors = append(r.Errors, prefix+" (azure_ad): settings.tenant_id is required unless allow_multi_tenant=true")
 		}
+		// allowed_tenants only makes sense with multi-tenant.
+		hasAllowed := false
+		switch v := p.Settings["allowed_tenants"].(type) {
+		case []any:
+			hasAllowed = len(v) > 0
+		case []string:
+			hasAllowed = len(v) > 0
+		}
+		if !multi && hasAllowed {
+			r.Errors = append(r.Errors,
+				prefix+" (azure_ad): allowed_tenants is only meaningful when allow_multi_tenant=true")
+		}
+		// "Any-tenant mode" warning: multi-tenant + empty allowed_tenants
+		// admits any Entra tenant globally. Documented trade-off, but
+		// warn so operators don't ship it by accident.
+		if multi && !hasAllowed {
+			r.Warnings = append(r.Warnings,
+				prefix+" (azure_ad): allow_multi_tenant=true with no allowed_tenants list "+
+					"admits any Entra tenant globally — set allowed_tenants if you want to "+
+					"restrict to specific partner tenants")
+		}
 		if mode := asString(p.Settings, "groups_mode"); mode != "" && mode != "claim" && mode != "graph" {
 			r.Errors = append(r.Errors, fmt.Sprintf("%s (azure_ad): groups_mode must be 'claim' or 'graph', got %q", prefix, mode))
 		}

@@ -22,6 +22,16 @@ const (
 	authOIDCGroupsClaimPhase
 	authHTTPURLPhase
 	authHTTPOrgPhase
+	// Phase 2: aws_sigv4
+	authAWSRegionPhase
+	authAWSAudiencePhase
+	authAWSAccountsPhase
+	// Phase 2: gcp_iap
+	authGCPIAPAudiencePhase
+	// Phase 2: azure_ad (single-tenant only; multi-tenant requires YAML
+	// edit so it's a deliberate choice rather than an accidental toggle)
+	authAADTenantPhase
+	authAADAudiencePhase
 	authDonePhase
 )
 
@@ -31,6 +41,9 @@ const (
 	AuthModeNone         = "none"
 	AuthModeOIDC         = "oidc"
 	AuthModeHTTPVerifier = "http_verifier"
+	AuthModeAWSSigv4     = "aws_sigv4"
+	AuthModeGCPIAP       = "gcp_iap"
+	AuthModeAzureAD      = "azure_ad"
 	AuthModeCustom       = "custom"
 )
 
@@ -67,6 +80,20 @@ type AuthStep struct {
 	httpURL string
 	httpOrg string
 
+	// aws_sigv4 settings
+	awsRegion   string
+	awsAudience string
+	awsAccounts []string // 12-digit AWS account IDs
+
+	// gcp_iap settings
+	gcpAudience string
+
+	// azure_ad settings (TUI is single-tenant only; multi-tenant
+	// requires editing forge.yaml directly so it stays a deliberate
+	// security decision)
+	aadTenant   string
+	aadAudience string
+
 	complete bool
 }
 
@@ -90,6 +117,24 @@ func NewAuthStep(styles *tui.StyleSet) *AuthStep {
 			Value:       AuthModeHTTPVerifier,
 			Description: "Legacy — POST tokens to your own /verify endpoint",
 			Icon:        "🔁",
+		},
+		{
+			Label:       "AWS Sigv4 (IAM)",
+			Value:       AuthModeAWSSigv4,
+			Description: "Verify AWS-IAM callers via STS GetCallerIdentity (Phase 2)",
+			Icon:        "🅰️",
+		},
+		{
+			Label:       "GCP Identity-Aware Proxy",
+			Value:       AuthModeGCPIAP,
+			Description: "Forge behind a GCP HTTPS LB+IAP (Phase 2)",
+			Icon:        "🇬",
+		},
+		{
+			Label:       "Azure AD / Entra ID",
+			Value:       AuthModeAzureAD,
+			Description: "Single-tenant Entra tokens (Phase 2 — multi-tenant via YAML)",
+			Icon:        "🇦",
 		},
 		{
 			Label:       "Custom",
@@ -144,7 +189,10 @@ func (s *AuthStep) Update(msg tea.Msg) (tui.Step, tea.Cmd) {
 	case authSelectPhase:
 		return s.updateSelect(msg)
 	case authOIDCIssuerPhase, authOIDCAudiencePhase, authOIDCGroupsClaimPhase,
-		authHTTPURLPhase, authHTTPOrgPhase:
+		authHTTPURLPhase, authHTTPOrgPhase,
+		authAWSRegionPhase, authAWSAudiencePhase, authAWSAccountsPhase,
+		authGCPIAPAudiencePhase,
+		authAADTenantPhase, authAADAudiencePhase:
 		return s.updateInput(msg)
 	}
 	return s, nil
@@ -180,6 +228,30 @@ func (s *AuthStep) updateSelect(msg tea.Msg) (tui.Step, tea.Cmd) {
 			"Verifier URL",
 			"https://auth.example.com/verify",
 			validateHTTPSURL,
+		)
+		return s, s.input.Init()
+	case AuthModeAWSSigv4:
+		s.phase = authAWSRegionPhase
+		s.input = s.newTextInput(
+			"AWS region",
+			"us-east-1",
+			validateAWSRegion,
+		)
+		return s, s.input.Init()
+	case AuthModeGCPIAP:
+		s.phase = authGCPIAPAudiencePhase
+		s.input = s.newTextInput(
+			"IAP audience (backend service ID from GCP console)",
+			"/projects/PNUM/global/backendServices/BACKEND_ID",
+			validateNonEmpty,
+		)
+		return s, s.input.Init()
+	case AuthModeAzureAD:
+		s.phase = authAADTenantPhase
+		s.input = s.newTextInput(
+			"Entra tenant ID (GUID)",
+			"00000000-0000-0000-0000-000000000000",
+			validateNonEmpty,
 		)
 		return s, s.input.Init()
 	}
@@ -242,6 +314,57 @@ func (s *AuthStep) updateInput(msg tea.Msg) (tui.Step, tea.Cmd) {
 		s.complete = true
 		s.phase = authDonePhase
 		return s, doneCmd()
+
+	// --- aws_sigv4 ---
+	case authAWSRegionPhase:
+		s.awsRegion = v
+		s.phase = authAWSAudiencePhase
+		s.input = s.newTextInput(
+			"Audience (informational; press Enter to skip)",
+			"api://forge",
+			nil,
+		)
+		return s, s.input.Init()
+
+	case authAWSAudiencePhase:
+		s.awsAudience = v
+		s.phase = authAWSAccountsPhase
+		s.input = s.newTextInput(
+			"Allowed AWS accounts (comma-separated 12-digit IDs; Enter to skip)",
+			"412664885516,109887654321",
+			validateAccountList,
+		)
+		return s, s.input.Init()
+
+	case authAWSAccountsPhase:
+		s.awsAccounts = parseAccountList(v)
+		s.complete = true
+		s.phase = authDonePhase
+		return s, doneCmd()
+
+	// --- gcp_iap ---
+	case authGCPIAPAudiencePhase:
+		s.gcpAudience = v
+		s.complete = true
+		s.phase = authDonePhase
+		return s, doneCmd()
+
+	// --- azure_ad (single-tenant) ---
+	case authAADTenantPhase:
+		s.aadTenant = v
+		s.phase = authAADAudiencePhase
+		s.input = s.newTextInput(
+			"Audience (Application ID URI)",
+			"api://forge",
+			validateNonEmpty,
+		)
+		return s, s.input.Init()
+
+	case authAADAudiencePhase:
+		s.aadAudience = v
+		s.complete = true
+		s.phase = authDonePhase
+		return s, doneCmd()
 	}
 
 	return s, cmd
@@ -299,6 +422,15 @@ func (s *AuthStep) Summary() string {
 			return "HTTP Verifier"
 		}
 		return "HTTP Verifier · " + host
+	case AuthModeAWSSigv4:
+		if len(s.awsAccounts) > 0 {
+			return fmt.Sprintf("AWS Sigv4 · %s · %d account(s)", s.awsRegion, len(s.awsAccounts))
+		}
+		return "AWS Sigv4 · " + s.awsRegion
+	case AuthModeGCPIAP:
+		return "GCP IAP"
+	case AuthModeAzureAD:
+		return "Azure AD · single-tenant"
 	case AuthModeCustom:
 		return "Custom (edit forge.yaml)"
 	}
@@ -341,6 +473,25 @@ func (s *AuthStep) Apply(ctx *tui.WizardContext) {
 		if host := hostnameOrEmpty(s.httpURL); host != "" {
 			ctx.AuthEgressHosts = appendUnique(ctx.AuthEgressHosts, host)
 		}
+	case AuthModeAWSSigv4:
+		settings := map[string]any{"region": s.awsRegion}
+		if s.awsAudience != "" {
+			settings["audience"] = s.awsAudience
+		}
+		if len(s.awsAccounts) > 0 {
+			settings["allowed_accounts"] = s.awsAccounts
+		}
+		ctx.AuthSettings = settings
+		ctx.AuthEgressHosts = appendUnique(ctx.AuthEgressHosts, "sts."+s.awsRegion+".amazonaws.com")
+	case AuthModeGCPIAP:
+		ctx.AuthSettings = map[string]any{"audience": s.gcpAudience}
+		ctx.AuthEgressHosts = appendUnique(ctx.AuthEgressHosts, "www.gstatic.com")
+	case AuthModeAzureAD:
+		ctx.AuthSettings = map[string]any{
+			"tenant_id": s.aadTenant,
+			"audience":  s.aadAudience,
+		}
+		ctx.AuthEgressHosts = appendUnique(ctx.AuthEgressHosts, "login.microsoftonline.com")
 	default:
 		// None / Custom: nothing to attach.
 		ctx.AuthSettings = nil
@@ -374,6 +525,60 @@ func validateNonEmpty(val string) error {
 		return fmt.Errorf("required")
 	}
 	return nil
+}
+
+// validateAWSRegion checks for the canonical AWS region shape
+// (xx-direction-N). Doesn't enumerate regions because AWS adds them
+// often; STS at startup fails fast if the host doesn't resolve.
+func validateAWSRegion(val string) error {
+	v := strings.TrimSpace(val)
+	if v == "" {
+		return fmt.Errorf("required")
+	}
+	// xx-direction-N, e.g. us-east-1, eu-west-2, ap-southeast-1
+	parts := strings.Split(v, "-")
+	if len(parts) < 3 {
+		return fmt.Errorf("expected AWS region shape like 'us-east-1'")
+	}
+	return nil
+}
+
+// validateAccountList accepts a comma-separated list of 12-digit AWS
+// account IDs. Empty input is OK (the field is optional). Each entry
+// is validated; one bad entry blocks the whole field.
+func validateAccountList(val string) error {
+	v := strings.TrimSpace(val)
+	if v == "" {
+		return nil
+	}
+	for raw := range strings.SplitSeq(v, ",") {
+		acct := strings.TrimSpace(raw)
+		if len(acct) != 12 {
+			return fmt.Errorf("account %q: expected 12 digits", acct)
+		}
+		for _, c := range acct {
+			if c < '0' || c > '9' {
+				return fmt.Errorf("account %q: must be digits only", acct)
+			}
+		}
+	}
+	return nil
+}
+
+// parseAccountList splits a comma-separated input into a trimmed slice.
+// Empty input returns nil so the caller can omit the YAML key.
+func parseAccountList(val string) []string {
+	v := strings.TrimSpace(val)
+	if v == "" {
+		return nil
+	}
+	var out []string
+	for raw := range strings.SplitSeq(v, ",") {
+		if s := strings.TrimSpace(raw); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // hostnameOrEmpty returns the bare host (no port) from a URL, or "" on

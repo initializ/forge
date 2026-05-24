@@ -146,6 +146,7 @@ func init() {
 	initCmd.Flags().String("auth-aws-region", "", "AWS region for aws_sigv4 (e.g. us-east-1)")
 	initCmd.Flags().String("auth-aws-audience", "", "informational audience for aws_sigv4")
 	initCmd.Flags().StringSlice("auth-aws-allowed-principal", nil, "allowed principal glob for aws_sigv4 (repeatable)")
+	initCmd.Flags().StringSlice("auth-aws-allowed-account", nil, "allowed AWS account ID for aws_sigv4 (repeatable; ergonomic shortcut for whole-account access)")
 	initCmd.Flags().String("auth-aws-cache-ttl", "", "aws_sigv4 identity cache TTL (default 60s)")
 
 	initCmd.Flags().String("auth-gcp-iap-audience", "", "audience for gcp_iap (backend service ID)")

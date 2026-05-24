@@ -6,28 +6,33 @@ After feature work, update the affected documentation to reflect code changes.
 
 1. **Identify changed files** — Run `git diff main --name-only` to find modified Go files.
 
-2. **Map files to docs** — Use this mapping to determine which docs need updates:
+2. **Map files to docs** — Use this mapping to determine which docs need updates.
+   Paths match the actual `docs/` tree (nested under `core-concepts/`, `reference/`,
+   `security/`, `deployment/`, `skills/`).
 
    | Changed path pattern | Affected docs |
    |---------------------|---------------|
-   | `forge-core/runtime/` | `docs/runtime.md`, `docs/hooks.md` |
-   | `forge-core/security/` | `docs/security/overview.md`, `docs/security/egress.md` |
-   | `forge-core/tools/` | `docs/tools.md` |
-   | `forge-core/llm/` | `docs/runtime.md` |
-   | `forge-core/memory/` | `docs/memory.md` |
-   | `forge-core/scheduler/` | `docs/scheduling.md` |
-   | `forge-core/secrets/` | `docs/security/secrets.md` |
-   | `forge-core/skills/` | `docs/skills.md` |
-   | `forge-core/channels/` | `docs/channels.md` |
-   | `forge-cli/cmd/` | `docs/commands.md` |
-   | `forge-cli/runtime/` | `docs/runtime.md` |
-   | `forge-cli/server/` | `docs/architecture.md` |
-   | `forge-cli/channels/` | `docs/channels.md` |
-   | `forge-cli/tools/` | `docs/tools.md` |
-   | `forge-plugins/` | `docs/channels.md`, `docs/plugins.md` |
-   | `forge-ui/` | `docs/dashboard.md` |
-   | `forge-skills/` | `docs/skills.md` |
-   | `forge.yaml` / `types/` | `docs/configuration.md` |
+   | `forge-core/auth/` | `docs/security/authentication.md`, `docs/security/audit-logging.md` |
+   | `forge-core/runtime/` | `docs/core-concepts/runtime-engine.md`, `docs/core-concepts/hooks.md` |
+   | `forge-core/security/` | `docs/security/overview.md`, `docs/security/egress-control.md` |
+   | `forge-core/tools/` | `docs/core-concepts/tools-and-builtins.md` |
+   | `forge-core/llm/` | `docs/core-concepts/runtime-engine.md` |
+   | `forge-core/memory/` | `docs/core-concepts/memory-system.md` |
+   | `forge-core/scheduler/` | `docs/core-concepts/scheduling.md` |
+   | `forge-core/secrets/` | `docs/security/secret-management.md` |
+   | `forge-core/channels/` | `docs/core-concepts/channels.md` |
+   | `forge-core/validate/` | `docs/reference/forge-yaml-schema.md` |
+   | `forge-cli/cmd/` | `docs/reference/cli-reference.md` |
+   | `forge-cli/runtime/` | `docs/core-concepts/runtime-engine.md` |
+   | `forge-cli/server/` | `docs/core-concepts/how-forge-works.md` |
+   | `forge-cli/channels/` | `docs/core-concepts/channels.md` |
+   | `forge-cli/tools/` | `docs/core-concepts/tools-and-builtins.md` |
+   | `forge-cli/internal/tui/` | `docs/reference/cli-reference.md` (wizard flow) |
+   | `forge-plugins/` | `docs/core-concepts/channels.md`, `docs/reference/framework-plugins.md` |
+   | `forge-ui/` | `docs/reference/web-dashboard.md` |
+   | `forge-skills/` | `docs/skills/writing-custom-skills.md`, `docs/skills/contributing-a-skill.md` |
+   | `forge-core/types/` / `forge.yaml` | `docs/reference/forge-yaml-schema.md` |
+   | `CHANGELOG.md` | (rendered into release notes; no per-doc sync needed) |
 
 3. **Read the diff** — For each mapped doc, read the relevant `git diff main` output to understand what changed.
 

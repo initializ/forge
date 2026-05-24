@@ -93,6 +93,7 @@ You write a `SKILL.md`. Forge compiles it into a secure, runnable agent with egr
 | Document | Description |
 |----------|-------------|
 | [Security Overview](docs/security/overview.md) | Complete security architecture |
+| [Authentication](docs/security/authentication.md) | Pluggable auth providers — OIDC, AWS Sigv4, GCP IAP, Azure AD |
 | [Egress Security](docs/security/egress-control.md) | Egress enforcement deep dive |
 | [Secrets](docs/security/secret-management.md) | Encrypted secret management |
 | [Build Signing](docs/security/build-signing.md) | Ed25519 signing and verification |

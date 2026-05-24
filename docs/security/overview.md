@@ -18,6 +18,10 @@ Forge's security is organized in layers, each addressing a different threat surf
 │                    Global Guardrails                          │
 │              (content filtering, PII, jailbreak)             │
 ├──────────────────────────────────────────────────────────────┤
+│                  Authentication (a2a)                         │
+│  (Pluggable provider chain: OIDC, AWS Sigv4, GCP IAP,         │
+│   Azure AD, http_verifier, static_token loopback)             │
+├──────────────────────────────────────────────────────────────┤
 │                    Egress Enforcement                        │
 │  (EgressEnforcer + EgressProxy + SafeDialer + NetworkPolicy) │
 ├──────────────────────────────────────────────────────────────┤
@@ -39,6 +43,7 @@ Forge's security is organized in layers, each addressing a different threat surf
 ## Table of Contents
 
 - [Network Posture](#network-posture)
+- [Authentication](#authentication)
 - [Egress Enforcement](#egress-enforcement)
 - [Execution Sandboxing](#execution-sandboxing)
 - [Secrets Management](#secrets-management)
@@ -47,6 +52,32 @@ Forge's security is organized in layers, each addressing a different threat surf
 - [Audit Logging](#audit-logging)
 - [Container Security](#container-security)
 - [Related Documentation](#related-documentation)
+
+## Authentication
+
+The `/tasks` HTTP endpoint requires every caller to authenticate through a
+pluggable provider chain configured in `forge.yaml`. Forge ships six provider
+types and holds no IdP secrets — every provider verifies against a third
+party (STS, GCP JWKS, AAD JWKS, your custom verifier) or a local file.
+
+| Provider | Use case | Wire format |
+|---|---|---|
+| `static_token` | Loopback (channel adapters, local Web UI dashboard) | Bearer literal |
+| `oidc` | Generic OIDC IdP (Keycloak, Auth0, Okta, Google) | Bearer JWT |
+| `aws_sigv4` | AWS IAM identities (Lambda, EC2, EKS, SSO users) | `Bearer forge-aws-v1.<base64>` |
+| `gcp_iap` | Behind GCP HTTPS LB + IAP | `X-Goog-Iap-Jwt-Assertion: <jwt>` |
+| `azure_ad` | Microsoft Entra ID | Bearer JWT |
+| `http_verifier` | Custom `/verify` endpoint you operate | Opaque token |
+
+The chain is first-match-wins with **fail-closed on rejection** — a malformed
+token of type A doesn't fall through to type B. The local Web UI dashboard
+and channel adapters use an auto-prepended `static_token` (the `runtime.token`
+file under `.forge/`) so they keep working regardless of how external auth is
+configured.
+
+See [Authentication Providers](authentication.md) for the complete reference,
+including per-provider security model, client-side recipes, and mesh
+(agent-to-agent) patterns.
 
 ---
 
@@ -267,6 +298,7 @@ Production builds enforce:
 
 | Document | Description |
 |----------|-------------|
+| [Authentication](authentication.md) | Pluggable auth providers (OIDC, AWS Sigv4, GCP IAP, Azure AD, etc.) gating the a2a HTTP server |
 | [Egress Security](egress-control.md) | Deep dive into egress enforcement: IP validation, SafeDialer, profiles, modes, domain matching, proxy architecture, NetworkPolicy |
 | [Secrets Management](secret-management.md) | Encrypted storage, per-agent secrets, passphrase handling |
 | [Build Signing & Verification](build-signing.md) | Key management, build signing, runtime verification |

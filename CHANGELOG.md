@@ -6,13 +6,12 @@
 
 - **`aws_sigv4` auth provider.** Authenticate AWS-IAM callers by reflecting
   their Sigv4 signature to AWS STS `GetCallerIdentity`. No `aws-sdk-go-v2`
-  dependency. See [`docs/auth/providers/aws_sigv4.md`](docs/auth/providers/aws_sigv4.md).
+  dependency.
 - **`gcp_iap` auth provider.** Verify the JWT IAP forwards as
   `X-Goog-Iap-Jwt-Assertion` when Forge sits behind a GCP HTTPS Load
-  Balancer with IAP enabled. See [`docs/auth/providers/gcp_iap.md`](docs/auth/providers/gcp_iap.md).
+  Balancer with IAP enabled.
 - **`azure_ad` auth provider.** Verify Microsoft Entra ID Bearer tokens
   with tenant lock-in and optional Microsoft Graph group enrichment.
-  See [`docs/auth/providers/azure_ad.md`](docs/auth/providers/azure_ad.md).
 - Non-interactive `forge init` flags for the three new providers:
   `--auth-aws-region`, `--auth-aws-allowed-principal` (repeatable),
   `--auth-gcp-iap-audience`, `--auth-azure-tenant`,

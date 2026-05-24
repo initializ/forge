@@ -41,3 +41,8 @@ profile.cov
 
 # OS files
 .DS_Store
+
+# Auth provider docs — kept on disk locally but not version-controlled.
+# Source-of-truth docs live in the design folder; in-repo copies are
+# scratch space until we decide on the doc-site delivery story.
+docs/auth/

@@ -86,6 +86,7 @@ func buildAuthFromFlags(cmd *cobra.Command, mode string) (settings map[string]an
 		tenant, _ := cmd.Flags().GetString("auth-azure-tenant")
 		audience, _ := cmd.Flags().GetString("auth-azure-audience")
 		multiTenant, _ := cmd.Flags().GetBool("auth-azure-multi-tenant")
+		allowedTenants, _ := cmd.Flags().GetStringSlice("auth-azure-allowed-tenant")
 		groupsMode, _ := cmd.Flags().GetString("auth-azure-groups-mode")
 		if audience == "" {
 			return nil, nil, fmt.Errorf("--auth=azure_ad requires --auth-azure-audience")
@@ -93,12 +94,18 @@ func buildAuthFromFlags(cmd *cobra.Command, mode string) (settings map[string]an
 		if !multiTenant && tenant == "" {
 			return nil, nil, fmt.Errorf("--auth=azure_ad requires --auth-azure-tenant unless --auth-azure-multi-tenant=true")
 		}
+		if !multiTenant && len(allowedTenants) > 0 {
+			return nil, nil, fmt.Errorf("--auth-azure-allowed-tenant is only meaningful with --auth-azure-multi-tenant=true")
+		}
 		settings = map[string]any{"audience": audience}
 		if tenant != "" {
 			settings["tenant_id"] = tenant
 		}
 		if multiTenant {
 			settings["allow_multi_tenant"] = true
+		}
+		if len(allowedTenants) > 0 {
+			settings["allowed_tenants"] = allowedTenants
 		}
 		if groupsMode != "" {
 			settings["groups_mode"] = groupsMode

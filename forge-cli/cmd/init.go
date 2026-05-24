@@ -154,6 +154,7 @@ func init() {
 	initCmd.Flags().String("auth-azure-tenant", "", "Entra tenant GUID (required unless --auth-azure-multi-tenant)")
 	initCmd.Flags().String("auth-azure-audience", "", "Entra application ID URI / audience")
 	initCmd.Flags().Bool("auth-azure-multi-tenant", false, "accept tokens from any Entra tenant (default false)")
+	initCmd.Flags().StringSlice("auth-azure-allowed-tenant", nil, "allowed Entra tenant GUID for multi-tenant mode (repeatable; empty list = any tenant globally)")
 	initCmd.Flags().String("auth-azure-groups-mode", "", "azure_ad groups mode: claim (default) or graph")
 }
 

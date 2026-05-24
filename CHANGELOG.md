@@ -74,6 +74,27 @@ Identity Center (SSO) — SSO permission sets gate Org membership at
 sign-in, and you can match Identity Center-assumed roles with the
 existing `allowed_principals` globs.
 
+### `azure_ad.allowed_tenants` — explicit allowlist for multi-tenant mode
+
+```yaml
+auth:
+  providers:
+    - type: azure_ad
+      settings:
+        audience: api://forge
+        allow_multi_tenant: true
+        allowed_tenants:
+          - "00000000-1111-2222-3333-444444444444"   # partner A
+          - "55555555-6666-7777-8888-999999999999"   # partner B
+```
+
+When `allow_multi_tenant: true`, the `tid` claim must be in
+`allowed_tenants` (case-insensitive GUID match). Empty list +
+multi-tenant remains the documented "any tenant globally" mode for
+back-compat, but `forge validate` now emits a warning when the list
+is empty to make the trade-off explicit. Non-interactive flag:
+`--auth-azure-allowed-tenant` (repeatable).
+
 ### TUI wizard supports Phase 2 providers
 
 `forge init`'s TUI picker now includes `AWS Sigv4 (IAM)`,

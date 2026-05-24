@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // TokenPrefix is the magic token-type marker that distinguishes
@@ -25,11 +27,13 @@ const TokenPrefix = "forge-aws-v1."
 // encoding of "/" in X-Amz-Credential, "+" in X-Amz-Security-Token), and
 // any such re-encoding invalidates the signature.
 type PresignedToken struct {
-	RawURL string   // the exact URL the AWS SDK produced — preserve as-is
-	URL    *url.URL // parsed view, for host validation and query inspection only
-	AKID   string   // for IdentityCache bucket key
-	Date   string   // YYYYMMDD scope date — for IdentityCache bucket key
-	Region string   // from the credential scope (we cross-check against cfg.Region)
+	RawURL  string        // the exact URL the AWS SDK produced — preserve as-is
+	URL     *url.URL      // parsed view, for host validation and query inspection only
+	AKID    string        // for IdentityCache bucket key
+	Date    string        // YYYYMMDD scope date — for IdentityCache bucket key
+	Region  string        // from the credential scope (we cross-check against cfg.Region)
+	SigTime time.Time     // parsed X-Amz-Date — used by CheckFreshness, not by ParseToken itself
+	Expires time.Duration // parsed X-Amz-Expires — used by CheckFreshness
 }
 
 // ParseToken validates a forge-aws-v1 Bearer token end-to-end and returns
@@ -117,13 +121,83 @@ func ParseToken(token, expectedHost string, requireHTTPS bool) (*PresignedToken,
 		return nil, fmt.Errorf("X-Amz-Credential: %w", err)
 	}
 
+	sigTime, err := parseAmzDate(q.Get("X-Amz-Date"))
+	if err != nil {
+		return nil, fmt.Errorf("X-Amz-Date: %w", err)
+	}
+	expires, err := parseAmzExpires(q.Get("X-Amz-Expires"))
+	if err != nil {
+		return nil, fmt.Errorf("X-Amz-Expires: %w", err)
+	}
+
 	return &PresignedToken{
-		RawURL: string(raw),
-		URL:    u,
-		AKID:   akid,
-		Date:   date,
-		Region: region,
+		RawURL:  string(raw),
+		URL:     u,
+		AKID:    akid,
+		Date:    date,
+		Region:  region,
+		SigTime: sigTime,
+		Expires: expires,
 	}, nil
+}
+
+// CheckFreshness rejects tokens whose self-declared lifetime exceeds
+// maxExpires OR whose validity window has already lapsed (with skew
+// for clock drift between Forge and the caller). This is defense in
+// depth on top of STS's own ~15min enforcement: if STS ever accepts
+// a stale token, our IdentityCache would happily serve the cached
+// Identity for its full TTL. Parser-side freshness closes that gap.
+//
+// Caller passes `now` and the limits so this is unit-testable without
+// time monkey-patching. Provider supplies them from its Config.
+func (t *PresignedToken) CheckFreshness(now time.Time, maxExpires, skew time.Duration) error {
+	if t.Expires > maxExpires {
+		return fmt.Errorf("X-Amz-Expires=%s exceeds cap %s", t.Expires, maxExpires)
+	}
+	// Token's own self-declared expiry passed already (with skew tolerance).
+	if now.After(t.SigTime.Add(t.Expires).Add(skew)) {
+		return fmt.Errorf("token expired: signed at %s + %s lifetime + %s skew, now %s",
+			t.SigTime.UTC().Format(time.RFC3339), t.Expires, skew, now.UTC().Format(time.RFC3339))
+	}
+	// Token from the future beyond our skew tolerance — either a wildly
+	// skewed client OR a malicious signer trying to extend the validity
+	// window. STS itself catches this; we belt-and-brace.
+	if t.SigTime.Sub(now) > skew {
+		return fmt.Errorf("token signed in the future: %s vs now %s (skew %s)",
+			t.SigTime.UTC().Format(time.RFC3339), now.UTC().Format(time.RFC3339), skew)
+	}
+	return nil
+}
+
+// parseAmzDate parses an X-Amz-Date timestamp in its standard form
+// "YYYYMMDDTHHMMSSZ" (e.g. "20260524T150405Z"). UTC by definition.
+func parseAmzDate(s string) (time.Time, error) {
+	if s == "" {
+		return time.Time{}, errors.New("missing X-Amz-Date")
+	}
+	t, err := time.Parse("20060102T150405Z", s)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("malformed %q: %v", s, err)
+	}
+	return t, nil
+}
+
+// parseAmzExpires parses the X-Amz-Expires query value (seconds, as a
+// decimal integer string). AWS SDKs constrain this to [1, 604800]
+// (1s to 7 days) at signing time; we additionally cap at CheckFreshness
+// time per the operator's maxExpires.
+func parseAmzExpires(s string) (time.Duration, error) {
+	if s == "" {
+		return 0, errors.New("missing X-Amz-Expires")
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("not an integer: %q", s)
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("must be positive, got %d", n)
+	}
+	return time.Duration(n) * time.Second, nil
 }
 
 // parseCredentialScope splits X-Amz-Credential into its five segments:

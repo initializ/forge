@@ -207,6 +207,15 @@ func validateAuthPayload(a *AuthCreateOptions) error {
 		return nil
 	}
 
+	// Filter the incoming Settings to the known-keys whitelist BEFORE
+	// validation OR scaffolding. Closes the exploit chain (review M5):
+	// without this, a POST with `{"settings": {"audience": "x",
+	// "evil_key": "y"}}` would drop evil_key into forge.yaml verbatim.
+	// Today provider Config structs ignore unknown YAML fields, but a
+	// future field added without a `yaml:"-"` tag would suddenly become
+	// reachable via untrusted POST. Filtering here gives defense-in-depth.
+	a.Settings = validate.FilterKnownSettings(a.Mode, a.Settings)
+
 	authYAML := types.AuthConfig{
 		// Required is set true here because the wizard's renderAuthBlock
 		// always emits required:true when a provider is chosen. Keeping

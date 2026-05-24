@@ -23,6 +23,93 @@ var knownAuthProviderTypes = map[string]bool{
 	"azure_ad":  true,
 }
 
+// KnownAuthProviderSettings is the closed set of YAML keys each provider
+// type accepts. Mirrors the `yaml:` tags on each provider's Config struct;
+// must be kept in sync when new fields are added. Internal-only struct
+// fields (those carrying `yaml:"-"`) are intentionally absent — they
+// can only be set by another Go package, not via forge.yaml or the
+// Web UI's create-payload.
+//
+// Two callers consume this map:
+//
+//  1. ValidateAuthConfig emits a *warning* per unknown key during
+//     `forge validate`, so a typo like `aud:` instead of `audience:`
+//     gets surfaced loudly.
+//
+//  2. The Web UI handler (forge-ui handlers_create.go) filters its
+//     incoming Settings map through FilterKnownSettings before
+//     forwarding to scaffold — closing the exploit chain where a
+//     malicious POST `{"settings": {"audience": "x", "evil": "y"}}`
+//     would otherwise drop `evil:` into forge.yaml verbatim.
+var KnownAuthProviderSettings = map[string]map[string]bool{
+	"http_verifier": {
+		"url":         true,
+		"default_org": true,
+		"timeout":     true,
+	},
+	"static_token": {
+		"token":     true,
+		"token_env": true,
+	},
+	"oidc": {
+		"issuer":         true,
+		"audience":       true,
+		"client_id":      true,
+		"jwks_url":       true,
+		"jwks_cache_ttl": true,
+		"clock_skew":     true,
+		"claim_map":      true,
+	},
+	"aws_sigv4": {
+		"region":             true,
+		"audience":           true,
+		"allowed_principals": true,
+		"allowed_accounts":   true,
+		"identity_cache_ttl": true,
+		"sts_endpoint":       true, // documented test override, intentionally YAML-reachable
+		"http_timeout":       true,
+		"max_token_expires":  true,
+		"clock_skew":         true,
+	},
+	"gcp_iap": {
+		"audience":         true,
+		"jwks_refresh_ttl": true,
+		"http_timeout":     true,
+	},
+	"azure_ad": {
+		"tenant_id":          true,
+		"audience":           true,
+		"allow_multi_tenant": true,
+		"allowed_tenants":    true,
+		"groups_mode":        true,
+		"graph_timeout":      true,
+		"jwks_cache_ttl":     true,
+		// graph_endpoint intentionally omitted — yaml:"-" on the Config field
+	},
+}
+
+// FilterKnownSettings returns a copy of settings with any keys not in
+// the whitelist for providerType dropped. Use this at the boundary
+// between untrusted input (Web UI POST) and persistence (forge.yaml
+// scaffold) so unknown keys never reach disk.
+//
+// For unknown providerType (returns nil from the whitelist lookup), the
+// input is passed through unchanged — let the ValidateAuthConfig
+// "unknown type" error catch that case instead.
+func FilterKnownSettings(providerType string, settings map[string]any) map[string]any {
+	known, ok := KnownAuthProviderSettings[providerType]
+	if !ok {
+		return settings
+	}
+	out := make(map[string]any, len(settings))
+	for k, v := range settings {
+		if known[k] {
+			out[k] = v
+		}
+	}
+	return out
+}
+
 // ValidateAuthConfig adds errors and warnings for a forge.yaml auth: block.
 // Empty AuthConfig is valid (legacy --auth-url path remains the fallback).
 func ValidateAuthConfig(cfg types.AuthConfig, r *ValidationResult) {
@@ -62,6 +149,20 @@ func ValidateAuthConfig(cfg types.AuthConfig, r *ValidationResult) {
 // runs at runtime construction) so `forge validate` catches errors before
 // `forge run`.
 func validateProviderSettings(prefix string, p types.AuthProvider, r *ValidationResult) {
+	// Warn on any keys the provider doesn't recognize. Loose vs. error
+	// because some operators stash custom annotations (legacy practice
+	// from pre-Phase-2 configs); the Web UI handler additionally filters
+	// at write-time so the actual scaffold-poisoning chain is closed
+	// there (see forge-ui/handlers_create.go).
+	if known, ok := KnownAuthProviderSettings[p.Type]; ok {
+		for k := range p.Settings {
+			if !known[k] {
+				r.Warnings = append(r.Warnings,
+					fmt.Sprintf("%s (%s): unknown settings key %q — typo, or a key from a future provider version?", prefix, p.Type, k))
+			}
+		}
+	}
+
 	switch p.Type {
 	case "http_verifier":
 		if asString(p.Settings, "url") == "" {

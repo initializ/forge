@@ -140,6 +140,35 @@ func TestSTSClient_RequestCount(t *testing.T) {
 	}
 }
 
+func TestSTSClient_DoesNotFollowRedirects(t *testing.T) {
+	// Review B3: Go's default http.Client follows redirects up to 10
+	// hops. The parser-side host gate only validates the first hop —
+	// auto-following a 302 to attacker-controlled bytes would let
+	// those bytes become the parsed STS XML and control the stamped
+	// Identity. Pin: any 3xx is treated as STS-unavailable (we never
+	// follow), so the same-host guard actually holds.
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Location", "https://attacker.example.com/")
+		w.WriteHeader(http.StatusFound) // 302
+	}))
+	defer srv.Close()
+
+	c := NewSTSClient("us-east-1", "", 5*time.Second)
+	_, err := c.GetCallerIdentity(context.Background(), srv.URL)
+	if err == nil {
+		t.Fatal("expected error on 302; client must not follow")
+	}
+	// 3xx falls into the "unexpected status" arm → unavailable.
+	if !errors.Is(err, auth.ErrProviderUnavailable) {
+		t.Errorf("err = %v, want ErrProviderUnavailable", err)
+	}
+	if hits.Load() != 1 {
+		t.Errorf("STS hit %d times, want exactly 1 (redirect was followed)", hits.Load())
+	}
+}
+
 func TestSTSClient_PreservesURLQueryString(t *testing.T) {
 	// The pre-signed URL carries the signature in query params; the
 	// client MUST send those verbatim to STS or STS will reject.

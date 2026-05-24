@@ -19,6 +19,8 @@ All runtime security events are emitted as structured NDJSON to stderr with corr
 | `egress_blocked` | Outbound request blocked (with domain, mode) |
 | `llm_call` | LLM API call completed (with token count) |
 | `guardrail_check` | Guardrail evaluation result |
+| `auth_verify` | Inbound request authenticated successfully (with `provider`, `user_id`, `org_id`, `token_kind`) |
+| `auth_fail` | Inbound request rejected (with `reason`, `token_kind`) |
 
 ### Example
 
@@ -31,3 +33,81 @@ All runtime security events are emitted as structured NDJSON to stderr with corr
 ```
 
 The `source` field distinguishes in-process enforcer events from subprocess proxy events.
+
+### Authentication events
+
+Every inbound request to `/tasks` emits exactly one of `auth_verify` or `auth_fail`.
+
+**Successful authentication:**
+
+```json
+{
+  "ts":"2026-05-24T00:50:01Z",
+  "event":"auth_verify",
+  "fields":{
+    "method":"POST",
+    "path":"/tasks/send",
+    "provider":"aws_sigv4",
+    "user_id":"arn:aws:sts::412664885516:assumed-role/AWSReservedSSO_PowerUserAccess_.../Naveen",
+    "org_id":"412664885516",
+    "token_kind":"sigv4",
+    "groups_count":0,
+    "remote_addr":"[::1]:62297"
+  }
+}
+```
+
+`user_id` is the canonical identifier the verifier returned (ARN for AWS, JWT
+`sub` for OIDC/IAP/AAD). `org_id` is the AWS account, Entra tenant GUID, or
+OIDC `tid`/`org_id`-mapped claim depending on the provider.
+
+**Failed authentication:**
+
+```json
+{"ts":"...","event":"auth_fail","fields":{"reason":"rejected","token_kind":"sigv4","method":"POST","path":"/tasks/send","remote_addr":"[::1]:62200"}}
+```
+
+### Reason codes (`auth_fail.fields.reason`)
+
+| Reason | What it means | Operator action |
+|---|---|---|
+| `missing_token` | No auth-shaped headers at all | Caller forgot to authenticate |
+| `not_for_me` | Bearer present but no provider claimed it | Wrong token format for the configured providers |
+| `rejected` | Provider recognized + denied (allowlist miss, expired, bad sig, scope mismatch) | Check `allowed_principals` / `tenant_id` / token freshness |
+| `invalid` | Token malformed (bad base64, unsupported alg, missing required field) | Token construction bug on the caller side |
+| `provider_unavailable` | Verifier endpoint down (STS / JWKS / Graph 5xx, network error) | Provider-side incident; not a token issue |
+
+### Token kind values (`fields.token_kind`)
+
+Structural classification of what bytes were on the wire — safe to log:
+
+| Value | Shape |
+|---|---|
+| `empty` | No token / no auth-shaped headers |
+| `opaque` | Bearer with non-JWT, non-sigv4 shape (channel adapter loopback, custom verifier tokens) |
+| `jwt` | Bearer with three base64url segments (`oidc`, `azure_ad`) |
+| `sigv4` | Bearer with `forge-aws-v1.` prefix (`aws_sigv4` pre-signed URL token) |
+| `iap_jwt` | `X-Goog-Iap-Jwt-Assertion` header present (`gcp_iap`) — also stamped on successful verify even if Bearer was simultaneously present |
+
+### Audit pipeline grep recipes
+
+Who called my agent in the last hour, by ARN/email?
+
+```bash
+jq -r 'select(.event=="auth_verify") | .fields.user_id' forge.log | sort | uniq -c
+```
+
+Why are requests failing?
+
+```bash
+jq -r 'select(.event=="auth_fail") | .fields.reason' forge.log | sort | uniq -c
+```
+
+Which agents called this one (in a mesh)?
+
+```bash
+jq -r 'select(.event=="auth_verify") | "\(.fields.user_id)"' forge.log | sort -u
+```
+
+See [Authentication](authentication.md) for the full provider chain and how
+each provider populates these fields.

@@ -39,6 +39,23 @@ forge init [name] [flags]
 | `--org-id` | | | OpenAI Organization ID (enterprise) |
 | `--from-skills` | | | Path to a SKILL.md file for auto-configuration |
 | `--non-interactive` | | `false` | Skip interactive prompts |
+| `--auth` | | | Auth mode: `none`, `oidc`, `http_verifier`, `aws_sigv4`, `gcp_iap`, `azure_ad`, `custom` |
+| `--auth-issuer` | | | OIDC issuer URL (required with `--auth=oidc`) |
+| `--auth-audience` | | | OIDC audience (required with `--auth=oidc`) |
+| `--auth-url` | | | Verifier URL (required with `--auth=http_verifier`) |
+| `--auth-default-org` | | | Default `org_id` for http_verifier |
+| `--auth-groups-claim` | | | Custom JWT claim name for groups (oidc, default `groups`) |
+| `--auth-aws-region` | | | AWS region for `aws_sigv4` (e.g. `us-east-1`) |
+| `--auth-aws-audience` | | | Informational audience for `aws_sigv4` |
+| `--auth-aws-allowed-principal` | | | Allowed principal glob for `aws_sigv4` (repeatable) |
+| `--auth-aws-allowed-account` | | | Allowed AWS account ID for `aws_sigv4` (repeatable, 12-digit) |
+| `--auth-aws-cache-ttl` | | `60s` | `aws_sigv4` identity cache TTL |
+| `--auth-gcp-iap-audience` | | | Backend service ID for `gcp_iap` |
+| `--auth-azure-tenant` | | | Entra tenant GUID for `azure_ad` |
+| `--auth-azure-audience` | | | Audience (Application ID URI) for `azure_ad` |
+| `--auth-azure-multi-tenant` | | `false` | Accept tokens from any Entra tenant |
+| `--auth-azure-allowed-tenant` | | | Allowed Entra tenant GUID for multi-tenant `azure_ad` (repeatable) |
+| `--auth-azure-groups-mode` | | `claim` | `azure_ad` groups mode: `claim` or `graph` |
 
 ### Generated Files
 
@@ -84,7 +101,27 @@ forge init my-agent \
   --api-key sk-... \
   --org-id org-xxxxxxxxxxxxxxxxxxxxxxxx \
   --non-interactive
+
+# AWS IAM auth (any caller in account 412664885516)
+forge init my-agent \
+  --model-provider ollama \
+  --auth=aws_sigv4 \
+  --auth-aws-region=us-east-1 \
+  --auth-aws-allowed-account=412664885516 \
+  --non-interactive
+
+# Azure AD multi-tenant with explicit partner allowlist
+forge init my-agent \
+  --model-provider ollama \
+  --auth=azure_ad \
+  --auth-azure-audience=api://forge \
+  --auth-azure-multi-tenant \
+  --auth-azure-allowed-tenant=00000000-1111-... \
+  --auth-azure-allowed-tenant=55555555-6666-... \
+  --non-interactive
 ```
+
+See [Authentication](../security/authentication.md) for the full auth provider reference.
 
 ---
 

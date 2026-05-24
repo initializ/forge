@@ -212,7 +212,27 @@ The resolver (`forge-core/security/resolver.go`) combines all domain sources:
    - Start with explicit domains from `forge.yaml`
    - Add tool-inferred domains
    - Add capability bundle domains
+   - **Add auth-provider-derived domains** (see below)
    - Deduplicate and sort
+
+### Auth-provider domain auto-extension
+
+Configuring an `auth.providers[]` entry adds the host(s) the provider needs
+to reach to the allowlist automatically — operators don't have to remember
+to add `sts.us-east-1.amazonaws.com` themselves when they configure
+`aws_sigv4`. The `security.AuthDomains` helper centralizes the mapping:
+
+| Provider | Host(s) added |
+|---|---|
+| `oidc` | host of `issuer` URL, host of explicit `jwks_url` if set |
+| `http_verifier` | host of `url` |
+| `aws_sigv4` | `sts.<region>.amazonaws.com` (+ test-mode `sts_endpoint` override host) |
+| `gcp_iap` | `www.gstatic.com` (hardcoded, IAP JWKS lives there) |
+| `azure_ad` | `login.microsoftonline.com` (+ `graph.microsoft.com` when `groups_mode: graph`) |
+
+`forge init`'s wizard runs the Auth step **before** Egress so the operator
+sees the full outbound surface for review in a single screen. See
+[Authentication](authentication.md) for the per-provider auth model.
 
 ## Build Artifacts
 

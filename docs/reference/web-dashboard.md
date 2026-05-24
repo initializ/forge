@@ -69,10 +69,41 @@ A multi-step wizard (web equivalent of `forge init`) that walks through the full
 | Tools | Select builtin tools; web_search shows Tavily vs Perplexity provider choice with API key input |
 | Skills | Browse registry skills by category with inline required/optional env var collection |
 | Fallback | Select backup LLM providers with API keys for automatic failover |
+| Auth | Select a2a auth provider (see below) |
+| Egress | Review the outbound allowlist (including auth-provider-derived hosts) |
 | Env & Security | Add extra env vars; set passphrase for AES-256-GCM secret encryption |
 | Review | Summary of all selections before creation |
 
 The wizard collects credentials inline at each step (matching the CLI TUI behavior) and supports all the same options: model selection, OAuth, web search providers, fallback chains, and encrypted secret storage.
+
+### Auth step
+
+The Auth step exposes the same provider chain as `forge.yaml`'s
+`auth.providers[]` block. Picker options:
+
+| Option | Effect |
+|---|---|
+| **None** | Anonymous access — no `auth:` block written |
+| **OIDC (JWT)** | Generic OIDC IdP (Keycloak, Auth0, Okta, Google) — collects issuer + audience |
+| **HTTP Verifier** | Legacy — POST tokens to your own `/verify` endpoint |
+| **AWS Sigv4 (IAM)** | AWS-IAM-based callers — collects region + optional audience + comma-separated allowed accounts |
+| **GCP Identity-Aware Proxy** | Forge behind GCP LB+IAP — collects backend service ID |
+| **Azure AD / Entra ID** | Microsoft Entra ID (single-tenant in the wizard; multi-tenant requires editing `forge.yaml` as a deliberate security trade-off) |
+| **Custom** | Comment stub — edit `forge.yaml` yourself |
+
+The Auth step runs **before** Egress, so the Egress step's review screen
+displays auth-provider-derived hosts (e.g. `sts.us-east-1.amazonaws.com`
+when AWS Sigv4 is selected) alongside the model / channel / tool / skill
+hosts. The operator sees the full outbound surface for approval in one
+place.
+
+The Web UI's `POST /api/create` endpoint additionally filters incoming
+auth `settings` through a closed-key whitelist (defined in
+`forge-core/validate/auth.go`) before scaffolding — unknown keys are
+silently dropped rather than written to disk.
+
+See [Authentication](../security/authentication.md) for the full
+provider reference.
 
 ## Config Editor
 

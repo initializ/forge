@@ -61,6 +61,51 @@ package:
       dest: "/usr/local/bin/custom-tool"       # Install destination
       chmod: "0755"                            # File permissions
 
+auth:                               # a2a HTTP-server auth chain (optional)
+  required: true                    # 401 every unauthenticated request
+  providers:                        # ordered; first match wins (fail-closed on rejection)
+    - type: "static_token"          # local dev / shared-secret
+      settings:
+        token_env: "FORGE_AUTH_TOKEN"  # env var name (preferred over literal `token:`)
+    - type: "oidc"                  # any IdP with OIDC discovery
+      settings:
+        issuer:   "https://login.example.com/auth/realms/forge"
+        audience: "api://forge"
+        client_id: ""               # optional azp fallback
+        jwks_url: ""                # overrides discovery
+        jwks_cache_ttl: "1h"
+        clock_skew: "30s"
+        claim_map: {groups: "roles"}
+    - type: "http_verifier"         # legacy external /verify endpoint
+      settings:
+        url:         "https://auth.example.com/verify"
+        default_org: "acme"
+        timeout:     "10s"
+    - type: "aws_sigv4"             # Phase 2: AWS IAM via pre-signed STS URL
+      settings:
+        region:    "us-east-1"      # required
+        audience:  "api://forge"    # informational, emitted in audit Claims
+        allowed_accounts:           # ergonomic: "anyone in these AWS accounts"
+          - "412664885516"
+        allowed_principals:         # explicit globs (path.Match)
+          - "arn:aws:sts::412664885516:assumed-role/ci-deploy/*"
+        identity_cache_ttl: "60s"
+        max_token_expires:  "15m"   # caps caller's X-Amz-Expires claim
+        clock_skew:         "5m"
+    - type: "gcp_iap"               # Phase 2: GCP IAP-fronted Forge
+      settings:
+        audience: "/projects/PNUM/global/backendServices/BACKEND_ID"
+        jwks_refresh_ttl: "1h"
+    - type: "azure_ad"              # Phase 2: Microsoft Entra ID
+      settings:
+        tenant_id: "00000000-1111-..."   # required unless allow_multi_tenant
+        audience:  "api://forge"
+        allow_multi_tenant: false
+        allowed_tenants:                  # required when multi-tenant + want allowlist
+          - "55555555-6666-..."
+        groups_mode:   "claim"            # "claim" | "graph"
+        graph_timeout: "5s"
+
 secrets:
   providers:                        # Secret providers (order matters)
     - "encrypted-file"              # AES-256-GCM encrypted file

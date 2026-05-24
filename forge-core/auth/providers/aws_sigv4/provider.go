@@ -7,6 +7,28 @@
 // identities are cached by hash(AKID|YYYYMMDD) for IdentityCacheTTL so the
 // hot path doesn't bounce through STS on every call.
 //
+// # Client-side signing contract (READ THIS BEFORE INTEGRATING)
+//
+// Sigv4 binds the signature to the destination host as part of its canonical
+// headers. Forge does not — and cannot — relax that. As a consequence,
+// callers MUST sign their request as if they were going to STS directly,
+// then attach the resulting headers to a request that's sent to Forge:
+//
+//  1. Construct an STS request shape (POST https://sts.<region>.amazonaws.com/,
+//     body Action=GetCallerIdentity&Version=2011-06-15) — but do not send it.
+//  2. Sign that hypothetical request with the caller's AWS credentials, using
+//     service=sts and region=<region>.
+//  3. Take the resulting Authorization + X-Amz-Date (+ X-Amz-Security-Token
+//     for temporary credentials, e.g. SSO / IRSA / Lambda) headers and attach
+//     them to the REAL POST that goes to Forge's /tasks/send endpoint.
+//  4. Forge will forward those headers verbatim to STS; STS will validate
+//     them against its own host and return the caller's canonical ARN.
+//
+// Standard tools (awscurl, the AWS CLI, boto3.client('sts')) do NOT do this
+// automatically — they always sign for the URL they are addressing. A small
+// wrapper is required. See scripts/forge-aws-sign.py for the canonical
+// reference implementation in ~30 lines of boto3.
+//
 // Decision §9.1: no aws-sdk-go-v2 dependency — the STS RPC is ~150 LOC of
 // hand-rolled HTTP + XML. Trade-off: small attack surface, predictable
 // behavior, no transitive deps; cost: we maintain the RPC ourselves.

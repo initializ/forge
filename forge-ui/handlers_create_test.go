@@ -735,3 +735,48 @@ func TestHandleCreateAgent_WithoutAuthPayload(t *testing.T) {
 		t.Errorf("Auth = %v, want nil for omitted field", captured.Auth)
 	}
 }
+
+// --- Review M5: unknown-key filter at the Web UI boundary ---
+
+func TestHandleCreateAgent_FiltersUnknownAuthSettings(t *testing.T) {
+	// Defense-in-depth: a POST that carries an unknown settings key
+	// (typo OR malicious) must NOT survive into what the scaffold writes.
+	// Today the providers' Config structs ignore unknown YAML fields, so
+	// even an unfiltered key is harmless; this test pins the filter so
+	// a future config-struct field can't suddenly become reachable via
+	// untrusted POST.
+	srv, captured := setupCreateWithCapture(t)
+
+	body := []byte(`{
+		"name": "filter-test",
+		"model_provider": "openai",
+		"auth": {
+			"mode": "oidc",
+			"settings": {
+				"issuer":   "https://login.example.com",
+				"audience": "api://forge",
+				"evil_key": "attacker-supplied-value"
+			}
+		}
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/agents", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.handleCreateAgent(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", w.Code)
+	}
+	if captured.Auth == nil {
+		t.Fatal("expected Auth payload to reach scaffold")
+	}
+	if _, leaked := captured.Auth.Settings["evil_key"]; leaked {
+		t.Errorf("evil_key leaked to scaffold: %v", captured.Auth.Settings)
+	}
+	// Known keys must still be there.
+	if captured.Auth.Settings["issuer"] != "https://login.example.com" {
+		t.Errorf("issuer dropped or wrong: %v", captured.Auth.Settings)
+	}
+	if captured.Auth.Settings["audience"] != "api://forge" {
+		t.Errorf("audience dropped or wrong: %v", captured.Auth.Settings)
+	}
+}

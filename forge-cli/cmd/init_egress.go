@@ -93,6 +93,18 @@ func deriveEgressDomains(opts *initOptions, skills []contract.SkillDescriptor) [
 		}
 	}
 
+	// 5. Auth-provider domains — same translation the non-interactive
+	//    --auth=… path uses, so TUI and CLI render identical egress lists.
+	//    Examples:
+	//      oidc           → host extracted from issuer URL
+	//      aws_sigv4      → sts.<region>.amazonaws.com
+	//      gcp_iap        → www.gstatic.com  (hardcoded §9.4)
+	//      azure_ad       → login.microsoftonline.com (+ graph.microsoft.com
+	//                       when groups_mode=graph)
+	for _, h := range authEgressHostsFromSettings(opts.AuthMode, opts.AuthSettings) {
+		add(h)
+	}
+
 	sort.Strings(domains)
 	return domains
 }

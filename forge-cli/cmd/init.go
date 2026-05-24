@@ -267,13 +267,25 @@ func collectInteractive(opts *initOptions) error {
 		}
 	}
 
-	// Build the egress derivation callback (avoids circular import)
-	deriveEgressFn := func(provider string, channels, tools, selectedSkills []string, envVars map[string]string) []string {
+	// Build the egress derivation callback (avoids circular import).
+	// Note: the auth params get the auth step's choice forwarded into
+	// deriveEgressDomains, which delegates to authEgressHostsFromSettings
+	// — the same translation used by `forge init --auth=…` so TUI and
+	// non-interactive paths produce identical egress lists.
+	deriveEgressFn := func(
+		provider string,
+		channels, tools, selectedSkills []string,
+		envVars map[string]string,
+		authMode string,
+		authSettings map[string]any,
+	) []string {
 		tmpOpts := &initOptions{
 			ModelProvider: provider,
 			Channels:      channels,
 			BuiltinTools:  tools,
 			EnvVars:       envVars,
+			AuthMode:      authMode,
+			AuthSettings:  authSettings,
 		}
 		selectedInfos := lookupSelectedSkills(selectedSkills)
 		return deriveEgressDomains(tmpOpts, selectedInfos)
@@ -294,7 +306,14 @@ func collectInteractive(opts *initOptions) error {
 		return validateWebSearchKey(provider, key)
 	}
 
-	// Build step list
+	// Build step list.
+	//
+	// Auth comes BEFORE Egress so the operator's auth choice — and the
+	// hosts it requires (sts.<region>.amazonaws.com, login.microsoftonline.com,
+	// etc.) — appear in the Egress review for confirmation. Without this
+	// ordering, the egress list would miss auth hosts and a Forge instance
+	// could fail at runtime because its OIDC discovery or STS call gets
+	// blocked by the very allowlist the wizard just rendered.
 	wizardSteps := []tui.Step{
 		steps.NewNameStep(styles, opts.Name),
 		steps.NewProviderStep(styles, validateKeyFn, oauthFlowFn),
@@ -302,8 +321,8 @@ func collectInteractive(opts *initOptions) error {
 		steps.NewChannelStep(styles),
 		steps.NewToolsStep(styles, toolInfos, validateWebSearchKeyFn),
 		steps.NewSkillsStep(styles, skillInfos),
-		steps.NewEgressStep(styles, deriveEgressFn),
 		steps.NewAuthStep(styles),
+		steps.NewEgressStep(styles, deriveEgressFn),
 		steps.NewReviewStep(styles), // scaffold is handled by the caller after collectInteractive returns
 	}
 

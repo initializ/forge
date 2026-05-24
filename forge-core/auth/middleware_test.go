@@ -580,6 +580,31 @@ func TestMiddleware_TokenKind_Sigv4OnEmptyBearer(t *testing.T) {
 	}
 }
 
+func TestMiddleware_TokenKind_IapJwtOnIAPHeader(t *testing.T) {
+	// Phase 2: when the only auth header is X-Goog-Iap-Jwt-Assertion,
+	// audit emits token_kind="iap_jwt" (not "empty"). Pinning this so
+	// the GCP IAP audit signal is distinguishable from no-auth requests.
+	var gotKind string
+	opts := MiddlewareOptions{
+		Chain:     NewChainProvider(&headerCapturingProvider{err: ErrTokenNotForMe}),
+		SkipPaths: DefaultSkipPaths(),
+		OnAuth: func(_ *http.Request, _ *Identity, _ error, kind string) {
+			gotKind = kind
+		},
+	}
+	handler := Middleware(opts)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("POST", "/tasks", nil)
+	req.Header.Set("X-Goog-Iap-Jwt-Assertion", "eyJ.eyJ.sig")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if gotKind != "iap_jwt" {
+		t.Errorf("token kind = %q, want iap_jwt", gotKind)
+	}
+}
+
 func TestMiddleware_TokenKind_EmptyWhenTrulyNoAuth(t *testing.T) {
 	// Counterpart to the test above: when the caller didn't attempt auth
 	// at all, token_kind should be "empty" — not silently widened.

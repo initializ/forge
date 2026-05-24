@@ -22,26 +22,33 @@ import (
 // token is reflected to Graph, which authorizes the read against the
 // user's delegated permission (GroupMember.Read.All).
 type GraphClient struct {
-	endpoint string // override-able for tests
-	http     *http.Client
+	endpoint     string // initial page URL
+	endpointHost string // pre-parsed for cheap per-page nextLink validation
+	http         *http.Client
 }
 
 const graphBaseURL = "https://graph.microsoft.com/v1.0/me/transitiveMemberOf?$select=id&$top=100"
 
 // NewGraphClient builds a client pointed at the real Graph endpoint.
 func NewGraphClient(timeout time.Duration) *GraphClient {
-	return &GraphClient{
-		endpoint: graphBaseURL,
-		http:     &http.Client{Timeout: timeout},
-	}
+	return newGraphClientFor(graphBaseURL, timeout)
 }
 
 // NewGraphClientWithEndpoint is a TEST-ONLY constructor for pointing at
 // a fake Graph server.
 func NewGraphClientWithEndpoint(endpoint string, timeout time.Duration) *GraphClient {
+	return newGraphClientFor(endpoint, timeout)
+}
+
+func newGraphClientFor(endpoint string, timeout time.Duration) *GraphClient {
+	host := ""
+	if u, err := url.Parse(endpoint); err == nil {
+		host = u.Host
+	}
 	return &GraphClient{
-		endpoint: endpoint,
-		http:     &http.Client{Timeout: timeout},
+		endpoint:     endpoint,
+		endpointHost: host,
+		http:         &http.Client{Timeout: timeout},
 	}
 }
 
@@ -63,7 +70,7 @@ func (c *GraphClient) TransitiveMemberOf(ctx context.Context, _ string, authHead
 	out := []string{}
 	next := c.endpoint
 	for next != "" {
-		if err := ensureGraphHost(c.endpoint, next); err != nil {
+		if err := ensureGraphHost(c.endpointHost, next); err != nil {
 			return nil, fmt.Errorf("%w: graph nextLink host: %v", auth.ErrProviderUnavailable, err)
 		}
 		page, nextURL, err := c.fetchPage(ctx, next, authHeader)
@@ -125,20 +132,19 @@ func (c *GraphClient) fetchPage(ctx context.Context, u, authHeader string) (ids 
 // host. Real Graph paginates within graph.microsoft.com. For tests where
 // the endpoint is httptest's 127.0.0.1, the test-mode endpoint host is
 // what we compare against.
-func ensureGraphHost(configured, candidate string) error {
+//
+// `configuredHost` is the pre-parsed Host of GraphClient.endpoint, computed
+// once at construction so we don't reparse it for every paginated request.
+func ensureGraphHost(configuredHost, candidate string) error {
 	if candidate == "" {
 		return nil
-	}
-	want, err := url.Parse(configured)
-	if err != nil {
-		return err
 	}
 	got, err := url.Parse(candidate)
 	if err != nil {
 		return err
 	}
-	if !strings.EqualFold(want.Host, got.Host) {
-		return fmt.Errorf("nextLink host %q does not match configured %q", got.Host, want.Host)
+	if !strings.EqualFold(configuredHost, got.Host) {
+		return fmt.Errorf("nextLink host %q does not match configured %q", got.Host, configuredHost)
 	}
 	return nil
 }

@@ -361,5 +361,24 @@ func needsYAMLQuoting(s string) bool {
 	case "true", "false", "yes", "no", "on", "off", "null", "~":
 		return true
 	}
+	// All-digit strings would otherwise decode as integers — quote them
+	// to preserve string semantics (e.g. AWS account IDs are 12-digit
+	// strings, NOT numbers — and the provider expects []string).
+	if isAllDigits(s) {
+		return true
+	}
 	return false
+}
+
+// isAllDigits returns true if s is non-empty and consists only of ASCII digits.
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }

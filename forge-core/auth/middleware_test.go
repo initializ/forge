@@ -463,10 +463,10 @@ func (p *headerCapturingProvider) Verify(_ context.Context, token string, h Head
 	return p.identity, p.err
 }
 
-func TestMiddleware_Sigv4HeaderReachesChain(t *testing.T) {
-	// Phase 2 change: a Sigv4-shaped Authorization reaches the chain even
-	// though extractBearerToken returns "". The middleware no longer
-	// short-circuits to 401 when there's an auth-shaped header present.
+func TestMiddleware_Sigv4BearerReachesChain(t *testing.T) {
+	// Phase 2: aws_sigv4 uses the pre-signed URL Bearer-token pattern.
+	// The chain receives the Bearer token directly via the standard path
+	// — no non-Bearer-header handling needed.
 	spy := &headerCapturingProvider{err: ErrTokenNotForMe}
 	opts := MiddlewareOptions{
 		Chain:     NewChainProvider(spy),
@@ -477,15 +477,11 @@ func TestMiddleware_Sigv4HeaderReachesChain(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest("POST", "/tasks", nil)
-	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential=AKIA.../20260523/us-east-1/sts/aws4_request, SignedHeaders=host, Signature=ab")
+	req.Header.Set("Authorization", "Bearer forge-aws-v1.aHR0cHM6Ly9zdHM")
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
-	if spy.sawHeaders == nil {
-		t.Fatal("chain was never invoked — middleware short-circuited on empty Bearer")
-	}
-	got := spy.sawHeaders.Get("Authorization")
-	if got == "" || !startsWithLocal(got, "AWS4-HMAC-SHA256 ") {
-		t.Errorf("chain saw Authorization = %q, want Sigv4-prefixed value", got)
+	if spy.sawToken == "" || !startsWithLocal(spy.sawToken, "forge-aws-v1.") {
+		t.Errorf("chain saw token = %q, want forge-aws-v1 prefixed", spy.sawToken)
 	}
 }
 
@@ -554,11 +550,10 @@ func TestMiddleware_NoAuthHeaders_PreservesMissingTokenReason(t *testing.T) {
 	}
 }
 
-func TestMiddleware_TokenKind_Sigv4OnEmptyBearer(t *testing.T) {
-	// Phase 2: the audit token_kind reads "sigv4" when the request has a
-	// Sigv4-shaped Authorization header, even though Bearer extraction
-	// returned "". Audit dashboards need this signal to count Sigv4
-	// requests distinctly from "empty" (no auth attempt at all).
+func TestMiddleware_TokenKind_Sigv4FromForgeAwsToken(t *testing.T) {
+	// Phase 2: aws_sigv4 uses the "forge-aws-v1.<base64>" Bearer token
+	// pattern. TokenKind on that prefix returns "sigv4" so audit dashboards
+	// can count Sigv4 traffic distinctly from generic Bearer.
 	var gotKind string
 	opts := MiddlewareOptions{
 		Chain:     NewChainProvider(&headerCapturingProvider{err: ErrTokenNotForMe}),
@@ -572,7 +567,7 @@ func TestMiddleware_TokenKind_Sigv4OnEmptyBearer(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest("POST", "/tasks", nil)
-	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential=AKIA, SignedHeaders=host, Signature=ab")
+	req.Header.Set("Authorization", "Bearer forge-aws-v1.aHR0cHM6Ly9zdHMudXMtZWFzdC0xLmFtYXpvbmF3cy5jb20")
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
 	if gotKind != "sigv4" {

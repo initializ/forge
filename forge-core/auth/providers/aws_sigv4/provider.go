@@ -1,46 +1,70 @@
-// Package aws_sigv4 authenticates requests signed with AWS Sigv4 by
-// reflecting the signature to AWS STS GetCallerIdentity. Same pattern as
-// aws-iam-authenticator (the EKS auth bridge).
+// Package aws_sigv4 authenticates AWS-IAM callers using the pre-signed
+// URL pattern. Same approach as aws-iam-authenticator (the EKS auth bridge):
+// the caller uses their AWS SDK to compute a pre-signed STS
+// GetCallerIdentity URL, wraps it as a Bearer token, and sends it to
+// Forge. Forge invokes the URL on STS, which validates the signature
+// (it was signed for STS's host) and returns the canonical
+// ARN / Account / UserID. Forge stamps an Identity from that response.
 //
-// Forge never has the caller's secret key — STS validates the signature
-// on Forge's behalf and returns the canonical ARN/Account/UserID. Verified
-// identities are cached by hash(AKID|YYYYMMDD) for IdentityCacheTTL so the
-// hot path doesn't bounce through STS on every call.
+// Forge never possesses the caller's AWS secret key. The cryptographic
+// work happens once on the caller side via standard SDK calls.
 //
-// # Client-side signing contract (READ THIS BEFORE INTEGRATING)
+// # Client-side contract (3 lines)
 //
-// Sigv4 binds the signature to the destination host as part of its canonical
-// headers. Forge does not — and cannot — relax that. As a consequence,
-// callers MUST sign their request as if they were going to STS directly,
-// then attach the resulting headers to a request that's sent to Forge:
+//	# Python / boto3
+//	import boto3, base64
+//	url   = boto3.client('sts', region_name='us-east-1').generate_presigned_url(
+//	            'get_caller_identity', ExpiresIn=900)
+//	token = 'forge-aws-v1.' + base64.urlsafe_b64encode(url.encode()).rstrip(b'=').decode()
+//	requests.post(forge_url, headers={'Authorization': f'Bearer {token}'}, data=msg)
 //
-//  1. Construct an STS request shape (POST https://sts.<region>.amazonaws.com/,
-//     body Action=GetCallerIdentity&Version=2011-06-15) — but do not send it.
-//  2. Sign that hypothetical request with the caller's AWS credentials, using
-//     service=sts and region=<region>.
-//  3. Take the resulting Authorization + X-Amz-Date (+ X-Amz-Security-Token
-//     for temporary credentials, e.g. SSO / IRSA / Lambda) headers and attach
-//     them to the REAL POST that goes to Forge's /tasks/send endpoint.
-//  4. Forge will forward those headers verbatim to STS; STS will validate
-//     them against its own host and return the caller's canonical ARN.
+// Reference client in scripts/forge-aws-sign.py.
 //
-// Standard tools (awscurl, the AWS CLI, boto3.client('sts')) do NOT do this
-// automatically — they always sign for the URL they are addressing. A small
-// wrapper is required. See scripts/forge-aws-sign.py for the canonical
-// reference implementation in ~30 lines of boto3.
+// # Wire format
 //
-// Decision §9.1: no aws-sdk-go-v2 dependency — the STS RPC is ~150 LOC of
-// hand-rolled HTTP + XML. Trade-off: small attack surface, predictable
-// behavior, no transitive deps; cost: we maintain the RPC ourselves.
+//	Authorization: Bearer forge-aws-v1.<base64url-of-presigned-sts-url>
 //
-// Decision §9.3: allowed_principals are shell-style globs (path.Match).
+// The base64-decoded payload is a complete pre-signed URL of the form:
 //
-// Audit reason codes (Phase 1 contract):
+//	https://sts.<region>.amazonaws.com/
+//	  ?Action=GetCallerIdentity
+//	  &Version=2011-06-15
+//	  &X-Amz-Algorithm=AWS4-HMAC-SHA256
+//	  &X-Amz-Credential=<AKID>/<YYYYMMDD>/<region>/sts/aws4_request
+//	  &X-Amz-Date=<YYYYMMDDTHHMMSSZ>
+//	  &X-Amz-Expires=<seconds, max 900>
+//	  &X-Amz-SignedHeaders=host
+//	  &X-Amz-Signature=<hex>
 //
-//	rejected             — scope check, ARN allowlist miss, STS 4xx
+// # SSRF guard
+//
+// Before invoking the URL, Forge validates the host matches
+// sts.<configured-region>.amazonaws.com exactly. A token whose URL
+// points anywhere else is rejected — the token must not be usable to
+// coerce Forge into calling an arbitrary internal endpoint.
+//
+// # Caching
+//
+// Verified identities are cached for IdentityCacheTTL keyed on
+// hash(AKID, YYYYMMDD), extracted from the token's X-Amz-Credential.
+// Rotating AKID or rolling past midnight UTC invalidates the bucket.
+// Errors are never cached.
+//
+// # Decisions
+//
+// §9.1 — no aws-sdk-go-v2 dependency. The STS RPC is hand-rolled HTTP +
+// XML; trade-off is smaller attack surface and no transitive deps.
+//
+// §9.3 — allowed_principals are shell-style globs (path.Match).
+//
+// # Audit reason codes (Phase 1 contract)
+//
+//	rejected             — STS 4xx (expired/bad sig), ARN allowlist miss,
+//	                       URL host mismatch, region scope mismatch
 //	provider_unavailable — STS 5xx, network failure, parse failure
-//	invalid              — Sigv4 header malformed
-//	not_for_me           — Authorization header didn't start with AWS4-HMAC-SHA256
+//	invalid              — token format malformed, base64 fails, URL fails,
+//	                       missing required query params
+//	not_for_me           — token didn't start with "forge-aws-v1."
 package aws_sigv4
 
 import (
@@ -48,7 +72,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/initializ/forge/forge-core/auth"
@@ -66,33 +89,31 @@ const (
 // Config controls the aws_sigv4 provider.
 type Config struct {
 	// Region is the AWS region whose STS endpoint validates signatures.
-	// REQUIRED. Defense in depth: callers must sign for this exact region
-	// (Sigv4 cross-region replay rejected at parse-time scope check).
+	// REQUIRED. The pre-signed URL's host MUST match
+	// sts.<region>.amazonaws.com exactly.
 	Region string `yaml:"region"`
 
-	// Audience is informational only — emitted in audit logs for context.
-	// STS itself doesn't enforce this.
+	// Audience is informational only — emitted in the audit log's Claims
+	// payload. STS itself doesn't enforce it.
 	Audience string `yaml:"audience,omitempty"`
 
-	// AllowedPrincipals is an optional list of shell-style globs (decision
-	// §9.3) matched against the STS-returned ARN. Empty list means "allow
-	// any IAM principal in the account that signed the request" — fine
-	// for single-tenant dev setups, never appropriate for prod.
+	// AllowedPrincipals is an optional list of shell-style globs (§9.3)
+	// matched against the STS-returned ARN. Empty list means "allow any
+	// IAM principal that has a valid AWS key" — fine for single-tenant
+	// dev, never appropriate for production.
 	//
-	// Patterns match the assumed-role ARN form
+	// Patterns match the STS assumed-role ARN form
 	// ("arn:aws:sts::ACCOUNT:assumed-role/RoleName/SessionName"), NOT the
-	// role's own ARN ("arn:aws:iam::ACCOUNT:role/RoleName"). PR6 docs
-	// call this out explicitly with a worked example.
+	// IAM role ARN ("arn:aws:iam::ACCOUNT:role/RoleName").
 	AllowedPrincipals []string `yaml:"allowed_principals,omitempty"`
 
 	// IdentityCacheTTL bounds how long a verified Identity is reused
-	// without re-checking with STS. Defaults to 60s. Sets the upper
-	// bound on the window in which a revoked AKID remains accepted.
+	// without re-checking with STS. Defaults to 60s.
 	IdentityCacheTTL time.Duration `yaml:"identity_cache_ttl,omitempty"`
 
-	// STSEndpoint is a TEST-ONLY override that points STS calls at an
-	// alternate URL. Production should leave this empty so the region
-	// derives the canonical sts.<region>.amazonaws.com host.
+	// STSEndpoint is a TEST-ONLY override that changes the expected
+	// pre-signed URL host (and relaxes the https requirement). Production
+	// should leave this empty.
 	STSEndpoint string `yaml:"sts_endpoint,omitempty"`
 
 	// HTTPTimeout caps each STS call. Defaults to 5s.
@@ -107,13 +128,14 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// Provider implements auth.Provider for AWS Sigv4 callers.
+// Provider implements auth.Provider for AWS-IAM callers.
 type Provider struct {
-	cfg     Config
-	parser  Parser
-	cache   *IdentityCache
-	sts     *STSClient
-	matcher *ArnMatcher
+	cfg          Config
+	expectedHost string // computed once: sts.<region>.amazonaws.com or test override
+	requireHTTPS bool   // false only when STSEndpoint test override is in use
+	cache        *IdentityCache
+	sts          *STSClient
+	matcher      *ArnMatcher
 }
 
 // New constructs a Provider after validating cfg.
@@ -131,12 +153,27 @@ func New(cfg Config) (*Provider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("aws_sigv4: allowed_principals: %w", err)
 	}
+
+	expectedHost := fmt.Sprintf("sts.%s.amazonaws.com", cfg.Region)
+	requireHTTPS := true
+	if cfg.STSEndpoint != "" {
+		h, scheme := hostAndSchemeOf(cfg.STSEndpoint)
+		if h != "" {
+			expectedHost = h
+		}
+		// Test override: allow plain http for httptest servers.
+		if scheme == "http" {
+			requireHTTPS = false
+		}
+	}
+
 	return &Provider{
-		cfg:     cfg,
-		parser:  Parser{},
-		cache:   NewIdentityCache(cfg.IdentityCacheTTL),
-		sts:     NewSTSClient(cfg.Region, cfg.STSEndpoint, cfg.HTTPTimeout),
-		matcher: matcher,
+		cfg:          cfg,
+		expectedHost: expectedHost,
+		requireHTTPS: requireHTTPS,
+		cache:        NewIdentityCache(cfg.IdentityCacheTTL),
+		sts:          NewSTSClient(cfg.Region, "", cfg.HTTPTimeout),
+		matcher:      matcher,
 	}, nil
 }
 
@@ -145,44 +182,37 @@ func (p *Provider) Name() string { return ProviderName }
 
 // Verify implements auth.Provider.
 //
-// Token is unused — Sigv4 carries everything it needs in the Authorization
-// header (and X-Amz-Date, X-Amz-Security-Token), which the middleware
-// hands us via the headers map.
-func (p *Provider) Verify(ctx context.Context, _ string, headers auth.Headers) (*auth.Identity, error) {
-	authHeader := headers.Get("Authorization")
-	if !strings.HasPrefix(authHeader, sigv4Algorithm+" ") {
-		return nil, auth.ErrTokenNotForMe
-	}
-
-	sig, err := p.parser.Parse(authHeader)
+// The middleware extracts the Bearer token and passes it here. If the
+// token doesn't start with "forge-aws-v1." we yield to the next chain
+// entry. Otherwise we validate the embedded pre-signed URL, GET it on
+// STS, and stamp an Identity from the returned ARN.
+func (p *Provider) Verify(ctx context.Context, token string, _ auth.Headers) (*auth.Identity, error) {
+	parsed, err := ParseToken(token, p.expectedHost, p.requireHTTPS)
 	if err != nil {
+		// Only the prefix check distinguishes "this isn't my token"
+		// from "this IS my token but malformed." Use a sentinel so the
+		// chain can fall through on the former but stop on the latter.
+		if err.Error() == "missing forge-aws-v1 prefix" {
+			return nil, auth.ErrTokenNotForMe
+		}
 		return nil, fmt.Errorf("%w: %v", auth.ErrInvalidToken, err)
 	}
 
-	// Scope check (defense in depth §3.1): reject signatures meant for a
-	// different AWS service or region. Prevents cross-service Sigv4
-	// replay (e.g. a request signed for S3 reaching us configured for STS).
-	if sig.Service != "sts" {
-		return nil, fmt.Errorf("%w: signature scoped to service %q, expected sts", auth.ErrTokenRejected, sig.Service)
-	}
-	if sig.Region != p.cfg.Region {
-		return nil, fmt.Errorf("%w: signature scoped to region %q, expected %s", auth.ErrTokenRejected, sig.Region, p.cfg.Region)
+	// Region in the credential scope must match our configured region.
+	// Defends against cross-region replay (e.g. a token pre-signed for
+	// us-east-1 hitting a Forge instance configured for eu-west-1).
+	if parsed.Region != p.cfg.Region {
+		return nil, fmt.Errorf("%w: token region %q != configured %s", auth.ErrTokenRejected, parsed.Region, p.cfg.Region)
 	}
 
-	cacheKey := dateBucketKey(sig.AKID, sig.Date)
+	cacheKey := dateBucketKey(parsed.AKID, parsed.Date)
 	if id, ok := p.cache.Get(cacheKey); ok {
 		return id, nil
 	}
 
-	caller, err := p.sts.GetCallerIdentity(ctx, STSReflectArgs{
-		AuthHeader:    authHeader,
-		AmzDate:       headers.Get("X-Amz-Date"),
-		SecurityToken: headers.Get("X-Amz-Security-Token"),
-	})
+	caller, err := p.sts.GetCallerIdentity(ctx, parsed.URL.String())
 	if err != nil {
-		// STSClient already wraps with the right sentinel
-		// (ErrTokenRejected for 4xx, ErrProviderUnavailable for 5xx/network).
-		return nil, err
+		return nil, err // STSClient already wraps with the right sentinel
 	}
 
 	if !p.matcher.Match(caller.Arn) {
@@ -204,17 +234,52 @@ func (p *Provider) Verify(ctx context.Context, _ string, headers auth.Headers) (
 	return id, nil
 }
 
-// dateBucketKey hashes (AKID, YYYYMMDD) so two requests from the same AKID
-// on the same day collapse to one STS call per IdentityCacheTTL window.
-// Hashing protects the cache against length-leak / log-scan attacks on the
-// raw key — same reasoning as static_token (review #11).
-func dateBucketKey(akid, sigv4Date string) string {
-	bucket := sigv4Date
+// dateBucketKey hashes (AKID, YYYYMMDD) so two requests from the same
+// AKID on the same day collapse to a single STS call per
+// IdentityCacheTTL window. Hashing protects against length-leak / log-scan
+// reads of the cache key.
+func dateBucketKey(akid, date string) string {
+	bucket := date
 	if len(bucket) > 8 {
 		bucket = bucket[:8] // YYYYMMDD
 	}
 	sum := sha256.Sum256([]byte(akid + "|" + bucket))
 	return hex.EncodeToString(sum[:])
+}
+
+// hostAndSchemeOf is a forgiving parser used only at Factory time for the
+// STSEndpoint test override. Returns (host, scheme) or empty strings on
+// parse failure.
+func hostAndSchemeOf(raw string) (host, scheme string) {
+	// Accept both bare "host:port" and full "scheme://host:port/path" forms.
+	// For the test override we only care about the host portion (for
+	// matching) and whether scheme is http (so we can relax the https check).
+	if i := indexOf(raw, "://"); i >= 0 {
+		scheme = raw[:i]
+		rest := raw[i+3:]
+		for k := 0; k < len(rest); k++ {
+			if rest[k] == '/' {
+				return rest[:k], scheme
+			}
+		}
+		return rest, scheme
+	}
+	// No scheme: assume host:port form
+	for k := 0; k < len(raw); k++ {
+		if raw[k] == '/' {
+			return raw[:k], ""
+		}
+	}
+	return raw, ""
+}
+
+func indexOf(s, sub string) int {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return i
+		}
+	}
+	return -1
 }
 
 func init() {

@@ -575,6 +575,71 @@ func TestMiddleware_TokenKind_Sigv4FromForgeAwsToken(t *testing.T) {
 	}
 }
 
+func TestMiddleware_TokenKind_RefinedToIapJwtWhenGCPIAPVerifies(t *testing.T) {
+	// Review M4: structural kind is "jwt" when a Bearer is present, but
+	// if gcp_iap was actually the verifier (because it read the IAP
+	// header instead of the Bearer), the audit kind must be "iap_jwt"
+	// so dashboards count IAP-fronted traffic correctly.
+	idFromIAP := &Identity{UserID: "iap-user", Source: "gcp_iap"}
+	chain := NewChainProvider(&headerCapturingProvider{
+		identity: idFromIAP,
+	})
+
+	var gotKind string
+	opts := MiddlewareOptions{
+		Chain:     chain,
+		SkipPaths: DefaultSkipPaths(),
+		OnAuth: func(_ *http.Request, id *Identity, _ error, kind string) {
+			if id != nil && id.Source == "gcp_iap" {
+				gotKind = kind
+			}
+		},
+	}
+	handler := Middleware(opts)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("POST", "/tasks", nil)
+	// Both a Bearer JWT (structural kind="jwt") AND an IAP header present.
+	// The chain (stubbed to return Source="gcp_iap") simulates gcp_iap
+	// being the actual verifier.
+	req.Header.Set("Authorization", "Bearer eyJ.eyJ.sig")
+	req.Header.Set("X-Goog-Iap-Jwt-Assertion", "eyJ.eyJ.iap-sig")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if gotKind != "iap_jwt" {
+		t.Errorf("token kind = %q, want iap_jwt (refined post-verify from provider Source)", gotKind)
+	}
+}
+
+func TestMiddleware_TokenKind_JWT_NotRefinedForOIDCProviders(t *testing.T) {
+	// Counter-test: when oidc / azure_ad is the verifier (Source !=
+	// gcp_iap), the structural "jwt" kind stays — we don't over-refine.
+	id := &Identity{UserID: "alice", Source: "oidc"}
+	chain := NewChainProvider(&headerCapturingProvider{identity: id})
+
+	var gotKind string
+	handler := Middleware(MiddlewareOptions{
+		Chain:     chain,
+		SkipPaths: DefaultSkipPaths(),
+		OnAuth: func(_ *http.Request, id *Identity, _ error, kind string) {
+			if id != nil {
+				gotKind = kind
+			}
+		},
+	})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("POST", "/tasks", nil)
+	req.Header.Set("Authorization", "Bearer eyJ.eyJ.sig")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if gotKind != "jwt" {
+		t.Errorf("token kind = %q, want jwt (no refinement for oidc Source)", gotKind)
+	}
+}
+
 func TestMiddleware_TokenKind_IapJwtOnIAPHeader(t *testing.T) {
 	// Phase 2: when the only auth header is X-Goog-Iap-Jwt-Assertion,
 	// audit emits token_kind="iap_jwt" (not "empty"). Pinning this so

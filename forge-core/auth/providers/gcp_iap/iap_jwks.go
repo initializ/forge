@@ -196,7 +196,11 @@ func (j *IAPJWKSCache) refresh(ctx context.Context) error {
 	j.lastAttempt = time.Now()
 	j.mu.Unlock()
 
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, j.url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, j.url, nil)
+	if err != nil {
+		j.bumpBackoff()
+		return fmt.Errorf("%w: IAP JWKS build request: %v", auth.ErrProviderUnavailable, err)
+	}
 	resp, err := j.http.Do(req)
 	if err != nil {
 		j.bumpBackoff()
@@ -221,8 +225,24 @@ func (j *IAPJWKSCache) refresh(ctx context.Context) error {
 		return fmt.Errorf("%w: IAP JWKS parse: %v", auth.ErrProviderUnavailable, err)
 	}
 
+	// Merge-on-success rather than replace (Review NIT). A partial-
+	// but-valid JWKS (e.g. one freshly-rotated kid omitted by mistake)
+	// must not drop kids the stale-grace contract assumes we still
+	// have. New keys take precedence over old of the same kid; old
+	// keys that aren't in the new response are kept.
+	//
+	// Worst case: a stale key for a kid GCP has actually retired stays
+	// in our cache. JWT signature verification will fail naturally for
+	// any token signed with the retired private key, so this can't
+	// admit forged tokens — it just keeps verification working through
+	// JWKS-API hiccups.
 	j.mu.Lock()
-	j.keys = keys
+	if j.keys == nil {
+		j.keys = map[string]*ecdsa.PublicKey{}
+	}
+	for kid, k := range keys {
+		j.keys[kid] = k
+	}
 	j.lastSuccessful = time.Now()
 	j.backoffDuration = 0
 	j.mu.Unlock()
@@ -285,36 +305,76 @@ func parseECJWKSet(raw []byte) (map[string]*ecdsa.PublicKey, error) {
 	return out, nil
 }
 
-// classifyJWTErr maps golang-jwt errors to auth sentinels. The library
-// returns wrapped errors with stable joinings — we string-match on the
-// most reliable signals.
+// classifyJWTErr maps golang-jwt errors to auth sentinels using v5's
+// named sentinels via errors.Is rather than substring matching. The
+// library's error wording can shift across patch releases; the sentinels
+// are part of its public API and stable. (Review NIT.)
 //
-// Algorithm-confusion ("signing method X is invalid") and kid-related
-// errors are classified as ErrInvalidToken (token shape is wrong),
-// not ErrTokenRejected (which is policy denial). These checks run
-// BEFORE the generic "signature is invalid" arm because the alg error
-// is wrapped in a signature-shaped outer error by golang-jwt.
+// Two-tier mapping:
+//
+//	ErrInvalidToken (malformed / structurally wrong):
+//	  - jwt.ErrTokenMalformed         (bad base64, dot-count, etc.)
+//	  - jwt.ErrTokenUnverifiable      (no key found, alg mismatch
+//	                                   detected in keyFunc)
+//	  - jwt.ErrInvalidKey, jwt.ErrInvalidKeyType
+//	  - keyFunc messages we emit ourselves ("unexpected alg",
+//	    "missing kid", "not found in IAP JWKS")
+//
+//	ErrTokenRejected (well-formed but cryptographically/temporally
+//	                  invalid — policy-denial shape):
+//	  - jwt.ErrTokenSignatureInvalid
+//	  - jwt.ErrTokenExpired
+//	  - jwt.ErrTokenNotValidYet (nbf in future)
+//	  - jwt.ErrTokenUsedBeforeIssued (iat in future)
+//	  - jwt.ErrTokenInvalidClaims
+//
+// Default: ErrInvalidToken (conservative — unknown errors are
+// classified as malformed, not as policy rejections).
 func classifyJWTErr(err error) error {
 	if errors.Is(err, auth.ErrProviderUnavailable) ||
 		errors.Is(err, auth.ErrInvalidToken) ||
 		errors.Is(err, auth.ErrTokenRejected) {
 		return err
 	}
+
+	// Special case: ErrTokenSignatureInvalid wraps BOTH (a) actual
+	// bad-signature failures (rejected) AND (b) alg-confusion errors
+	// where golang-jwt's WithValidMethods refused the token's alg
+	// before signing was even attempted. The latter is a malformed-
+	// shape failure (alg whitelist tripped), not a policy denial, so
+	// inspect the wrapped message to distinguish.
+	if errors.Is(err, jwt.ErrTokenSignatureInvalid) {
+		s := err.Error()
+		if strings.Contains(s, "signing method") {
+			return fmt.Errorf("%w: %v", auth.ErrInvalidToken, err)
+		}
+		return fmt.Errorf("%w: %v", auth.ErrTokenRejected, err)
+	}
+
+	switch {
+	case errors.Is(err, jwt.ErrTokenMalformed),
+		errors.Is(err, jwt.ErrTokenUnverifiable),
+		errors.Is(err, jwt.ErrInvalidKey),
+		errors.Is(err, jwt.ErrInvalidKeyType):
+		return fmt.Errorf("%w: %v", auth.ErrInvalidToken, err)
+	case errors.Is(err, jwt.ErrTokenExpired),
+		errors.Is(err, jwt.ErrTokenNotValidYet),
+		errors.Is(err, jwt.ErrTokenUsedBeforeIssued),
+		errors.Is(err, jwt.ErrTokenInvalidClaims):
+		return fmt.Errorf("%w: %v", auth.ErrTokenRejected, err)
+	}
+
+	// keyFunc errors we emit ourselves get wrapped by jwt.Parse, but
+	// the unwrap chain doesn't preserve them as distinct sentinels.
+	// Fall back to substring matching for THESE messages only — they're
+	// strings WE control, not the library's.
 	s := err.Error()
 	switch {
-	case strings.Contains(s, "signing method"),
-		strings.Contains(s, "unexpected alg"),
+	case strings.Contains(s, "unexpected alg"),
 		strings.Contains(s, "missing kid"),
-		strings.Contains(s, "kid "),      // "kid X not found"
-		strings.Contains(s, "not found"): // covers JWKS-resolution failures
-		return fmt.Errorf("%w: %v", auth.ErrInvalidToken, err)
-	case strings.Contains(s, "expired"),
-		strings.Contains(s, "iat"),
-		strings.Contains(s, "nbf"),
-		strings.Contains(s, "signature is invalid"),
-		strings.Contains(s, "verification error"):
-		return fmt.Errorf("%w: %v", auth.ErrTokenRejected, err)
-	default:
+		strings.Contains(s, "not found in IAP JWKS"):
 		return fmt.Errorf("%w: %v", auth.ErrInvalidToken, err)
 	}
+
+	return fmt.Errorf("%w: %v", auth.ErrInvalidToken, err)
 }

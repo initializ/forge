@@ -247,6 +247,34 @@ func TestProvider_RS256Token_Rejected(t *testing.T) {
 	}
 }
 
+func TestProvider_HS256WithECPublicKeyAsSecret_Rejected(t *testing.T) {
+	// The most dangerous algorithm-confusion shape (Review NIT): attacker
+	// takes the verifier's PUBLIC key (which the JWKS endpoint publishes
+	// openly), uses its raw bytes as the HMAC secret to sign an HS256
+	// token, and submits it. A verifier that doesn't whitelist the alg
+	// would happily HMAC-verify the token against the same "secret" =
+	// the public key bytes. Our keyFunc rejects on alg!="ES256" BEFORE
+	// even looking up the key — pin that explicitly.
+	signer := newES256Signer(t)
+	p := newProviderPointingAt(t, signer, "test-aud")
+
+	// Use the signer's public EC point coordinates as the HMAC "secret."
+	// The attacker only needs the public key, which they can fetch from
+	// the JWKS endpoint anonymously.
+	pubBytes := append(signer.pub.X.Bytes(), signer.pub.Y.Bytes()...)
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims(validClaims("test-aud")))
+	tok.Header["kid"] = signer.kid
+	str, err := tok.SignedString(pubBytes)
+	if err != nil {
+		t.Fatalf("sign HS256: %v", err)
+	}
+
+	_, err = p.Verify(context.Background(), "", auth.Headers{"X-Goog-Iap-Jwt-Assertion": str})
+	if !errors.Is(err, auth.ErrInvalidToken) {
+		t.Errorf("err = %v, want ErrInvalidToken (HS256-with-public-key alg confusion)", err)
+	}
+}
+
 func TestFactory_RejectsMissingAudience(t *testing.T) {
 	if _, err := auth.Build("gcp_iap", map[string]any{}); err == nil {
 		t.Fatal("expected error when audience is missing")

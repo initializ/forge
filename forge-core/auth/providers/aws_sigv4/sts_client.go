@@ -6,46 +6,32 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
 	"github.com/initializ/forge/forge-core/auth"
 )
 
-// STSClient calls AWS STS GetCallerIdentity by reflecting the caller's
-// Sigv4 signature. ~150 LOC of hand-rolled HTTP + XML — no aws-sdk-go-v2
-// dependency (decision §9.1).
+// STSClient invokes a pre-signed STS GetCallerIdentity URL produced by the
+// caller's AWS SDK. Because the signature is in the URL's query parameters
+// (not headers tied to a destination host), the request validates against
+// STS no matter who relays it — that's the design property that lets
+// Forge act as a verifier without holding any AWS secrets.
 //
-// The key security property: Forge NEVER possesses the caller's secret
-// key. STS validates the signature on Forge's behalf and returns the
-// canonical ARN / UserId / Account on success.
+// ~80 LOC of hand-rolled HTTP + XML. No aws-sdk-go-v2 dependency
+// (decision §9.1).
 type STSClient struct {
-	endpoint string
-	http     *http.Client
+	http *http.Client
 }
 
-// NewSTSClient builds a client for sts.<region>.amazonaws.com. The override
-// argument is for tests only — production should leave it empty.
-func NewSTSClient(region, override string, timeout time.Duration) *STSClient {
-	ep := override
-	if ep == "" {
-		ep = fmt.Sprintf("https://sts.%s.amazonaws.com", region)
-	}
+// NewSTSClient builds a client that GETs the URL the caller pre-signed.
+// `region` is informational here (the URL itself carries the region in
+// its credential scope and host); we keep the arg for symmetry with the
+// pre-rewrite API and for future per-region tuning.
+func NewSTSClient(_ /* region */ string, _ /* legacyOverrideUnused */ string, timeout time.Duration) *STSClient {
 	return &STSClient{
-		endpoint: ep,
-		http:     &http.Client{Timeout: timeout},
+		http: &http.Client{Timeout: timeout},
 	}
-}
-
-// STSReflectArgs is the set of headers reflected verbatim from the caller's
-// request to the STS call. SecurityToken is optional and only present when
-// the caller is using temporary credentials (assumed roles, federation,
-// IRSA, etc.).
-type STSReflectArgs struct {
-	AuthHeader    string
-	AmzDate       string
-	SecurityToken string
 }
 
 // CallerIdentity is the parsed STS response — the canonical identifiers
@@ -56,31 +42,21 @@ type CallerIdentity struct {
 	Account string // e.g. "123456789012"
 }
 
-// GetCallerIdentity reflects the caller's Sigv4 headers to STS and parses
-// the response.
+// GetCallerIdentity GETs the pre-signed URL and parses the XML response.
 //
 // Error classification:
 //
 //	200 OK         → CallerIdentity, nil
-//	4xx            → auth.ErrTokenRejected (caller's signature didn't validate)
+//	4xx            → auth.ErrTokenRejected (caller's signature didn't validate;
+//	                 most often "SignatureDoesNotMatch", "ExpiredToken", or
+//	                 "InvalidClientTokenId")
 //	5xx / network  → auth.ErrProviderUnavailable (review #6 contract)
 //	parse failure  → auth.ErrProviderUnavailable (unexpected response shape)
-func (c *STSClient) GetCallerIdentity(ctx context.Context, args STSReflectArgs) (*CallerIdentity, error) {
-	body := url.Values{
-		"Action":  {"GetCallerIdentity"},
-		"Version": {"2011-06-15"},
-	}.Encode()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, strings.NewReader(body))
+func (c *STSClient) GetCallerIdentity(ctx context.Context, presignedURL string) (*CallerIdentity, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, presignedURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("%w: build STS request: %v", auth.ErrProviderUnavailable, err)
 	}
-	req.Header.Set("Authorization", args.AuthHeader)
-	req.Header.Set("X-Amz-Date", args.AmzDate)
-	if args.SecurityToken != "" {
-		req.Header.Set("X-Amz-Security-Token", args.SecurityToken)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -88,8 +64,7 @@ func (c *STSClient) GetCallerIdentity(ctx context.Context, args STSReflectArgs) 
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	// Real GetCallerIdentity responses are ~1 KiB; cap at 64 KiB to bound
-	// memory if STS ever returns something pathological.
+	// Real GetCallerIdentity responses are ~1 KiB; cap at 64 KiB.
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if err != nil {
 		return nil, fmt.Errorf("%w: read STS body: %v", auth.ErrProviderUnavailable, err)
@@ -107,9 +82,8 @@ func (c *STSClient) GetCallerIdentity(ctx context.Context, args STSReflectArgs) 
 	}
 }
 
-// parseGetCallerIdentityResponse extracts the three canonical fields from
-// STS's XML response. Rejects responses that are missing any of them — STS
-// always sets all three, so absence implies a malformed reply.
+// parseGetCallerIdentityResponse extracts the three canonical fields.
+// STS always emits all three; absence is treated as a malformed reply.
 func parseGetCallerIdentityResponse(raw []byte) (*CallerIdentity, error) {
 	var resp struct {
 		XMLName xml.Name `xml:"GetCallerIdentityResponse"`
@@ -133,9 +107,9 @@ func parseGetCallerIdentityResponse(raw []byte) (*CallerIdentity, error) {
 }
 
 // summarize returns a short, single-line, log-safe rendering of an STS
-// error body. Caps at 200 chars and strips newlines so the full error
-// payload — which can include the caller's Authorization echo on certain
-// SDK-shaped errors — never propagates to logs verbatim.
+// error body. Caps at 200 chars and strips newlines so STS error text
+// (which can echo the caller's headers in some shapes) never propagates
+// to logs verbatim.
 func summarize(raw []byte) string {
 	s := string(raw)
 	if len(s) > 200 {

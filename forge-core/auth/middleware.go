@@ -109,31 +109,17 @@ func Middleware(opts MiddlewareOptions) func(http.Handler) http.Handler {
 			token := extractBearerToken(r)
 			kind := TokenKind(token)
 
-			// Phase 2: when no Bearer token was extracted, classify the
-			// audit kind from the non-Bearer auth headers so token_kind in
-			// the audit log differentiates Sigv4 / IAP / no-auth requests
-			// instead of all reporting "empty".
-			rawAuth := r.Header.Get("Authorization")
+			// Phase 2: gcp_iap doesn't use a Bearer token — it reads
+			// X-Goog-Iap-Jwt-Assertion. Surface that in the audit kind
+			// and let the chain run even on empty Bearer when IAP is
+			// the format in play. aws_sigv4 (Phase 2 pre-signed URL
+			// pattern) DOES use a Bearer token, so no special-case here.
 			iapHeader := r.Header.Get("X-Goog-Iap-Jwt-Assertion")
-			if kind == "empty" {
-				switch {
-				case strings.HasPrefix(rawAuth, "AWS4-HMAC-SHA256 "):
-					kind = "sigv4"
-				case iapHeader != "":
-					kind = "iap_jwt"
-				}
+			if kind == "empty" && iapHeader != "" {
+				kind = "iap_jwt"
 			}
+			hasNonBearerAuth := token == "" && iapHeader != ""
 
-			// hasNonBearerAuth signals "the caller IS attempting auth, just
-			// not via Bearer." Used to differentiate "missing_token" (no
-			// auth headers at all) from "chain rejected/didn't match" in
-			// the audit reason.
-			hasNonBearerAuth := token == "" && (rawAuth != "" || iapHeader != "")
-
-			// Phase 2 change: consult the chain even on empty Bearer, so
-			// providers that speak non-Bearer formats (aws_sigv4, gcp_iap)
-			// get a chance. Phase 1 short-circuit (empty bearer → 401)
-			// preserved only when there are no auth-shaped headers at all.
 			if token == "" && !hasNonBearerAuth {
 				notifyAuth(opts.OnAuth, r, nil, ErrMissingBearer, kind)
 				writeAuthError(w, "valid bearer token required")

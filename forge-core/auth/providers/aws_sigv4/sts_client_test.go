@@ -24,17 +24,17 @@ const happySTSXML = `<GetCallerIdentityResponse xmlns="https://sts.amazonaws.com
 </GetCallerIdentityResponse>`
 
 func TestSTSClient_HappyPath(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("STS got method %q, want GET", r.Method)
+		}
 		w.Header().Set("Content-Type", "text/xml")
 		_, _ = io.WriteString(w, happySTSXML)
 	}))
 	defer srv.Close()
 
-	c := NewSTSClient("us-east-1", srv.URL, 5*time.Second)
-	id, err := c.GetCallerIdentity(context.Background(), STSReflectArgs{
-		AuthHeader: "AWS4-HMAC-SHA256 Credential=AKIA",
-		AmzDate:    "20260523T120000Z",
-	})
+	c := NewSTSClient("us-east-1", "", 5*time.Second)
+	id, err := c.GetCallerIdentity(context.Background(), srv.URL+"/?Action=GetCallerIdentity")
 	if err != nil {
 		t.Fatalf("GetCallerIdentity: %v", err)
 	}
@@ -56,8 +56,8 @@ func TestSTSClient_403_Rejected(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewSTSClient("us-east-1", srv.URL, 5*time.Second)
-	_, err := c.GetCallerIdentity(context.Background(), STSReflectArgs{AuthHeader: "AWS4"})
+	c := NewSTSClient("us-east-1", "", 5*time.Second)
+	_, err := c.GetCallerIdentity(context.Background(), srv.URL)
 	if !errors.Is(err, auth.ErrTokenRejected) {
 		t.Errorf("err = %v, want ErrTokenRejected", err)
 	}
@@ -66,77 +66,29 @@ func TestSTSClient_403_Rejected(t *testing.T) {
 func TestSTSClient_500_Unavailable(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = io.WriteString(w, "<ErrorResponse><Error><Code>InternalFailure</Code></Error></ErrorResponse>")
 	}))
 	defer srv.Close()
 
-	c := NewSTSClient("us-east-1", srv.URL, 5*time.Second)
-	_, err := c.GetCallerIdentity(context.Background(), STSReflectArgs{AuthHeader: "AWS4"})
+	c := NewSTSClient("us-east-1", "", 5*time.Second)
+	_, err := c.GetCallerIdentity(context.Background(), srv.URL)
 	if !errors.Is(err, auth.ErrProviderUnavailable) {
 		t.Errorf("err = %v, want ErrProviderUnavailable", err)
 	}
 }
 
 func TestSTSClient_NetworkError_Unavailable(t *testing.T) {
-	// Point at a closed listener so Do() returns a transport error.
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
 	url := srv.URL
 	srv.Close()
 
-	c := NewSTSClient("us-east-1", url, 1*time.Second)
-	_, err := c.GetCallerIdentity(context.Background(), STSReflectArgs{AuthHeader: "AWS4"})
+	c := NewSTSClient("us-east-1", "", 1*time.Second)
+	_, err := c.GetCallerIdentity(context.Background(), url)
 	if !errors.Is(err, auth.ErrProviderUnavailable) {
 		t.Errorf("err = %v, want ErrProviderUnavailable", err)
 	}
 }
 
-func TestSTSClient_AuthHeaderReflectedVerbatim(t *testing.T) {
-	var captured string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		captured = r.Header.Get("Authorization")
-		w.Header().Set("Content-Type", "text/xml")
-		_, _ = io.WriteString(w, happySTSXML)
-	}))
-	defer srv.Close()
-
-	wantAuth := "AWS4-HMAC-SHA256 Credential=AKIA.../20260523/us-east-1/sts/aws4_request, SignedHeaders=host;x-amz-date, Signature=abc123"
-	c := NewSTSClient("us-east-1", srv.URL, 5*time.Second)
-	_, err := c.GetCallerIdentity(context.Background(), STSReflectArgs{
-		AuthHeader:    wantAuth,
-		AmzDate:       "20260523T120000Z",
-		SecurityToken: "FwoGZX-test-session",
-	})
-	if err != nil {
-		t.Fatalf("GetCallerIdentity: %v", err)
-	}
-	if captured != wantAuth {
-		t.Errorf("STS did not receive caller's Authorization verbatim:\n  got:  %q\n  want: %q", captured, wantAuth)
-	}
-}
-
-func TestSTSClient_SecurityTokenReflected(t *testing.T) {
-	var capturedTok string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedTok = r.Header.Get("X-Amz-Security-Token")
-		_, _ = io.WriteString(w, happySTSXML)
-	}))
-	defer srv.Close()
-
-	c := NewSTSClient("us-east-1", srv.URL, 5*time.Second)
-	_, _ = c.GetCallerIdentity(context.Background(), STSReflectArgs{
-		AuthHeader:    "AWS4",
-		AmzDate:       "20260523T120000Z",
-		SecurityToken: "FwoGZX-token",
-	})
-	if capturedTok != "FwoGZX-token" {
-		t.Errorf("X-Amz-Security-Token = %q, want FwoGZX-token", capturedTok)
-	}
-}
-
 func TestSTSClient_BodyCap(t *testing.T) {
-	// Serve 128 KiB; ensure the client doesn't OOM and the response
-	// either parses cleanly (truncated at exactly a well-formed prefix
-	// — unlikely) OR returns ErrProviderUnavailable from parse failure.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "<GetCallerIdentityResponse>")
@@ -145,8 +97,8 @@ func TestSTSClient_BodyCap(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewSTSClient("us-east-1", srv.URL, 5*time.Second)
-	_, err := c.GetCallerIdentity(context.Background(), STSReflectArgs{AuthHeader: "AWS4"})
+	c := NewSTSClient("us-east-1", "", 5*time.Second)
+	_, err := c.GetCallerIdentity(context.Background(), srv.URL)
 	if err == nil {
 		t.Fatal("expected error on oversized STS body")
 	}
@@ -156,8 +108,6 @@ func TestSTSClient_BodyCap(t *testing.T) {
 }
 
 func TestSTSClient_MissingFieldsRejected(t *testing.T) {
-	// Response with empty Arn — must reject as unavailable (malformed,
-	// not "rejected" — STS would never legitimately return blank fields).
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `<GetCallerIdentityResponse><GetCallerIdentityResult>
 			<UserId>x</UserId><Account>123</Account><Arn></Arn>
@@ -165,38 +115,45 @@ func TestSTSClient_MissingFieldsRejected(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewSTSClient("us-east-1", srv.URL, 5*time.Second)
-	_, err := c.GetCallerIdentity(context.Background(), STSReflectArgs{AuthHeader: "AWS4"})
+	c := NewSTSClient("us-east-1", "", 5*time.Second)
+	_, err := c.GetCallerIdentity(context.Background(), srv.URL)
 	if !errors.Is(err, auth.ErrProviderUnavailable) {
 		t.Errorf("err = %v, want ErrProviderUnavailable", err)
 	}
 }
 
-func TestSTSClient_RegionEndpointFormat(t *testing.T) {
-	// Sanity: NewSTSClient without an override builds the right URL.
-	c := NewSTSClient("eu-west-1", "", time.Second)
-	if c.endpoint != "https://sts.eu-west-1.amazonaws.com" {
-		t.Errorf("endpoint = %q", c.endpoint)
-	}
-}
-
 func TestSTSClient_RequestCount(t *testing.T) {
-	// Pin the basic happy-path call counting for use by the provider-level
-	// cache-hit test.
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
 		_, _ = io.WriteString(w, happySTSXML)
 	}))
 	defer srv.Close()
-	c := NewSTSClient("us-east-1", srv.URL, 5*time.Second)
-	for i := range 3 {
-		_, err := c.GetCallerIdentity(context.Background(), STSReflectArgs{AuthHeader: "AWS4"})
-		if err != nil {
-			t.Fatalf("call %d: %v", i, err)
+	c := NewSTSClient("us-east-1", "", 5*time.Second)
+	for range 3 {
+		if _, err := c.GetCallerIdentity(context.Background(), srv.URL); err != nil {
+			t.Fatalf("call: %v", err)
 		}
 	}
 	if calls.Load() != 3 {
 		t.Errorf("STS calls = %d, want 3", calls.Load())
+	}
+}
+
+func TestSTSClient_PreservesURLQueryString(t *testing.T) {
+	// The pre-signed URL carries the signature in query params; the
+	// client MUST send those verbatim to STS or STS will reject.
+	var capturedQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedQuery = r.URL.RawQuery
+		_, _ = io.WriteString(w, happySTSXML)
+	}))
+	defer srv.Close()
+
+	c := NewSTSClient("us-east-1", "", 5*time.Second)
+	wantQuery := "Action=GetCallerIdentity&X-Amz-Signature=abc123"
+	_, _ = c.GetCallerIdentity(context.Background(), srv.URL+"/?"+wantQuery)
+	if capturedQuery != wantQuery {
+		t.Errorf("STS received query %q, want %q", capturedQuery, wantQuery)
 	}
 }

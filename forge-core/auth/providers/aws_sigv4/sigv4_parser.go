@@ -85,6 +85,18 @@ func ParseToken(token, expectedHost string, requireHTTPS bool) (*PresignedToken,
 	if u.Scheme != "https" && u.Scheme != "http" {
 		return nil, fmt.Errorf("URL scheme %q is not http(s)", u.Scheme)
 	}
+	// Reject userinfo BEFORE the host check. RFC 3986 separates
+	// userinfo from host, so net/url parses
+	// "https://user:pass@sts.us-east-1.amazonaws.com" into
+	// (u.User="user:pass", u.Host="sts.us-east-1.amazonaws.com") —
+	// the host check alone would let that token through. Then
+	// http.Client.Do would synthesize Authorization: Basic <b64> from
+	// u.User and ship attacker-controlled bytes to STS. STS ignores
+	// Basic (it uses the X-Amz-Signature query param), but we still
+	// don't want attacker bytes leaving the box. (Review M1.)
+	if u.User != nil {
+		return nil, errors.New("URL must not contain userinfo (RFC 3986 user:pass@ section)")
+	}
 	if !strings.EqualFold(u.Host, expectedHost) {
 		return nil, fmt.Errorf("URL host %q does not match expected %q (SSRF guard)", u.Host, expectedHost)
 	}

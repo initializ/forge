@@ -73,6 +73,27 @@ func TestParseToken_EmptyPayload(t *testing.T) {
 	}
 }
 
+func TestParseToken_RejectsUserinfo(t *testing.T) {
+	// Review M1: net/url parses "https://user:pass@sts.us-east-1.amazonaws.com"
+	// into u.User != nil and u.Host == "sts.us-east-1.amazonaws.com" — the
+	// host check alone passes. We must reject userinfo explicitly, otherwise
+	// http.Client.Do would synthesize Authorization: Basic <b64> and ship
+	// attacker bytes to STS.
+	hostile := strings.Replace(
+		validPresignedURL,
+		"https://sts.us-east-1.amazonaws.com/",
+		"https://attacker:secret@sts.us-east-1.amazonaws.com/",
+		1,
+	)
+	_, err := ParseToken(makeToken(hostile), validHost, true)
+	if err == nil {
+		t.Fatal("expected error on URL with userinfo")
+	}
+	if !strings.Contains(err.Error(), "userinfo") {
+		t.Errorf("err should mention userinfo; got %v", err)
+	}
+}
+
 func TestParseToken_RejectsForeignHost(t *testing.T) {
 	// SSRF guard — even if base64 decodes to a syntactically valid URL,
 	// any non-STS host is rejected.

@@ -114,7 +114,7 @@ func (p *Provider) Verify(ctx context.Context, _ string, headers auth.Headers) (
 	if claims.Issuer != iapIssuer {
 		return nil, fmt.Errorf("%w: iss=%q, want %q", auth.ErrTokenRejected, claims.Issuer, iapIssuer)
 	}
-	if !audienceContains(claims.Audience, p.cfg.Audience) {
+	if !slices.Contains(claims.Audience, p.cfg.Audience) {
 		return nil, fmt.Errorf("%w: aud mismatch", auth.ErrTokenRejected)
 	}
 	if claims.Subject == "" || claims.Email == "" {
@@ -134,10 +134,6 @@ func (p *Provider) Verify(ctx context.Context, _ string, headers auth.Headers) (
 			"hd":    claims.HD,
 		},
 	}, nil
-}
-
-func audienceContains(aud []string, want string) bool {
-	return slices.Contains(aud, want)
 }
 
 func init() {

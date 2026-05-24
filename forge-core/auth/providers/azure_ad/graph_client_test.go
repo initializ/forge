@@ -118,7 +118,7 @@ func TestGraph_DefensivePaginationCap(t *testing.T) {
 }
 
 func TestEnsureGraphHost_RejectsForeignHost(t *testing.T) {
-	err := ensureGraphHost("https://graph.microsoft.com/v1.0/me", "https://evil.example.com/me/next")
+	err := ensureGraphHost("graph.microsoft.com", "https://evil.example.com/me/next")
 	if err == nil {
 		t.Fatal("expected error on foreign host")
 	}
@@ -126,7 +126,7 @@ func TestEnsureGraphHost_RejectsForeignHost(t *testing.T) {
 
 func TestEnsureGraphHost_AcceptsSameHost(t *testing.T) {
 	err := ensureGraphHost(
-		"https://graph.microsoft.com/v1.0/me/transitiveMemberOf?$select=id",
+		"graph.microsoft.com",
 		"https://graph.microsoft.com/v1.0/me/transitiveMemberOf?$skiptoken=abc",
 	)
 	if err != nil {
@@ -135,7 +135,7 @@ func TestEnsureGraphHost_AcceptsSameHost(t *testing.T) {
 }
 
 func TestEnsureGraphHost_EmptyOK(t *testing.T) {
-	if err := ensureGraphHost("https://graph.microsoft.com/v1.0/me", ""); err != nil {
+	if err := ensureGraphHost("graph.microsoft.com", ""); err != nil {
 		t.Errorf("empty nextLink should be ok, got %v", err)
 	}
 }

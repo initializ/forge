@@ -277,10 +277,11 @@ func parseECJWKSet(raw []byte) (map[string]*ecdsa.PublicKey, error) {
 // returns wrapped errors with stable joinings — we string-match on the
 // most reliable signals.
 //
-// Ordering matters: alg-confusion checks come FIRST because the library
-// emits "signing method X is invalid" wrapped in "signature is invalid",
-// and we want algorithm-confusion classified as ErrInvalidToken (malformed)
-// rather than ErrTokenRejected (policy denial).
+// Algorithm-confusion ("signing method X is invalid") and kid-related
+// errors are classified as ErrInvalidToken (token shape is wrong),
+// not ErrTokenRejected (which is policy denial). These checks run
+// BEFORE the generic "signature is invalid" arm because the alg error
+// is wrapped in a signature-shaped outer error by golang-jwt.
 func classifyJWTErr(err error) error {
 	if errors.Is(err, auth.ErrProviderUnavailable) ||
 		errors.Is(err, auth.ErrInvalidToken) ||
@@ -292,7 +293,8 @@ func classifyJWTErr(err error) error {
 	case strings.Contains(s, "signing method"),
 		strings.Contains(s, "unexpected alg"),
 		strings.Contains(s, "missing kid"),
-		strings.Contains(s, "kid"):
+		strings.Contains(s, "kid "),      // "kid X not found"
+		strings.Contains(s, "not found"): // covers JWKS-resolution failures
 		return fmt.Errorf("%w: %v", auth.ErrInvalidToken, err)
 	case strings.Contains(s, "expired"),
 		strings.Contains(s, "iat"),

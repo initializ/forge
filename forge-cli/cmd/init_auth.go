@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -368,13 +369,108 @@ func needsYAMLQuoting(s string) bool {
 	case "true", "false", "yes", "no", "on", "off", "null", "~":
 		return true
 	}
-	// All-digit strings would otherwise decode as integers — quote them
-	// to preserve string semantics (e.g. AWS account IDs are 12-digit
-	// strings, NOT numbers — and the provider expects []string).
-	if isAllDigits(s) {
+	// Anything that resembles a YAML 1.1 / 1.2 number must be quoted
+	// to preserve string semantics. The auth-settings schema rarely
+	// produces these shapes (account IDs ARE all-digit; others are
+	// theoretical), but the docstring says "false negatives are bugs"
+	// and the Web UI POST path can supply arbitrary strings.
+	//
+	// Covers:
+	//   - All-digit:                 "412664885516"  (AWS account)
+	//   - Leading-zero:              "010"           (YAML 1.1 octal)
+	//   - Hex:                       "0x1A"          (YAML 1.1 hex)
+	//   - Octal:                     "0o17"          (YAML 1.2 octal)
+	//   - Binary:                    "0b10"          (YAML 1.2 binary)
+	//   - Scientific notation:       "1e10", "1.5E-3"
+	//   - Decimal float:             "3.14"
+	//   - Signed:                    "-5", "+7"
+	//   - Special floats:            ".inf", ".nan", "-.inf"
+	if looksNumeric(s) {
 		return true
 	}
 	return false
+}
+
+// looksNumeric reports whether s would parse as a YAML number under any
+// of YAML 1.1 / 1.2 / yaml.v3's relaxed coercion rules. Conservative —
+// false positives just produce extra quotes.
+func looksNumeric(s string) bool {
+	if s == "" {
+		return false
+	}
+	// YAML special floats: case-insensitive.
+	switch strings.ToLower(s) {
+	case ".inf", ".nan", "-.inf", "+.inf":
+		return true
+	}
+	// Strip a leading sign once for the remaining shape tests.
+	body := s
+	if body[0] == '+' || body[0] == '-' {
+		body = body[1:]
+		if body == "" {
+			return false
+		}
+	}
+	// Hex / Octal / Binary prefixes.
+	if len(body) >= 2 && body[0] == '0' {
+		switch body[1] {
+		case 'x', 'X':
+			return allHexDigits(body[2:])
+		case 'o', 'O':
+			return allOctalDigits(body[2:])
+		case 'b', 'B':
+			return allBinaryDigits(body[2:])
+		}
+	}
+	// Plain decimal integer (incl. leading-zero like "010", which
+	// YAML 1.1 would parse as octal).
+	if isAllDigits(body) {
+		return true
+	}
+	// Decimal float / scientific notation: rely on Go's strconv.ParseFloat
+	// — if it accepts the bytes as a float, YAML will too.
+	if _, err := strconv.ParseFloat(body, 64); err == nil {
+		return true
+	}
+	return false
+}
+
+func allHexDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		ok := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func allOctalDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '7' {
+			return false
+		}
+	}
+	return true
+}
+
+func allBinaryDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] != '0' && s[i] != '1' {
+			return false
+		}
+	}
+	return true
 }
 
 // isAllDigits returns true if s is non-empty and consists only of ASCII digits.

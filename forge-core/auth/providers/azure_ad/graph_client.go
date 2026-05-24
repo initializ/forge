@@ -103,7 +103,10 @@ func (c *GraphClient) TransitiveMemberOf(ctx context.Context, _ string, authHead
 }
 
 func (c *GraphClient) fetchPage(ctx context.Context, u, authHeader string) (ids []string, next string, err error) {
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("%w: graph build request: %v", auth.ErrProviderUnavailable, err)
+	}
 	req.Header.Set("Authorization", authHeader)
 	req.Header.Set("Accept", "application/json")
 

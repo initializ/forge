@@ -37,6 +37,16 @@ run channel adapters (Slack, Telegram), the `static_token` loopback secret
 is auto-prepended to the chain — it always matches first for self-issued
 loopback calls, regardless of what's configured in `forge.yaml`.
 
+## TUI wizard ordering
+
+The `forge init` wizard runs the **Auth step before the Egress step** —
+once you pick a provider, the egress review automatically includes the
+outbound hosts it needs (STS endpoint for `aws_sigv4`, AAD authority for
+`azure_ad`, IAP JWKS host for `gcp_iap`, OIDC issuer host for `oidc`).
+Operators see and confirm those hosts alongside provider / channel / tool /
+skill hosts in a single review screen — no need to add auth hosts to
+`egress_hosts` by hand after the wizard.
+
 ## Non-Bearer formats (v0.11.0)
 
 As of v0.11.0 the middleware consults the chain **even when no Bearer token

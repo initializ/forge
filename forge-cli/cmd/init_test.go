@@ -513,6 +513,115 @@ func TestDeriveEgressDomains_Empty(t *testing.T) {
 	}
 }
 
+// TestDeriveEgressDomains_AuthProviderHostsMerged confirms the wizard
+// re-order invariant: a chosen Auth provider contributes its required
+// hosts (STS for aws_sigv4, AAD authority for azure_ad, etc.) to the
+// same egress list a user reviews in the Egress step. Pins the contract
+// that the operator never has to add auth hosts manually after the wizard.
+func TestDeriveEgressDomains_AuthProviderHostsMerged(t *testing.T) {
+	cases := []struct {
+		name string
+		mode string
+		set  map[string]any
+		want []string
+	}{
+		{
+			name: "aws_sigv4 us-east-1",
+			mode: "aws_sigv4",
+			set:  map[string]any{"region": "us-east-1"},
+			want: []string{"sts.us-east-1.amazonaws.com"},
+		},
+		{
+			name: "aws_sigv4 eu-west-2",
+			mode: "aws_sigv4",
+			set:  map[string]any{"region": "eu-west-2"},
+			want: []string{"sts.eu-west-2.amazonaws.com"},
+		},
+		{
+			name: "gcp_iap",
+			mode: "gcp_iap",
+			set:  map[string]any{"audience": "/projects/x/global/backendServices/y"},
+			want: []string{"www.gstatic.com"},
+		},
+		{
+			name: "azure_ad claim",
+			mode: "azure_ad",
+			set:  map[string]any{"audience": "api://forge", "tenant_id": "abc"},
+			want: []string{"login.microsoftonline.com"},
+		},
+		{
+			name: "azure_ad graph mode adds graph host",
+			mode: "azure_ad",
+			set:  map[string]any{"audience": "api://forge", "tenant_id": "abc", "groups_mode": "graph"},
+			want: []string{"graph.microsoft.com", "login.microsoftonline.com"},
+		},
+		{
+			name: "oidc issuer host",
+			mode: "oidc",
+			set:  map[string]any{"issuer": "https://login.example.com", "audience": "api://forge"},
+			want: []string{"login.example.com"},
+		},
+		{
+			name: "none → no auth hosts added",
+			mode: "none",
+			set:  nil,
+			want: nil,
+		},
+		{
+			name: "custom → no auth hosts added",
+			mode: "custom",
+			set:  nil,
+			want: nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := &initOptions{
+				ModelProvider: "ollama", // no provider hosts → exposes only auth hosts
+				EnvVars:       map[string]string{},
+				AuthMode:      tc.mode,
+				AuthSettings:  tc.set,
+			}
+			got := deriveEgressDomains(opts, nil)
+			if len(got) != len(tc.want) {
+				t.Fatalf("len(got) = %d (%v), want %d (%v)", len(got), got, len(tc.want), tc.want)
+			}
+			for i, d := range tc.want {
+				if got[i] != d {
+					t.Errorf("got[%d] = %q, want %q (full got: %v)", i, got[i], d, got)
+				}
+			}
+		})
+	}
+}
+
+// TestDeriveEgressDomains_AuthHostsMergeNotOverwrite confirms auth hosts
+// coexist with provider/channel/skill hosts — the auth pass is additive,
+// not exclusive.
+func TestDeriveEgressDomains_AuthHostsMergeNotOverwrite(t *testing.T) {
+	opts := &initOptions{
+		ModelProvider: "openai",
+		Channels:      []string{"slack"},
+		EnvVars:       map[string]string{},
+		AuthMode:      "aws_sigv4",
+		AuthSettings:  map[string]any{"region": "us-east-1"},
+	}
+	got := deriveEgressDomains(opts, nil)
+	have := map[string]bool{}
+	for _, d := range got {
+		have[d] = true
+	}
+	for _, want := range []string{
+		"api.openai.com",              // model provider
+		"slack.com",                   // channel
+		"sts.us-east-1.amazonaws.com", // auth
+	} {
+		if !have[want] {
+			t.Errorf("missing %q in merged egress list: %v", want, got)
+		}
+	}
+}
+
 func TestBuildEnvVars(t *testing.T) {
 	opts := &initOptions{
 		ModelProvider: "openai",

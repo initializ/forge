@@ -37,6 +37,8 @@ import sys
 try:
     import boto3
     import requests
+    from botocore.auth import SigV4QueryAuth
+    from botocore.awsrequest import AWSRequest
 except ImportError as e:
     print(f"missing dependency: {e}", file=sys.stderr)
     print("install with: pip3 install --user boto3 requests", file=sys.stderr)
@@ -46,14 +48,26 @@ except ImportError as e:
 def mint_token(region: str, profile: str | None, expires: int = 900) -> str:
     """Mint a forge-aws-v1 token from the current AWS credentials.
 
-    `expires` (seconds) is the TTL baked into the pre-signed URL; max 900
-    per STS limits. Forge accepts any valid TTL — the token simply becomes
-    unusable once STS rejects the expired signature.
+    Builds the pre-signed URL via SigV4QueryAuth directly, NOT via
+    boto3.client('sts').generate_presigned_url('get_caller_identity', ...)
+    — the latter signs as if the request were a POST to STS and STS
+    rejects the resulting GET URL with "SignatureDoesNotMatch." Same
+    quirk aws-iam-authenticator works around by signing the request
+    explicitly.
+
+    `expires` (seconds) is the TTL baked into the URL; max 900.
     """
     session = boto3.Session(profile_name=profile) if profile else boto3.Session()
-    sts = session.client("sts", region_name=region)
-    url = sts.generate_presigned_url("get_caller_identity", ExpiresIn=expires)
-    encoded = base64.urlsafe_b64encode(url.encode()).rstrip(b"=").decode()
+    creds = session.get_credentials().get_frozen_credentials()
+
+    req = AWSRequest(
+        method="GET",
+        url=f"https://sts.{region}.amazonaws.com/?Action=GetCallerIdentity&Version=2011-06-15",
+        headers={},
+    )
+    SigV4QueryAuth(creds, "sts", region, expires=expires).add_auth(req)
+
+    encoded = base64.urlsafe_b64encode(req.url.encode()).rstrip(b"=").decode()
     return "forge-aws-v1." + encoded
 
 

@@ -225,6 +225,7 @@ func mockInitCmdWithFlags() *cobra.Command {
 	c.Flags().String("auth-azure-tenant", "", "")
 	c.Flags().String("auth-azure-audience", "", "")
 	c.Flags().Bool("auth-azure-multi-tenant", false, "")
+	c.Flags().StringSlice("auth-azure-allowed-tenant", nil, "")
 	c.Flags().String("auth-azure-groups-mode", "", "")
 	return c
 }

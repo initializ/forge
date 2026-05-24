@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -250,6 +251,8 @@ func TestProvider_WrongTenant_Rejected(t *testing.T) {
 }
 
 func TestProvider_MultiTenant_AcceptsArbitraryTenant(t *testing.T) {
+	// Documented high-risk shape: AllowMultiTenant=true with NO
+	// AllowedTenants list means "accept any tenant globally."
 	f := newFakeAAD(t)
 	p := newTestProviderAADMultiTenant(t, f)
 
@@ -258,6 +261,115 @@ func TestProvider_MultiTenant_AcceptsArbitraryTenant(t *testing.T) {
 
 	if _, err := p.Verify(context.Background(), tok, auth.Headers{}); err != nil {
 		t.Errorf("expected multi-tenant success, got %v", err)
+	}
+}
+
+// --- Review M3: AllowedTenants gate in multi-tenant mode ---
+
+func TestProvider_MultiTenant_AllowedTenants_AcceptsListed(t *testing.T) {
+	f := newFakeAAD(t)
+	wantTID := "33333333-3333-3333-3333-333333333333"
+	p, err := newWithIssuer(Config{
+		Audience:         "api://forge",
+		AllowMultiTenant: true,
+		AllowedTenants: []string{
+			"22222222-2222-2222-2222-222222222222",
+			wantTID,
+		},
+	}, f.issuerURL())
+	if err != nil {
+		t.Fatalf("newWithIssuer: %v", err)
+	}
+
+	claims := validAADClaims(f.issuerURL(), wantTID, "api://forge")
+	tok := f.sign(claims)
+
+	if _, err := p.Verify(context.Background(), tok, auth.Headers{}); err != nil {
+		t.Errorf("expected success for listed tenant, got %v", err)
+	}
+}
+
+func TestProvider_MultiTenant_AllowedTenants_RejectsUnlisted(t *testing.T) {
+	f := newFakeAAD(t)
+	p, err := newWithIssuer(Config{
+		Audience:         "api://forge",
+		AllowMultiTenant: true,
+		AllowedTenants:   []string{"22222222-2222-2222-2222-222222222222"},
+	}, f.issuerURL())
+	if err != nil {
+		t.Fatalf("newWithIssuer: %v", err)
+	}
+
+	claims := validAADClaims(f.issuerURL(), "deadbeef-dead-beef-dead-beefdeadbeef", "api://forge")
+	tok := f.sign(claims)
+
+	_, vErr := p.Verify(context.Background(), tok, auth.Headers{})
+	if !errors.Is(vErr, auth.ErrTokenRejected) {
+		t.Errorf("err = %v, want ErrTokenRejected (tid not in allowlist)", vErr)
+	}
+	if vErr != nil && !strings.Contains(vErr.Error(), "allowed_tenants") {
+		t.Errorf("err should mention allowed_tenants; got %v", vErr)
+	}
+}
+
+func TestProvider_MultiTenant_AllowedTenants_CaseInsensitive(t *testing.T) {
+	// Entra emits lowercase tids; operators sometimes paste uppercase
+	// from the portal. Match should tolerate either.
+	f := newFakeAAD(t)
+	wantTID := "33333333-3333-3333-3333-333333333333"
+	p, err := newWithIssuer(Config{
+		Audience:         "api://forge",
+		AllowMultiTenant: true,
+		AllowedTenants:   []string{"33333333-3333-3333-3333-333333333333"},
+	}, f.issuerURL())
+	if err != nil {
+		t.Fatalf("newWithIssuer: %v", err)
+	}
+
+	claims := validAADClaims(f.issuerURL(), strings.ToUpper(wantTID), "api://forge")
+	tok := f.sign(claims)
+
+	if _, err := p.Verify(context.Background(), tok, auth.Headers{}); err != nil {
+		t.Errorf("expected case-insensitive match, got %v", err)
+	}
+}
+
+func TestProvider_MultiTenant_AllowedTenants_MissingTidRejected(t *testing.T) {
+	// Multi-tenant + AllowedTenants set + token has no tid → reject.
+	// In "any-tenant" mode (empty AllowedTenants) a missing tid would
+	// be allowed (we wouldn't be checking), but the moment the operator
+	// sets a list they want the gate enforced.
+	f := newFakeAAD(t)
+	p, err := newWithIssuer(Config{
+		Audience:         "api://forge",
+		AllowMultiTenant: true,
+		AllowedTenants:   []string{"22222222-2222-2222-2222-222222222222"},
+	}, f.issuerURL())
+	if err != nil {
+		t.Fatalf("newWithIssuer: %v", err)
+	}
+
+	claims := validAADClaims(f.issuerURL(), "ignored", "api://forge")
+	delete(claims, "tid")
+	tok := f.sign(claims)
+
+	_, vErr := p.Verify(context.Background(), tok, auth.Headers{})
+	if !errors.Is(vErr, auth.ErrInvalidToken) {
+		t.Errorf("err = %v, want ErrInvalidToken (missing tid)", vErr)
+	}
+}
+
+func TestProvider_SingleTenant_WithAllowedTenants_RejectedAtFactory(t *testing.T) {
+	// Config-level guard: AllowedTenants is meaningless in single-tenant
+	// mode (TenantID is THE gate). Reject the combo so a typo doesn't
+	// silently degrade.
+	_, err := auth.Build("azure_ad", map[string]any{
+		"audience":        "api://forge",
+		"tenant_id":       "11111111-1111-1111-1111-111111111111",
+		"allowed_tenants": []any{"22222222-2222-2222-2222-222222222222"},
+	})
+	if err == nil {
+		t.Fatal("expected error: allowed_tenants requires allow_multi_tenant=true")
 	}
 }
 

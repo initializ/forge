@@ -55,11 +55,23 @@ type IAPJWKSCache struct {
 }
 
 // NewIAPJWKSCache builds an empty cache pointing at the given URL.
+//
+// CheckRedirect is pinned to ErrUseLastResponse. The IAP JWKS host is
+// hardcoded (decision §9.4) precisely so we never trust any other source
+// of public keys — auto-following a 3xx to a foreign URL would let a
+// MITM / TLS-inspecting proxy / DNS-hijack scenario substitute attacker
+// keys, after which any forged token signed by those keys would verify.
+// Refuse redirects outright.
 func NewIAPJWKSCache(url string, ttl, timeout time.Duration) *IAPJWKSCache {
 	return &IAPJWKSCache{
-		url:  url,
-		ttl:  ttl,
-		http: &http.Client{Timeout: timeout},
+		url: url,
+		ttl: ttl,
+		http: &http.Client{
+			Timeout: timeout,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 		keys: map[string]*ecdsa.PublicKey{},
 	}
 }

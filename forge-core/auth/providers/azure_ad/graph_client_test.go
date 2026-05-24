@@ -117,8 +117,38 @@ func TestGraph_DefensivePaginationCap(t *testing.T) {
 	}
 }
 
+func TestGraphClient_DoesNotFollowRedirects(t *testing.T) {
+	// Review B2: ensureGraphHost only validates @odata.nextLink (the
+	// application-layer paginator). HTTP 301/302/307 from Graph were
+	// being auto-followed by Go's default policy, bypassing the host
+	// guard. An attacker (MITM, TLS-inspecting proxy, DNS hijack)
+	// returning a 302 to a foreign URL would have the response body
+	// JSON-unmarshalled as `value: [{id: ...}]` — those IDs become
+	// Identity.Groups, which the future Phase 4 authz layer will
+	// trust. Pin CheckRedirect = ErrUseLastResponse.
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.Header().Set("Location", "https://attacker.example.com/value")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer srv.Close()
+
+	c := NewGraphClientWithEndpoint(srv.URL, 5*time.Second)
+	_, err := c.TransitiveMemberOf(context.Background(), "user-1", "Bearer token")
+	if err == nil {
+		t.Fatal("expected error on 302; client must not follow")
+	}
+	if !errors.Is(err, auth.ErrProviderUnavailable) {
+		t.Errorf("err = %v, want ErrProviderUnavailable", err)
+	}
+	if hits != 1 {
+		t.Errorf("graph hit %d times, want 1 (redirect was followed)", hits)
+	}
+}
+
 func TestEnsureGraphHost_RejectsForeignHost(t *testing.T) {
-	err := ensureGraphHost("graph.microsoft.com", "https://evil.example.com/me/next")
+	err := ensureGraphHost("graph.microsoft.com", "https", "https://evil.example.com/me/next")
 	if err == nil {
 		t.Fatal("expected error on foreign host")
 	}
@@ -126,7 +156,7 @@ func TestEnsureGraphHost_RejectsForeignHost(t *testing.T) {
 
 func TestEnsureGraphHost_AcceptsSameHost(t *testing.T) {
 	err := ensureGraphHost(
-		"graph.microsoft.com",
+		"graph.microsoft.com", "https",
 		"https://graph.microsoft.com/v1.0/me/transitiveMemberOf?$skiptoken=abc",
 	)
 	if err != nil {
@@ -135,8 +165,38 @@ func TestEnsureGraphHost_AcceptsSameHost(t *testing.T) {
 }
 
 func TestEnsureGraphHost_EmptyOK(t *testing.T) {
-	if err := ensureGraphHost("graph.microsoft.com", ""); err != nil {
+	if err := ensureGraphHost("graph.microsoft.com", "https", ""); err != nil {
 		t.Errorf("empty nextLink should be ok, got %v", err)
+	}
+}
+
+func TestEnsureGraphHost_RejectsSchemeDowngrade(t *testing.T) {
+	// Review B1: http://-on-same-host MUST be rejected. Go's http.Client
+	// keeps Authorization across same-host redirects, so a downgrade
+	// would leak the caller's Bearer in plaintext to anyone with a
+	// network position to MITM the response.
+	err := ensureGraphHost(
+		"graph.microsoft.com", "https",
+		"http://graph.microsoft.com/v1.0/me/transitiveMemberOf?$skiptoken=abc",
+	)
+	if err == nil {
+		t.Fatal("expected error on http downgrade")
+	}
+	if !strings.Contains(err.Error(), "scheme") {
+		t.Errorf("err should mention scheme; got %v", err)
+	}
+}
+
+func TestEnsureGraphHost_TestModeHTTPOK(t *testing.T) {
+	// When the configured endpoint itself is http:// (httptest servers
+	// in unit/integration tests), http://-same-host nextLinks must
+	// still validate.
+	err := ensureGraphHost(
+		"127.0.0.1:54321", "http",
+		"http://127.0.0.1:54321/page2",
+	)
+	if err != nil {
+		t.Errorf("test-mode http nextLink should be accepted, got %v", err)
 	}
 }
 

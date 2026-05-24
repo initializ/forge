@@ -297,6 +297,34 @@ func TestJWKSCache_StaleGraceOnOutage(t *testing.T) {
 	}
 }
 
+func TestJWKSCache_DoesNotFollowRedirects(t *testing.T) {
+	// Review (sibling of B2/B3): the IAP JWKS URL is hardcoded (§9.4)
+	// precisely so we never trust an alternate key source. Auto-
+	// following a 302 to attacker bytes would let an attacker substitute
+	// their own keys — any token forged with those keys would then
+	// verify. Pin: any 3xx is treated as JWKS-unavailable (we never
+	// follow).
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.Header().Set("Location", "https://attacker.example.com/")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer srv.Close()
+
+	c := NewIAPJWKSCache(srv.URL, time.Hour, 5*time.Second)
+	err := c.refresh(context.Background())
+	if err == nil {
+		t.Fatal("expected error on 302; client must not follow")
+	}
+	if !errors.Is(err, auth.ErrProviderUnavailable) {
+		t.Errorf("err = %v, want ErrProviderUnavailable", err)
+	}
+	if hits != 1 {
+		t.Errorf("JWKS endpoint hit %d times, want 1 (redirect was followed)", hits)
+	}
+}
+
 func TestJWKSCache_BackoffBumps(t *testing.T) {
 	// Endpoint always 500 — observe backoffDuration grow on each refresh.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

@@ -28,9 +28,22 @@ type STSClient struct {
 // `region` is informational here (the URL itself carries the region in
 // its credential scope and host); we keep the arg for symmetry with the
 // pre-rewrite API and for future per-region tuning.
+//
+// CheckRedirect is pinned to ErrUseLastResponse. STS never legitimately
+// issues 3xx; the parser-side host gate (sigv4_parser.go's expectedHost)
+// only validates the FIRST hop. If we let Go's default policy auto-follow
+// a 302, an attacker (MITM with a valid cert, TLS-inspecting corporate
+// proxy, DNS hijack) could redirect us to a foreign URL whose body becomes
+// the parsed STS XML — and that XML controls Identity.UserID/OrgID/Arn.
+// Refuse redirects outright so the same-host guard actually holds.
 func NewSTSClient(_ /* region */ string, _ /* legacyOverrideUnused */ string, timeout time.Duration) *STSClient {
 	return &STSClient{
-		http: &http.Client{Timeout: timeout},
+		http: &http.Client{
+			Timeout: timeout,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}
 }
 

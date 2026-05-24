@@ -22,9 +22,10 @@ import (
 // token is reflected to Graph, which authorizes the read against the
 // user's delegated permission (GroupMember.Read.All).
 type GraphClient struct {
-	endpoint     string // initial page URL
-	endpointHost string // pre-parsed for cheap per-page nextLink validation
-	http         *http.Client
+	endpoint       string // initial page URL
+	endpointHost   string // pre-parsed for cheap per-page nextLink validation
+	endpointScheme string // pre-parsed for the same — guards against http://-downgrade nextLinks
+	http           *http.Client
 }
 
 const graphBaseURL = "https://graph.microsoft.com/v1.0/me/transitiveMemberOf?$select=id&$top=100"
@@ -41,14 +42,29 @@ func NewGraphClientWithEndpoint(endpoint string, timeout time.Duration) *GraphCl
 }
 
 func newGraphClientFor(endpoint string, timeout time.Duration) *GraphClient {
-	host := ""
+	host, scheme := "", ""
 	if u, err := url.Parse(endpoint); err == nil {
 		host = u.Host
+		scheme = u.Scheme
 	}
 	return &GraphClient{
-		endpoint:     endpoint,
-		endpointHost: host,
-		http:         &http.Client{Timeout: timeout},
+		endpoint:       endpoint,
+		endpointHost:   host,
+		endpointScheme: scheme,
+		http: &http.Client{
+			Timeout: timeout,
+			// Reject HTTP redirects unconditionally. Graph paginates via
+			// application-layer @odata.nextLink (which we validate against
+			// the configured host + scheme); it does NOT need transport-
+			// layer 301/302/307s. Allowing the default redirect-follow
+			// policy would bypass our same-host guard — an attacker
+			// returning a 302 to a foreign URL would have the bearer
+			// reflected there. ErrUseLastResponse returns the 3xx as-is;
+			// our status-code switch then classifies it as unavailable.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}
 }
 
@@ -70,7 +86,7 @@ func (c *GraphClient) TransitiveMemberOf(ctx context.Context, _ string, authHead
 	out := []string{}
 	next := c.endpoint
 	for next != "" {
-		if err := ensureGraphHost(c.endpointHost, next); err != nil {
+		if err := ensureGraphHost(c.endpointHost, c.endpointScheme, next); err != nil {
 			return nil, fmt.Errorf("%w: graph nextLink host: %v", auth.ErrProviderUnavailable, err)
 		}
 		page, nextURL, err := c.fetchPage(ctx, next, authHeader)
@@ -129,13 +145,22 @@ func (c *GraphClient) fetchPage(ctx context.Context, u, authHeader string) (ids 
 }
 
 // ensureGraphHost rejects @odata.nextLink values that point at a foreign
-// host. Real Graph paginates within graph.microsoft.com. For tests where
-// the endpoint is httptest's 127.0.0.1, the test-mode endpoint host is
-// what we compare against.
+// host OR downgrade the scheme. Both checks matter:
 //
-// `configuredHost` is the pre-parsed Host of GraphClient.endpoint, computed
-// once at construction so we don't reparse it for every paginated request.
-func ensureGraphHost(configuredHost, candidate string) error {
+//   - Host: Graph paginates within graph.microsoft.com. A foreign-host
+//     nextLink would coerce Forge into sending the caller's Bearer to
+//     an attacker.
+//   - Scheme: Go's http.Client strips Authorization on cross-host
+//     redirects but NOT on cross-scheme (https→http) downgrades to the
+//     same host. A `nextLink: "http://graph.microsoft.com/..."` would
+//     pass the host check and then leak the Bearer in plaintext to
+//     anyone able to MITM the connection. Require scheme match too.
+//
+// `configuredHost` / `configuredScheme` are pre-parsed from
+// GraphClient.endpoint at construction time so we don't reparse it for
+// every paginated request. For tests, the configured scheme is http
+// (httptest servers) and that's intentionally allowed.
+func ensureGraphHost(configuredHost, configuredScheme, candidate string) error {
 	if candidate == "" {
 		return nil
 	}
@@ -145,6 +170,9 @@ func ensureGraphHost(configuredHost, candidate string) error {
 	}
 	if !strings.EqualFold(configuredHost, got.Host) {
 		return fmt.Errorf("nextLink host %q does not match configured %q", got.Host, configuredHost)
+	}
+	if !strings.EqualFold(configuredScheme, got.Scheme) {
+		return fmt.Errorf("nextLink scheme %q does not match configured %q (Bearer-downgrade guard)", got.Scheme, configuredScheme)
 	}
 	return nil
 }

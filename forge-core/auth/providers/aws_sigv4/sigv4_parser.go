@@ -17,8 +17,16 @@ const TokenPrefix = "forge-aws-v1."
 // The token wraps a pre-signed STS GetCallerIdentity URL; AKID + Date are
 // extracted from the URL's X-Amz-Credential query param so the provider's
 // identity cache can key on them without re-deriving for every Verify call.
+//
+// RawURL holds the original URL byte-for-byte as it appeared in the
+// decoded token payload. Forge MUST use RawURL when invoking STS — round-
+// tripping through Go's net/url package re-encodes query parameters in
+// ways that differ from how the AWS SDK emitted them (e.g., percent-
+// encoding of "/" in X-Amz-Credential, "+" in X-Amz-Security-Token), and
+// any such re-encoding invalidates the signature.
 type PresignedToken struct {
-	URL    *url.URL // validated, host-checked, ready to GET
+	RawURL string   // the exact URL the AWS SDK produced — preserve as-is
+	URL    *url.URL // parsed view, for host validation and query inspection only
 	AKID   string   // for IdentityCache bucket key
 	Date   string   // YYYYMMDD scope date — for IdentityCache bucket key
 	Region string   // from the credential scope (we cross-check against cfg.Region)
@@ -98,6 +106,7 @@ func ParseToken(token, expectedHost string, requireHTTPS bool) (*PresignedToken,
 	}
 
 	return &PresignedToken{
+		RawURL: string(raw),
 		URL:    u,
 		AKID:   akid,
 		Date:   date,

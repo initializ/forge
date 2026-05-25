@@ -271,8 +271,20 @@ func (s *Server) runOnce(ctx context.Context) error {
 		closeAll()
 		return fmt.Errorf("initialize: %w", err)
 	}
-	// Send the initialized notification per spec.
-	_ = cli.Initialized(ctx)
+	// Send the initialized notification per spec. Failure here means
+	// the server did NOT receive the notification — strict MCP
+	// servers will then reject the subsequent tools/list, masking
+	// the real cause as a "discover" failure (review B5).
+	// Propagate the error and bound it with the per-call timeout
+	// (the notification is fire-and-forget but the underlying HTTP
+	// POST still needs a cap).
+	notifyCtx, notifyCancel := context.WithTimeout(ctx, s.timeout())
+	if err := cli.Initialized(notifyCtx); err != nil {
+		notifyCancel()
+		closeAll()
+		return fmt.Errorf("initialized notification: %w", err)
+	}
+	notifyCancel()
 	s.logger.Info("mcp server initialized", map[string]any{
 		"server": s.Name, "server_version": res.ServerInfo.Version,
 	})
@@ -491,20 +503,35 @@ func (s *Server) emitDegraded(attempt int, backoff time.Duration) {
 	})
 }
 
-// classifyFailurePhase maps an error string to a reason code phase.
-// Cheap, string-prefix-only — the phase is for ops dashboards, not
-// programmatic dispatch.
+// classifyFailurePhase maps an error to a reason-code phase used in
+// mcp_server_failed audit events. Uses PREFIX matching against the
+// outermost error wrap — runOnce always wraps with one of these
+// known prefixes:
+//
+//	"connect: ..."                  (factory failure)
+//	"initialize: ..."               (Initialize RPC failure)
+//	"initialized notification: ..." (notification POST failure — B5)
+//	"tools/list: ..."               (ListTools RPC failure)
+//	"tool[N] \"name\": ..."         (schema validation inside discover)
+//
+// The previous strings.Contains-based classifier was brittle — a
+// server's error text happening to contain the word "initialized"
+// flipped a tools/list failure to phase=initialize and vice versa
+// (review B5 reproduction). Prefix matching against our OWN wrap
+// strings removes that fragility.
 func classifyFailurePhase(err error) string {
 	if err == nil {
 		return "unknown"
 	}
 	msg := err.Error()
 	switch {
-	case strings.Contains(msg, "connect"):
+	case strings.HasPrefix(msg, "connect:"):
 		return "connect"
-	case strings.Contains(msg, "initialize"):
+	case strings.HasPrefix(msg, "initialize:"),
+		strings.HasPrefix(msg, "initialized notification:"):
 		return "initialize"
-	case strings.Contains(msg, "tools/list"):
+	case strings.HasPrefix(msg, "tools/list:"),
+		strings.HasPrefix(msg, "tool["):
 		return "discover"
 	default:
 		return "runtime"

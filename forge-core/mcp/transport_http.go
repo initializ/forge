@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
+	"time"
 )
 
 // AuthTokenFunc returns a Bearer token to attach to outbound MCP
@@ -33,6 +33,14 @@ type AuthTokenFunc func(ctx context.Context) (string, error)
 // is intended to be called from a single demultiplexer goroutine in
 // the Client (a future refactor could lift this restriction if
 // server-initiated frames become common).
+//
+// Backpressure (review B3): the response queue is bounded. When it
+// fills, push() blocks (it does NOT silently drop the oldest frame
+// — the previous behavior, which orphaned the in-flight CallTool
+// whose response was discarded). If the queue stays full longer
+// than overflowTimeout (default 30s) the transport is closed with
+// ErrTransportUnavailable so callers fail loudly instead of hanging
+// on their per-ID response channels.
 type HTTPTransport struct {
 	client     *http.Client
 	url        string
@@ -42,9 +50,10 @@ type HTTPTransport struct {
 	mu        sync.Mutex
 	sessionID string
 
-	queue  chan JSONRPCMessage
-	closed atomic.Bool
-	once   sync.Once
+	queue           chan JSONRPCMessage
+	done            chan struct{}
+	closeOnce       sync.Once
+	overflowTimeout time.Duration // default 30s; tests may shorten
 }
 
 // NewHTTPTransport constructs an HTTPTransport. authFn may be nil for
@@ -62,11 +71,13 @@ func NewHTTPTransport(url string, httpClient *http.Client, authFn AuthTokenFunc)
 		return nil, fmt.Errorf("%w: httpClient is nil — caller must inject one (typically security.EgressClient)", ErrProtocolError)
 	}
 	return &HTTPTransport{
-		client:     httpClient,
-		url:        url,
-		authFn:     authFn,
-		clientInfo: "forge-mcp/0.12.0",
-		queue:      make(chan JSONRPCMessage, 16),
+		client:          httpClient,
+		url:             url,
+		authFn:          authFn,
+		clientInfo:      "forge-mcp/0.12.0",
+		queue:           make(chan JSONRPCMessage, 16),
+		done:            make(chan struct{}),
+		overflowTimeout: 30 * time.Second,
 	}, nil
 }
 
@@ -87,8 +98,10 @@ func (h *HTTPTransport) SessionID() string {
 // 202 Accepted with empty body is treated as a successful
 // notification ack — no frames are queued.
 func (h *HTTPTransport) Send(ctx context.Context, msg JSONRPCMessage) error {
-	if h.closed.Load() {
+	select {
+	case <-h.done:
 		return ErrClosed
+	default:
 	}
 	if msg.Jsonrpc == "" {
 		msg.Jsonrpc = "2.0"
@@ -196,8 +209,10 @@ func (h *HTTPTransport) consumeJSON(body io.Reader) error {
 	if err := msg.Validate(); err != nil {
 		return err
 	}
-	h.push(msg)
-	return nil
+	// Propagate push errors (queue overflow → transport closed). Without
+	// this, an overflow would have been silently swallowed by the
+	// previous void-returning push (review B3).
+	return h.push(msg)
 }
 
 // consumeSSE parses Server-Sent Events frames per the MCP spec —
@@ -217,7 +232,9 @@ func (h *HTTPTransport) consumeSSE(ctx context.Context, body io.Reader) error {
 		if err := msg.Validate(); err != nil {
 			return err
 		}
-		h.push(msg)
+		if err := h.push(msg); err != nil {
+			return err // overflow → transport closed (review B3)
+		}
 		data.Reset()
 		return nil
 	}
@@ -258,48 +275,72 @@ func (h *HTTPTransport) consumeSSE(ctx context.Context, body io.Reader) error {
 	}
 }
 
-// push enqueues a frame, dropping the oldest if the queue is full
-// (defensive; the queue is large enough that this should not happen
-// under realistic load).
-func (h *HTTPTransport) push(msg JSONRPCMessage) {
-	if h.closed.Load() {
-		return
-	}
+// push enqueues a frame. Blocks if the queue is full, applying
+// backpressure to the SSE parser / HTTP body reader. If the queue
+// stays full longer than overflowTimeout the transport is closed
+// with ErrTransportUnavailable — the previous behavior (silently
+// dropping the OLDEST frame, review B3) orphaned the in-flight
+// CallTool whose response was discarded; this version surfaces
+// the problem loudly so callers see a transport error instead of
+// hanging on per-ID response channels.
+//
+// Returns ErrClosed if the transport has been closed.
+func (h *HTTPTransport) push(msg JSONRPCMessage) error {
+	// Fast path: queue has space.
 	select {
+	case <-h.done:
+		return ErrClosed
 	case h.queue <- msg:
+		return nil
 	default:
-		// Drop oldest to make room — backpressure visible to next Recv
-		// caller via slower delivery.
-		select {
-		case <-h.queue:
-		default:
-		}
-		select {
-		case h.queue <- msg:
-		default:
-		}
+	}
+	// Queue full — block with overflow cap.
+	t := time.NewTimer(h.overflowTimeout)
+	defer t.Stop()
+	select {
+	case <-h.done:
+		return ErrClosed
+	case h.queue <- msg:
+		return nil
+	case <-t.C:
+		// Demuxer is not draining — fail loud rather than silently
+		// drop. Closing the transport unblocks all pending callers
+		// via Client.Run's failAll on the next Recv.
+		_ = h.Close()
+		return fmt.Errorf("%w: response queue full for %s — demuxer not draining",
+			ErrTransportUnavailable, h.overflowTimeout)
 	}
 }
 
 // Recv blocks until a frame is available, ctx is cancelled, or the
-// transport is closed.
+// transport is closed. Returns ErrClosed on close — preferred over
+// the queue branch so callers get a clear close signal even when
+// frames are buffered.
 func (h *HTTPTransport) Recv(ctx context.Context) (JSONRPCMessage, error) {
+	// Prefer done over queue: when both are ready (transport closed
+	// with leftover frames), return ErrClosed.
+	select {
+	case <-h.done:
+		return JSONRPCMessage{}, ErrClosed
+	default:
+	}
 	select {
 	case <-ctx.Done():
 		return JSONRPCMessage{}, ctx.Err()
-	case msg, ok := <-h.queue:
-		if !ok {
-			return JSONRPCMessage{}, ErrClosed
-		}
+	case <-h.done:
+		return JSONRPCMessage{}, ErrClosed
+	case msg := <-h.queue:
 		return msg, nil
 	}
 }
 
-// Close releases resources. Idempotent.
+// Close releases resources. Idempotent. Closes only h.done — h.queue
+// is NOT closed because push may still be blocked on it from another
+// goroutine, and sending to a closed channel panics. Recv prefers
+// h.done over h.queue so the close is observable immediately.
 func (h *HTTPTransport) Close() error {
-	h.once.Do(func() {
-		h.closed.Store(true)
-		close(h.queue)
+	h.closeOnce.Do(func() {
+		close(h.done)
 	})
 	return nil
 }

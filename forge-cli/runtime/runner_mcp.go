@@ -44,6 +44,11 @@ func (r *Runner) startMCPManager(
 	var flow *mcp.OAuthFlow
 	if needsOAuth {
 		flow = mcp.NewOAuthFlow()
+		// Route /token calls through the egress-controlled client so
+		// token endpoints (auto-merged into the allowlist by
+		// security.MCPDomains) ride the same enforcer as MCP traffic
+		// — and a hung IdP can't bypass it (review B2).
+		flow.HTTPClient = egressClient
 		flow.AuditFn = func(server string, ok bool, reason string) {
 			auditLogger.Emit(coreruntime.AuditEvent{
 				Event: coreruntime.EventMCPTokenRefresh,

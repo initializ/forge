@@ -3,6 +3,7 @@ package types
 
 import (
 	"fmt"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -23,10 +24,105 @@ type ForgeConfig struct {
 	Memory         MemoryConfig     `yaml:"memory,omitempty"`
 	Secrets        SecretsConfig    `yaml:"secrets,omitempty"`
 	Auth           AuthConfig       `yaml:"auth,omitempty"`
+	MCP            MCPConfig        `yaml:"mcp,omitempty"`
 	Schedules      []ScheduleConfig `yaml:"schedules,omitempty"`
 	CORSOrigins    []string         `yaml:"cors_origins,omitempty"`
 	Package        PackageConfig    `yaml:"package,omitempty"`
 	GuardrailsPath string           `yaml:"guardrails_path,omitempty"` // path to guardrails.json (default: "guardrails.json")
+}
+
+// MCPConfig declares Model Context Protocol servers for the agent.
+//
+// Phase 1 (v0.12.0): HTTP transport only. Stdio servers are on the
+// roadmap — see docs/mcp/index.md. The Forge runtime never spawns
+// subprocesses for MCP; transport=stdio is rejected at validate time.
+type MCPConfig struct {
+	// TokenStorePath overrides the encrypted OAuth-token store location.
+	// Default: ~/.forge/mcp-tokens.enc. Override via env MCP_TOKEN_STORE_PATH.
+	TokenStorePath string `yaml:"token_store_path,omitempty"`
+
+	// Servers is the ordered list of MCP servers Forge connects to.
+	// Each server's discovered tools are registered as namespaced
+	// "<server>__<tool>" entries in the agent's tool registry.
+	Servers []MCPServer `yaml:"servers,omitempty"`
+}
+
+// MCPServer is one entry in MCPConfig.Servers.
+type MCPServer struct {
+	// Name is the slug-format identifier used as the tool namespace
+	// prefix and in audit logs (e.g., name "linear" → tools
+	// "linear__create_issue", "linear__list_issues", ...). Required.
+	Name string `yaml:"name"`
+
+	// Transport selects the wire protocol. Phase 1: "http" only.
+	// "stdio" is rejected at validate time with a roadmap pointer.
+	Transport string `yaml:"transport"`
+
+	// URL is the HTTP endpoint for the MCP server. Required for
+	// transport=http. Examples:
+	//   - https://mcp.linear.app/sse        (vendor-hosted)
+	//   - http://notion-mcp.mcp-servers.svc.cluster.local:8080/mcp
+	URL string `yaml:"url"`
+
+	// Auth, when non-nil, declares how Forge authenticates outbound
+	// calls to this MCP server. nil means no auth (typical for
+	// in-cluster trust networks).
+	Auth *MCPAuth `yaml:"auth,omitempty"`
+
+	// Tools filters which tools discovered via tools/list are exposed
+	// to the LLM. Allow / Deny cannot BOTH be empty — operators must
+	// be explicit. See ValidateMCPConfig.
+	Tools MCPToolFilter `yaml:"tools,omitempty"`
+
+	// Timeout caps each MCP RPC. Default 60s. Minimum 1s.
+	Timeout time.Duration `yaml:"timeout,omitempty"`
+
+	// Required controls startup failure behavior:
+	//   - true:  this server failing during startup aborts forge run
+	//            with a non-zero exit (K8s observes CrashLoopBackOff).
+	//   - false: warn + continue without this server's tools.
+	Required bool `yaml:"required,omitempty"`
+}
+
+// MCPToolFilter controls which discovered MCP tools are exposed to
+// the LLM.
+//
+// Default-deny: if Allow is empty AND Deny is empty, validation
+// rejects the entry. Operators must be explicit about tool exposure.
+type MCPToolFilter struct {
+	// Allow is the explicit whitelist of tool names to expose. Use
+	// "*" to expose every tool discovered at first connect (snapshot
+	// semantics — tools added by the MCP server later do NOT appear
+	// without a re-build).
+	Allow []string `yaml:"allow,omitempty"`
+
+	// Deny subtracts from the Allow set (or from "all discovered"
+	// when Allow=["*"]). A tool listed in both Allow and Deny is a
+	// validation error.
+	Deny []string `yaml:"deny,omitempty"`
+}
+
+// MCPAuth declares the authentication mechanism for an MCP server.
+type MCPAuth struct {
+	// Type is one of:
+	//   - "oauth"  → OAuth 2.1 PKCE; tokens stored in MCPConfig.TokenStorePath.
+	//                Requires ClientID. Use `forge mcp login <name>` once.
+	//   - "bearer" → static Bearer token from env var TokenEnv.
+	//   - "static" → same as bearer; named separately for clarity in
+	//                forge.yaml.
+	Type string `yaml:"type"`
+
+	// ClientID is the OAuth client identifier registered with the MCP
+	// server's authorization service. Required when Type == "oauth".
+	ClientID string `yaml:"client_id,omitempty"`
+
+	// Scopes is the OAuth scope set requested at login.
+	Scopes []string `yaml:"scopes,omitempty"`
+
+	// TokenEnv names the environment variable holding the bearer
+	// token. Required when Type ∈ {"bearer", "static"}. The variable
+	// is read at runtime, never stored in forge.yaml.
+	TokenEnv string `yaml:"token_env,omitempty"`
 }
 
 // AuthConfig declares the auth provider chain for the A2A server. Mirrors

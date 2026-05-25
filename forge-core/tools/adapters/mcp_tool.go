@@ -155,7 +155,14 @@ func (m *MCPTool) Execute(ctx context.Context, args json.RawMessage) (string, er
 
 	out := flattenContent(res.Content)
 	if len(out) > m.maxResultChars {
-		out = out[:m.maxResultChars] + truncatedSuffix
+		// Subtract suffix length so the FINAL string is at most
+		// m.maxResultChars (review B16 — previously the cap was
+		// +len(truncatedSuffix) bytes over the configured limit).
+		cut := m.maxResultChars - len(truncatedSuffix)
+		if cut < 0 {
+			cut = 0
+		}
+		out = out[:cut] + truncatedSuffix
 	}
 
 	if res.IsError {
@@ -205,7 +212,8 @@ func flattenContent(parts []mcp.ToolContent) string {
 //
 //	unavailable — transport down / 5xx / timeout
 //	protocol    — JSON-RPC error response, malformed frame
-//	revoked     — OAuth token revoked (operator must re-login)
+//	revoked     — OAuth refresh denied (operator must re-login)
+//	no_token    — never logged in (review B11; distinct from revoked)
 //	canceled    — ctx canceled by caller
 //	unknown     — anything else (should be rare; investigate)
 func classifyToolErr(err error) string {
@@ -216,6 +224,8 @@ func classifyToolErr(err error) string {
 		return "unavailable"
 	case errors.Is(err, mcp.ErrTokenRevoked):
 		return "revoked"
+	case errors.Is(err, mcp.ErrNoToken):
+		return "no_token"
 	case errors.Is(err, mcp.ErrProtocolError):
 		return "protocol"
 	default:

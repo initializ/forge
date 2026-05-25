@@ -109,8 +109,10 @@ func TestMCPTool_Execute_Truncation(t *testing.T) {
 	if !strings.HasSuffix(got, truncatedSuffix) {
 		t.Errorf("result not truncated: %q…", got[:50])
 	}
-	if len(got) > 1000+len(truncatedSuffix) {
-		t.Errorf("truncated result too long: %d", len(got))
+	// Final string MUST be ≤ maxResultChars (review B16 — previously
+	// the cap leaked by +len(truncatedSuffix) bytes).
+	if len(got) > 1000 {
+		t.Errorf("truncated result %d bytes exceeds maxResultChars=1000", len(got))
 	}
 }
 

@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/initializ/forge/forge-core/mcp"
 	"github.com/initializ/forge/forge-core/types"
+	"github.com/initializ/forge/forge-core/validate"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -69,8 +71,13 @@ func init() {
 	mcpCmd.AddCommand(mcpListCmd, mcpTestCmd, mcpLoginCmd, mcpLogoutCmd)
 }
 
-// loadForgeConfig reads forge.yaml from the working dir (or --config).
-// Shared by every mcp subcommand.
+// loadForgeConfig reads forge.yaml from the working dir (or --config)
+// AND runs the full validator. Shared by every mcp subcommand.
+//
+// Running ValidateForgeConfig here (review B14) means a malformed
+// mcp: block surfaces with the validator's specific error
+// (e.g. "auth.token_url is required for oauth") instead of cryptic
+// per-server failures inside `mcp list` / `mcp test` later.
 func loadForgeConfig(cmd *cobra.Command) (*types.ForgeConfig, error) {
 	path := cfgFile
 	if !filepath.IsAbs(path) {
@@ -84,6 +91,15 @@ func loadForgeConfig(cmd *cobra.Command) (*types.ForgeConfig, error) {
 	var cfg types.ForgeConfig
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	result := validate.ValidateForgeConfig(&cfg)
+	if !result.IsValid() {
+		return nil, fmt.Errorf("%s is invalid:\n  - %s", path,
+			strings.Join(result.Errors, "\n  - "))
+	}
+	// Warnings printed but non-fatal.
+	for _, w := range result.Warnings {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
 	}
 	return &cfg, nil
 }

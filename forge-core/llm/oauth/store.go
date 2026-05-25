@@ -10,8 +10,31 @@ import (
 	"github.com/initializ/forge/forge-core/secrets"
 )
 
-// DefaultCredentialsDir returns the default directory for OAuth credentials.
+// credentialsDirOverride is set by SetCredentialsDir. Empty means
+// fall back to the home-directory default. Set at process start by
+// callers that need a non-default location (e.g., K8s pod with the
+// token Secret mounted somewhere other than ~/.forge/credentials).
+//
+// Not concurrency-protected — expected to be set once at startup
+// before any goroutines call Save/LoadCredentials. Review B11.
+var credentialsDirOverride string
+
+// SetCredentialsDir overrides the default OAuth credentials
+// directory. Intended for early-startup wiring; calling it after
+// concurrent Save/Load is in flight is a data race.
+//
+// Pass "" to clear the override and revert to the home-based
+// default. Review B11.
+func SetCredentialsDir(dir string) { credentialsDirOverride = dir }
+
+// DefaultCredentialsDir returns the directory used by the
+// encrypted/plaintext credential helpers. If SetCredentialsDir
+// has been called with a non-empty value, that wins; otherwise
+// returns ~/.forge/credentials.
 func DefaultCredentialsDir() (string, error) {
+	if credentialsDirOverride != "" {
+		return credentialsDirOverride, nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("getting home directory: %w", err)

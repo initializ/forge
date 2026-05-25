@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/initializ/forge/forge-core/mcp"
 	"github.com/initializ/forge/forge-core/types"
@@ -200,16 +198,6 @@ func TestMCPLogout_DeletesTokens(t *testing.T) {
 	}
 }
 
-// TestMCPCall_BuiltinIsGone proves that the deprecated mcp_call
-// builtin is no longer registered anywhere — a regression guard for
-// the removal Commit 6 performs.
-func TestMCPCall_BuiltinIsGone(t *testing.T) {
-	// We don't import builtins from this package; instead, do a
-	// quick check that no tool named "mcp_call" surfaces in the
-	// default registry path. (The test in
-	// forge-core/tools/adapters/adapters_test.go covers the absence
-	// of NewMCPCallTool at compile time.)
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
-	_ = ctx // present for symmetry with future builtins-touching tests
-}
+// (TestMCPCall_BuiltinIsGone removed — the compile-time guard in
+// forge-core/tools/adapters/adapters_test.go covers the deprecation
+// regression. Review B15.)

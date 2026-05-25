@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/initializ/forge/forge-core/llm"
@@ -26,14 +27,27 @@ func NewRegistry() *Registry {
 
 // Register adds a tool to the registry. Returns an error if a tool with the
 // same name is already registered.
+//
+// Tool names containing "__" are reserved for MCP-discovered tools
+// (the "<server>__<tool>" namespaced form). Non-MCP tools that try
+// to use that separator are rejected — this prevents a builtin from
+// accidentally shadowing an MCP tool's namespace. MCP tools must
+// implement the MCPSource marker interface to opt in.
 func (r *Registry) Register(t Tool) error {
+	name := t.Name()
+	if strings.Contains(name, "__") {
+		if _, isMCP := t.(MCPSource); !isMCP {
+			return fmt.Errorf("tool name %q contains '__' which is reserved for MCP namespacing (tool must implement tools.MCPSource)", name)
+		}
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if _, exists := r.tools[t.Name()]; exists {
-		return fmt.Errorf("tool already registered: %q", t.Name())
+	if _, exists := r.tools[name]; exists {
+		return fmt.Errorf("tool already registered: %q", name)
 	}
-	r.tools[t.Name()] = t
+	r.tools[name] = t
 	return nil
 }
 

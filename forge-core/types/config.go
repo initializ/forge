@@ -106,7 +106,8 @@ type MCPToolFilter struct {
 type MCPAuth struct {
 	// Type is one of:
 	//   - "oauth"  → OAuth 2.1 PKCE; tokens stored in MCPConfig.TokenStorePath.
-	//                Requires ClientID. Use `forge mcp login <name>` once.
+	//                Requires ClientID, AuthorizeURL, TokenURL.
+	//                Use `forge mcp login <name>` once at laptop time.
 	//   - "bearer" → static Bearer token from env var TokenEnv.
 	//   - "static" → same as bearer; named separately for clarity in
 	//                forge.yaml.
@@ -118,6 +119,17 @@ type MCPAuth struct {
 
 	// Scopes is the OAuth scope set requested at login.
 	Scopes []string `yaml:"scopes,omitempty"`
+
+	// AuthorizeURL is the OAuth 2.1 authorization endpoint (where
+	// `forge mcp login` opens the browser). Required when Type ==
+	// "oauth". Phase 1 requires this be explicit; Phase 1.5 will add
+	// RFC 9728 / RFC 8414 automated discovery via the MCP server URL.
+	AuthorizeURL string `yaml:"authorize_url,omitempty"`
+
+	// TokenURL is the OAuth 2.1 token endpoint (where authorization
+	// codes and refresh tokens are exchanged). Required when
+	// Type == "oauth".
+	TokenURL string `yaml:"token_url,omitempty"`
 
 	// TokenEnv names the environment variable holding the bearer
 	// token. Required when Type ∈ {"bearer", "static"}. The variable

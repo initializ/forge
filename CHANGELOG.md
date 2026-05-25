@@ -1,5 +1,62 @@
 # Changelog
 
+## v0.12.0 — Phase 1: MCP integration (HTTP transport) — in progress
+
+### Added
+
+- **Model Context Protocol (MCP) HTTP client support.** Configure servers
+  under a new `mcp:` block in `forge.yaml`; discovered tools are
+  registered as namespaced `<server>__<tool>` first-class tools that
+  flow through the existing LLM executor.
+- **`forge mcp` subcommands:**
+  - `forge mcp list` — show every configured server, its state, and
+    the number of tools it exposes after filtering.
+  - `forge mcp test <name>` — connect, list tools, optionally call one
+    with `--call <tool> --args '<json>'`.
+  - `forge mcp login <name>` — laptop-time OAuth 2.1 PKCE flow.
+  - `forge mcp logout <name>` — remove stored OAuth tokens.
+- **OAuth 2.1 PKCE** for hosted MCP servers (Linear, Notion, Atlassian,
+  GitHub hosted MCP, etc.). Tokens persist via the existing
+  AES-256-GCM keyring at `~/.forge/credentials/mcp_<name>.json`
+  (encrypted when `FORGE_PASSPHRASE` is set).
+- **Audit events** (NDJSON to stderr, no byte payload ever):
+  `mcp_server_started`, `mcp_server_failed`, `mcp_server_degraded`,
+  `mcp_tool_call`, `mcp_tool_result`, `mcp_tool_conflict`,
+  `mcp_token_refresh`.
+- **Egress integration.** MCP server hosts auto-merged into the egress
+  allowlist (mirroring `auth_domains`) so an HTTP MCP call cannot
+  silently be blocked at runtime.
+- **Tool namespacing.** `tools.Registry.Register` rejects names
+  containing `__` unless the tool implements the new
+  `tools.MCPSource` marker interface, preventing builtins from
+  shadowing MCP-namespaced tools.
+
+### Removed
+
+- **`mcp_call` adapter tool removed.** Superseded by the new `mcp:`
+  configuration block in `forge.yaml`, which exposes each MCP
+  server's tools as first-class namespaced tools — strictly better UX
+  for the LLM than a single meta-tool. See `docs/mcp/index.md` for
+  the migration path.
+
+### Notes
+
+- **Phase 1 supports HTTP transport only.** Stdio MCP servers (Notion,
+  Linear community, Atlassian, the modelcontextprotocol/servers
+  reference set) are on the roadmap. `transport: stdio` is rejected at
+  `forge validate` time with the message
+  `"stdio is on the roadmap; Phase 1 supports HTTP transport only"`.
+- **MCP protocol version pinned to `2025-06-18`**. Handshake hard-fails
+  on mismatch — version negotiation is intentionally absent.
+- **OAuth callback** runs on a `127.0.0.1` loopback listener; it is a
+  laptop-time operation. For K8s deployments, run
+  `forge mcp login <name>` locally, then mount the resulting
+  credentials file as a Secret and point `MCP_TOKEN_STORE_PATH` at it.
+- **No new top-level dependencies** — JSON Schema validation reuses
+  the existing `xeipuuv/gojsonschema` already in `go.mod`.
+
+---
+
 ## v0.11.0 — Phase 2: cloud-native auth providers (in progress)
 
 ### Added

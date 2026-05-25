@@ -18,7 +18,7 @@ func GenerateNetworkPolicy(reg *Registry) NetworkPolicy {
 		}
 
 		switch t.Name() {
-		case "http_request", "webhook_call", "mcp_call", "openapi_call":
+		case "http_request", "webhook_call", "openapi_call":
 			hasNetworkTool = true
 		case "web_search":
 			hasNetworkTool = true

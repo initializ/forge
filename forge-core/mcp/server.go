@@ -335,6 +335,13 @@ func (s *Server) markTerminal() {
 	s.terminalOnce.Do(func() { close(s.failed) })
 }
 
+// FilterTools is the exported form of filterTools, for callers
+// outside the package (e.g., `forge mcp list` which previews what a
+// real `forge run` would expose).
+func FilterTools(descs []MCPToolDescriptor, f types.MCPToolFilter) []MCPToolDescriptor {
+	return filterTools(descs, f)
+}
+
 // filterTools applies Spec.Tools.{Allow,Deny} to the discovered set.
 //
 // Wildcard "*" in Allow expands to "every tool discovered at this

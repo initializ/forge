@@ -102,6 +102,36 @@ type OAuthServerConfig struct {
 // provider tokens in the same encrypted file.
 func storeKey(name string) string { return "mcp_" + name }
 
+// Laptop-side OAuth login loopback server tunings (review B8).
+//
+// The server only handles a single callback redirect and is bound
+// to 127.0.0.1, so blast radius is small. Still, set every common
+// HTTP server timeout so a misbehaving peer (browser extension,
+// localhost-resident attacker, hung redirect) cannot wedge the
+// goroutine. Values picked to be aggressive — the legitimate
+// callback completes in <100ms.
+const (
+	loginReadHeaderTimeout = 5 * time.Second
+	loginReadTimeout       = 15 * time.Second
+	loginWriteTimeout      = 15 * time.Second
+	loginIdleTimeout       = 60 * time.Second
+	loginShutdownTimeout   = 5 * time.Second
+)
+
+// newLoginServer constructs the loopback HTTP server used by Login.
+// Pulled out so the timeout tunings can be tested directly and so
+// any future addition (TLSConfig, MaxHeaderBytes) lands in one
+// place.
+func newLoginServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: loginReadHeaderTimeout,
+		ReadTimeout:       loginReadTimeout,
+		WriteTimeout:      loginWriteTimeout,
+		IdleTimeout:       loginIdleTimeout,
+	}
+}
+
 // Login runs the interactive OAuth 2.1 PKCE flow and persists the
 // resulting token. Intended for laptop-time use by
 // `forge mcp login <name>`. Blocks until the callback fires or ctx
@@ -174,12 +204,17 @@ func (f *OAuthFlow) Login(ctx context.Context, name string, cfg OAuthServerConfi
 		resultCh <- callbackResult{code: code}
 	})
 
-	server := &http.Server{
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
+	server := newLoginServer(mux)
 	go func() { _ = server.Serve(listener) }()
-	defer func() { _ = server.Shutdown(context.Background()) }()
+	defer func() {
+		// Bounded shutdown — defense-in-depth (review B8). The previous
+		// context.Background() shutdown would hang indefinitely if a
+		// peer held a connection open past the response, blocking the
+		// Login return path.
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), loginShutdownTimeout)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+	}()
 
 	// Open the operator's browser via the caller-injected opener.
 	// We do NOT default here — forge-core/mcp stays os/exec-free

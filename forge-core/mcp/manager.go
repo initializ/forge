@@ -110,15 +110,21 @@ func (m *Manager) Start(ctx context.Context) error {
 		name string
 		err  error
 	}
-	errs := make(chan result, len(m.servers))
 
-	for name, srv := range m.servers {
+	// Spawn one Run goroutine per server. Its return value isn't
+	// consumed by anyone — Required-server failures are detected via
+	// the readiness channel below (which observes s.Failed()) and
+	// terminal Run errors after Start has returned are immaterial
+	// (the next caller of Manager.Stop would tear everything down).
+	// The previous code wrote results into a buffered `errs` channel
+	// that nothing ever read, with a dead-drain goroutine after
+	// wg.Wait — both removed (review B10).
+	for _, srv := range m.servers {
 		s := srv
-		n := name
 		m.wg.Add(1)
 		go func() {
 			defer m.wg.Done()
-			errs <- result{name: n, err: s.Run(childCtx)}
+			_ = s.Run(childCtx)
 		}()
 	}
 
@@ -159,19 +165,14 @@ func (m *Manager) Start(ctx context.Context) error {
 	}
 
 	// If a Required server failed, tear everything down before returning.
+	// m.wg.Wait() blocks until every Run() goroutine has finished
+	// writing to errs; the buffered channel is then unreferenced once
+	// Start returns and gets collected normally. No explicit drain
+	// needed (review B10 — removed dead drain goroutine that ran
+	// AFTER Wait already proved all writers were done).
 	if firstRequiredErr != nil {
 		cancel()
 		m.wg.Wait()
-		// Drain any straggler Run() returns from errs to avoid leak.
-		go func() {
-			for range cap(errs) {
-				select {
-				case <-errs:
-				default:
-					return
-				}
-			}
-		}()
 		return firstRequiredErr
 	}
 

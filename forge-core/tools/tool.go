@@ -33,6 +33,21 @@ type Tool interface {
 	Execute(ctx context.Context, args json.RawMessage) (string, error)
 }
 
+// MCPSource is an optional interface signalling that a tool was
+// discovered from an MCP server. The registry uses this to permit
+// "__" in the tool's name — that separator is reserved for the
+// namespaced form "<server-name>__<tool-name>" so MCP tools cannot
+// collide with builtin or adapter tool names. Tools that do NOT
+// implement MCPSource are rejected at registration time if their
+// name contains "__".
+//
+// Implementing this is a single no-op method; see
+// forge-core/tools/adapters/mcp_tool.go.
+type MCPSource interface {
+	Tool
+	MCPSource() // marker — body is empty
+}
+
 // ToLLMDefinition converts a Tool to an llm.ToolDefinition for use with LLM APIs.
 func ToLLMDefinition(t Tool) llm.ToolDefinition {
 	return llm.ToolDefinition{

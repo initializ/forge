@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -47,7 +48,24 @@ type tokenResponse struct {
 }
 
 // ExchangeCode exchanges an authorization code for tokens.
+//
+// Deprecated for new callers — use ExchangeCodeCtx so the request
+// is bounded by a context and rides a caller-provided *http.Client.
+// Kept for backward compatibility with code written against v0.10.
 func ExchangeCode(tokenURL, clientID, code, redirectURI, codeVerifier string) (*Token, error) {
+	return ExchangeCodeCtx(context.Background(), nil, tokenURL, clientID, code, redirectURI, codeVerifier)
+}
+
+// ExchangeCodeCtx is the context- and client-aware variant of
+// ExchangeCode. Caller MUST pass a context with a finite deadline
+// (or a cancellable parent) so a hung IdP cannot wedge the goroutine
+// indefinitely (review B2).
+//
+// If client is nil, a sensible defaulting client is constructed with
+// a 30s end-to-end timeout — but callers in production should pass
+// the egress-controlled client built by security.Resolve so token
+// endpoints ride the same allowlist as every other outbound call.
+func ExchangeCodeCtx(ctx context.Context, client *http.Client, tokenURL, clientID, code, redirectURI, codeVerifier string) (*Token, error) {
 	data := url.Values{
 		"grant_type":    {"authorization_code"},
 		"client_id":     {clientID},
@@ -55,23 +73,46 @@ func ExchangeCode(tokenURL, clientID, code, redirectURI, codeVerifier string) (*
 		"redirect_uri":  {redirectURI},
 		"code_verifier": {codeVerifier},
 	}
-
-	return doTokenRequest(tokenURL, data)
+	return doTokenRequestCtx(ctx, client, tokenURL, data)
 }
 
 // RefreshToken exchanges a refresh token for new access and refresh tokens.
+//
+// Deprecated for new callers — use RefreshTokenCtx. See review B2.
 func RefreshToken(tokenURL, clientID, refreshToken string) (*Token, error) {
+	return RefreshTokenCtx(context.Background(), nil, tokenURL, clientID, refreshToken)
+}
+
+// RefreshTokenCtx is the context- and client-aware variant of
+// RefreshToken. Caller MUST pass a context with a finite deadline.
+// See ExchangeCodeCtx docstring for the client-injection contract.
+func RefreshTokenCtx(ctx context.Context, client *http.Client, tokenURL, clientID, refreshToken string) (*Token, error) {
 	data := url.Values{
 		"grant_type":    {"refresh_token"},
 		"client_id":     {clientID},
 		"refresh_token": {refreshToken},
 	}
-
-	return doTokenRequest(tokenURL, data)
+	return doTokenRequestCtx(ctx, client, tokenURL, data)
 }
 
-func doTokenRequest(tokenURL string, data url.Values) (*Token, error) {
-	resp, err := http.Post(tokenURL, "application/x-www-form-urlencoded", strings.NewReader(data.Encode())) //nolint:gosec
+// defaultTokenTimeout bounds the deprecated http.Post fallback path
+// used by the no-ctx legacy callers. New callers go through
+// *Ctx helpers with their own bounded context.
+const defaultTokenTimeout = 30 * time.Second
+
+func doTokenRequestCtx(ctx context.Context, client *http.Client, tokenURL string, data url.Values) (*Token, error) {
+	if client == nil {
+		// Defaulting client gets the same 30s cap a sensible operator
+		// would set — the previous behavior was http.DefaultClient
+		// with NO timeout, which is the bug this fix closes (B2).
+		client = &http.Client{Timeout: defaultTokenTimeout}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("building token request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := client.Do(req) //nolint:gosec
 	if err != nil {
 		return nil, fmt.Errorf("token request failed: %w", err)
 	}

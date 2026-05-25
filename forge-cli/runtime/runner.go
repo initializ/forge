@@ -488,12 +488,29 @@ func (r *Runner) Run(ctx context.Context) error {
 			} else if mcpMgr != nil {
 				defer func() { _ = mcpMgr.Stop() }()
 				for _, h := range mcpMgr.Tools() {
-					mcpTool := adapters.NewMCPTool(adapters.MCPToolOpts{
+					mcpTool, ctorErr := adapters.NewMCPTool(adapters.MCPToolOpts{
 						Server:     h.Server,
 						Descriptor: h.Descriptor,
 						Client:     h.Client,
 						Audit:      auditLogger,
 					})
+					if ctorErr != nil {
+						// Bad descriptor (empty name or "__" — review B9).
+						// Audit as a conflict; the tool never enters the
+						// registry so the LLM never sees an ambiguous name.
+						r.logger.Warn("mcp tool construction rejected", map[string]any{
+							"server": h.Server, "tool": h.Descriptor.Name, "error": ctorErr.Error(),
+						})
+						auditLogger.Emit(coreruntime.AuditEvent{
+							Event: coreruntime.EventMCPToolConflict,
+							Fields: map[string]any{
+								"server":        h.Server,
+								"incoming_name": h.Descriptor.Name,
+								"error":         ctorErr.Error(),
+							},
+						})
+						continue
+					}
 					if regErr := reg.Register(mcpTool); regErr != nil {
 						r.logger.Warn("mcp tool registration", map[string]any{
 							"tool": mcpTool.Name(), "error": regErr.Error(),

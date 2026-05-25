@@ -5,7 +5,10 @@
 //   - HTTP transport only (Streamable HTTP). Stdio MCP servers are on
 //     the roadmap; see docs/mcp/index.md for the deferred-design
 //     discussion. The Forge runtime never spawns subprocesses for MCP
-//     and the package contains no os/exec dependency.
+//     and this package contains no os/exec dependency — pinned by
+//     TestB4_PackageHasNoOsExecImport. The laptop-time browser opener
+//     used by OAuth Login lives in forge-cli/cmd/mcp_browser.go and is
+//     injected by the caller via OAuthFlow.BrowserOpener (review B4).
 //   - Per-server lifecycle managed by a goroutine driving a state
 //     machine (Configured → Connecting → Initializing → Discovering →
 //     Ready → Calling, with Degraded/Reconnecting for transient

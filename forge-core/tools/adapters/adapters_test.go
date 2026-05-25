@@ -46,32 +46,17 @@ func TestWebhookCallTool(t *testing.T) {
 	}
 }
 
-func TestMCPCallTool(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":"tool result"}}`)) //nolint:errcheck
-	}))
-	defer ts.Close()
-
-	tool := NewMCPCallTool()
-	if tool.Name() != "mcp_call" {
-		t.Errorf("name: got %q", tool.Name())
-	}
-
-	args, _ := json.Marshal(map[string]any{
-		"server_url": ts.URL,
-		"tool_name":  "test_tool",
-		"arguments":  map[string]string{"key": "val"},
-	})
-
-	result, err := tool.Execute(context.Background(), args)
-	if err != nil {
-		t.Fatalf("Execute error: %v", err)
-	}
-	if !strings.Contains(result, "tool result") {
-		t.Errorf("result: %q", result)
-	}
-}
+// TestMCPCallTool_Removed pins the deprecation: the mcp_call builtin
+// was removed in Phase 1 because the new `mcp:` config block exposes
+// each MCP server's tools as first-class namespaced tools — strictly
+// better UX for the LLM. See docs/mcp/index.md and the CHANGELOG.
+//
+// This test is intentionally a compile-time guard: if anyone tries
+// to bring NewMCPCallTool back, this file won't compile. Remove the
+// guard once the v0.12.0 deprecation window closes.
+//
+// (No runtime assertion — the absence of NewMCPCallTool is what the
+// test enforces.)
 
 func TestOpenAPICallTool(t *testing.T) {
 	tool := NewOpenAPICallTool()

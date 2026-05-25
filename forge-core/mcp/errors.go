@@ -35,6 +35,17 @@ var (
 	// message for forensics.
 	ErrTokenRevoked = errors.New("mcp: oauth token revoked")
 
+	// ErrNoToken signals that the OAuth token store has NO entry for
+	// the named MCP server — the operator never ran
+	// `forge mcp login <name>` (or the credentials Secret was not
+	// mounted into the pod). Distinct from ErrTokenRevoked so audit
+	// dashboards can tell first-use-needs-login from a revoked
+	// refresh token (review B11). Both block requests; both prompt
+	// the operator to run `forge mcp login`, but the operational
+	// runbook differs (deploy-time secret wiring vs. user-side
+	// token rotation).
+	ErrNoToken = errors.New("mcp: no stored token — login required")
+
 	// ErrClosed signals operations on a Transport whose Close() has
 	// already been called.
 	ErrClosed = errors.New("mcp: transport closed")

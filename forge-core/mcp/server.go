@@ -297,7 +297,7 @@ func (s *Server) runOnce(ctx context.Context) error {
 
 	cli, err := s.factory(ctx)
 	if err != nil {
-		return fmt.Errorf("connect: %w", err)
+		return withPhase("connect", err)
 	}
 
 	// Launch demultiplexer.
@@ -321,7 +321,7 @@ func (s *Server) runOnce(ctx context.Context) error {
 	initCancel()
 	if err != nil {
 		closeAll()
-		return fmt.Errorf("initialize: %w", err)
+		return withPhase("initialize", err)
 	}
 	// Send the initialized notification per spec. Failure here means
 	// the server did NOT receive the notification — strict MCP
@@ -334,7 +334,7 @@ func (s *Server) runOnce(ctx context.Context) error {
 	if err := cli.Initialized(notifyCtx); err != nil {
 		notifyCancel()
 		closeAll()
-		return fmt.Errorf("initialized notification: %w", err)
+		return withPhase("initialize", fmt.Errorf("initialized notification: %w", err))
 	}
 	notifyCancel()
 	s.logger.Info("mcp server initialized", map[string]any{
@@ -347,7 +347,7 @@ func (s *Server) runOnce(ctx context.Context) error {
 	listCancel()
 	if err != nil {
 		closeAll()
-		return fmt.Errorf("tools/list: %w", err)
+		return withPhase("discover", fmt.Errorf("tools/list: %w", err))
 	}
 
 	// Validate every input schema AND every name before exposing the
@@ -359,15 +359,15 @@ func (s *Server) runOnce(ctx context.Context) error {
 	for i, d := range descs {
 		if d.Name == "" {
 			closeAll()
-			return fmt.Errorf("tool[%d]: descriptor name is empty", i)
+			return withPhase("discover", fmt.Errorf("tool[%d]: descriptor name is empty", i))
 		}
 		if strings.Contains(d.Name, "__") {
 			closeAll()
-			return fmt.Errorf("tool[%d] %q: name contains \"__\" — reserved for the <server>__<tool> namespace separator", i, d.Name)
+			return withPhase("discover", fmt.Errorf("tool[%d] %q: name contains \"__\" — reserved for the <server>__<tool> namespace separator", i, d.Name))
 		}
 		if err := ValidateInputSchema(d.InputSchema); err != nil {
 			closeAll()
-			return fmt.Errorf("tool[%d] %q: %w", i, d.Name, err)
+			return withPhase("discover", fmt.Errorf("tool[%d] %q: %w", i, d.Name, err))
 		}
 	}
 
@@ -389,7 +389,9 @@ func (s *Server) runOnce(ctx context.Context) error {
 		return nil
 	case <-demuxDone:
 		// transport ended — error propagated via the demux's failAll.
-		return fmt.Errorf("%w: demuxer exited", ErrTransportUnavailable)
+		// Tag as "runtime" phase explicitly (post-Ready failure, not
+		// a discover/initialize/connect-phase issue).
+		return withPhase("runtime", fmt.Errorf("%w: demuxer exited", ErrTransportUnavailable))
 	}
 }
 
@@ -582,37 +584,39 @@ func (s *Server) emitDegraded(attempt int, backoff time.Duration) {
 	})
 }
 
-// classifyFailurePhase maps an error to a reason-code phase used in
-// mcp_server_failed audit events. Uses PREFIX matching against the
-// outermost error wrap — runOnce always wraps with one of these
-// known prefixes:
+// phasedError tags an error with the lifecycle phase that produced
+// it. runOnce wraps each phase's failure via withPhase(), so
+// classifyFailurePhase can dispatch via errors.As — no string
+// matching (review B12, follow-up to B5).
+type phasedError struct {
+	phase string
+	err   error
+}
+
+func (e *phasedError) Error() string { return e.phase + ": " + e.err.Error() }
+func (e *phasedError) Unwrap() error { return e.err }
+func (e *phasedError) Phase() string { return e.phase }
+
+func withPhase(phase string, err error) error {
+	return &phasedError{phase: phase, err: err}
+}
+
+// classifyFailurePhase returns the phase tag attached by withPhase
+// at the failing site in runOnce. Any error not carrying a
+// phasedError wrap (e.g., a panic-recovered error or a future
+// code path we haven't tagged) classifies as "runtime".
 //
-//	"connect: ..."                  (factory failure)
-//	"initialize: ..."               (Initialize RPC failure)
-//	"initialized notification: ..." (notification POST failure — B5)
-//	"tools/list: ..."               (ListTools RPC failure)
-//	"tool[N] \"name\": ..."         (schema validation inside discover)
-//
-// The previous strings.Contains-based classifier was brittle — a
-// server's error text happening to contain the word "initialized"
-// flipped a tools/list failure to phase=initialize and vice versa
-// (review B5 reproduction). Prefix matching against our OWN wrap
-// strings removes that fragility.
+// Prefix matching on err.Error() — the previous approach — broke
+// when an upstream server's natural-language error text happened
+// to overlap our prefix names (B5 reproduction). Using a typed
+// wrap removes that fragility entirely.
 func classifyFailurePhase(err error) string {
 	if err == nil {
 		return "unknown"
 	}
-	msg := err.Error()
-	switch {
-	case strings.HasPrefix(msg, "connect:"):
-		return "connect"
-	case strings.HasPrefix(msg, "initialize:"),
-		strings.HasPrefix(msg, "initialized notification:"):
-		return "initialize"
-	case strings.HasPrefix(msg, "tools/list:"),
-		strings.HasPrefix(msg, "tool["):
-		return "discover"
-	default:
-		return "runtime"
+	var pe *phasedError
+	if errors.As(err, &pe) {
+		return pe.Phase()
 	}
+	return "runtime"
 }

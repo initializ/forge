@@ -3,11 +3,24 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
+	"github.com/initializ/forge/forge-core/llm/oauth"
 	"github.com/initializ/forge/forge-core/mcp"
+	"github.com/initializ/forge/forge-core/types"
 	"github.com/spf13/cobra"
 )
+
+// loginTokenStorePath returns the effective override (forge.yaml >
+// env var > unset). Mirrors runtime's mcpTokenStorePath helper so
+// laptop-time login and pod-time refresh agree on the location.
+func loginTokenStorePath(cfg *types.ForgeConfig) string {
+	if cfg != nil && cfg.MCP.TokenStorePath != "" {
+		return cfg.MCP.TokenStorePath
+	}
+	return os.Getenv("MCP_TOKEN_STORE_PATH")
+}
 
 // mcpLoginRun runs the OAuth 2.1 PKCE flow against the named server,
 // persisting the resulting tokens via the encrypted llm/oauth store.
@@ -31,6 +44,13 @@ func mcpLoginRun(cmd *cobra.Command, args []string) error {
 				}
 				return spec.Auth.Type
 			}())
+	}
+
+	// Apply any token-store-path override (review B11) so the
+	// laptop-side Login persists into the same location the
+	// runtime will read from later.
+	if path := loginTokenStorePath(cfg); path != "" {
+		oauth.SetCredentialsDir(path)
 	}
 
 	flow := mcp.NewOAuthFlow()

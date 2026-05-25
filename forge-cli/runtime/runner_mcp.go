@@ -3,10 +3,29 @@ package runtime
 import (
 	"context"
 	"net/http"
+	"os"
 
+	"github.com/initializ/forge/forge-core/llm/oauth"
 	"github.com/initializ/forge/forge-core/mcp"
 	coreruntime "github.com/initializ/forge/forge-core/runtime"
 )
+
+// mcpTokenStorePath returns the effective OAuth credentials
+// directory for MCP. Precedence (highest first):
+//
+//  1. forge.yaml mcp.token_store_path
+//  2. env MCP_TOKEN_STORE_PATH
+//  3. "" — caller falls back to oauth.DefaultCredentialsDir's
+//     home-based default.
+//
+// Review B11 — TokenStorePath was previously parsed from YAML but
+// never read.
+func mcpTokenStorePath(fromYAML string) string {
+	if fromYAML != "" {
+		return fromYAML
+	}
+	return os.Getenv("MCP_TOKEN_STORE_PATH")
+}
 
 // startMCPManager constructs and starts the mcp.Manager when forge.yaml
 // declares mcp.servers. Returns (nil, nil) when no MCP block is
@@ -29,6 +48,14 @@ func (r *Runner) startMCPManager(
 	}
 	if egressClient == nil {
 		egressClient = http.DefaultClient
+	}
+
+	// Wire the optional token-store-path override (review B11). YAML
+	// field wins over env var; both override the ~/.forge/credentials
+	// default. Empty here means "use default" — pass empty so any
+	// previous override is cleared at the start of this Run.
+	if storePath := mcpTokenStorePath(r.cfg.Config.MCP.TokenStorePath); storePath != "" {
+		oauth.SetCredentialsDir(storePath)
 	}
 
 	// Build the shared OAuthFlow if any server uses oauth. Wiring the

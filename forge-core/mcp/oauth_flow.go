@@ -264,7 +264,11 @@ func (f *OAuthFlow) BearerToken(ctx context.Context, name string, cfg OAuthServe
 		return "", fmt.Errorf("loading credentials for %q: %w", name, err)
 	}
 	if tok == nil {
-		return "", fmt.Errorf("%w: no stored token for %q — run 'forge mcp login %s'", ErrTokenRevoked, name, name)
+		// Distinct from ErrTokenRevoked — see errors.go ErrNoToken
+		// docstring (review B11). Emit a "no_token" audit reason so
+		// dashboards can tell first-use from revocation.
+		f.emit(name, false, "no_token")
+		return "", fmt.Errorf("%w: %q — run 'forge mcp login %s'", ErrNoToken, name, name)
 	}
 
 	if !tok.IsExpiredWithBuffer(f.RefreshWindow) {

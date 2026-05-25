@@ -64,17 +64,18 @@ func TestHTTPTransport_UnknownContentType_ProtocolError(t *testing.T) {
 	}
 }
 
-// TestHTTPTransport_QueueOverflow_DropsOldest covers the
-// drop-oldest branch of push() when many frames arrive faster than
-// they're consumed.
-func TestHTTPTransport_QueueOverflow_DropsOldest(t *testing.T) {
+// TestHTTPTransport_QueueOverflow_NoSilentDrop covers the review-B3
+// fix: when the response queue fills, push() blocks (not silently
+// drops the oldest frame). With a Recv consumer in tandem, all 64
+// SSE frames must be delivered — no silent loss.
+func TestHTTPTransport_QueueOverflow_NoSilentDrop(t *testing.T) {
 	t.Parallel()
-	// SSE handler emits 64 frames in one response — queue is sized 16.
+	const total = 64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		f, _ := w.(http.Flusher)
-		for i := range 64 {
+		for i := range total {
 			_, _ = w.Write([]byte("data: " + okFrame("1", `{"i":`+itoa(i)+`}`) + "\n\n"))
 			f.Flush()
 		}
@@ -83,20 +84,34 @@ func TestHTTPTransport_QueueOverflow_DropsOldest(t *testing.T) {
 
 	tr := newTransport(t, srv, nil)
 	id := json.Number("1")
+
+	// Start Recv before Send so the consumer keeps the queue draining;
+	// without this, push WOULD block until overflowTimeout (which the
+	// next test exercises).
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	gotCh := make(chan int, 1)
+	go func() {
+		n := 0
+		for {
+			_, err := tr.Recv(ctx)
+			if err != nil {
+				gotCh <- n
+				return
+			}
+			n++
+			if n == total {
+				gotCh <- n
+				return
+			}
+		}
+	}()
 	if err := tr.Send(context.Background(), JSONRPCMessage{Jsonrpc: "2.0", ID: &id, Method: "x"}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	// At least 1 frame must be receivable — exact count depends on
-	// race between push and Recv but the test exercises the drop-
-	// oldest fallback path so it's covered for coverage purposes.
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-	got, err := tr.Recv(ctx)
-	if err != nil {
-		t.Fatalf("Recv: %v", err)
-	}
-	if got.ID == nil {
-		t.Errorf("frame missing id")
+	n := <-gotCh
+	if n != total {
+		t.Errorf("got %d frames, want %d — fix B3 ensures no silent drop", n, total)
 	}
 }
 

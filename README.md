@@ -63,6 +63,7 @@ You write a `SKILL.md`. Forge compiles it into a secure, runnable agent with egr
 | Cron Scheduling | Recurring tasks with channel delivery |
 | Memory | Session persistence + long-term vector search |
 | LLM Fallbacks | Multi-provider with automatic failover |
+| MCP Client | Connect to any HTTP MCP server (Linear, Notion, Atlassian, ...) — tools surface as `<server>__<tool>` with namespaced audit |
 | Web Dashboard | `forge ui` for browser-based agent management |
 | Build Signing | Ed25519 artifact signing & verification |
 | Air-Gap Ready | Runs with local models, no cloud required |

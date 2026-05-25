@@ -37,6 +37,7 @@ import (
 	"github.com/initializ/forge/forge-core/secrets"
 	"github.com/initializ/forge/forge-core/security"
 	"github.com/initializ/forge/forge-core/tools"
+	"github.com/initializ/forge/forge-core/tools/adapters"
 	"github.com/initializ/forge/forge-core/tools/builtins"
 	"github.com/initializ/forge/forge-core/types"
 	"github.com/initializ/forge/forge-skills/contract"
@@ -270,6 +271,9 @@ func (r *Runner) Run(ctx context.Context) error {
 	// OIDC issuer or http_verifier URL configured in forge.yaml would be
 	// silently blocked at runtime by the egress enforcer.
 	egressDomains = append(egressDomains, security.AuthDomains(r.cfg.Config.Auth)...)
+	// Same for MCP servers — without this, every HTTPS MCP call would
+	// be silently blocked. Mirror the AuthDomains pattern.
+	egressDomains = append(egressDomains, security.MCPDomains(r.cfg.Config.MCP)...)
 	egressCfg, egressErr := security.Resolve(
 		r.cfg.Config.Egress.Profile,
 		r.cfg.Config.Egress.Mode,
@@ -471,6 +475,37 @@ func (r *Runner) Run(ctx context.Context) error {
 				}
 				if len(removed) > 0 {
 					r.logger.Info("removed denied tools", map[string]any{"denied": removed})
+				}
+			}
+
+			// Start MCP servers (Phase 1: HTTP-only) and register their
+			// discovered tools as namespaced "<server>__<tool>" entries.
+			// Required=true server failures here cause Run() to return
+			// non-zero — K8s sees CrashLoopBackOff. Required=false
+			// failures log a warning and continue.
+			if mcpMgr, err := r.startMCPManager(ctx, egressClient, auditLogger); err != nil {
+				return fmt.Errorf("starting mcp manager: %w", err)
+			} else if mcpMgr != nil {
+				defer func() { _ = mcpMgr.Stop() }()
+				for _, h := range mcpMgr.Tools() {
+					mcpTool := adapters.NewMCPTool(adapters.MCPToolOpts{
+						Server:     h.Server,
+						Descriptor: h.Descriptor,
+						Client:     h.Client,
+						Audit:      auditLogger,
+					})
+					if regErr := reg.Register(mcpTool); regErr != nil {
+						r.logger.Warn("mcp tool registration", map[string]any{
+							"tool": mcpTool.Name(), "error": regErr.Error(),
+						})
+						auditLogger.Emit(coreruntime.AuditEvent{
+							Event: coreruntime.EventMCPToolConflict,
+							Fields: map[string]any{
+								"incoming_name": mcpTool.Name(),
+								"error":         regErr.Error(),
+							},
+						})
+					}
 				}
 			}
 

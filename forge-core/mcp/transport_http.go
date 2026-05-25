@@ -147,10 +147,26 @@ func (h *HTTPTransport) Send(ctx context.Context, msg JSONRPCMessage) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	// Capture session id if present.
+	// Capture session id if present. MCP spec: the server assigns a
+	// session ID on initialize and the client echoes it on every
+	// subsequent request — it is stable for the lifetime of the
+	// connection. A server that rotates the value mid-stream is
+	// either buggy or hostile (e.g. trying to splice Forge onto a
+	// different session). Capture only on first sight; reject any
+	// inconsistent change (review B7).
 	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
 		h.mu.Lock()
-		h.sessionID = sid
+		switch h.sessionID {
+		case "":
+			h.sessionID = sid
+		case sid:
+			// unchanged — common case, accept silently.
+		default:
+			existing := h.sessionID
+			h.mu.Unlock()
+			return fmt.Errorf("%w: server rotated Mcp-Session-Id mid-stream (had %q, got %q) — possible session hijack",
+				ErrProtocolError, existing, sid)
+		}
 		h.mu.Unlock()
 	}
 

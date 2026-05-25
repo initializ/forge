@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -33,10 +34,29 @@ import (
 //
 // The refresh path is concurrency-safe via per-name singleflight —
 // 100 concurrent BearerToken calls produce one /token call.
+//
+// IMPORTANT (review B2): the singleflight goroutine uses its OWN
+// background-derived context with a hard RefreshTimeout cap — it is
+// NOT bound to the leader caller's ctx. Otherwise a misbehaving IdP
+// hangs the goroutine indefinitely, leaks the inFly slot, and wedges
+// every subsequent caller for the same server. Caller-ctx-cancel
+// unblocks the caller's wait on <-grp.done but never affects the
+// in-flight refresh.
 type OAuthFlow struct {
 	// RefreshWindow is the slack before expiry at which BearerToken
 	// proactively refreshes. Default 60s.
 	RefreshWindow time.Duration
+
+	// RefreshTimeout caps each /token call. Default 30s.
+	// Decoupled from any caller's context — see the type docstring.
+	RefreshTimeout time.Duration
+
+	// HTTPClient is used for token-endpoint requests. nil → a
+	// defaulting *http.Client with no Transport-level timeout (the
+	// per-call ctx supplies the bound). Production wiring should pass
+	// the egress-controlled client (security.EgressClient) so token
+	// endpoints ride the same allowlist as MCP traffic.
+	HTTPClient *http.Client
 
 	// AuditFn is called on every refresh attempt (success and
 	// failure). nil means no audit — typical for Login at laptop time.
@@ -54,8 +74,9 @@ type OAuthFlow struct {
 // NewOAuthFlow constructs an OAuthFlow with default settings.
 func NewOAuthFlow() *OAuthFlow {
 	return &OAuthFlow{
-		RefreshWindow: 60 * time.Second,
-		inFly:         make(map[string]*refreshGroup),
+		RefreshWindow:  60 * time.Second,
+		RefreshTimeout: 30 * time.Second,
+		inFly:          make(map[string]*refreshGroup),
 	}
 }
 
@@ -170,10 +191,12 @@ func (f *OAuthFlow) Login(ctx context.Context, name string, cfg OAuthServerConfi
 		code = res.code
 	}
 
-	// Exchange code for tokens. ExchangeCode lives in
-	// forge-core/llm/oauth and uses application/x-www-form-urlencoded
-	// per RFC 6749.
-	token, err := oauth.ExchangeCode(cfg.TokenURL, cfg.ClientID, code, redirectURI, pkce.Verifier)
+	// Exchange code for tokens. Honor the caller's ctx (laptop-time
+	// login has its own outer deadline) and use the configured
+	// HTTPClient if set so the call rides the egress allowlist.
+	exchCtx, cancel := context.WithTimeout(ctx, f.refreshTimeout())
+	defer cancel()
+	token, err := oauth.ExchangeCodeCtx(exchCtx, f.HTTPClient, cfg.TokenURL, cfg.ClientID, code, redirectURI, pkce.Verifier)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrProtocolError, err)
 	}
@@ -203,7 +226,18 @@ func (f *OAuthFlow) BearerToken(ctx context.Context, name string, cfg OAuthServe
 		return tok.AccessToken, nil
 	}
 
-	// Singleflight: collapse concurrent refreshes.
+	// Singleflight: collapse concurrent refreshes. The leader spawns
+	// the refresh goroutine and EVERY subsequent caller — including
+	// the leader itself — waits on grp.done below.
+	//
+	// CRITICAL (review B2): the goroutine's context is derived from
+	// context.Background, NOT from the leader's ctx. If we used the
+	// leader's ctx, a leader cancellation would tear down the refresh
+	// mid-flight and waiters would all get the leader's error. Worse,
+	// if the leader's ctx had no deadline AND the IdP hung, the
+	// goroutine would never return — the previous bug. Decoupling
+	// here, plus the hard RefreshTimeout below, guarantees forward
+	// progress: the slot ALWAYS clears within RefreshTimeout.
 	f.mu.Lock()
 	grp, exists := f.inFly[name]
 	if !exists {
@@ -213,12 +247,20 @@ func (f *OAuthFlow) BearerToken(ctx context.Context, name string, cfg OAuthServe
 
 		go func() {
 			defer func() {
+				// Recover here so a panic in doRefresh still clears the
+				// slot and unblocks waiters. Without this, a panicking
+				// refresh would orphan f.inFly[name] forever.
+				if r := recover(); r != nil {
+					grp.err = fmt.Errorf("%w: refresh goroutine panicked: %v", ErrTransportUnavailable, r)
+				}
 				f.mu.Lock()
 				delete(f.inFly, name)
 				f.mu.Unlock()
 				close(grp.done)
 			}()
-			grp.token, grp.err = f.doRefresh(ctx, name, cfg, tok.RefreshToken)
+			refreshCtx, cancel := context.WithTimeout(context.Background(), f.refreshTimeout())
+			defer cancel()
+			grp.token, grp.err = f.doRefresh(refreshCtx, name, cfg, tok.RefreshToken)
 		}()
 	} else {
 		f.mu.Unlock()
@@ -240,18 +282,29 @@ func (f *OAuthFlow) BearerToken(ctx context.Context, name string, cfg OAuthServe
 // classified as ErrTokenRevoked for the documented failure cases
 // (invalid_grant, expired refresh token); other errors propagate
 // as ErrTransportUnavailable so the lifecycle treats them as retryable.
+//
+// ctx is honored by the underlying HTTP call (review B2) — a deadline
+// on ctx is the only thing keeping a hung IdP from wedging this
+// goroutine. The caller (BearerToken's singleflight goroutine) sets
+// a hard RefreshTimeout cap so this method ALWAYS returns.
 func (f *OAuthFlow) doRefresh(ctx context.Context, name string, cfg OAuthServerConfig, refreshToken string) (string, error) {
-	_ = ctx // RefreshToken in llm/oauth uses a default http.Client; we honor ctx via the channel select above.
-	newTok, err := oauth.RefreshToken(cfg.TokenURL, cfg.ClientID, refreshToken)
+	newTok, err := oauth.RefreshTokenCtx(ctx, f.HTTPClient, cfg.TokenURL, cfg.ClientID, refreshToken)
 	if err != nil {
 		// Heuristic: explicit OAuth error strings → revoked.
-		// Anything else (network etc.) → transport unavailable.
+		// Anything else (network / timeout / etc.) → transport unavailable.
 		msg := err.Error()
 		if strings.Contains(msg, "invalid_grant") ||
 			strings.Contains(msg, "expired_token") ||
 			strings.Contains(msg, "invalid_token") {
 			f.emit(name, false, "refresh_denied")
 			return "", fmt.Errorf("%w: %v", ErrTokenRevoked, err)
+		}
+		// Distinguish ctx-deadline from a transport error so audit
+		// dashboards can alert on "refresh consistently hits 30s"
+		// (configured timeout too tight, OR IdP hanging).
+		if errors.Is(err, context.DeadlineExceeded) {
+			f.emit(name, false, "timeout")
+			return "", fmt.Errorf("%w: refresh timed out after %s", ErrTransportUnavailable, f.refreshTimeout())
 		}
 		f.emit(name, false, "transport")
 		return "", fmt.Errorf("%w: %v", ErrTransportUnavailable, err)
@@ -266,6 +319,16 @@ func (f *OAuthFlow) doRefresh(ctx context.Context, name string, cfg OAuthServerC
 	}
 	f.emit(name, true, "refreshed")
 	return newTok.AccessToken, nil
+}
+
+// refreshTimeout returns the configured RefreshTimeout or a sensible
+// default. Used by both the singleflight goroutine (to bound the
+// derived ctx) and doRefresh (to embed the duration in error text).
+func (f *OAuthFlow) refreshTimeout() time.Duration {
+	if f.RefreshTimeout > 0 {
+		return f.RefreshTimeout
+	}
+	return 30 * time.Second
 }
 
 // Logout deletes the stored token for an MCP server. Idempotent.

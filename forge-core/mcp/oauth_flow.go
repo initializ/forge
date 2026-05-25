@@ -63,8 +63,14 @@ type OAuthFlow struct {
 	AuditFn func(server string, ok bool, reason string)
 
 	// BrowserOpener opens a URL in the operator's browser during
-	// Login. nil falls back to a sensible per-OS default
-	// (xdg-open / open / start). Tests inject a no-op.
+	// Login. REQUIRED — Login returns an error if nil. We
+	// deliberately do NOT provide a default that shells out to
+	// xdg-open/open/start because forge-core/mcp must remain free
+	// of an `os/exec` import (spec §4.6, review B4). The browser-
+	// opening glue lives in forge-cli/cmd/mcp_login.go where
+	// `os/exec` is permitted because that code never ships in the
+	// runtime call graph reachable from `forge run`. Tests inject
+	// a no-op or a redirect-driving helper.
 	BrowserOpener func(url string) error
 
 	mu    sync.Mutex
@@ -103,6 +109,12 @@ func storeKey(name string) string { return "mcp_" + name }
 func (f *OAuthFlow) Login(ctx context.Context, name string, cfg OAuthServerConfig) error {
 	if cfg.ClientID == "" || cfg.AuthorizeURL == "" || cfg.TokenURL == "" {
 		return fmt.Errorf("%w: oauth Login requires client_id, authorize_url, token_url", ErrProtocolError)
+	}
+	if f.BrowserOpener == nil {
+		// Fail fast — see the BrowserOpener field docstring. The CLI
+		// (forge-cli/cmd/mcp_login.go) sets this before calling Login;
+		// any other call site must do the same.
+		return fmt.Errorf("%w: OAuthFlow.BrowserOpener is nil — caller must inject one (forge-core/mcp does not import os/exec, review B4)", ErrProtocolError)
 	}
 
 	pkce, err := oauth.GeneratePKCE()
@@ -169,12 +181,10 @@ func (f *OAuthFlow) Login(ctx context.Context, name string, cfg OAuthServerConfi
 	go func() { _ = server.Serve(listener) }()
 	defer func() { _ = server.Shutdown(context.Background()) }()
 
-	// Open the operator's browser.
-	opener := f.BrowserOpener
-	if opener == nil {
-		opener = defaultBrowserOpener
-	}
-	if err := opener(authURL); err != nil {
+	// Open the operator's browser via the caller-injected opener.
+	// We do NOT default here — forge-core/mcp stays os/exec-free
+	// (review B4). The nil check above already rejected this case.
+	if err := f.BrowserOpener(authURL); err != nil {
 		// Non-fatal: print the URL so the operator can open it manually.
 		fmt.Printf("Open this URL in your browser to authorize:\n  %s\n", authURL)
 	}
@@ -368,16 +378,4 @@ func buildAuthorizeURL(authorizeURL, clientID, redirectURI, state, challenge str
 	}
 	u.RawQuery = q.Encode()
 	return u.String(), nil
-}
-
-// defaultBrowserOpener invokes the OS's default browser opener. Best-
-// effort — failures are non-fatal; Login falls back to printing the
-// URL for the operator to open manually.
-func defaultBrowserOpener(target string) error {
-	// Imports kept tight: this is the only place we touch os/exec.
-	// Importing it module-wide would be flagged by the
-	// "no os/exec in forge-core/mcp" rule, but the rule's intent is
-	// "no MCP subprocesses" — the laptop-time browser open is a
-	// different concern. Kept narrowly scoped here.
-	return openBrowser(target)
 }

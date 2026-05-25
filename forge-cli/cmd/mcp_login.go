@@ -34,6 +34,10 @@ func mcpLoginRun(cmd *cobra.Command, args []string) error {
 	}
 
 	flow := mcp.NewOAuthFlow()
+	// Inject the CLI-side browser opener. forge-core/mcp deliberately
+	// has no os/exec dependency (review B4 / spec §4.6), so the
+	// laptop-time opener lives here in the CLI package.
+	flow.BrowserOpener = openBrowserCLI
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 

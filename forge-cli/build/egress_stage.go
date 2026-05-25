@@ -31,7 +31,14 @@ func (s *EgressStage) Execute(ctx context.Context, bc *pipeline.BuildContext) er
 		}
 	}
 
-	resolved, err := security.Resolve(cfg.Profile, cfg.Mode, cfg.AllowedDomains, toolNames, cfg.Capabilities)
+	// Merge auth + MCP domains into the explicit allowlist BEFORE
+	// resolving. Without this, an OIDC issuer or an MCP server URL
+	// configured in forge.yaml would be silently blocked at runtime.
+	allowed := append([]string{}, cfg.AllowedDomains...)
+	allowed = append(allowed, security.AuthDomains(bc.Config.Auth)...)
+	allowed = append(allowed, security.MCPDomains(bc.Config.MCP)...)
+
+	resolved, err := security.Resolve(cfg.Profile, cfg.Mode, allowed, toolNames, cfg.Capabilities)
 	if err != nil {
 		return fmt.Errorf("resolving egress: %w", err)
 	}

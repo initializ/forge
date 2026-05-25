@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/initializ/forge/forge-core/runtime"
@@ -181,7 +182,16 @@ func (s *Server) Run(ctx context.Context) error {
 				"server": s.Name, "error": err.Error(),
 			})
 
-			// Decide whether to retry or terminally fail.
+			// Every error path moves through Degraded first — that's the
+			// state machine's "we hit an error, deciding next step." From
+			// Degraded we either Reconnect or terminal-Fail.
+			//
+			// runOnce can return error from one of {Connecting,
+			// Initializing, Discovering, Ready}. All four are legal
+			// predecessors of Degraded (review B1 fix).
+			s.transition(StateDegraded)
+
+			// Terminal: backoff exhausted.
 			if attempt >= len(s.backoff) {
 				s.emitFailed("backoff_exhausted", err)
 				s.transition(StateFailed)
@@ -192,7 +202,7 @@ func (s *Server) Run(ctx context.Context) error {
 				s.transition(StateStopped)
 				return nil
 			}
-			// Some errors are not retryable — version mismatch, schema bug.
+			// Terminal: non-retryable errors (version mismatch, schema bug).
 			if errors.Is(err, ErrVersionMismatch) {
 				s.emitFailed("version_mismatch", err)
 				s.transition(StateFailed)
@@ -204,7 +214,9 @@ func (s *Server) Run(ctx context.Context) error {
 				return nil
 			}
 
-			// Retry path.
+			// Retry: Degraded → Reconnecting → backoff → next runOnce
+			// (which starts with transition(Connecting), legal from
+			// Reconnecting).
 			s.transition(StateReconnecting)
 			s.emitDegraded(attempt+1, s.backoff[attempt])
 			select {
@@ -314,19 +326,38 @@ func (s *Server) timeout() time.Duration {
 }
 
 // transition moves the state machine to `to`, asserting the move is
-// legal. An illegal transition is a programming bug — panic to fail
-// loud in tests; in prod the panic is recovered to a Failed state.
+// legal. An illegal transition is a programming bug:
+//
+//   - Under `go test` (testing.Testing() == true) it PANICS so the
+//     bug surfaces immediately during CI.
+//   - In a built binary it logs an error and force-transitions to
+//     StateFailed so a misconfigured server cannot leave the Server
+//     stuck in an invalid state silently — the previous behavior
+//     (review B1) was to log + return WITHOUT updating state, which
+//     left every failure-path Server stuck at e.g. StateInitializing
+//     through the entire reconnect cycle.
 func (s *Server) transition(to ServerState) {
 	s.mu.Lock()
 	from := s.state
-	if !isValidTransition(from, to) {
+	if isValidTransition(from, to) {
+		s.state = to
 		s.mu.Unlock()
-		s.logger.Error("illegal state transition", map[string]any{
-			"server": s.Name, "from": from.String(), "to": to.String(),
-		})
 		return
 	}
-	s.state = to
+	s.mu.Unlock()
+
+	msg := fmt.Sprintf("illegal mcp state transition for %q: %s → %s", s.Name, from, to)
+	if testing.Testing() {
+		panic(msg)
+	}
+	s.logger.Error(msg, map[string]any{
+		"server": s.Name, "from": from.String(), "to": to.String(),
+	})
+	// Force into Failed so we don't keep emitting bogus audit events
+	// from a stale state. Failed → Stopped is the only legal outbound,
+	// which markTerminal + the Run loop's terminal path will handle.
+	s.mu.Lock()
+	s.state = StateFailed
 	s.mu.Unlock()
 }
 

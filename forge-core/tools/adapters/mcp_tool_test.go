@@ -32,7 +32,7 @@ func (m *mockClient) Close() error { return nil }
 
 func newAdapter(t *testing.T, c mcp.Client, opts ...func(*MCPTool)) *MCPTool {
 	t.Helper()
-	a := NewMCPTool(MCPToolOpts{
+	a, err := NewMCPTool(MCPToolOpts{
 		Server: "srv",
 		Descriptor: mcp.MCPToolDescriptor{
 			Name:        "echo",
@@ -41,6 +41,9 @@ func newAdapter(t *testing.T, c mcp.Client, opts ...func(*MCPTool)) *MCPTool {
 		},
 		Client: c,
 	})
+	if err != nil {
+		t.Fatalf("NewMCPTool: %v", err)
+	}
 	for _, o := range opts {
 		o(a)
 	}
@@ -147,7 +150,7 @@ func TestMCPTool_Audit_NeverLogsBytes(t *testing.T) {
 	}}
 	var buf safeBuf
 	audit := runtime.NewAuditLogger(&buf)
-	a := NewMCPTool(MCPToolOpts{
+	a, err := NewMCPTool(MCPToolOpts{
 		Server: "srv",
 		Descriptor: mcp.MCPToolDescriptor{
 			Name: "echo", InputSchema: json.RawMessage(`{}`),
@@ -155,6 +158,9 @@ func TestMCPTool_Audit_NeverLogsBytes(t *testing.T) {
 		Client: c,
 		Audit:  audit,
 	})
+	if err != nil {
+		t.Fatalf("NewMCPTool: %v", err)
+	}
 	args := []byte(`{"sentinel":"` + auditSentinelArgs + `"}`)
 	out, err := a.Execute(context.Background(), args)
 	if err != nil {
@@ -183,11 +189,14 @@ func TestMCPTool_Audit_OkFalseOnError(t *testing.T) {
 	c := &mockClient{err: errors.New("simulated network failure: " + mcp.ErrTransportUnavailable.Error())}
 	c.err = mcp.ErrTransportUnavailable
 	var buf safeBuf
-	a := NewMCPTool(MCPToolOpts{
+	a, err := NewMCPTool(MCPToolOpts{
 		Server: "s", Descriptor: mcp.MCPToolDescriptor{Name: "t", InputSchema: json.RawMessage(`{}`)},
 		Client: c, Audit: runtime.NewAuditLogger(&buf),
 	})
-	_, err := a.Execute(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("NewMCPTool: %v", err)
+	}
+	_, err = a.Execute(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}

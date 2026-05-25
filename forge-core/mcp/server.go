@@ -350,9 +350,21 @@ func (s *Server) runOnce(ctx context.Context) error {
 		return fmt.Errorf("tools/list: %w", err)
 	}
 
-	// Validate every input schema before exposing the server. A bad
-	// schema fails THIS server, not the LLM call.
+	// Validate every input schema AND every name before exposing the
+	// server. A bad schema fails THIS server, not the LLM call. A bad
+	// name (empty, or contains the "__" namespace separator — review
+	// B9) also fails the server: the registry's contains-"__" check
+	// would otherwise admit ambiguous names like "<server>__" or
+	// "<server>____foo".
 	for i, d := range descs {
+		if d.Name == "" {
+			closeAll()
+			return fmt.Errorf("tool[%d]: descriptor name is empty", i)
+		}
+		if strings.Contains(d.Name, "__") {
+			closeAll()
+			return fmt.Errorf("tool[%d] %q: name contains \"__\" — reserved for the <server>__<tool> namespace separator", i, d.Name)
+		}
 		if err := ValidateInputSchema(d.InputSchema); err != nil {
 			closeAll()
 			return fmt.Errorf("tool[%d] %q: %w", i, d.Name, err)

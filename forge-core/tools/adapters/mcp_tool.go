@@ -67,7 +67,16 @@ type MCPToolOpts struct {
 }
 
 // NewMCPTool constructs an MCPTool from a discovered descriptor.
-func NewMCPTool(opts MCPToolOpts) *MCPTool {
+//
+// Returns an error when the descriptor name is empty or contains the
+// "__" namespace separator (review B9). The registry's contains-"__"
+// admission check accepts ambiguous names like "<server>__" or
+// "<server>____foo" otherwise; failing at construction means the
+// adapter is never created and the caller can audit the rejection.
+func NewMCPTool(opts MCPToolOpts) (*MCPTool, error) {
+	if err := validateDescriptorName(opts.Descriptor.Name); err != nil {
+		return nil, fmt.Errorf("mcp server %q: %w", opts.Server, err)
+	}
 	maxChars := opts.MaxResultChars
 	if maxChars <= 0 {
 		maxChars = defaultMaxResultChars
@@ -78,7 +87,28 @@ func NewMCPTool(opts MCPToolOpts) *MCPTool {
 		client:         opts.Client,
 		maxResultChars: maxChars,
 		audit:          opts.Audit,
+	}, nil
+}
+
+// validateDescriptorName enforces the MCP-tool-name contract at the
+// adapter boundary (review B9):
+//
+//   - non-empty (an empty name would produce "<server>__" — the
+//     registry's strings.Contains check accepts that, but the LLM
+//     and audit log get a tool with no actual name)
+//   - no "__" substring (the namespace separator must appear at
+//     exactly ONE position in the registered name: between server
+//     and tool. A tool name like "foo__bar" produces "<server>__foo__bar"
+//     — two separators, ambiguous parse for log consumers and a
+//     conflict-vector if another tool happens to share a suffix).
+func validateDescriptorName(name string) error {
+	if name == "" {
+		return errors.New("mcp tool descriptor name is empty")
 	}
+	if strings.Contains(name, "__") {
+		return fmt.Errorf("mcp tool descriptor name %q contains \"__\" — reserved for the <server>__<tool> namespace separator", name)
+	}
+	return nil
 }
 
 // MCPSource marks this tool as MCP-sourced — required so

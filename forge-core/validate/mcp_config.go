@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/initializ/forge/forge-core/types"
@@ -152,7 +153,11 @@ func validateMCPToolFilter(prefix string, f types.MCPToolFilter, r *ValidationRe
 		return
 	}
 
-	// Per-name format check.
+	// Per-name format check. Also forbid "__" — that substring is
+	// reserved for the runtime "<server>__<tool>" namespace
+	// separator (review B9). An operator-supplied allow entry like
+	// "foo__bar" would silently turn into "<server>__foo__bar" at
+	// runtime, ambiguous to log parsers and a conflict vector.
 	for i, name := range f.Allow {
 		if name == "*" {
 			continue // wildcard is allowed
@@ -160,12 +165,22 @@ func validateMCPToolFilter(prefix string, f types.MCPToolFilter, r *ValidationRe
 		if !mcpToolNamePattern.MatchString(name) {
 			r.Errors = append(r.Errors,
 				fmt.Sprintf("%s.allow[%d]: invalid tool name %q", prefix, i, name))
+			continue
+		}
+		if strings.Contains(name, "__") {
+			r.Errors = append(r.Errors,
+				fmt.Sprintf("%s.allow[%d]: tool name %q contains \"__\" (reserved for MCP namespacing)", prefix, i, name))
 		}
 	}
 	for i, name := range f.Deny {
 		if !mcpToolNamePattern.MatchString(name) {
 			r.Errors = append(r.Errors,
 				fmt.Sprintf("%s.deny[%d]: invalid tool name %q", prefix, i, name))
+			continue
+		}
+		if strings.Contains(name, "__") {
+			r.Errors = append(r.Errors,
+				fmt.Sprintf("%s.deny[%d]: tool name %q contains \"__\" (reserved for MCP namespacing)", prefix, i, name))
 		}
 	}
 

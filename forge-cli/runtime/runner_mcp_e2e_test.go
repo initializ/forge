@@ -74,9 +74,12 @@ func TestE2E_MultiServerMCP_AgentLoop(t *testing.T) {
 	// Register all discovered tools — mirrors the runner.go path.
 	reg := tools.NewRegistry()
 	for _, h := range mgr.Tools() {
-		mt := adapters.NewMCPTool(adapters.MCPToolOpts{
+		mt, err := adapters.NewMCPTool(adapters.MCPToolOpts{
 			Server: h.Server, Descriptor: h.Descriptor, Client: h.Client, Audit: audit,
 		})
+		if err != nil {
+			t.Fatalf("NewMCPTool: %v", err)
+		}
 		if err := reg.Register(mt); err != nil {
 			t.Fatalf("Register %s: %v", mt.Name(), err)
 		}

@@ -129,6 +129,12 @@ func validateMCPAuth(prefix string, a types.MCPAuth, r *ValidationResult) {
 		if a.ClientID == "" {
 			r.Errors = append(r.Errors, prefix+": client_id is required for oauth")
 		}
+		if a.AuthorizeURL == "" {
+			r.Errors = append(r.Errors, prefix+": authorize_url is required for oauth")
+		}
+		if a.TokenURL == "" {
+			r.Errors = append(r.Errors, prefix+": token_url is required for oauth")
+		}
 	case "bearer", "static":
 		if a.TokenEnv == "" {
 			r.Errors = append(r.Errors,

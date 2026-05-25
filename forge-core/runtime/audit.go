@@ -30,6 +30,19 @@ const (
 	EventAuthVerify = "auth_verify" // every successful auth decision
 	EventAuthFail   = "auth_fail"   // every failed auth decision (with reason code)
 
+	// MCP events. Like auth, these carry NO byte payload — never the
+	// arguments to a tool call, never the result content. Emitters
+	// include only sizes (args_size, result_size), durations, server +
+	// tool names, and reason codes. See forge-core/mcp and
+	// forge-core/tools/adapters/mcp_tool.go.
+	EventMCPServerStarted  = "mcp_server_started"
+	EventMCPServerFailed   = "mcp_server_failed"
+	EventMCPServerDegraded = "mcp_server_degraded"
+	EventMCPToolCall       = "mcp_tool_call"
+	EventMCPToolResult     = "mcp_tool_result"
+	EventMCPToolConflict   = "mcp_tool_conflict"
+	EventMCPTokenRefresh   = "mcp_token_refresh"
+
 	// Deprecated: use EventAuthVerify. Kept as a string alias so any
 	// audit-log consumer that grep'd for "auth_success" can be migrated.
 	// Scheduled for removal in v0.11.0.

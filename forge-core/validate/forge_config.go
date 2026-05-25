@@ -119,6 +119,7 @@ func ValidateForgeConfig(cfg *types.ForgeConfig) *ValidationResult {
 	}
 
 	ValidateAuthConfig(cfg.Auth, r)
+	ValidateMCPConfig(cfg.MCP, r)
 
 	return r
 }

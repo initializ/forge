@@ -1,16 +1,17 @@
-package mcp
+package cmd
 
 import (
 	"os/exec"
 	"runtime"
 )
 
-// openBrowser invokes the platform's default URL opener. This is the
-// ONLY os/exec use in forge-core/mcp; it is for laptop-time
-// `forge mcp login` only. Production runtime never reaches this code
-// (Login is interactive — the agent process at runtime calls
-// BearerToken, never Login).
-func openBrowser(target string) error {
+// openBrowserCLI invokes the platform's default URL opener. This is
+// the only os/exec use in the OAuth login path; it lives in the CLI
+// package (not forge-core/mcp) because the runtime image must NOT
+// link os/exec for MCP code — see spec §4.6 and review B4. The CLI
+// `forge mcp login` command is laptop-only and never runs inside
+// the agent runtime.
+func openBrowserCLI(target string) error {
 	var cmd string
 	var args []string
 	switch runtime.GOOS {

@@ -89,11 +89,63 @@ type ServerDeps struct {
 	OAuth      *OAuthFlow // nil → no OAuth servers in this config
 }
 
-// NewServer constructs a Server. Returns an error when the spec
-// requires OAuth but no OAuthFlow was supplied.
+// knownMCPAuthTypes is the closed set of accepted Auth.Type values.
+// MUST stay in sync with validate.knownMCPAuthTypes — the validate
+// package is the canonical source for the YAML-config path, but
+// NewServer re-checks here so Go-API callers constructing a
+// types.MCPServer programmatically (and skipping ValidateMCPConfig)
+// still get a loud failure for typos like "Bearer" (capital B)
+// instead of a silently-unauthenticated transport. Review B6.
+//
+// Duplicated as a literal map rather than imported from validate to
+// avoid coupling forge-core/mcp to forge-core/validate. If the set
+// of types changes, both copies must move together — covered by
+// TestB6_KnownAuthTypes_MatchValidate.
+var knownMCPAuthTypes = map[string]bool{
+	"bearer": true,
+	"static": true,
+	"oauth":  true,
+}
+
+// NewServer constructs a Server. Returns an error when:
+//
+//   - spec.Auth.Type is set to an unknown value (review B6) — a typo
+//     like "Bearer" capitalized would otherwise fall through
+//     buildAuthFn and produce an unauthenticated transport.
+//   - spec.Auth.Type is "bearer" or "static" with an empty TokenEnv
+//     — runtime would silently send "" as the bearer token.
+//   - spec requires oauth but no OAuthFlow was supplied.
+//   - spec requires oauth but ClientID / AuthorizeURL / TokenURL are
+//     empty.
+//
+// The validate package catches all of these on the YAML path;
+// these checks make NewServer safe for programmatic construction
+// too. Without them, the only signal of a misconfiguration was a
+// distant 401/403 from the remote server.
 func NewServer(spec types.MCPServer, deps ServerDeps) (*Server, error) {
-	if spec.Auth != nil && spec.Auth.Type == "oauth" && deps.OAuth == nil {
-		return nil, fmt.Errorf("%w: server %q requires oauth but no OAuthFlow supplied", ErrProtocolError, spec.Name)
+	if spec.Auth != nil {
+		if spec.Auth.Type == "" {
+			return nil, fmt.Errorf("%w: server %q: auth.type is required when auth block is set", ErrProtocolError, spec.Name)
+		}
+		if !knownMCPAuthTypes[spec.Auth.Type] {
+			return nil, fmt.Errorf("%w: server %q: unknown auth.type %q (must be one of: bearer, static, oauth)", ErrProtocolError, spec.Name, spec.Auth.Type)
+		}
+		switch spec.Auth.Type {
+		case "bearer", "static":
+			if spec.Auth.TokenEnv == "" {
+				return nil, fmt.Errorf("%w: server %q: auth.token_env is required for type=%s", ErrProtocolError, spec.Name, spec.Auth.Type)
+			}
+		case "oauth":
+			if spec.Auth.ClientID == "" {
+				return nil, fmt.Errorf("%w: server %q: auth.client_id is required for oauth", ErrProtocolError, spec.Name)
+			}
+			if spec.Auth.AuthorizeURL == "" || spec.Auth.TokenURL == "" {
+				return nil, fmt.Errorf("%w: server %q: auth.authorize_url and auth.token_url are required for oauth", ErrProtocolError, spec.Name)
+			}
+			if deps.OAuth == nil {
+				return nil, fmt.Errorf("%w: server %q requires oauth but no OAuthFlow supplied", ErrProtocolError, spec.Name)
+			}
+		}
 	}
 	logger := deps.Logger
 	if logger == nil {
@@ -426,6 +478,12 @@ func filterTools(descs []MCPToolDescriptor, f types.MCPToolFilter) []MCPToolDesc
 // Auth spec. Returns nil for no-auth servers (typical for in-cluster
 // sidecars on trusted networks).
 //
+// Precondition: spec.Auth (when non-nil) has a known Auth.Type —
+// enforced by NewServer (review B6). If the precondition is
+// violated (e.g., a unit test bypassing NewServer), this function
+// returns an AuthTokenFunc that surfaces ErrProtocolError on first
+// call rather than silently sending unauthenticated requests.
+//
 // os.Getenv lookups happen INSIDE the closure so changes to env at
 // runtime (e.g., a K8s Secret rotated and the pod restarted) take
 // effect on the next call without a Manager restart.
@@ -451,7 +509,16 @@ func buildAuthFn(spec types.MCPServer, flow *OAuthFlow) AuthTokenFunc {
 			return flow.BearerToken(ctx, name, cfg)
 		}
 	}
-	return nil
+	// Defense in depth — NewServer should have rejected an unknown
+	// auth.Type already. If a future refactor accidentally bypasses
+	// that check, fail loud on the first request instead of sending
+	// silently-unauthenticated traffic.
+	unknownType := spec.Auth.Type
+	serverName := spec.Name
+	return func(_ context.Context) (string, error) {
+		return "", fmt.Errorf("%w: server %q has unknown auth.type %q — buildAuthFn called without going through NewServer (review B6)",
+			ErrProtocolError, serverName, unknownType)
+	}
 }
 
 // getenv is overridable for tests.

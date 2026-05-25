@@ -100,10 +100,40 @@ func TestValidateMCPConfig(t *testing.T) {
 			name: "auth oauth without client_id",
 			cfg: types.MCPConfig{Servers: []types.MCPServer{{
 				Name: "x", Transport: "http", URL: "http://x",
-				Auth:  &types.MCPAuth{Type: "oauth"},
+				Auth: &types.MCPAuth{
+					Type:         "oauth",
+					AuthorizeURL: "https://example.com/authorize",
+					TokenURL:     "https://example.com/token",
+				},
 				Tools: types.MCPToolFilter{Allow: []string{"y"}},
 			}}},
 			wantErrs: []string{"client_id is required"},
+		},
+		{
+			name: "auth oauth without authorize_url",
+			cfg: types.MCPConfig{Servers: []types.MCPServer{{
+				Name: "x", Transport: "http", URL: "http://x",
+				Auth: &types.MCPAuth{
+					Type:     "oauth",
+					ClientID: "abc",
+					TokenURL: "https://example.com/token",
+				},
+				Tools: types.MCPToolFilter{Allow: []string{"y"}},
+			}}},
+			wantErrs: []string{"authorize_url is required"},
+		},
+		{
+			name: "auth oauth without token_url",
+			cfg: types.MCPConfig{Servers: []types.MCPServer{{
+				Name: "x", Transport: "http", URL: "http://x",
+				Auth: &types.MCPAuth{
+					Type:         "oauth",
+					ClientID:     "abc",
+					AuthorizeURL: "https://example.com/authorize",
+				},
+				Tools: types.MCPToolFilter{Allow: []string{"y"}},
+			}}},
+			wantErrs: []string{"token_url is required"},
 		},
 		{
 			name: "auth bearer without token_env",
@@ -185,8 +215,14 @@ func TestValidateMCPConfig(t *testing.T) {
 			name: "valid happy path — oauth",
 			cfg: types.MCPConfig{Servers: []types.MCPServer{{
 				Name: "linear", Transport: "http",
-				URL:   "https://mcp.linear.app/sse",
-				Auth:  &types.MCPAuth{Type: "oauth", ClientID: "abc", Scopes: []string{"read"}},
+				URL: "https://mcp.linear.app/sse",
+				Auth: &types.MCPAuth{
+					Type:         "oauth",
+					ClientID:     "abc",
+					Scopes:       []string{"read"},
+					AuthorizeURL: "https://linear.app/oauth/authorize",
+					TokenURL:     "https://api.linear.app/oauth/token",
+				},
 				Tools: types.MCPToolFilter{Allow: []string{"create_issue", "list_issues"}},
 			}}},
 			wantNoErr: true,

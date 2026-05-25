@@ -28,13 +28,19 @@ func setupCredsHome(t *testing.T) string {
 	return dir
 }
 
-func TestOAuthFlow_BearerToken_NoStoredToken_ReturnsRevoked(t *testing.T) {
+func TestOAuthFlow_BearerToken_NoStoredToken_ReturnsNoToken(t *testing.T) {
 	setupCredsHome(t)
 	f := NewOAuthFlow()
 	_, err := f.BearerToken(context.Background(), "nonexistent",
 		OAuthServerConfig{ClientID: "x", AuthorizeURL: "https://a", TokenURL: "https://t"})
-	if !errors.Is(err, ErrTokenRevoked) {
-		t.Fatalf("err = %v, want ErrTokenRevoked", err)
+	// Review B11: no-stored-token surfaces ErrNoToken (distinct from
+	// ErrTokenRevoked). Tested independently so audit dashboards can
+	// tell first-use from rotation.
+	if !errors.Is(err, ErrNoToken) {
+		t.Fatalf("err = %v, want ErrNoToken", err)
+	}
+	if errors.Is(err, ErrTokenRevoked) {
+		t.Errorf("err = %v unexpectedly matches ErrTokenRevoked", err)
 	}
 	if !strings.Contains(err.Error(), "forge mcp login") {
 		t.Errorf("err should hint at login command, got: %v", err)

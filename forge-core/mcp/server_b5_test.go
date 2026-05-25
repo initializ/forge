@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -105,11 +106,14 @@ func TestB5_ToolsListError_ReportedAsDiscover(t *testing.T) {
 	}
 }
 
-// TestB5_PhaseClassifier_PrefixBased pins the deterministic
-// classifier directly. The old substring-based classifier returned
-// "initialize" for ANY error containing that word. The new
-// prefix-based one requires the wrap prefix our own runOnce emits.
-func TestB5_PhaseClassifier_PrefixBased(t *testing.T) {
+// TestB5_PhaseClassifier_TypedWrap pins the deterministic
+// classifier directly. The classifier now dispatches via
+// errors.As(*phasedError) instead of substring matching, so the
+// classifier ONLY recognizes errors that were explicitly tagged at
+// the failing site via withPhase() in runOnce (review B12 follow-up
+// to B5). Stray errors classify as "runtime" — there is no
+// ambiguity from upstream text containing our phase names.
+func TestB5_PhaseClassifier_TypedWrap(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name string
@@ -117,14 +121,14 @@ func TestB5_PhaseClassifier_PrefixBased(t *testing.T) {
 		want string
 	}{
 		{"nil", nil, "unknown"},
-		{"connect prefix", errors.New("connect: dial tcp: refused"), "connect"},
-		{"initialize prefix", errors.New("initialize: HTTP 502"), "initialize"},
-		{"initialized notification prefix", errors.New("initialized notification: HTTP 502"), "initialize"},
-		{"tools/list prefix", errors.New("tools/list: HTTP 503"), "discover"},
-		{"tool[N] prefix (schema validation)", errors.New(`tool[0] "echo": malformed JSON Schema`), "discover"},
-		{"unrelated text containing 'initialize'", errors.New("server says: not yet initialized properly"), "runtime"},
-		{"unrelated text containing 'tools/list'", errors.New("ignore me: tools/list mentioned elsewhere"), "runtime"},
-		{"random transport error", errors.New("transport: connection reset"), "runtime"},
+		{"connect via withPhase", withPhase("connect", errors.New("dial tcp: refused")), "connect"},
+		{"initialize via withPhase", withPhase("initialize", errors.New("HTTP 502")), "initialize"},
+		{"discover via withPhase", withPhase("discover", errors.New("HTTP 503")), "discover"},
+		{"runtime via withPhase", withPhase("runtime", errors.New("demuxer exited")), "runtime"},
+		{"wrapped phase still unwraps", fmt.Errorf("outer: %w", withPhase("connect", errors.New("inner"))), "connect"},
+		{"raw error without withPhase", errors.New("connect: dial tcp: refused"), "runtime"},
+		{"raw error with phase-word in text", errors.New("server says: not yet initialized properly"), "runtime"},
+		{"raw error mentioning tools/list", errors.New("ignore me: tools/list mentioned elsewhere"), "runtime"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

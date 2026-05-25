@@ -77,11 +77,17 @@ All file tools use `PathValidator` (from `pathutil.go`):
 
 | Adapter | Description |
 |---------|-------------|
-| `mcp_call` | Call tools on MCP servers via JSON-RPC |
 | `webhook_call` | POST JSON payloads to webhook URLs. Strips credentials on cross-origin redirects |
 | `openapi_call` | Call OpenAPI-described endpoints |
 
 Adapter tools bridge external services into the agent's tool set.
+
+> **MCP tools** are not listed in this table. Configure MCP servers
+> under the top-level `mcp:` block in `forge.yaml`; each server's
+> discovered tools are registered as namespaced `<server>__<tool>`
+> entries automatically. See [docs/mcp/](../mcp/index.md) for the
+> configuration reference. The previous `mcp_call` adapter tool
+> was removed in v0.12.0 — the new block is strictly more capable.
 
 ## Web Search Providers
 

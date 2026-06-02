@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **`forge init` Custom provider now produces a runnable agent (issue #83).**
+  Picking the **Custom** provider in `forge init` (or the Web UI wizard)
+  previously wrote `provider: custom` to `forge.yaml` plus
+  `MODEL_BASE_URL` / `MODEL_API_KEY` env vars, neither of which the runtime
+  understood — agents fell back to `StubExecutor` and every task failed
+  with `agent execution not configured for framework "forge"`. Scaffold
+  now normalizes Custom → `provider: openai` + `OPENAI_BASE_URL` /
+  `OPENAI_API_KEY`, matching the OpenAI-compatible code path the runtime
+  resolver already supports. Affects both TUI and Web UI flows.
+- **OAuth-credentials path no longer silently overrides
+  `OPENAI_BASE_URL` (issue #83).** When the runtime or skill builder
+  found stored ChatGPT OAuth credentials AND no `OPENAI_API_KEY`, it
+  ignored an explicitly-set `OPENAI_BASE_URL` and routed traffic to
+  `chatgpt.com/backend-api/codex` — manifesting as a 400 from ChatGPT
+  rejecting the operator's model name. Both `forge run` and `forge ui`
+  now refuse this combination with a clear error explaining what to set.
+
+### Migration
+
+- If you have `provider: custom` in a checked-in `forge.yaml` from an
+  earlier `forge init` run, change it to `provider: openai` and rename
+  the `.env` keys from `MODEL_BASE_URL` / `MODEL_API_KEY` to
+  `OPENAI_BASE_URL` / `OPENAI_API_KEY`. No new `forge init` is required.
+
 ## v0.12.0 — Phase 1: MCP integration (HTTP transport) — in progress
 
 ### Added

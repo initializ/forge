@@ -1675,11 +1675,34 @@ func (r *Runner) buildLLMClient(mc *coreruntime.ModelConfig) (llm.Client, error)
 
 // createProviderClient creates an LLM client for a provider, using OAuth
 // credentials if available for supported providers.
+//
+// OAuth precedence guardrail (issue #83): when the operator has set
+// OPENAI_BASE_URL (i.e. an explicit OpenAI-compatible endpoint), do NOT
+// fall through to the stored ChatGPT OAuth credentials — the OAuth
+// path overrides cfg.BaseURL with chatgpt.com/backend-api/codex and
+// silently routes requests there, defeating the explicit override.
+// An operator pointing at OpenRouter / vLLM / Kimi / etc. must set
+// OPENAI_API_KEY for that endpoint; if it's missing, surface the
+// configuration error rather than tunneling to ChatGPT.
 func (r *Runner) createProviderClient(provider string, cfg llm.ClientConfig) (llm.Client, error) {
 	// Check for stored OAuth credentials — but only if no real API key is
 	// configured. The "__oauth__" sentinel means the user chose OAuth auth
 	// during init, so we should load the actual token from the credential store.
 	needsOAuth := provider == "openai" && (cfg.APIKey == "" || cfg.APIKey == "__oauth__")
+
+	// Explicit OPENAI_BASE_URL disqualifies the OAuth path. The OAuth
+	// flow's base URL (chatgpt.com/backend-api/codex) is mutually
+	// exclusive with a user-supplied endpoint.
+	if needsOAuth && cfg.BaseURL != "" {
+		return nil, fmt.Errorf(
+			"OPENAI_BASE_URL is set to %q but no OPENAI_API_KEY was provided; "+
+				"the OpenAI OAuth credentials path is disabled when an explicit "+
+				"base URL is in use (it would silently override your endpoint with "+
+				"chatgpt.com/backend-api/codex). Set OPENAI_API_KEY for the configured endpoint",
+			cfg.BaseURL,
+		)
+	}
+
 	if needsOAuth {
 		token, err := oauth.LoadCredentials(provider)
 		if err == nil && token != nil && token.RefreshToken != "" {

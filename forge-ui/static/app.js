@@ -1493,8 +1493,8 @@ function CreatePage() {
                   Base URL <span style="color: var(--accent);">*</span>
                 </label>
                 <input class="wizard-input" placeholder="https://api.example.com/v1"
-                  value=${form.env_vars['MODEL_BASE_URL'] || ''}
-                  onInput=${(e) => updateEnvVar('MODEL_BASE_URL', e.target.value)} />
+                  value=${form.env_vars['OPENAI_BASE_URL'] || ''}
+                  onInput=${(e) => updateEnvVar('OPENAI_BASE_URL', e.target.value)} />
                 <div style="font-size: 11px; color: var(--text-muted); margin-top: 3px;">OpenAI-compatible API endpoint</div>
               </div>
             `}
@@ -1749,7 +1749,7 @@ function CreatePage() {
         // Filter out vars already collected by previous steps
         const autoKeys = new Set([
           ...Object.keys(PROVIDER_KEY_INFO).map(p => PROVIDER_KEY_INFO[p].envVar),
-          'MODEL_BASE_URL', 'WEB_SEARCH_PROVIDER',
+          'OPENAI_BASE_URL', 'WEB_SEARCH_PROVIDER',
           ...form.channels.flatMap(ch => (CHANNEL_TOKEN_FIELDS[ch] || []).map(f => f.key)),
           ...(meta?.web_search_providers || []).map(p => p.env_var),
           ...skillEnvVars.required.map(e => e.key),

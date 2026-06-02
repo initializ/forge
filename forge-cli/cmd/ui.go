@@ -199,6 +199,21 @@ func runUI(cmd *cobra.Command, args []string) error {
 		// skip the codegen model upgrade for OAuth clients.
 		var client llm.Client
 		needsOAuth := mc.Provider == "openai" && (mc.Client.APIKey == "" || mc.Client.APIKey == "__oauth__")
+		// OAuth precedence guardrail (issue #83). The ChatGPT OAuth
+		// path's hardcoded chatgpt.com/backend-api/codex base URL is
+		// mutually exclusive with an operator-supplied OPENAI_BASE_URL.
+		// Without this guard, the skill builder would silently route
+		// requests to ChatGPT instead of the agent's configured
+		// OpenAI-compatible endpoint.
+		if needsOAuth && mc.Client.BaseURL != "" {
+			return fmt.Errorf(
+				"OPENAI_BASE_URL is set to %q but no OPENAI_API_KEY was provided; "+
+					"the OpenAI OAuth credentials path is disabled when an explicit "+
+					"base URL is in use (it would silently override your endpoint with "+
+					"chatgpt.com/backend-api/codex). Set OPENAI_API_KEY for the configured endpoint",
+				mc.Client.BaseURL,
+			)
+		}
 		if needsOAuth {
 			token, oauthErr := oauth.LoadCredentials(mc.Provider)
 			if oauthErr == nil && token != nil && token.RefreshToken != "" {

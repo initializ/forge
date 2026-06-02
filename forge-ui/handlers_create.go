@@ -75,10 +75,16 @@ func (s *UIServer) handleGetWizardMeta(w http.ResponseWriter, _ *http.Request) {
 			},
 		},
 		"custom": {
-			Default:    "default",
-			NeedsKey:   true,
-			IsCustom:   true,
-			BaseURLEnv: "MODEL_BASE_URL",
+			Default:  "default",
+			NeedsKey: true,
+			IsCustom: true,
+			// Custom-provider normalization (issue #83): the wizard's
+			// Custom path is wired through provider=openai +
+			// OPENAI_BASE_URL/OPENAI_API_KEY at scaffold time. The
+			// frontend therefore writes OPENAI_BASE_URL directly
+			// rather than the legacy MODEL_BASE_URL alias, which the
+			// runtime resolver never read.
+			BaseURLEnv: "OPENAI_BASE_URL",
 		},
 	}
 

@@ -386,7 +386,11 @@ func collectInteractive(opts *initOptions) error {
 		opts.EnvVars[k] = v
 	}
 
-	// Custom provider env vars
+	// Custom provider env vars. The wizard collects a base URL + API key
+	// for the OpenAI-compatible endpoint. Write under the legacy
+	// MODEL_* names here; normalizeCustomProvider rewrites them to
+	// OPENAI_BASE_URL / OPENAI_API_KEY at scaffold time so both this
+	// path and the Web UI POST (which also uses MODEL_*) converge.
 	if ctx.CustomBaseURL != "" {
 		opts.EnvVars["MODEL_BASE_URL"] = ctx.CustomBaseURL
 	}
@@ -513,6 +517,48 @@ func storeProviderEnvVar(opts *initOptions) {
 	}
 }
 
+// normalizeCustomProvider rewrites the wizard's "Custom" provider option
+// to the OpenAI-compatible shape that the runtime resolver actually
+// consumes: provider=openai + OPENAI_BASE_URL + OPENAI_API_KEY.
+//
+// Background (issue #83): the wizard's Custom path is meant for OpenAI-
+// compatible endpoints (OpenRouter, litellm, vLLM, self-hosted Kimi/
+// Llama, etc.). Before normalization it wrote provider=custom to
+// forge.yaml and MODEL_BASE_URL / MODEL_API_KEY to .env — but the LLM
+// client factory has no "custom" case (it returns an unknown-provider
+// error) and ResolveModelConfig never reads MODEL_BASE_URL or
+// MODEL_API_KEY. The runtime fell back to StubExecutor and every task
+// failed with "agent execution not configured for framework forge".
+//
+// The fix is to normalize at the single scaffold entry point so both
+// the TUI wizard and the Web UI Custom flow produce the same shape.
+func normalizeCustomProvider(opts *initOptions) {
+	if opts.ModelProvider != "custom" {
+		return
+	}
+	opts.ModelProvider = "openai"
+	// Migrate legacy MODEL_BASE_URL / MODEL_API_KEY (TUI wizard,
+	// older Web UI revs) to the OPENAI_* names the runtime reads.
+	if v := opts.EnvVars["MODEL_BASE_URL"]; v != "" {
+		opts.EnvVars["OPENAI_BASE_URL"] = v
+		delete(opts.EnvVars, "MODEL_BASE_URL")
+	}
+	if v := opts.EnvVars["MODEL_API_KEY"]; v != "" {
+		opts.EnvVars["OPENAI_API_KEY"] = v
+		delete(opts.EnvVars, "MODEL_API_KEY")
+		if opts.APIKey == "" {
+			opts.APIKey = v
+		}
+	}
+	// storeProviderEnvVar runs before scaffold and short-circuits when
+	// provider="custom"; fold in any opts.APIKey set by flag or POST
+	// so the .env emits OPENAI_API_KEY consistently with the path
+	// taken by every other openai-shaped configuration.
+	if opts.APIKey != "" && opts.EnvVars["OPENAI_API_KEY"] == "" {
+		opts.EnvVars["OPENAI_API_KEY"] = opts.APIKey
+	}
+}
+
 // checkSkillRequirements checks binary and env requirements for selected skills.
 func checkSkillRequirements(opts *initOptions) {
 	chkReg, chkErr := local.NewEmbeddedRegistry()
@@ -594,6 +640,8 @@ func parseSkillsFile(path string) ([]toolEntry, error) {
 }
 
 func scaffold(opts *initOptions) error {
+	normalizeCustomProvider(opts)
+
 	dir := filepath.Join(".", opts.AgentID)
 
 	// Check if directory already exists
@@ -1124,6 +1172,13 @@ func buildEnvVars(opts *initOptions) []envVarEntry {
 			val = "your-api-key-here"
 		}
 		vars = append(vars, envVarEntry{Key: "OPENAI_API_KEY", Value: val, Comment: "OpenAI API key"})
+		// OPENAI_BASE_URL is set when the wizard's Custom provider
+		// option is used against an OpenAI-compatible endpoint
+		// (OpenRouter, vLLM, litellm, etc.) and normalizeCustomProvider
+		// has rewritten provider=custom to provider=openai. (Issue #83.)
+		if baseURL := opts.EnvVars["OPENAI_BASE_URL"]; baseURL != "" {
+			vars = append(vars, envVarEntry{Key: "OPENAI_BASE_URL", Value: baseURL, Comment: "OpenAI-compatible endpoint base URL"})
+		}
 		if orgID := opts.OrganizationID; orgID != "" {
 			vars = append(vars, envVarEntry{Key: "OPENAI_ORG_ID", Value: orgID, Comment: "OpenAI organization ID (enterprise)"})
 		}
@@ -1141,16 +1196,6 @@ func buildEnvVars(opts *initOptions) []envVarEntry {
 		vars = append(vars, envVarEntry{Key: "GEMINI_API_KEY", Value: val, Comment: "Gemini API key"})
 	case "ollama":
 		vars = append(vars, envVarEntry{Key: "OLLAMA_HOST", Value: "http://localhost:11434", Comment: "Ollama host"})
-	case "custom":
-		baseURL := opts.EnvVars["MODEL_BASE_URL"]
-		if baseURL != "" {
-			vars = append(vars, envVarEntry{Key: "MODEL_BASE_URL", Value: baseURL, Comment: "Custom model endpoint URL"})
-		}
-		apiKeyVal := opts.EnvVars["MODEL_API_KEY"]
-		if apiKeyVal == "" {
-			apiKeyVal = "your-api-key-here"
-		}
-		vars = append(vars, envVarEntry{Key: "MODEL_API_KEY", Value: apiKeyVal, Comment: "Model provider API key"})
 	}
 
 	// Web search provider key if web_search selected

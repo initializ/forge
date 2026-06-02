@@ -239,7 +239,7 @@ type ProviderModels struct {
 	HasOAuth      bool          `json:"has_oauth,omitempty"`
 	NeedsKey      bool          `json:"needs_key"`
 	IsCustom      bool          `json:"is_custom,omitempty"`
-	BaseURLEnv    string        `json:"base_url_env,omitempty"` // e.g. "MODEL_BASE_URL"
+	BaseURLEnv    string        `json:"base_url_env,omitempty"` // e.g. "OPENAI_BASE_URL"
 	SupportsOrgID bool          `json:"supports_org_id,omitempty"`
 }
 

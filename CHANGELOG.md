@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+### Added
+
+- **Workspace-level skill-builder LLM config (issue #92).** The `forge ui`
+  skill builder now reads its LLM configuration from
+  `<workspace>/.forge/ui.yaml` (or `~/.forge/ui.yaml` as a machine-wide
+  fallback) instead of borrowing credentials from whichever agent the
+  operator picked. The skill-builder LLM is decoupled from any agent's
+  runtime LLM, so the same configuration works across every agent in
+  the workspace and is usable before any agent has been scaffolded.
+  - New `GET` / `PUT` endpoints at `/api/settings/skill-builder` plus a
+    Settings modal in the skill-builder UI.
+  - New `GET /api/skill-builder/provider` (path-less) for first-run
+    detection in an empty workspace.
+  - Status banner surfaces the resolution source (`workspace` / `user` /
+    `agent_fallback` / `unset`) and a deprecation warning when the
+    agent-fallback compat shim resolves.
+  - The Settings modal accepts the API key value inline (password field)
+    and persists it to `<workspace>/.forge/.env` with mode 0600. An
+    auto-generated `<workspace>/.forge/.gitignore` protects the file
+    from accidental commits. The key value never appears in `ui.yaml`
+    and is never echoed back by the GET endpoint.
+  - See `docs/ui/skill-builder-llm.md` for the configuration reference.
+
+### Changed
+
+- **`SkillBuilderCodegenModel` no longer overrides the operator's model
+  (issue #92).** The function previously forced `gpt-4.1` for openai and
+  `claude-opus-4-6` for anthropic regardless of what the agent (or
+  workspace) had configured. The override is removed; the operator's
+  chosen model is used verbatim. This unblocks agents pointed at custom
+  OpenAI-compatible endpoints (OpenRouter, vLLM, litellm, self-hosted
+  Kimi/Llama) where the hardcoded "stronger" model isn't hosted.
+- **Skill-builder handlers no longer call `os.Setenv` (issue #92).** The
+  pre-#92 handlers leaked the picked agent's `.env` into the `forge ui`
+  process's environment via `os.Setenv` calls, which caused cross-agent
+  credential stomping when switching agents in the UI. Credentials are
+  now threaded as request-scoped values.
+
 ### Fixed
 
 - **`forge init` Custom provider now produces a runnable agent (issue #83).**

@@ -11,9 +11,34 @@ import (
 	"testing"
 )
 
+// isolateHome relocates os.UserHomeDir() to a temp directory for the
+// duration of the test. Required because uiconfig.LoadSkillBuilderLLM's
+// tier-2 fallback resolves the user config via os.UserHomeDir; without
+// isolation, a real ~/.forge/ui.yaml on the dev machine would change
+// what these tests observe.
+func isolateHome(t *testing.T) {
+	t.Helper()
+	fake := t.TempDir()
+	origHome, hadHome := os.LookupEnv("HOME")
+	if err := os.Setenv("HOME", fake); err != nil {
+		t.Fatalf("setenv HOME: %v", err)
+	}
+	t.Cleanup(func() {
+		if hadHome {
+			_ = os.Setenv("HOME", origHome)
+		} else {
+			_ = os.Unsetenv("HOME")
+		}
+	})
+}
+
 func setupTestServerWithSkillBuilder(t *testing.T) (*UIServer, string) {
 	t.Helper()
 	root := t.TempDir()
+
+	// Isolate HOME so uiconfig's tier-2 user fallback can't accidentally
+	// pick up the dev machine's ~/.forge/ui.yaml during tests.
+	isolateHome(t)
 
 	// Create test agent
 	agentDir := filepath.Join(root, "test-agent")
@@ -82,15 +107,32 @@ func TestSkillBuilderProvider(t *testing.T) {
 	if resp["provider"] != "openai" {
 		t.Errorf("provider = %q, want %q", resp["provider"], "openai")
 	}
-	// Model is gpt-4.1 (API key codegen upgrade) or the agent's configured
-	// model (OAuth — Codex backend has model restrictions).
-	model := resp["model"].(string)
-	if model != "gpt-4.1" && model != "gpt-4o" {
-		t.Errorf("model = %q, want %q or %q", model, "gpt-4.1", "gpt-4o")
+	// Per issue #92: no hardcoded codegen upgrade. The agent-fallback path
+	// returns the operator's configured model verbatim. (Pre-#92 this was
+	// gpt-4.1 regardless of agent config.)
+	if model, _ := resp["model"].(string); model != "gpt-4o" {
+		t.Errorf("model = %q, want %q (no codegen upgrade)", model, "gpt-4o")
+	}
+	// Falling through to agent fallback should surface the deprecation
+	// warning so the UI can prompt the operator to configure workspace
+	// settings.
+	if source, _ := resp["source"].(string); source != "agent_fallback" {
+		t.Errorf("source = %q, want agent_fallback", source)
+	}
+	if warning, _ := resp["warning"].(string); warning == "" {
+		t.Errorf("agent_fallback path should emit a deprecation warning")
 	}
 }
 
-func TestSkillBuilderProviderAnthropicOverride(t *testing.T) {
+// TestSkillBuilderProvider_AgentFallback_PreservesConfiguredModel pins the
+// post-#92 behavior: the skill builder reports the operator-configured
+// model verbatim — no SkillBuilderCodegenModel upgrade to claude-opus-4-6
+// (or gpt-4.1 for openai). Pre-#92 the agent's configured model was
+// overridden for the skill builder's LLM call, which broke any agent
+// pointed at a custom OpenAI-compatible endpoint that didn't host the
+// hardcoded "stronger" model.
+func TestSkillBuilderProvider_AgentFallback_PreservesConfiguredModel(t *testing.T) {
+	isolateHome(t)
 	root := t.TempDir()
 
 	agentDir := filepath.Join(root, "anthropic-agent")
@@ -128,8 +170,8 @@ model:
 	if resp["provider"] != "anthropic" {
 		t.Errorf("provider = %q, want %q", resp["provider"], "anthropic")
 	}
-	if resp["model"] != "claude-opus-4-6" {
-		t.Errorf("model = %q, want %q", resp["model"], "claude-opus-4-6")
+	if resp["model"] != "claude-sonnet-4-20250514" {
+		t.Errorf("model = %q, want %q (no codegen upgrade)", resp["model"], "claude-sonnet-4-20250514")
 	}
 }
 

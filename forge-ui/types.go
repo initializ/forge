@@ -3,6 +3,8 @@ package forgeui
 import (
 	"context"
 	"time"
+
+	"github.com/initializ/forge/forge-ui/uiconfig"
 )
 
 // ProcessState represents the lifecycle state of an agent process.
@@ -79,7 +81,20 @@ type SkillBuilderMessage struct {
 }
 
 // LLMStreamOptions configures a streaming LLM call for the skill builder.
+//
+// The LLM struct is the resolved skill-builder LLM configuration —
+// workspace-level (per issue #92) when available, with the agent-
+// fallback path used only when no workspace/user config exists.
+// Callers in forge-cli MUST consume LLM directly rather than re-reading
+// the agent's forge.yaml / .env: doing so would re-introduce the
+// per-agent env-stomping the workspace-LLM design replaced.
+//
+// AgentDir is retained for the deprecated fallback resolution path
+// only — forge-ui passes it so the loader can read the agent's
+// forge.yaml when no workspace/user config exists. New code paths
+// should not depend on it.
 type LLMStreamOptions struct {
+	LLM          uiconfig.SkillBuilderLLM
 	AgentDir     string
 	SystemPrompt string
 	Messages     []SkillBuilderMessage

@@ -4,27 +4,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 
-	"github.com/initializ/forge/forge-cli/runtime"
-	"github.com/initializ/forge/forge-core/llm/oauth"
-	"github.com/initializ/forge/forge-core/types"
+	"github.com/initializ/forge/forge-ui/uiconfig"
 )
 
-// SkillBuilderCodegenModel returns the preferred code-generation model for the
-// given provider. Skill generation is a complex task that benefits from stronger
-// models than the agent's default. Falls back to fallback if the provider is unknown.
-func SkillBuilderCodegenModel(provider, fallback string) string {
-	switch provider {
-	case "openai":
-		return "gpt-4.1"
-	case "anthropic":
-		return "claude-opus-4-6"
-	default:
-		return fallback
-	}
+// SkillBuilderCodegenModel previously hardcoded "gpt-4.1" / "claude-opus-4-6"
+// regardless of the agent's configured model. Issue #92 removed that override:
+// the skill builder now uses the operator-chosen model from workspace-level
+// ui.yaml (see uiconfig.LoadSkillBuilderLLM). The function is retained as a
+// no-op shim with a deprecation marker so any out-of-tree callers fail loudly.
+//
+// Deprecated: skill-builder model selection is now driven by uiconfig.
+func SkillBuilderCodegenModel(_, configured string) string {
+	return configured
 }
 
 // resolveAgentDir extracts agent ID from the request, looks up the agent,
@@ -51,82 +44,35 @@ func (s *UIServer) resolveAgentDir(w http.ResponseWriter, r *http.Request) strin
 	return agent.Directory
 }
 
-// handleSkillBuilderProvider returns the agent's LLM provider info.
+// handleSkillBuilderProvider reports the resolved skill-builder LLM
+// configuration. Workspace-level config (forge-ui/uiconfig) is the
+// primary source; the agent's forge.yaml is consulted only when no
+// workspace/user config exists (deprecated fallback). The handler
+// never mutates the UI process's environment.
 func (s *UIServer) handleSkillBuilderProvider(w http.ResponseWriter, r *http.Request) {
-	agentDir := s.resolveAgentDir(w, r)
-	if agentDir == "" {
-		return
+	// agentDir is only used for the deprecated fallback path. It's
+	// optional — first-run flow (no agent picked yet) is supported.
+	agentDir := ""
+	if r.PathValue("id") != "" {
+		agentDir = s.resolveAgentDir(w, r)
+		if agentDir == "" {
+			return // resolveAgentDir wrote the error response
+		}
 	}
 
-	configPath := filepath.Join(agentDir, "forge.yaml")
-	data, err := os.ReadFile(configPath)
+	llm, err := uiconfig.LoadSkillBuilderLLM(s.cfg.WorkDir, agentDir, uiconfig.EnvLookupForWorkspace(s.cfg.WorkDir))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "reading config: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "loading skill-builder config: "+err.Error())
 		return
-	}
-
-	cfg, err := types.ParseForgeConfig(data)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "parsing config: "+err.Error())
-		return
-	}
-
-	provider := cfg.Model.Provider
-
-	// Load the agent's .env and encrypted secrets so we can check for API keys
-	// that aren't in the UI process's own environment.
-	envPath := filepath.Join(agentDir, ".env")
-	envVars, _ := runtime.LoadEnvFile(envPath)
-	for k, v := range envVars {
-		// Don't pollute process env with __oauth__ sentinels — they block
-		// OverlaySecretsToEnv from replacing them with real keys later.
-		if v == "__oauth__" {
-			continue
-		}
-		if os.Getenv(k) == "" {
-			_ = os.Setenv(k, v)
-		}
-	}
-	runtime.OverlaySecretsToEnv(cfg, agentDir)
-
-	// Check if the provider's API key env var is set (excluding __oauth__ sentinel)
-	keyVal := func(k string) bool {
-		v := os.Getenv(k)
-		return v != "" && v != "__oauth__"
-	}
-	hasKey := false
-	isOAuth := false
-	switch provider {
-	case "openai":
-		hasKey = keyVal("OPENAI_API_KEY")
-		if !hasKey {
-			// Check for stored OAuth credentials
-			if token, err := oauth.LoadCredentials("openai"); err == nil && token != nil && token.RefreshToken != "" {
-				hasKey = true
-				isOAuth = true
-			}
-		}
-	case "anthropic":
-		hasKey = keyVal("ANTHROPIC_API_KEY")
-	case "gemini":
-		hasKey = keyVal("GEMINI_API_KEY")
-	case "ollama":
-		hasKey = true // Ollama doesn't need an API key
-	default:
-		hasKey = keyVal("LLM_API_KEY") || keyVal("MODEL_API_KEY")
-	}
-
-	// OAuth/Codex backend has model restrictions — use agent's configured model.
-	// API key clients get upgraded to a stronger codegen model.
-	model := cfg.Model.Name
-	if !isOAuth {
-		model = SkillBuilderCodegenModel(provider, model)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"provider": provider,
-		"model":    model,
-		"has_key":  hasKey,
+		"provider": llm.Provider,
+		"model":    llm.Model,
+		"base_url": llm.BaseURL,
+		"has_key":  llm.HasCredentials(),
+		"source":   llm.Source,
+		"warning":  llm.Warning,
 	})
 }
 
@@ -160,6 +106,29 @@ func (s *UIServer) handleSkillBuilderChat(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Resolve the workspace-level skill-builder LLM ONCE per request and
+	// pass it through LLMStreamOptions. The forge-cli callback consumes
+	// LLM directly — it must not re-read the agent's forge.yaml / .env,
+	// since that would re-introduce the per-agent env-stomping the
+	// workspace-LLM design replaced (issue #92).
+	llm, err := uiconfig.LoadSkillBuilderLLM(s.cfg.WorkDir, agentDir, uiconfig.EnvLookupForWorkspace(s.cfg.WorkDir))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "loading skill-builder config: "+err.Error())
+		return
+	}
+	if llm.Source == uiconfig.SourceUnset {
+		writeError(w, http.StatusBadRequest,
+			"skill-builder LLM is not configured. Open Settings → Skill Builder to pick a provider, model, and API key env var.")
+		return
+	}
+	if !llm.HasCredentials() {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf(
+			"skill-builder LLM is configured (%s) but no API key found in env var %q. "+
+				"Set that env var in the forge ui process and reload, or change api_key_env in Settings.",
+			llm.Provider, llm.APIKeyEnv))
+		return
+	}
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "streaming not supported")
@@ -173,7 +142,8 @@ func (s *UIServer) handleSkillBuilderChat(w http.ResponseWriter, r *http.Request
 
 	var fullResponse strings.Builder
 
-	err := s.cfg.LLMStreamFunc(r.Context(), LLMStreamOptions{
+	err = s.cfg.LLMStreamFunc(r.Context(), LLMStreamOptions{
+		LLM:          llm,
 		AgentDir:     agentDir,
 		SystemPrompt: skillBuilderSystemPrompt,
 		Messages:     req.Messages,

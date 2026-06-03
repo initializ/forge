@@ -137,7 +137,16 @@ An AI-powered conversational tool for creating custom skills. Access it via the 
 
 ### How It Works
 
-The Skill Builder uses the agent's own LLM provider to power a chat conversation that generates valid SKILL.md files and optional helper scripts. It automatically selects a stronger code-generation model when available (e.g. `gpt-4.1` for OpenAI, `claude-opus-4-6` for Anthropic). API key detection loads the agent's `.env` file and encrypted secrets (if unlocked) in addition to system environment variables.
+The Skill Builder uses a **workspace-level LLM** that's independent of any specific agent's runtime LLM. The same configuration applies across every agent in the workspace and works before any agent has been scaffolded.
+
+Configuration is persisted under `<workspace>/.forge/`:
+
+- `ui.yaml` holds the non-secret fields (`provider`, `model`, optional `base_url`, optional `api_key_env`).
+- `.env` holds the API key value (mode `0600`, auto-protected by a sibling `.gitignore`).
+
+The status banner above the chat panel surfaces the resolution source — `workspace`, `user` (machine-wide fallback), `agent_fallback` (a deprecated compat shim used when no workspace/user config exists), or `unset`. When `unset`, the banner shows a **Configure** button that opens the settings modal.
+
+See [Skill Builder LLM](../ui/skill-builder-llm.md) for the full configuration reference, three-tier resolution precedence, and trust-boundary rationale.
 
 ### Features
 
@@ -182,11 +191,14 @@ The validator enforces the [SKILL.md format](../core-concepts/skill-md-format.md
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/agents/{id}/skill-builder/provider` | Returns the agent's LLM provider, codegen model, and API key status |
+| `GET` | `/api/skill-builder/provider` | Returns the resolved workspace-level LLM (provider, model, `source`, `has_key`, deprecation `warning`). Use this for first-run detection before any agent is picked. |
+| `GET` | `/api/agents/{id}/skill-builder/provider` | Same shape as above, but consults the agent-fallback tier when no workspace/user config exists. |
 | `GET` | `/api/agents/{id}/skill-builder/context` | Returns the system prompt used for skill generation |
-| `POST` | `/api/agents/{id}/skill-builder/chat` | Streams an LLM conversation via SSE (accepts `messages` array) |
+| `POST` | `/api/agents/{id}/skill-builder/chat` | Streams an LLM conversation via SSE (accepts `messages` array). Returns `400` when the workspace LLM is `unset` or has no resolvable API key. |
 | `POST` | `/api/agents/{id}/skill-builder/validate` | Validates a SKILL.md and optional scripts |
 | `POST` | `/api/agents/{id}/skill-builder/save` | Saves a validated skill to `skills/{name}/`, merges egress domains, writes env vars; returns `SkillSaveResult` with `path`, `egress_added`, `env_configured`, `env_missing` |
+| `GET` | `/api/settings/skill-builder` | Returns the workspace-level config + metadata for the Settings modal (`source`, `has_key`, `providers` list). The API key value is never echoed back. |
+| `PUT` | `/api/settings/skill-builder` | Persists `provider`, `model`, optional `base_url`, optional `api_key_env` to `<workspace>/.forge/ui.yaml`. When an optional `api_key` field is present in the body, writes it to `<workspace>/.forge/.env` (mode `0600`) under `api_key_env` (or the provider default). The key value never leaks to `ui.yaml`. Submit an empty / omitted `api_key` to leave the saved value untouched. |
 
 ## Architecture
 
@@ -199,6 +211,9 @@ forge-ui/
   handlers.go                      Dashboard API (agents, start/stop, chat, sessions)
   handlers_create.go               Wizard API (create, config, skills, tools, OAuth)
   handlers_skill_builder.go        Skill Builder API (chat, validate, save, provider)
+  handlers_settings.go             Workspace-level settings API (skill-builder LLM)
+  uiconfig/                        Workspace ui.yaml + .env loader; SkillBuilderLLM
+                                   resolution + atomic .env writer with auto-.gitignore
   skill_builder_context.go         System prompt for the Skill Designer AI
   skill_validator.go               SKILL.md validation and artifact extraction
   process.go                       Process manager (exec forge serve start/stop)

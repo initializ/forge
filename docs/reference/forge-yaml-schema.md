@@ -16,13 +16,17 @@ registry: "ghcr.io/org"             # Container registry
 entrypoint: "agent.py"              # Required for crewai/langchain, omit for forge
 
 model:
-  provider: "openai"                # openai, anthropic, gemini, ollama, custom
+  provider: "openai"                # openai, anthropic, gemini, ollama
   name: "gpt-4o"                    # Model name
   organization_id: "org-xxx"        # OpenAI Organization ID (enterprise, optional)
   fallbacks:                        # Fallback providers (optional)
     - provider: "anthropic"
       name: "claude-sonnet-4-20250514"
       organization_id: ""           # Per-fallback org ID override (optional)
+# For OpenAI-compatible endpoints (OpenRouter, vLLM, litellm, self-hosted
+# Kimi/Llama): use provider: "openai" + set OPENAI_BASE_URL in .env.
+# The forge init wizard's "Custom" option normalizes to this shape — the
+# generated forge.yaml never carries provider: "custom".
 
 tools:
   - name: "web_search"

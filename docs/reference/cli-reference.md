@@ -31,7 +31,7 @@ forge init [name] [flags]
 | `--name` | `-n` | | Agent name |
 | `--framework` | `-f` | | Framework: `crewai`, `langchain`, or `custom` |
 | `--language` | `-l` | | Language: `python`, `typescript`, or `go` |
-| `--model-provider` | `-m` | | Model provider: `openai`, `anthropic`, `ollama`, or `custom` |
+| `--model-provider` | `-m` | | Model provider: `openai`, `anthropic`, `gemini`, `ollama`, or `custom` (alias for an OpenAI-compatible endpoint — scaffolds `provider: openai` + `OPENAI_BASE_URL` / `OPENAI_API_KEY`) |
 | `--channels` | | | Channel adapters (e.g., `slack,telegram`) |
 | `--tools` | | | Builtin tools to enable (e.g., `web_search,http_request`) |
 | `--skills` | | | Registry skills to include (e.g., `github,weather`) |

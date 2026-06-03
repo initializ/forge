@@ -2,7 +2,7 @@
   <img src="assets/banner.png" alt="Forge — open-source AI agent framework" width="100%">
 </p>
 
-# Forge — OpenClaw for Enterprise: A Secure, Portable AI Agent Runtime
+# Forge — An Open, Secure, Portable AI Agent Runtime for the Enterprise
 
 <p align="center">
   <a href="https://useforge.ai/docs/"><img src="https://img.shields.io/badge/Docs-useforge.ai-FFD700?style=for-the-badge" alt="Documentation"></a>
@@ -11,8 +11,7 @@
   <a href="https://initializ.ai"><img src="https://img.shields.io/badge/Built%20by-initializ-blueviolet?style=for-the-badge" alt="Built by initializ"></a>
 </p>
 
-Build, run, and deploy AI agents from a single `SKILL.md` file.
-Secure by default. Runs anywhere — local, container, cloud, air-gapped.
+Forge is the open-source runtime for Anthropic's Agent Skills standard — built for the agent that runs next to a service, in your environment, on infrastructure you already operate. Write a `SKILL.md`. Compile to a portable, hardened agent. Deploy it anywhere containers run: Kubernetes, on-prem, air-gapped, embedded in CI, or as an A2A endpoint.
 
 ## Why Forge?
 

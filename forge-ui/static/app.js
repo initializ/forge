@@ -2254,6 +2254,159 @@ function SkillsPage() {
   `;
 }
 
+// ── Skill Builder Settings (issue #92) ───────────────────────
+
+async function fetchSkillBuilderSettings() {
+  const res = await fetch('/api/settings/skill-builder');
+  if (!res.ok) throw new Error(`Failed to fetch settings: ${res.status}`);
+  return res.json();
+}
+
+async function saveSkillBuilderSettings(body) {
+  const res = await fetch('/api/settings/skill-builder', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Save failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+// SkillBuilderSettingsModal lets the operator pick the workspace-
+// level LLM the skill builder uses, decoupled from any agent's
+// runtime LLM. Persists to <workspace>/.forge/ui.yaml via the
+// PUT /api/settings/skill-builder endpoint.
+function SkillBuilderSettingsModal({ initial, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    provider: (initial && initial.provider) || 'openai',
+    model: (initial && initial.model) || '',
+    base_url: (initial && initial.base_url) || '',
+    api_key_env: (initial && initial.api_key_env) || '',
+  });
+  // API key is intentionally a separate piece of state — never persisted
+  // to ui.yaml, never echoed back from the server. Left blank on every
+  // open of the modal so an existing key isn't shown (or shadowed by an
+  // empty input). Submitting an empty api_key leaves the saved value
+  // untouched; submit a new value to rotate.
+  const [apiKey, setApiKey] = useState('');
+  const [showKey, setShowKey] = useState(false);
+  const [hasKey, setHasKey] = useState((initial && initial.has_key) || false);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState(null);
+
+  // Reload from server when modal opens so we see the persisted state,
+  // not the partially-fallback shape that fetchSkillBuilderProvider
+  // returned (which folds in agent-fallback fields).
+  useEffect(() => {
+    fetchSkillBuilderSettings()
+      .then((s) => {
+        setForm({
+          provider: s.provider || 'openai',
+          model: s.model || '',
+          base_url: s.base_url || '',
+          api_key_env: s.api_key_env || '',
+        });
+        setHasKey(!!s.has_key);
+      })
+      .catch((e) => setErr(e.message));
+  }, []);
+
+  async function submit() {
+    setSaving(true);
+    setErr(null);
+    try {
+      // Build the request body. Include api_key only when the operator
+      // typed one — empty string means "leave the existing key alone."
+      const body = { ...form };
+      if (apiKey) body.api_key = apiKey;
+      const saved = await saveSkillBuilderSettings(body);
+      onSaved && onSaved(saved);
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const update = (k, v) => setForm({ ...form, [k]: v });
+
+  return html`
+    <div class="modal-overlay" onClick=${onClose}>
+      <div class="modal" onClick=${(e) => e.stopPropagation()} style="max-width: 540px;">
+        <div class="modal-header">
+          <h3>Skill Builder LLM</h3>
+          <button class="btn btn-ghost btn-sm" onClick=${onClose}>✕</button>
+        </div>
+        <div class="modal-body">
+          <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 16px;">
+            Workspace-level LLM used to generate skills. Independent of any
+            specific agent's runtime LLM. Persisted to
+            <code>&lt;workspace&gt;/.forge/ui.yaml</code>.
+          </p>
+
+          <label class="modal-label">Provider</label>
+          <select class="wizard-input" value=${form.provider} onChange=${(e) => update('provider', e.target.value)}>
+            <option value="openai">openai</option>
+            <option value="anthropic">anthropic</option>
+            <option value="gemini">gemini</option>
+            <option value="ollama">ollama</option>
+          </select>
+
+          <label class="modal-label" style="margin-top: 12px;">Model</label>
+          <input class="wizard-input" placeholder="gpt-4.1 / claude-opus-4 / etc."
+            value=${form.model} onInput=${(e) => update('model', e.target.value)} />
+
+          ${form.provider === 'openai' && html`
+            <label class="modal-label" style="margin-top: 12px;">Base URL <span style="color: var(--text-muted);">(optional)</span></label>
+            <input class="wizard-input" placeholder="https://api.openai.com/v1 (leave blank for default)"
+              value=${form.base_url} onInput=${(e) => update('base_url', e.target.value)} />
+            <div style="font-size: 11px; color: var(--text-muted); margin-top: 3px;">
+              Set this for OpenAI-compatible endpoints (OpenRouter, vLLM, litellm).
+            </div>
+          `}
+
+          <label class="modal-label" style="margin-top: 12px;">API key env var</label>
+          <input class="wizard-input" placeholder=${`${form.provider.toUpperCase()}_API_KEY (default)`}
+            value=${form.api_key_env} onInput=${(e) => update('api_key_env', e.target.value)} />
+          <div style="font-size: 11px; color: var(--text-muted); margin-top: 3px;">
+            Name of the environment variable the forge ui process reads for the API key.
+            Leave blank to use the provider default.
+          </div>
+
+          ${form.provider !== 'ollama' && html`
+            <label class="modal-label" style="margin-top: 12px;">
+              API key ${hasKey ? html`<span style="color: var(--text-muted); font-weight: normal;">(saved; leave blank to keep)</span>` : ''}
+            </label>
+            <div style="display: flex; gap: 6px;">
+              <input class="wizard-input" type=${showKey ? 'text' : 'password'} autocomplete="off"
+                placeholder=${hasKey ? '••••••••' : 'paste API key value'}
+                value=${apiKey} onInput=${(e) => setApiKey(e.target.value)} style="flex: 1;" />
+              <button type="button" class="btn btn-ghost btn-sm" onClick=${() => setShowKey(!showKey)}>
+                ${showKey ? 'Hide' : 'Show'}
+              </button>
+            </div>
+            <div style="font-size: 11px; color: var(--text-muted); margin-top: 3px;">
+              Stored at <code>&lt;workspace&gt;/.forge/.env</code> (mode 0600).
+              An auto-generated <code>.forge/.gitignore</code> protects it from being committed.
+            </div>
+          `}
+
+          ${err && html`<div class="modal-error">${err}</div>`}
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost" onClick=${onClose}>Cancel</button>
+          <button class="btn btn-primary" onClick=${submit} disabled=${saving}>
+            ${saving ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 // ── Skill Builder Page ───────────────────────────────────────
 
 function SkillBuilderPage({ agentId }) {
@@ -2268,6 +2421,7 @@ function SkillBuilderPage({ agentId }) {
   const [saveStatus, setSaveStatus] = useState(null);
   const [envInputs, setEnvInputs] = useState({});
   const [error, setError] = useState(null);
+  const [showSettings, setShowSettings] = useState(false);
   const abortRef = useRef(null);
   const chatEndRef = useRef(null);
   const editorRef = useRef(null);
@@ -2429,11 +2583,19 @@ function SkillBuilderPage({ agentId }) {
         <div class="sb-header">
           <h2>Skill Builder</h2>
           ${provider && html`
-            <div class="provider-banner ${!provider.has_key ? 'provider-banner-error' : ''}">
-              <span>${provider.provider}/${provider.model}</span>
-              ${!provider.has_key && html`<span class="provider-warning">API key not configured</span>`}
+            <div class="provider-banner ${!provider.has_key || provider.source === 'unset' ? 'provider-banner-error' : ''}">
+              ${provider.source === 'unset' ? html`
+                <span>Workspace skill-builder LLM is not configured.</span>
+                <button class="btn btn-link btn-sm" onClick=${() => setShowSettings(true)}>Configure</button>
+              ` : html`
+                <span>${provider.provider}/${provider.model}</span>
+                ${provider.source === 'agent_fallback' && html`<span class="provider-warning" title=${provider.warning || ''}>using agent fallback (deprecated)</span>`}
+                ${!provider.has_key && html`<span class="provider-warning">API key not configured (env: ${provider.api_key_env || 'unset'})</span>`}
+                <button class="btn btn-link btn-sm" onClick=${() => setShowSettings(true)}>Settings</button>
+              `}
             </div>
           `}
+          ${showSettings && html`<${SkillBuilderSettingsModal} initial=${provider} onClose=${() => setShowSettings(false)} onSaved=${(updated) => { setProvider(updated); setShowSettings(false); }} />`}
         </div>
 
         <div class="sb-messages">

@@ -101,6 +101,13 @@ func (s *UIServer) Start(ctx context.Context) error {
 	mux.HandleFunc("POST /api/agents/{id}/skill-builder/save", s.handleSkillBuilderSave)
 	mux.HandleFunc("GET /api/agents/{id}/skill-builder/context", s.handleSkillBuilderContext)
 	mux.HandleFunc("GET /api/agents/{id}/skill-builder/provider", s.handleSkillBuilderProvider)
+	// Workspace-level skill-builder settings (issue #92). The
+	// path-less /api/skill-builder/provider lets the UI query the
+	// resolved config before any agent is picked — needed for first-run
+	// in an empty workspace.
+	mux.HandleFunc("GET /api/skill-builder/provider", s.handleSkillBuilderProvider)
+	mux.HandleFunc("GET /api/settings/skill-builder", s.handleGetSkillBuilderSettings)
+	mux.HandleFunc("PUT /api/settings/skill-builder", s.handlePutSkillBuilderSettings)
 
 	// Static file serving with SPA fallback. The embedded FS is rooted
 	// directly at the static assets — no "dist/" subdirectory (review #8

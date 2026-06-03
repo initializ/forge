@@ -9,13 +9,9 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/initializ/forge/forge-cli/config"
 	"github.com/initializ/forge/forge-cli/internal/tui"
-	"github.com/initializ/forge/forge-cli/runtime"
 	"github.com/initializ/forge/forge-core/llm"
-	"github.com/initializ/forge/forge-core/llm/oauth"
 	"github.com/initializ/forge/forge-core/llm/providers"
-	coreruntime "github.com/initializ/forge/forge-core/runtime"
 	"github.com/initializ/forge/forge-core/util"
 	forgeui "github.com/initializ/forge/forge-ui"
 	"github.com/spf13/cobra"
@@ -143,108 +139,36 @@ func runUI(cmd *cobra.Command, args []string) error {
 	}
 
 	// Build the LLMStreamFunc for skill builder conversations.
+	//
+	// Per issue #92, this callback consumes the workspace-level LLM
+	// configuration resolved by forge-ui (opts.LLM) and DOES NOT re-read
+	// the agent's forge.yaml / .env or mutate the UI process's env.
+	// Per-agent credentials live with the agent runtime, not the skill
+	// builder.
 	llmStreamFunc := func(ctx context.Context, opts forgeui.LLMStreamOptions) error {
-		// Load agent config
-		cfgPath := filepath.Join(opts.AgentDir, "forge.yaml")
-		cfg, err := config.LoadForgeConfig(cfgPath)
+		if opts.LLM.Provider == "" {
+			return fmt.Errorf("skill-builder LLM is not configured (no workspace ui.yaml and no agent fallback available)")
+		}
+
+		// Construct the LLM client from the resolved workspace config.
+		// No env reading, no os.Setenv. OAuth is intentionally NOT
+		// supported on this path — workspace-level config requires an
+		// explicit API key under api_key_env. (Operators who want to
+		// use ChatGPT OAuth specifically can set OPENAI_API_KEY from
+		// the OAuth token themselves; the workspace-LLM design does
+		// not silently override an explicit endpoint via the codex
+		// backend, per the issue #83 guardrail.)
+		clientCfg := llm.ClientConfig{
+			Model:   opts.LLM.Model,
+			APIKey:  opts.LLM.APIKey,
+			BaseURL: opts.LLM.BaseURL,
+		}
+		client, err := providers.NewClient(opts.LLM.Provider, clientCfg)
 		if err != nil {
-			return fmt.Errorf("loading config: %w", err)
+			return fmt.Errorf("creating LLM client: %w", err)
 		}
 
-		// Load .env — force-set values so __oauth__ sentinels from prior
-		// handler calls don't block real keys from encrypted secrets.
-		envPath := filepath.Join(opts.AgentDir, ".env")
-		envVars, err := runtime.LoadEnvFile(envPath)
-		if err != nil {
-			return fmt.Errorf("loading env: %w", err)
-		}
-		for k, v := range envVars {
-			_ = os.Setenv(k, v)
-		}
-
-		// Clear __oauth__ sentinels so OverlaySecretsToEnv can replace them
-		// with real keys from the encrypted secrets store.
-		for _, key := range []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"} {
-			if os.Getenv(key) == "__oauth__" {
-				_ = os.Unsetenv(key)
-			}
-		}
-
-		// Overlay encrypted secrets
-		runtime.OverlaySecretsToEnv(cfg, opts.AgentDir)
-
-		// Build env map for model resolution. OS env takes priority over .env
-		// file because OverlaySecretsToEnv may have replaced sentinels with
-		// real keys from the encrypted store.
-		envMap := make(map[string]string)
-		for k, v := range envVars {
-			if v != "__oauth__" {
-				envMap[k] = v
-			}
-		}
-		for _, kv := range os.Environ() {
-			parts := strings.SplitN(kv, "=", 2)
-			if len(parts) == 2 {
-				envMap[parts[0]] = parts[1]
-			}
-		}
-
-		mc := coreruntime.ResolveModelConfig(cfg, envMap, "")
-		if mc == nil {
-			return fmt.Errorf("unable to resolve model configuration")
-		}
-
-		// Resolve OAuth credentials when the API key is the __oauth__ sentinel
-		// or empty. OAuth/Codex backend has its own model constraints, so
-		// skip the codegen model upgrade for OAuth clients.
-		var client llm.Client
-		needsOAuth := mc.Provider == "openai" && (mc.Client.APIKey == "" || mc.Client.APIKey == "__oauth__")
-		// OAuth precedence guardrail (issue #83). The ChatGPT OAuth
-		// path's hardcoded chatgpt.com/backend-api/codex base URL is
-		// mutually exclusive with an operator-supplied OPENAI_BASE_URL.
-		// Without this guard, the skill builder would silently route
-		// requests to ChatGPT instead of the agent's configured
-		// OpenAI-compatible endpoint.
-		if needsOAuth && mc.Client.BaseURL != "" {
-			return fmt.Errorf(
-				"OPENAI_BASE_URL is set to %q but no OPENAI_API_KEY was provided; "+
-					"the OpenAI OAuth credentials path is disabled when an explicit "+
-					"base URL is in use (it would silently override your endpoint with "+
-					"chatgpt.com/backend-api/codex). Set OPENAI_API_KEY for the configured endpoint",
-				mc.Client.BaseURL,
-			)
-		}
-		if needsOAuth {
-			token, oauthErr := oauth.LoadCredentials(mc.Provider)
-			if oauthErr == nil && token != nil && token.RefreshToken != "" {
-				oauthCfg := oauth.OpenAIConfig()
-				baseURL := token.BaseURL
-				if baseURL == "" {
-					baseURL = oauthCfg.BaseURL
-				}
-				mc.Client.APIKey = token.AccessToken
-				mc.Client.BaseURL = baseURL
-				client = providers.NewOAuthClient(mc.Client, mc.Provider, oauthCfg)
-			} else if mc.Client.APIKey == "" || mc.Client.APIKey == "__oauth__" {
-				// No API key and OAuth failed — surface the error instead
-				// of silently falling through to a client with no auth.
-				if oauthErr != nil {
-					return fmt.Errorf("loading OAuth credentials: %w", oauthErr)
-				}
-				return fmt.Errorf("no OpenAI API key or OAuth credentials found; run 'forge init' with OAuth or set OPENAI_API_KEY")
-			}
-		}
-		if client == nil {
-			// Only upgrade to the codegen model for non-OAuth (API key) clients.
-			mc.Client.Model = forgeui.SkillBuilderCodegenModel(mc.Provider, mc.Client.Model)
-			var clientErr error
-			client, clientErr = providers.NewClient(mc.Provider, mc.Client)
-			if clientErr != nil {
-				return fmt.Errorf("creating LLM client: %w", clientErr)
-			}
-		}
-
-		// Build chat request with system prompt + conversation messages
+		// Build chat request with system prompt + conversation messages.
 		messages := []llm.ChatMessage{
 			{Role: "system", Content: opts.SystemPrompt},
 		}
@@ -256,7 +180,7 @@ func runUI(cmd *cobra.Command, args []string) error {
 		}
 
 		req := &llm.ChatRequest{
-			Model:    mc.Client.Model,
+			Model:    opts.LLM.Model,
 			Messages: messages,
 			Stream:   true,
 		}

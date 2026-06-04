@@ -238,11 +238,17 @@ func (r *Runner) Run(ctx context.Context) error {
 		scaffold = DefaultPolicyScaffold()
 	}
 
-	// 3. Build agent card
+	// 3. Build agent card. Populate security schemes from the configured
+	// auth chain so the published card reflects what the middleware
+	// actually accepts, then enrich with SKILL.md frontmatter parsed
+	// at runtime so dev (no build artifact) and post-build deployments
+	// surface the same skill list.
 	card, err := BuildAgentCard(r.cfg.WorkDir, r.cfg.Config, r.cfg.Port)
 	if err != nil {
 		return fmt.Errorf("building agent card: %w", err)
 	}
+	coreruntime.PopulateSecuritySchemes(card, r.cfg.Config)
+	r.enrichAgentCardWithSkills(card)
 
 	// 4. Create audit logger (used by hooks and handlers)
 	auditLogger := coreruntime.NewAuditLogger(os.Stderr)
@@ -751,8 +757,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		if err != nil {
 			r.logger.Error("failed to reload agent card", map[string]any{"error": err.Error()})
 		} else {
+			coreruntime.PopulateSecuritySchemes(newCard, r.cfg.Config)
+			r.enrichAgentCardWithSkills(newCard)
 			srv.UpdateAgentCard(newCard)
 			r.logger.Info("agent card reloaded", nil)
+			// Re-emit agent_card_published so audit consumers see the
+			// new card hash — same event shape as the startup emit.
+			r.emitAgentCardPublished(auditLogger, newCard)
 		}
 
 		// Restart subprocess lifecycle (no-op if lifecycle is nil)
@@ -766,6 +777,12 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// 10. Print startup banner
 	r.printBanner(proxyURL)
+
+	// 10b. Emit the agent_card_published audit event (issue #85). One
+	// per startup; carries identity + size + a sha256 of the JSON-
+	// encoded card so consumers can detect config drift. Hot-reload
+	// re-emits via the file watcher above (UpdateAgentCard path).
+	r.emitAgentCardPublished(auditLogger, card)
 
 	// 11. Start server (blocks)
 	return srv.Start(ctx)
@@ -1810,7 +1827,7 @@ func (r *Runner) printBanner(proxyURL string) {
 		fmt.Fprintf(os.Stderr, "  Proxy:      %s\n", proxyURL)
 	}
 	fmt.Fprintf(os.Stderr, "  ────────────────────────────────────────\n")
-	fmt.Fprintf(os.Stderr, "  Agent Card: http://localhost:%d/.well-known/agent.json\n", r.cfg.Port)
+	fmt.Fprintf(os.Stderr, "  Agent Card: http://localhost:%d/.well-known/agent-card.json\n", r.cfg.Port)
 	fmt.Fprintf(os.Stderr, "  Health:     http://localhost:%d/healthz\n", r.cfg.Port)
 	fmt.Fprintf(os.Stderr, "  REST:       http://localhost:%d/tasks/send\n", r.cfg.Port)
 	fmt.Fprintf(os.Stderr, "  JSON-RPC:   POST http://localhost:%d/\n", r.cfg.Port)

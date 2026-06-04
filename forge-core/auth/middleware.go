@@ -15,16 +15,23 @@ type errorResponse struct {
 
 // DefaultSkipPaths returns the default set of public endpoints
 // that do not require authentication (agent card, health checks).
+//
+// Both Agent Card paths are public:
+//   - /.well-known/agent-card.json — A2A 0.3.0 canonical path
+//   - /.well-known/agent.json      — legacy alias (deprecated header
+//     emitted by the handler); removable after one release cycle
 func DefaultSkipPaths() map[string]bool {
 	return map[string]bool{
-		"GET /":                           true,
-		"GET /.well-known/agent.json":     true,
-		"GET /healthz":                    true,
-		"GET /health":                     true,
-		"OPTIONS /":                       true,
-		"OPTIONS /.well-known/agent.json": true,
-		"OPTIONS /healthz":                true,
-		"OPTIONS /health":                 true,
+		"GET /":                                true,
+		"GET /.well-known/agent-card.json":     true,
+		"GET /.well-known/agent.json":          true,
+		"GET /healthz":                         true,
+		"GET /health":                          true,
+		"OPTIONS /":                            true,
+		"OPTIONS /.well-known/agent-card.json": true,
+		"OPTIONS /.well-known/agent.json":      true,
+		"OPTIONS /healthz":                     true,
+		"OPTIONS /health":                      true,
 	}
 }
 

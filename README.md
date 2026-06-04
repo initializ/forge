@@ -103,6 +103,7 @@ You write a `SKILL.md`. Forge compiles it into a secure, runnable agent with egr
 
 | Document | Description |
 |----------|-------------|
+| [A2A Agent Card](docs/reference/a2a-agent-card.md) | Spec-conformant Agent Card at `/.well-known/agent-card.json` (A2A 0.3.0) |
 | [Commands](docs/reference/cli-reference.md) | Full CLI reference |
 | [Configuration](docs/reference/forge-yaml-schema.md) | `forge.yaml` schema and environment variables |
 | [Dashboard](docs/reference/web-dashboard.md) | Web UI features and architecture |

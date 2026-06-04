@@ -43,6 +43,14 @@ const (
 	EventMCPToolConflict   = "mcp_tool_conflict"
 	EventMCPTokenRefresh   = "mcp_token_refresh"
 
+	// Agent Card events. Emitted once at agent startup with the
+	// finalized A2A Agent Card content for traceability. Carries the
+	// card's name, version, URL, protocolVersion, skill count, and a
+	// sha256 hash of the JSON-encoded card so consumers can detect
+	// config drift. See forge-cli/runtime/runner.go's startup pass
+	// and the A2A 0.3.0 spec.
+	EventAgentCardPublished = "agent_card_published"
+
 	// Deprecated: use EventAuthVerify. Kept as a string alias so any
 	// audit-log consumer that grep'd for "auth_success" can be migrated.
 	// Scheduled for removal in v0.11.0.

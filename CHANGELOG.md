@@ -4,6 +4,24 @@
 
 ### Added
 
+- **Workflow correlation ID threading (issue #86, FWS-2).** Forge agents
+  now extract orchestration headers — `X-Workflow-ID`,
+  `X-Workflow-Stage-ID`, `X-Workflow-Step-ID`, `X-Invocation-Caller` —
+  at the A2A dispatch boundary (JSON-RPC + REST handlers) and inject
+  them into `context.Context` as
+  a `WorkflowContext` value. Every audit event emitted during the
+  invocation is then auto-tagged via a new `AuditLogger.EmitFromContext`
+  with the matching `workflow_id` / `stage_id` / `step_id` /
+  `invocation_caller` fields, letting audit consumers correlate events
+  across multiple agents participating in one workflow run. Direct A2A
+  invocations (no orchestrator headers) leave the fields unset —
+  emitted JSON is byte-for-byte identical to the pre-FWS-2 shape, so
+  existing audit consumers keep working. A
+  `WorkflowContext.ApplyToHTTPHeaders` helper is exposed for tools
+  that want to propagate the headers onto outbound agent-to-agent A2A
+  calls; auto-propagation is deliberately off by default to prevent
+  leaking workflow identity to third-party APIs. See
+  `docs/security/workflow-correlation.md`.
 - **A2A 0.3.0 Agent Card conformance (issue #85, FWS-1).** Forge now
   serves a spec-conformant Agent Card at the A2A 0.3.0 canonical path
   `/.well-known/agent-card.json`. The card carries every required A2A

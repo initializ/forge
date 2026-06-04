@@ -305,7 +305,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			if !allowed {
 				event = coreruntime.AuditEgressBlocked
 			}
-			auditLogger.Emit(coreruntime.AuditEvent{
+			auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
 				Event:         event,
 				CorrelationID: coreruntime.CorrelationIDFromContext(ctx),
 				TaskID:        coreruntime.TaskIDFromContext(ctx),
@@ -806,7 +806,7 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 		ctx = coreruntime.WithCorrelationID(ctx, correlationID)
 		ctx = coreruntime.WithTaskID(ctx, params.ID)
 
-		auditLogger.Emit(coreruntime.AuditEvent{
+		auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
 			Event:         coreruntime.AuditSessionStart,
 			CorrelationID: correlationID,
 			TaskID:        params.ID,
@@ -830,7 +830,7 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 				},
 			}
 			store.Put(task)
-			auditLogger.Emit(coreruntime.AuditEvent{
+			auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
 				Event:         coreruntime.AuditSessionEnd,
 				CorrelationID: correlationID,
 				TaskID:        params.ID,
@@ -858,7 +858,7 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 				},
 			}
 			store.Put(task)
-			auditLogger.Emit(coreruntime.AuditEvent{
+			auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
 				Event:         coreruntime.AuditSessionEnd,
 				CorrelationID: correlationID,
 				TaskID:        params.ID,
@@ -878,7 +878,7 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 					},
 				}
 				store.Put(task)
-				auditLogger.Emit(coreruntime.AuditEvent{
+				auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
 					Event:         coreruntime.AuditSessionEnd,
 					CorrelationID: correlationID,
 					TaskID:        params.ID,
@@ -907,7 +907,7 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 			}
 		}
 		store.Put(task)
-		auditLogger.Emit(coreruntime.AuditEvent{
+		auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
 			Event:         coreruntime.AuditSessionEnd,
 			CorrelationID: correlationID,
 			TaskID:        params.ID,
@@ -933,7 +933,7 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 		ctx = coreruntime.WithCorrelationID(ctx, correlationID)
 		ctx = coreruntime.WithTaskID(ctx, params.ID)
 
-		auditLogger.Emit(coreruntime.AuditEvent{
+		auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
 			Event:         coreruntime.AuditSessionStart,
 			CorrelationID: correlationID,
 			TaskID:        params.ID,
@@ -959,7 +959,7 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 			}
 			store.Put(task)
 			server.WriteSSEEvent(w, flusher, "status", task) //nolint:errcheck
-			auditLogger.Emit(coreruntime.AuditEvent{
+			auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
 				Event:         coreruntime.AuditSessionEnd,
 				CorrelationID: correlationID,
 				TaskID:        params.ID,
@@ -1007,7 +1007,7 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 			}
 			store.Put(task)
 			server.WriteSSEEvent(w, flusher, "status", task) //nolint:errcheck
-			auditLogger.Emit(coreruntime.AuditEvent{
+			auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
 				Event:         coreruntime.AuditSessionEnd,
 				CorrelationID: correlationID,
 				TaskID:        params.ID,
@@ -1052,7 +1052,7 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 			finalState = a2a.TaskStateCompleted
 		}
 
-		auditLogger.Emit(coreruntime.AuditEvent{
+		auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
 			Event:         coreruntime.AuditSessionEnd,
 			CorrelationID: correlationID,
 			TaskID:        params.ID,
@@ -1238,7 +1238,13 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 			Message: body.Task.Message,
 		}
 
-		task, err := r.executeTask(req.Context(), params, store, executor, guardrails, egressClient, auditLogger)
+		// Pull workflow correlation headers (issue #86) so audit
+		// events tagged via EmitFromContext carry the orchestrator's
+		// workflow/stage/step identifiers. Absent headers → IsZero
+		// WorkflowContext → fields omitted (backward compat).
+		ctx := coreruntime.WithWorkflowContext(req.Context(),
+			coreruntime.WorkflowContextFromHTTPHeaders(req.Header))
+		task, err := r.executeTask(ctx, params, store, executor, guardrails, egressClient, auditLogger)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -1276,8 +1282,10 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 		ctx := security.WithEgressClient(req.Context(), egressClient)
 		ctx = coreruntime.WithCorrelationID(ctx, correlationID)
 		ctx = coreruntime.WithTaskID(ctx, params.ID)
+		ctx = coreruntime.WithWorkflowContext(ctx,
+			coreruntime.WorkflowContextFromHTTPHeaders(req.Header))
 
-		auditLogger.Emit(coreruntime.AuditEvent{
+		auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
 			Event:         coreruntime.AuditSessionStart,
 			CorrelationID: correlationID,
 			TaskID:        params.ID,
@@ -1301,7 +1309,7 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 			}
 			store.Put(task)
 			server.WriteSSEEvent(w, flusher, "status", task) //nolint:errcheck
-			auditLogger.Emit(coreruntime.AuditEvent{
+			auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
 				Event:         coreruntime.AuditSessionEnd,
 				CorrelationID: correlationID,
 				TaskID:        params.ID,
@@ -1344,7 +1352,7 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 			}
 			store.Put(task)
 			server.WriteSSEEvent(w, flusher, "status", task) //nolint:errcheck
-			auditLogger.Emit(coreruntime.AuditEvent{
+			auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
 				Event:         coreruntime.AuditSessionEnd,
 				CorrelationID: correlationID,
 				TaskID:        params.ID,
@@ -1385,7 +1393,7 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 			finalState = a2a.TaskStateCompleted
 		}
 
-		auditLogger.Emit(coreruntime.AuditEvent{
+		auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
 			Event:         coreruntime.AuditSessionEnd,
 			CorrelationID: correlationID,
 			TaskID:        params.ID,
@@ -1965,6 +1973,12 @@ func makeAuthAuditCallback(auditLogger *coreruntime.AuditLogger) func(*http.Requ
 	}
 	return func(req *http.Request, id *auth.Identity, err error, tokenKind string) {
 		correlationID := coreruntime.CorrelationIDFromContext(req.Context())
+		// Auth middleware runs BEFORE handleJSONRPC has had a chance to
+		// extract workflow correlation headers into ctx. Pull them
+		// directly from req.Header here so auth events still carry
+		// workflow tags. Empty when the orchestrator didn't send them
+		// — fields then omit (backward compat).
+		wc := coreruntime.WorkflowContextFromHTTPHeaders(req.Header)
 
 		if err == nil && id != nil {
 			// Success → auth_verify.
@@ -1979,17 +1993,25 @@ func makeAuthAuditCallback(auditLogger *coreruntime.AuditLogger) func(*http.Requ
 				"remote_addr":  req.RemoteAddr,
 			}
 			auditLogger.Emit(coreruntime.AuditEvent{
-				Event:         coreruntime.EventAuthVerify,
-				CorrelationID: correlationID,
-				Fields:        fields,
+				Event:            coreruntime.EventAuthVerify,
+				CorrelationID:    correlationID,
+				WorkflowID:       wc.WorkflowID,
+				StageID:          wc.StageID,
+				StepID:           wc.StepID,
+				InvocationCaller: wc.InvocationCaller,
+				Fields:           fields,
 			})
 			return
 		}
 
 		// Failure → auth_fail with reason code.
 		auditLogger.Emit(coreruntime.AuditEvent{
-			Event:         coreruntime.EventAuthFail,
-			CorrelationID: correlationID,
+			Event:            coreruntime.EventAuthFail,
+			CorrelationID:    correlationID,
+			WorkflowID:       wc.WorkflowID,
+			StageID:          wc.StageID,
+			StepID:           wc.StepID,
+			InvocationCaller: wc.InvocationCaller,
 			Fields: map[string]any{
 				"reason":      authFailReason(err),
 				"token_kind":  tokenKind,

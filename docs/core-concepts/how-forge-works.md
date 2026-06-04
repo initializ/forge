@@ -265,7 +265,7 @@ The build pipeline executes stages sequentially. Each stage lives in `forge-cli/
 | # | Stage | Produces |
 |---|-------|----------|
 | 1 | **FrameworkAdapterStage** | Detects framework (crewai/langchain/custom), extracts agent config, generates A2A wrapper |
-| 2 | **AgentSpecStage** | `agent.json` — canonical AgentSpec from ForgeConfig |
+| 2 | **AgentSpecStage** | `agent.json` — canonical AgentSpec from ForgeConfig, including `a2a.skills` populated from SKILL.md frontmatter so post-build A2A clients see the agent's skill surface (see [A2A Agent Card](../reference/a2a-agent-card.md)) |
 | 3 | **ToolsStage** | Tool schema files from discovered and configured tools |
 | 4 | **PolicyStage** | `policy-scaffold.json` — guardrail configuration |
 | 5 | **DockerfileStage** | `Dockerfile` — container image definition |

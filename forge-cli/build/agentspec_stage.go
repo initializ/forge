@@ -26,6 +26,13 @@ func (s *AgentSpecStage) Execute(ctx context.Context, bc *pipeline.BuildContext)
 		spec.Runtime.Entrypoint = compiler.WrapperEntrypoint(bc.WrapperFile)
 	}
 
+	// Populate spec.A2A.Skills from SKILL.md frontmatter so the published
+	// AgentSpec advertises the agent's skill surface (issue #85). Without
+	// this, consumers of agent.json (and the runner's AgentCardFromSpec
+	// path post-build) would only see builtin tools — the SKILL.md files
+	// would never reach the A2A Agent Card.
+	populateA2ASkillsFromSKILLmd(spec, bc.Opts.WorkDir, bc.Config.Skills.Path)
+
 	bc.Spec = spec
 
 	data, err := json.MarshalIndent(spec, "", "  ")

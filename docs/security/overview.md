@@ -257,6 +257,8 @@ All runtime security events are emitted as structured NDJSON to stderr with corr
 
 The `source` field distinguishes in-process enforcer events from subprocess proxy events.
 
+When the inbound A2A request carries orchestrator headers, events are additionally tagged with `workflow_id` / `stage_id` / `step_id` / `invocation_caller`. See [Workflow Correlation IDs](workflow-correlation.md) for the header contract and outbound propagation rules.
+
 ---
 
 ## Container Security

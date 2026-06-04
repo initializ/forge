@@ -4,6 +4,18 @@
 
 ### Added
 
+- **A2A 0.3.0 Agent Card conformance (issue #85, FWS-1).** Forge now
+  serves a spec-conformant Agent Card at the A2A 0.3.0 canonical path
+  `/.well-known/agent-card.json`. The card carries every required A2A
+  0.3.0 field — `version`, `protocolVersion` (pinned to `0.3.0`),
+  `defaultInputModes`, `defaultOutputModes` — plus `securitySchemes`
+  derived from the configured auth chain (`static_token` → HTTP
+  bearer, `oidc` → openIdConnect with discovery URL, `gcp_iap` → apiKey
+  in header, `aws_sigv4` → custom bearer format, etc.), and emits an
+  `agent_card_published` audit event on startup carrying the card's
+  identity + size + a sha256 hash so downstream consumers can detect
+  config drift. Identical card shape across `forge dev` and deployed
+  modes. See `docs/reference/a2a-agent-card.md`.
 - **Workspace-level skill-builder LLM config (issue #92).** The `forge ui`
   skill builder now reads its LLM configuration from
   `<workspace>/.forge/ui.yaml` (or `~/.forge/ui.yaml` as a machine-wide
@@ -39,6 +51,14 @@
   process's environment via `os.Setenv` calls, which caused cross-agent
   credential stomping when switching agents in the UI. Credentials are
   now threaded as request-scoped values.
+
+### Deprecated
+
+- **Legacy Agent Card path `/.well-known/agent.json` (issue #85).** Still
+  served and returns the same body as the canonical
+  `/.well-known/agent-card.json`, but now emits a `Deprecation: true`
+  response header per RFC 8594 plus a `Link` header pointing at the
+  successor path. Scheduled for removal in the release after next.
 
 ### Fixed
 

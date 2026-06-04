@@ -140,8 +140,13 @@ func (s *Server) Start(ctx context.Context) error {
 		mux.HandleFunc(route.pattern, route.handler)
 	}
 
-	// Register core A2A handlers
-	mux.HandleFunc("GET /.well-known/agent.json", s.handleAgentCard)
+	// Register core A2A handlers. The canonical Agent Card path is
+	// /.well-known/agent-card.json per A2A 0.3.0; the legacy
+	// /.well-known/agent.json path is also served (with a Deprecation
+	// response header) so existing clients keep working through one
+	// release cycle.
+	mux.HandleFunc("GET /.well-known/agent-card.json", s.handleAgentCard)
+	mux.HandleFunc("GET /.well-known/agent.json", s.handleAgentCardLegacy)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("POST /", s.handleJSONRPC)
 	mux.HandleFunc("GET /", s.handleAgentCard)
@@ -211,6 +216,17 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 func (s *Server) handleAgentCard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(s.agentCard()) //nolint:errcheck
+}
+
+// handleAgentCardLegacy serves the same Agent Card payload on the
+// legacy /.well-known/agent.json path with a Deprecation response
+// header per RFC 8594, pointing clients at the A2A 0.3.0 canonical
+// path. Removable after one release cycle.
+func (s *Server) handleAgentCardLegacy(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Deprecation", "true")
+	w.Header().Set("Link", `</.well-known/agent-card.json>; rel="successor-version"`)
 	json.NewEncoder(w).Encode(s.agentCard()) //nolint:errcheck
 }
 

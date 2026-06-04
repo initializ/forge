@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/initializ/forge/forge-core/a2a"
+	coreruntime "github.com/initializ/forge/forge-core/runtime"
 	"golang.org/x/time/rate"
 )
 
@@ -255,6 +256,15 @@ func (s *Server) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Extract initializ orchestration headers (issue #86 / FWS-2) ONCE
+	// at the dispatch boundary so every downstream handler sees the
+	// same WorkflowContext via ctx without having to parse headers
+	// itself. Absent headers produce an IsZero WorkflowContext —
+	// audit events then omit the workflow fields, matching pre-FWS-2
+	// shape (backward compatible).
+	ctx := coreruntime.WithWorkflowContext(r.Context(),
+		coreruntime.WorkflowContextFromHTTPHeaders(r.Header))
+
 	// Check SSE handlers first (for streaming methods)
 	if h, ok := s.sseHandlers[req.Method]; ok {
 		flusher, ok := w.(http.Flusher)
@@ -265,13 +275,13 @@ func (s *Server) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
-		h(r.Context(), req.ID, req.Params, w, flusher)
+		h(ctx, req.ID, req.Params, w, flusher)
 		return
 	}
 
 	// Check regular handlers
 	if h, ok := s.handlers[req.Method]; ok {
-		resp := h(r.Context(), req.ID, req.Params)
+		resp := h(ctx, req.ID, req.Params)
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}

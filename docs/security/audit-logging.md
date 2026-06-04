@@ -35,6 +35,10 @@ All runtime security events are emitted as structured NDJSON to stderr with corr
 
 The `source` field distinguishes in-process enforcer events from subprocess proxy events.
 
+### Workflow correlation
+
+When the inbound A2A request carries the orchestrator's correlation headers (`X-Workflow-ID`, `X-Workflow-Stage-ID`, `X-Workflow-Step-ID`, `X-Invocation-Caller`), every audit event emitted during that invocation is tagged with the matching `workflow_id` / `stage_id` / `step_id` / `invocation_caller` fields. Header names are vendor-neutral so any A2A-compatible orchestrator can populate them. Direct A2A invocations (no orchestrator) omit the fields entirely — emitted JSON is byte-identical to the pre-correlation shape. See [Workflow correlation IDs](workflow-correlation.md) for the full reference, including outbound propagation for agent-to-agent flows.
+
 ### Authentication events
 
 Every inbound request to `/tasks` emits exactly one of `auth_verify` or `auth_fail`.

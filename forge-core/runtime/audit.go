@@ -51,6 +51,17 @@ const (
 	// and the A2A 0.3.0 spec.
 	EventAgentCardPublished = "agent_card_published"
 
+	// Lifecycle events emitted at A2A invocation boundaries.
+	// AuditInvocationComplete carries total wall-clock duration_ms for
+	// the full invocation (auth → dispatch → engine.Execute → response).
+	// See issue #87 / FWS-3.
+	AuditInvocationComplete = "invocation_complete"
+
+	// AuditLLMCallCancelled is emitted when a streaming LLM call is
+	// cancelled mid-flight; carries partial usage counts captured up to
+	// the cancellation point. See issue #87 / FWS-3.
+	AuditLLMCallCancelled = "llm_call_cancelled"
+
 	// Deprecated: use EventAuthVerify. Kept as a string alias so any
 	// audit-log consumer that grep'd for "auth_success" can be migrated.
 	// Scheduled for removal in v0.11.0.
@@ -67,6 +78,17 @@ const (
 // `X-Invocation-Caller` headers from any A2A-compatible orchestrator.
 // Direct A2A invocations omit them entirely so the JSON shape matches
 // the pre-FWS-2 audit consumers.
+//
+// Token usage, duration, model, and provider fields (issue #87 / FWS-3)
+// are populated by the LLM call site, tool execution path, and per-
+// invocation lifecycle. They use *int / *int64 pointers so the JSON
+// distinguishes "field absent" (nil) from "field present with zero
+// value" — important for llm_call events where zero is a legitimate
+// count and TokensUnavailable signals "provider did not report usage."
+//
+// Field naming aligns with OTel GenAI semconv (input_tokens /
+// output_tokens / duration_ms) so audit consumers can correlate Forge
+// audit events with OTel traces without a translation table.
 type AuditEvent struct {
 	Timestamp string `json:"ts"`
 	Event     string `json:"event"`
@@ -92,6 +114,27 @@ type AuditEvent struct {
 	// InvocationCaller identifies the upstream caller (orchestrator
 	// or upstream agent in an agent-to-agent flow).
 	InvocationCaller string `json:"invocation_caller,omitempty"`
+
+	// LLM call attribution (llm_call, llm_call_cancelled, invocation_complete).
+	Model    string `json:"model,omitempty"`
+	Provider string `json:"provider,omitempty"`
+
+	// Token counts captured from provider response metadata. Nil when
+	// the event is not an LLM call. Non-nil with zero values + a true
+	// TokensUnavailable flag when the provider did not return usage
+	// (e.g. some self-hosted Ollama setups).
+	InputTokens       *int `json:"input_tokens,omitempty"`
+	OutputTokens      *int `json:"output_tokens,omitempty"`
+	TokensUnavailable bool `json:"tokens_unavailable,omitempty"`
+
+	// DurationMs is the wall-clock duration in milliseconds. Populated on
+	// llm_call, tool_exec, and invocation_complete events.
+	DurationMs *int64 `json:"duration_ms,omitempty"`
+
+	// RequestID is the provider-specific call identifier (Anthropic
+	// `id`, OpenAI `id`, etc.) — kept as an opaque debug-correlation
+	// handle, never used for cost attribution.
+	RequestID string `json:"request_id,omitempty"`
 
 	Fields map[string]any `json:"fields,omitempty"`
 }
@@ -160,6 +203,106 @@ func (a *AuditLogger) EmitFromContext(ctx context.Context, event AuditEvent) {
 		}
 	}
 	a.Emit(event)
+}
+
+// LLMCallAuditArgs is the shared input to AuditLogger.EmitLLMCall. The
+// LLM call site captures these fields once at provider-call completion
+// and the audit logger fans them out to the llm_call NDJSON event. The
+// OTel tracing work (FORGE_OTEL_TRACING.md) will hook into this same
+// capture point to populate gen_ai.usage.input_tokens /
+// gen_ai.usage.output_tokens span attributes without re-doing the
+// per-provider extraction. See issue #87 / FWS-3.
+type LLMCallAuditArgs struct {
+	Model     string
+	Provider  string
+	RequestID string
+	Usage     LLMUsage
+	Duration  time.Duration
+	// Cancelled flips the emitted event from llm_call to llm_call_cancelled.
+	// Used for streaming calls aborted mid-flight; partial usage counts are
+	// still carried.
+	Cancelled bool
+}
+
+// LLMUsage carries the normalized token counts an LLM call site
+// captures from provider response metadata. Mirrors llm.UsageInfo but
+// kept in the runtime package so the audit layer has no llm-package
+// dependency. The audit emitter sets TokensUnavailable=true on the
+// event when both Input and Output are zero — signal to billing
+// consumers that the provider did not report usage rather than
+// "the call genuinely consumed zero tokens."
+type LLMUsage struct {
+	InputTokens  int
+	OutputTokens int
+	TotalTokens  int
+}
+
+// EmitLLMCall builds and emits an llm_call (or llm_call_cancelled)
+// audit event from the captured args. Routed through EmitFromContext
+// so workflow-correlation fields (workflow_id / stage_id / step_id /
+// invocation_caller from FWS-2) auto-tag every LLM call event when
+// the inbound request carried orchestrator headers. This is the
+// shared capture point that the OTel tracing work will hook into.
+// See issue #87 / FWS-3.
+func (a *AuditLogger) EmitLLMCall(ctx context.Context, args LLMCallAuditArgs) {
+	evt := AuditEvent{
+		Event:     AuditLLMCall,
+		Model:     args.Model,
+		Provider:  args.Provider,
+		RequestID: args.RequestID,
+	}
+	if args.Cancelled {
+		evt.Event = AuditLLMCallCancelled
+	}
+	in, out := args.Usage.InputTokens, args.Usage.OutputTokens
+	evt.InputTokens = &in
+	evt.OutputTokens = &out
+	if in == 0 && out == 0 {
+		evt.TokensUnavailable = true
+	}
+	d := args.Duration.Milliseconds()
+	evt.DurationMs = &d
+	a.EmitFromContext(ctx, evt)
+}
+
+// EmitToolExec emits a tool_exec audit event tagged with the tool
+// name + wall-clock duration. Routed through EmitFromContext so
+// workflow-correlation fields auto-tag every tool execution when the
+// inbound request was orchestrated. The Fields map may carry
+// arg-shape metadata (e.g. arg sizes, types) — raw arg values are
+// deliberately not emitted here; that question is FWS-8's
+// payload-stripping concern, not FWS-3's. See issue #87 / FWS-3.
+func (a *AuditLogger) EmitToolExec(ctx context.Context, tool string, duration time.Duration, fields map[string]any) {
+	d := duration.Milliseconds()
+	a.EmitFromContext(ctx, AuditEvent{
+		Event:      AuditToolExec,
+		DurationMs: &d,
+		Fields:     mergeToolExecFields(tool, fields),
+	})
+}
+
+func mergeToolExecFields(tool string, fields map[string]any) map[string]any {
+	if fields == nil {
+		fields = map[string]any{}
+	}
+	fields["tool"] = tool
+	fields["phase"] = "end"
+	return fields
+}
+
+// EmitInvocationComplete emits an invocation_complete audit event
+// carrying the total wall-clock duration of the A2A invocation
+// (auth → dispatch → engine.Execute → response). Routed through
+// EmitFromContext so workflow-correlation fields are inherited from
+// the inbound request. One event per invocation; emitted by the
+// runner at the response boundary. See issue #87 / FWS-3.
+func (a *AuditLogger) EmitInvocationComplete(ctx context.Context, duration time.Duration, fields map[string]any) {
+	d := duration.Milliseconds()
+	a.EmitFromContext(ctx, AuditEvent{
+		Event:      AuditInvocationComplete,
+		DurationMs: &d,
+		Fields:     fields,
+	})
 }
 
 // Context key types for correlation IDs, task IDs, and file directories.

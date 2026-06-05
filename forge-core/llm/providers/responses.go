@@ -420,9 +420,9 @@ func (c *ResponsesClient) readStream(r io.Reader, ch chan<- llm.StreamDelta) {
 			delta := llm.StreamDelta{Done: true}
 			if ev.Response.Usage != nil {
 				delta.Usage = &llm.UsageInfo{
-					PromptTokens:     ev.Response.Usage.InputTokens,
-					CompletionTokens: ev.Response.Usage.OutputTokens,
-					TotalTokens:      ev.Response.Usage.TotalTokens,
+					InputTokens:  ev.Response.Usage.InputTokens,
+					OutputTokens: ev.Response.Usage.OutputTokens,
+					TotalTokens:  ev.Response.Usage.TotalTokens,
 				}
 			}
 			// Determine finish reason from output

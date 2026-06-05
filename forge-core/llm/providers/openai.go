@@ -220,9 +220,9 @@ func (c *OpenAIClient) parseOpenAIResponse(body io.Reader) (*llm.ChatResponse, e
 			ToolCalls: choice.Message.ToolCalls,
 		},
 		Usage: llm.UsageInfo{
-			PromptTokens:     resp.Usage.PromptTokens,
-			CompletionTokens: resp.Usage.CompletionTokens,
-			TotalTokens:      resp.Usage.TotalTokens,
+			InputTokens:  resp.Usage.PromptTokens,
+			OutputTokens: resp.Usage.CompletionTokens,
+			TotalTokens:  resp.Usage.TotalTokens,
 		},
 		FinishReason: choice.FinishReason,
 	}, nil
@@ -273,9 +273,9 @@ func (c *OpenAIClient) readSSEStream(r io.Reader, ch chan<- llm.StreamDelta) {
 		}
 		if chunk.Usage != nil {
 			delta.Usage = &llm.UsageInfo{
-				PromptTokens:     chunk.Usage.PromptTokens,
-				CompletionTokens: chunk.Usage.CompletionTokens,
-				TotalTokens:      chunk.Usage.TotalTokens,
+				InputTokens:  chunk.Usage.PromptTokens,
+				OutputTokens: chunk.Usage.CompletionTokens,
+				TotalTokens:  chunk.Usage.TotalTokens,
 			}
 		}
 		ch <- delta

@@ -4,6 +4,40 @@
 
 ### Added
 
+- **Token usage and execution duration emission (issue #87, FWS-3).**
+  Every `llm_call` audit event now carries `input_tokens`,
+  `output_tokens`, `model`, `provider`, `duration_ms`, and `request_id`
+  captured directly from provider response metadata (Anthropic, OpenAI,
+  Ollama via the OpenAI-compatible path, OpenAI Responses). Field
+  naming aligns with OTel GenAI semantic conventions
+  (`gen_ai.usage.input_tokens` / `gen_ai.usage.output_tokens`) so audit
+  consumers can correlate to OTel traces without a translation table.
+  When a provider returns no usage (some self-hosted Ollama setups),
+  the event flags `tokens_unavailable: true` rather than silent zeros.
+  Each `tool_exec` event gains `duration_ms` plus structured arg-shape
+  metadata (`args_size`, `result_size`) — raw arg values are not
+  emitted (payload stripping is FWS-8's concern). A new
+  `invocation_complete` event closes every A2A invocation with total
+  wall-clock duration and aggregated `input_tokens_total` /
+  `output_tokens_total` / `llm_call_count`. A2A responses now carry
+  the same totals inline as `X-Forge-Tokens-In`, `X-Forge-Tokens-Out`,
+  `X-Forge-Duration-Ms`, `X-Forge-Model`, `X-Forge-Provider` headers
+  so orchestrators can enforce cost ceilings during parallel workflow
+  execution without subscribing to the audit stream. Headers populate
+  regardless of OTel-tracing state. Cost calculation is deliberately
+  not in Forge — Forge emits tokens, the platform applies price tables.
+  The new emitters route through `AuditLogger.EmitFromContext` so
+  workflow-correlation fields (FWS-2) auto-tag every `llm_call` /
+  `tool_exec` / `invocation_complete` event when the inbound request
+  carried orchestrator headers. Schema additivity: existing audit
+  consumers reading the pre-FWS-3 shape continue to work unchanged. See
+  `docs/security/audit-logging.md#token-usage-and-execution-duration`.
+
+  Internal API change as part of this work: `llm.UsageInfo` field
+  names were renamed `PromptTokens` → `InputTokens` and
+  `CompletionTokens` → `OutputTokens` (JSON tags too) to align with
+  OTel GenAI semconv. The type is internal to `forge-core/llm` and not
+  consumed outside that package, so no external callers are affected.
 - **Workflow correlation ID threading (issue #86, FWS-2).** Forge agents
   now extract orchestration headers — `X-Workflow-ID`,
   `X-Workflow-Stage-ID`, `X-Workflow-Step-ID`, `X-Invocation-Caller` —

@@ -219,6 +219,14 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 
 	// Agent loop
 	for i := 0; i < e.maxIter; i++ {
+		// Honor cancellation at iteration boundary. Returning ctx.Err()
+		// here propagates context.Canceled / DeadlineExceeded up to the
+		// runner, which maps it to TaskStateCanceled +
+		// invocation_cancelled audit. See issue #88 / FWS-4.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
 		// Run compaction before LLM call (best-effort).
 		if e.compactor != nil {
 			if _, err := e.compactor.MaybeCompact(task.ID, mem); err != nil {
@@ -442,6 +450,12 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 		iterResults := make([]toolIterResult, 0, len(resp.Message.ToolCalls))
 
 		for _, tc := range resp.Message.ToolCalls {
+			// Honor cancellation between tool calls within an iteration —
+			// orchestrators that cancel mid-iteration get fast exit
+			// without burning more LLM/tool spend. See issue #88 / FWS-4.
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			toolsUsed = append(toolsUsed, tc.Function.Name)
 
 			// Fire BeforeToolExec hook

@@ -103,13 +103,14 @@ type Runner struct {
 	cfg              RunnerConfig
 	logger           coreruntime.Logger
 	cliExecTool      *clitools.CLIExecuteTool
-	modelConfig      *coreruntime.ModelConfig       // resolved model config (for banner)
-	derivedCLIConfig *contract.DerivedCLIConfig     // auto-derived from skill requirements
-	skillGuardrails  *agentspec.SkillGuardrailRules // runtime-parsed skill guardrails (fallback when no build artifact)
-	sched            *scheduler.Scheduler           // cron scheduler (nil until started)
-	startTime        time.Time                      // server start time (for /health uptime)
-	scheduleNotifier ScheduleNotifier               // optional: delivers cron results to channels
-	authToken        string                         // resolved auth token (empty if --no-auth)
+	modelConfig      *coreruntime.ModelConfig          // resolved model config (for banner)
+	derivedCLIConfig *contract.DerivedCLIConfig        // auto-derived from skill requirements
+	skillGuardrails  *agentspec.SkillGuardrailRules    // runtime-parsed skill guardrails (fallback when no build artifact)
+	sched            *scheduler.Scheduler              // cron scheduler (nil until started)
+	startTime        time.Time                         // server start time (for /health uptime)
+	scheduleNotifier ScheduleNotifier                  // optional: delivers cron results to channels
+	authToken        string                            // resolved auth token (empty if --no-auth)
+	cancelRegistry   *coreruntime.CancellationRegistry // per-Runner in-flight cancellation registry (issue #88 / FWS-4)
 }
 
 // NewRunner creates a Runner from the given config.
@@ -121,7 +122,11 @@ func NewRunner(cfg RunnerConfig) (*Runner, error) {
 		cfg.Port = 8080
 	}
 	logger := coreruntime.NewJSONLogger(os.Stderr, cfg.Verbose)
-	return &Runner{cfg: cfg, logger: logger}, nil
+	return &Runner{
+		cfg:            cfg,
+		logger:         logger,
+		cancelRegistry: coreruntime.NewCancellationRegistry(),
+	}, nil
 }
 
 // SetScheduleNotifier sets the callback used to deliver scheduled task results
@@ -993,8 +998,14 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 		return a2a.NewResponse(id, task)
 	})
 
-	// tasks/cancel — cancel a task
-	srv.RegisterHandler("tasks/cancel", func(ctx context.Context, id any, rawParams json.RawMessage) *a2a.JSONRPCResponse {
+	// tasks/cancel — signal the in-flight invocation for taskID. Maps
+	// the optional CancelTaskParams.Reason onto a CancellationReason
+	// the runtime then surfaces on the invocation_cancelled audit event
+	// and the response task message. Idempotent: a cancel for a task
+	// that already completed (or was never started) returns the stored
+	// task without an error so the orchestrator can issue cancels
+	// optimistically. See issue #88 / FWS-4.
+	srv.RegisterHandler("tasks/cancel", func(_ context.Context, id any, rawParams json.RawMessage) *a2a.JSONRPCResponse {
 		var params a2a.CancelTaskParams
 		if err := json.Unmarshal(rawParams, &params); err != nil {
 			return a2a.NewErrorResponse(id, a2a.ErrCodeInvalidParams, "invalid params: "+err.Error())
@@ -1005,9 +1016,21 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 			return a2a.NewErrorResponse(id, a2a.ErrCodeInvalidParams, "task not found: "+params.ID)
 		}
 
-		task.Status = a2a.TaskStatus{State: a2a.TaskStateCanceled}
-		store.Put(task)
-		r.logger.Info("task canceled", map[string]any{"task_id": params.ID})
+		reason := coreruntime.CancellationReason(params.Reason)
+		if reason == "" {
+			reason = coreruntime.CancelReasonExternalSignal
+		}
+		signalled := r.cancelRegistry.Cancel(params.ID, reason)
+		r.logger.Info("tasks/cancel", map[string]any{
+			"task_id":   params.ID,
+			"reason":    string(reason),
+			"signalled": signalled,
+		})
+		// When the registry had no entry, the invocation already
+		// finished (or never started). Leave the stored task untouched —
+		// flipping a completed task to canceled would corrupt audit
+		// and orchestrator state. The response echoes whatever the
+		// store has so the orchestrator reads the actual outcome.
 		return a2a.NewResponse(id, task)
 	})
 }
@@ -1032,6 +1055,15 @@ func (r *Runner) executeTask(
 	// invocation_complete audit event. See issue #87 / FWS-3.
 	acc := coreruntime.NewLLMUsageAccumulator()
 	ctx = coreruntime.WithLLMUsageAccumulator(ctx, acc)
+	// Cancellation surface (issue #88 / FWS-4): derive a cancel-cause
+	// ctx so the tasks/cancel handler can signal this in-flight
+	// invocation by task ID. The release closure pops the registry
+	// entry on return; cancel() at defer time is a no-op when the
+	// invocation completed cleanly.
+	ctx, cancelInvocation := context.WithCancelCause(ctx)
+	release := r.cancelRegistry.Register(params.ID, cancelInvocation)
+	defer release()
+	defer cancelInvocation(nil) // nil cause = clean completion; no-op when already cancelled
 
 	auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
 		Event:         coreruntime.AuditSessionStart,
@@ -1046,7 +1078,14 @@ func (r *Runner) executeTask(
 	task.Status = a2a.TaskStatus{State: a2a.TaskStateSubmitted}
 	store.Put(task)
 
-	emitInvocationComplete := func() {
+	// emitInvocationLifecycle emits either invocation_complete or
+	// invocation_cancelled at the response boundary, depending on
+	// whether the ctx was cancelled mid-flight. The cancellation reason
+	// flows through context.Cause — set by the tasks/cancel handler
+	// via the cancellation registry. Partial usage from the accumulator
+	// rides on both events so a downstream cost aggregator sees the
+	// tokens consumed before cancellation. See issue #88 / FWS-4.
+	emitInvocationLifecycle := func() {
 		snap := acc.Snapshot()
 		fields := map[string]any{"state": string(task.Status.State)}
 		if snap.LLMCallCount > 0 {
@@ -1059,6 +1098,12 @@ func (r *Runner) executeTask(
 			if snap.PrimaryProvider != "" {
 				fields["provider"] = snap.PrimaryProvider
 			}
+		}
+		if task.Status.State == a2a.TaskStateCanceled {
+			auditLogger.EmitInvocationCancelled(ctx,
+				coreruntime.CancellationReasonFromCause(ctx),
+				snap.InvocationDuration, fields)
+			return
 		}
 		auditLogger.EmitInvocationComplete(ctx, snap.InvocationDuration, fields)
 	}
@@ -1078,7 +1123,7 @@ func (r *Runner) executeTask(
 			TaskID:        params.ID,
 			Fields:        map[string]any{"state": string(a2a.TaskStateFailed)},
 		})
-		emitInvocationComplete()
+		emitInvocationLifecycle()
 		return task, acc.Snapshot(), nil
 	}
 
@@ -1088,6 +1133,32 @@ func (r *Runner) executeTask(
 
 	respMsg, err := executor.Execute(ctx, task, &params.Message)
 	if err != nil {
+		// Cancellation gets a distinct lifecycle (state=canceled,
+		// invocation_cancelled audit event) so the orchestrator can
+		// distinguish "you asked me to stop" from "the agent crashed."
+		// See issue #88 / FWS-4.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			reason := coreruntime.CancellationReasonFromCause(ctx)
+			r.logger.Info("task cancelled mid-execution", map[string]any{
+				"task_id": params.ID, "reason": string(reason),
+			})
+			task.Status = a2a.TaskStatus{
+				State: a2a.TaskStateCanceled,
+				Message: &a2a.Message{
+					Role:  a2a.MessageRoleAgent,
+					Parts: []a2a.Part{a2a.NewTextPart("cancelled: " + string(reason))},
+				},
+			}
+			store.Put(task)
+			auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
+				Event:         coreruntime.AuditSessionEnd,
+				CorrelationID: correlationID,
+				TaskID:        params.ID,
+				Fields:        map[string]any{"state": string(a2a.TaskStateCanceled)},
+			})
+			emitInvocationLifecycle()
+			return task, acc.Snapshot(), nil
+		}
 		r.logger.Error("execute failed", map[string]any{"task_id": params.ID, "error": err.Error()})
 		task.Status = a2a.TaskStatus{
 			State: a2a.TaskStateFailed,
@@ -1103,7 +1174,7 @@ func (r *Runner) executeTask(
 			TaskID:        params.ID,
 			Fields:        map[string]any{"state": string(a2a.TaskStateFailed)},
 		})
-		emitInvocationComplete()
+		emitInvocationLifecycle()
 		return task, acc.Snapshot(), nil
 	}
 
@@ -1123,7 +1194,7 @@ func (r *Runner) executeTask(
 				TaskID:        params.ID,
 				Fields:        map[string]any{"state": string(a2a.TaskStateFailed)},
 			})
-			emitInvocationComplete()
+			emitInvocationLifecycle()
 			return task, acc.Snapshot(), nil
 		}
 	}
@@ -1151,7 +1222,7 @@ func (r *Runner) executeTask(
 		TaskID:        params.ID,
 		Fields:        map[string]any{"state": string(task.Status.State)},
 	})
-	emitInvocationComplete()
+	emitInvocationLifecycle()
 	r.logger.Info("task completed", map[string]any{"task_id": params.ID, "state": string(task.Status.State)})
 	return task, acc.Snapshot(), nil
 }

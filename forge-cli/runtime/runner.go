@@ -586,6 +586,7 @@ func (r *Runner) Run(ctx context.Context) error {
 						SystemPrompt:  sysPrompt,
 						Logger:        r.logger,
 						ModelName:     mc.Client.Model,
+						Provider:      mc.Provider,
 						MaxIterations: 100,
 						CharBudget:    charBudget,
 						FilesDir:      filepath.Join(r.cfg.WorkDir, ".forge", "files"),
@@ -791,129 +792,25 @@ func (r *Runner) Run(ctx context.Context) error {
 func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.AgentExecutor, guardrails coreruntime.GuardrailChecker, egressClient *http.Client, auditLogger *coreruntime.AuditLogger) {
 	store := srv.TaskStore()
 
-	// tasks/send — synchronous request
+	// tasks/send — synchronous request. Delegates to executeTask so the
+	// JSON-RPC path goes through the same audit + accumulator wiring as
+	// REST POST /tasks/send. See issue #87 / FWS-3.
 	srv.RegisterHandler("tasks/send", func(ctx context.Context, id any, rawParams json.RawMessage) *a2a.JSONRPCResponse {
 		var params a2a.SendTaskParams
 		if err := json.Unmarshal(rawParams, &params); err != nil {
 			return a2a.NewErrorResponse(id, a2a.ErrCodeInvalidParams, "invalid params: "+err.Error())
 		}
-
 		r.logger.Info("tasks/send", map[string]any{"task_id": params.ID})
-
-		// Inject egress client and correlation/task IDs into context
-		correlationID := coreruntime.GenerateID()
-		ctx = security.WithEgressClient(ctx, egressClient)
-		ctx = coreruntime.WithCorrelationID(ctx, correlationID)
-		ctx = coreruntime.WithTaskID(ctx, params.ID)
-
-		auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
-			Event:         coreruntime.AuditSessionStart,
-			CorrelationID: correlationID,
-			TaskID:        params.ID,
-		})
-
-		// Load existing task to preserve conversation history, or create new.
-		task := store.Get(params.ID)
-		if task == nil {
-			task = &a2a.Task{ID: params.ID}
-		}
-		task.Status = a2a.TaskStatus{State: a2a.TaskStateSubmitted}
-		store.Put(task)
-
-		// Guardrail check inbound
-		if err := guardrails.CheckInbound(&params.Message); err != nil {
-			task.Status = a2a.TaskStatus{
-				State: a2a.TaskStateFailed,
-				Message: &a2a.Message{
-					Role:  a2a.MessageRoleAgent,
-					Parts: []a2a.Part{a2a.NewTextPart("Guardrail violation: " + err.Error())},
-				},
-			}
-			store.Put(task)
-			auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
-				Event:         coreruntime.AuditSessionEnd,
-				CorrelationID: correlationID,
-				TaskID:        params.ID,
-				Fields:        map[string]any{"state": string(a2a.TaskStateFailed)},
-			})
-			return a2a.NewResponse(id, task)
-		}
-
-		// Append inbound user message to task history.
-		task.History = append(task.History, params.Message)
-
-		// Update to working
-		task.Status = a2a.TaskStatus{State: a2a.TaskStateWorking}
-		store.Put(task)
-
-		// Execute via executor
-		respMsg, err := executor.Execute(ctx, task, &params.Message)
+		// Delegate to executeTask so JSON-RPC and REST share the same
+		// audit + accumulator + invocation_complete wiring (issue #87 /
+		// FWS-3). The dispatcher already injected WorkflowContext into
+		// ctx from inbound headers per issue #86 / FWS-2, so every audit
+		// event executeTask emits carries workflow correlation fields
+		// when present.
+		task, _, err := r.executeTask(ctx, params, store, executor, guardrails, egressClient, auditLogger)
 		if err != nil {
-			r.logger.Error("execute failed", map[string]any{"task_id": params.ID, "error": err.Error()})
-			task.Status = a2a.TaskStatus{
-				State: a2a.TaskStateFailed,
-				Message: &a2a.Message{
-					Role:  a2a.MessageRoleAgent,
-					Parts: []a2a.Part{a2a.NewTextPart(err.Error())},
-				},
-			}
-			store.Put(task)
-			auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
-				Event:         coreruntime.AuditSessionEnd,
-				CorrelationID: correlationID,
-				TaskID:        params.ID,
-				Fields:        map[string]any{"state": string(a2a.TaskStateFailed)},
-			})
-			return a2a.NewResponse(id, task)
+			return a2a.NewErrorResponse(id, a2a.ErrCodeInternal, err.Error())
 		}
-
-		// Guardrail check outbound
-		if respMsg != nil {
-			if err := guardrails.CheckOutbound(respMsg); err != nil {
-				task.Status = a2a.TaskStatus{
-					State: a2a.TaskStateFailed,
-					Message: &a2a.Message{
-						Role:  a2a.MessageRoleAgent,
-						Parts: []a2a.Part{a2a.NewTextPart("Outbound guardrail violation: " + err.Error())},
-					},
-				}
-				store.Put(task)
-				auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
-					Event:         coreruntime.AuditSessionEnd,
-					CorrelationID: correlationID,
-					TaskID:        params.ID,
-					Fields:        map[string]any{"state": string(a2a.TaskStateFailed)},
-				})
-				return a2a.NewResponse(id, task)
-			}
-		}
-
-		// Append agent response to task history.
-		if respMsg != nil {
-			task.History = append(task.History, *respMsg)
-		}
-
-		// Build completed task
-		task.Status = a2a.TaskStatus{
-			State:   a2a.TaskStateCompleted,
-			Message: respMsg,
-		}
-		if respMsg != nil {
-			task.Artifacts = []a2a.Artifact{
-				{
-					Name:  "response",
-					Parts: respMsg.Parts,
-				},
-			}
-		}
-		store.Put(task)
-		auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
-			Event:         coreruntime.AuditSessionEnd,
-			CorrelationID: correlationID,
-			TaskID:        params.ID,
-			Fields:        map[string]any{"state": string(task.Status.State)},
-		})
-		r.logger.Info("task completed", map[string]any{"task_id": params.ID, "state": string(task.Status.State)})
 		return a2a.NewResponse(id, task)
 	})
 
@@ -927,11 +824,33 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 
 		r.logger.Info("tasks/sendSubscribe", map[string]any{"task_id": params.ID})
 
-		// Inject egress client and correlation/task IDs into context
+		// Inject egress client, correlation/task IDs, and per-invocation
+		// usage accumulator (issue #87 / FWS-3) into context. The
+		// accumulator lets the AfterLLMCall hook fold each call's
+		// tokens/duration into running totals for the invocation_complete
+		// audit event emitted before this handler returns.
 		correlationID := coreruntime.GenerateID()
 		ctx = security.WithEgressClient(ctx, egressClient)
 		ctx = coreruntime.WithCorrelationID(ctx, correlationID)
 		ctx = coreruntime.WithTaskID(ctx, params.ID)
+		sseAcc := coreruntime.NewLLMUsageAccumulator()
+		ctx = coreruntime.WithLLMUsageAccumulator(ctx, sseAcc)
+		defer func() {
+			snap := sseAcc.Snapshot()
+			fields := map[string]any{}
+			if snap.LLMCallCount > 0 {
+				fields["input_tokens_total"] = snap.InputTokens
+				fields["output_tokens_total"] = snap.OutputTokens
+				fields["llm_call_count"] = snap.LLMCallCount
+				if snap.PrimaryModel != "" {
+					fields["model"] = snap.PrimaryModel
+				}
+				if snap.PrimaryProvider != "" {
+					fields["provider"] = snap.PrimaryProvider
+				}
+			}
+			auditLogger.EmitInvocationComplete(ctx, snap.InvocationDuration, fields)
+		}()
 
 		auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
 			Event:         coreruntime.AuditSessionStart,
@@ -1102,13 +1021,19 @@ func (r *Runner) executeTask(
 	guardrails coreruntime.GuardrailChecker,
 	egressClient *http.Client,
 	auditLogger *coreruntime.AuditLogger,
-) (*a2a.Task, error) {
+) (*a2a.Task, coreruntime.LLMUsageSnapshot, error) {
 	correlationID := coreruntime.GenerateID()
 	ctx = security.WithEgressClient(ctx, egressClient)
 	ctx = coreruntime.WithCorrelationID(ctx, correlationID)
 	ctx = coreruntime.WithTaskID(ctx, params.ID)
+	// Per-invocation usage accumulator so AfterLLMCall hooks can fold
+	// each call's tokens/duration into running totals the response
+	// handler reads back for X-Forge-* headers + the
+	// invocation_complete audit event. See issue #87 / FWS-3.
+	acc := coreruntime.NewLLMUsageAccumulator()
+	ctx = coreruntime.WithLLMUsageAccumulator(ctx, acc)
 
-	auditLogger.Emit(coreruntime.AuditEvent{
+	auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
 		Event:         coreruntime.AuditSessionStart,
 		CorrelationID: correlationID,
 		TaskID:        params.ID,
@@ -1121,6 +1046,23 @@ func (r *Runner) executeTask(
 	task.Status = a2a.TaskStatus{State: a2a.TaskStateSubmitted}
 	store.Put(task)
 
+	emitInvocationComplete := func() {
+		snap := acc.Snapshot()
+		fields := map[string]any{"state": string(task.Status.State)}
+		if snap.LLMCallCount > 0 {
+			fields["input_tokens_total"] = snap.InputTokens
+			fields["output_tokens_total"] = snap.OutputTokens
+			fields["llm_call_count"] = snap.LLMCallCount
+			if snap.PrimaryModel != "" {
+				fields["model"] = snap.PrimaryModel
+			}
+			if snap.PrimaryProvider != "" {
+				fields["provider"] = snap.PrimaryProvider
+			}
+		}
+		auditLogger.EmitInvocationComplete(ctx, snap.InvocationDuration, fields)
+	}
+
 	if err := guardrails.CheckInbound(&params.Message); err != nil {
 		task.Status = a2a.TaskStatus{
 			State: a2a.TaskStateFailed,
@@ -1130,13 +1072,14 @@ func (r *Runner) executeTask(
 			},
 		}
 		store.Put(task)
-		auditLogger.Emit(coreruntime.AuditEvent{
+		auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
 			Event:         coreruntime.AuditSessionEnd,
 			CorrelationID: correlationID,
 			TaskID:        params.ID,
 			Fields:        map[string]any{"state": string(a2a.TaskStateFailed)},
 		})
-		return task, nil
+		emitInvocationComplete()
+		return task, acc.Snapshot(), nil
 	}
 
 	task.History = append(task.History, params.Message)
@@ -1154,13 +1097,14 @@ func (r *Runner) executeTask(
 			},
 		}
 		store.Put(task)
-		auditLogger.Emit(coreruntime.AuditEvent{
+		auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
 			Event:         coreruntime.AuditSessionEnd,
 			CorrelationID: correlationID,
 			TaskID:        params.ID,
 			Fields:        map[string]any{"state": string(a2a.TaskStateFailed)},
 		})
-		return task, nil
+		emitInvocationComplete()
+		return task, acc.Snapshot(), nil
 	}
 
 	if respMsg != nil {
@@ -1179,7 +1123,8 @@ func (r *Runner) executeTask(
 				TaskID:        params.ID,
 				Fields:        map[string]any{"state": string(a2a.TaskStateFailed)},
 			})
-			return task, nil
+			emitInvocationComplete()
+			return task, acc.Snapshot(), nil
 		}
 	}
 
@@ -1200,14 +1145,15 @@ func (r *Runner) executeTask(
 		}
 	}
 	store.Put(task)
-	auditLogger.Emit(coreruntime.AuditEvent{
+	auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
 		Event:         coreruntime.AuditSessionEnd,
 		CorrelationID: correlationID,
 		TaskID:        params.ID,
 		Fields:        map[string]any{"state": string(task.Status.State)},
 	})
+	emitInvocationComplete()
 	r.logger.Info("task completed", map[string]any{"task_id": params.ID, "state": string(task.Status.State)})
-	return task, nil
+	return task, acc.Snapshot(), nil
 }
 
 // restTaskRequest is the simplified JSON body for REST task endpoints.
@@ -1238,17 +1184,18 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 			Message: body.Task.Message,
 		}
 
-		// Pull workflow correlation headers (issue #86) so audit
+		// Pull workflow correlation headers (issue #86 / FWS-2) so audit
 		// events tagged via EmitFromContext carry the orchestrator's
 		// workflow/stage/step identifiers. Absent headers → IsZero
 		// WorkflowContext → fields omitted (backward compat).
 		ctx := coreruntime.WithWorkflowContext(req.Context(),
 			coreruntime.WorkflowContextFromHTTPHeaders(req.Header))
-		task, err := r.executeTask(ctx, params, store, executor, guardrails, egressClient, auditLogger)
+		task, snap, err := r.executeTask(ctx, params, store, executor, guardrails, egressClient, auditLogger)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
+		applyForgeUsageHeaders(w.Header(), snap)
 		writeJSON(w, http.StatusOK, task)
 	})
 
@@ -1282,8 +1229,31 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 		ctx := security.WithEgressClient(req.Context(), egressClient)
 		ctx = coreruntime.WithCorrelationID(ctx, correlationID)
 		ctx = coreruntime.WithTaskID(ctx, params.ID)
+		// Pull workflow correlation headers (issue #86 / FWS-2) before
+		// the accumulator setup so invocation_complete inherits workflow
+		// tagging via EmitFromContext.
 		ctx = coreruntime.WithWorkflowContext(ctx,
 			coreruntime.WorkflowContextFromHTTPHeaders(req.Header))
+		// Per-invocation usage accumulator + invocation_complete on exit.
+		// See issue #87 / FWS-3.
+		restSSEAcc := coreruntime.NewLLMUsageAccumulator()
+		ctx = coreruntime.WithLLMUsageAccumulator(ctx, restSSEAcc)
+		defer func() {
+			snap := restSSEAcc.Snapshot()
+			fields := map[string]any{}
+			if snap.LLMCallCount > 0 {
+				fields["input_tokens_total"] = snap.InputTokens
+				fields["output_tokens_total"] = snap.OutputTokens
+				fields["llm_call_count"] = snap.LLMCallCount
+				if snap.PrimaryModel != "" {
+					fields["model"] = snap.PrimaryModel
+				}
+				if snap.PrimaryProvider != "" {
+					fields["provider"] = snap.PrimaryProvider
+				}
+			}
+			auditLogger.EmitInvocationComplete(ctx, snap.InvocationDuration, fields)
+		}()
 
 		auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
 			Event:         coreruntime.AuditSessionStart,
@@ -1549,29 +1519,48 @@ func (r *Runner) registerAuditHooks(hooks *coreruntime.HookRegistry, auditLogger
 		if hctx.Error != nil {
 			fields["error"] = hctx.Error.Error()
 		}
+		// Structured arg-shape metadata (sizes only — never raw values;
+		// raw-arg-value emission is FWS-8's payload-stripping concern,
+		// not FWS-3's). See issue #87 / FWS-3.
+		if hctx.ToolInput != "" {
+			fields["args_size"] = len(hctx.ToolInput)
+		}
+		if hctx.ToolOutput != "" {
+			fields["result_size"] = len(hctx.ToolOutput)
+		}
+		ms := hctx.ToolExecDuration.Milliseconds()
 		auditLogger.Emit(coreruntime.AuditEvent{
 			Event:         coreruntime.AuditToolExec,
 			CorrelationID: hctx.CorrelationID,
 			TaskID:        hctx.TaskID,
+			DurationMs:    &ms,
 			Fields:        fields,
 		})
 		return nil
 	})
 
-	hooks.Register(coreruntime.AfterLLMCall, func(_ context.Context, hctx *coreruntime.HookContext) error {
-		fields := map[string]any{}
-		if hctx.Response != nil && hctx.Response.Usage.TotalTokens > 0 {
-			fields["tokens"] = hctx.Response.Usage.TotalTokens
+	hooks.Register(coreruntime.AfterLLMCall, func(ctx context.Context, hctx *coreruntime.HookContext) error {
+		var usage coreruntime.LLMUsage
+		var requestID string
+		if hctx.Response != nil {
+			usage.InputTokens = hctx.Response.Usage.InputTokens
+			usage.OutputTokens = hctx.Response.Usage.OutputTokens
+			usage.TotalTokens = hctx.Response.Usage.TotalTokens
+			requestID = hctx.Response.ID
 		}
-		if r.modelConfig != nil && r.modelConfig.Client.OrgID != "" {
-			fields["organization_id"] = r.modelConfig.Client.OrgID
-		}
-		auditLogger.Emit(coreruntime.AuditEvent{
-			Event:         coreruntime.AuditLLMCall,
-			CorrelationID: hctx.CorrelationID,
-			TaskID:        hctx.TaskID,
-			Fields:        fields,
+		auditLogger.EmitLLMCall(ctx, coreruntime.LLMCallAuditArgs{
+			Model:     hctx.Model,
+			Provider:  hctx.Provider,
+			RequestID: requestID,
+			Usage:     usage,
+			Duration:  hctx.LLMCallDuration,
 		})
+		// Accumulate per-invocation usage totals so the response handler
+		// can populate X-Forge-Tokens-In/Out + X-Forge-Duration-Ms +
+		// X-Forge-Model + X-Forge-Provider headers. See issue #87 / FWS-3.
+		if acc := coreruntime.LLMUsageAccumulatorFromContext(ctx); acc != nil {
+			acc.AddLLMCall(hctx.Model, hctx.Provider, usage, hctx.LLMCallDuration)
+		}
 		return nil
 	})
 }

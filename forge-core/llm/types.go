@@ -76,8 +76,13 @@ type StreamDelta struct {
 }
 
 // UsageInfo contains token usage information.
+//
+// Field naming aligns with OTel GenAI semantic conventions
+// (gen_ai.usage.input_tokens / gen_ai.usage.output_tokens) so audit
+// consumers can correlate Forge audit events with OTel traces without
+// a translation table. See issue #87 / FWS-3.
 type UsageInfo struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+	TotalTokens  int `json:"total_tokens"`
 }

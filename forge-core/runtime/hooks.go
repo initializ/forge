@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"time"
 
 	"github.com/initializ/forge/forge-core/llm"
 )
@@ -18,6 +19,11 @@ const (
 )
 
 // HookContext carries data available to hooks at each hook point.
+//
+// LLMCallDuration / ToolExecDuration / Provider / Model are populated
+// at the call site (loop.go) before the After* hook fires, so audit
+// emitters can tag llm_call and tool_exec events with wall-clock
+// timing and provider attribution. See issue #87 / FWS-3.
 type HookContext struct {
 	Messages      []llm.ChatMessage
 	Response      *llm.ChatResponse
@@ -27,6 +33,18 @@ type HookContext struct {
 	Error         error
 	TaskID        string
 	CorrelationID string
+
+	// LLMCallDuration is the wall-clock time spent in the provider
+	// client.Chat call. Populated for AfterLLMCall hooks.
+	LLMCallDuration time.Duration
+	// Provider / Model identify the LLM provider + model used for the
+	// call. Populated for AfterLLMCall hooks so audit + A2A-header
+	// emitters can stamp attribution without re-walking config.
+	Provider string
+	Model    string
+	// ToolExecDuration is the wall-clock time spent executing the tool.
+	// Populated for AfterToolExec hooks.
+	ToolExecDuration time.Duration
 }
 
 // Hook is a function invoked at a specific point in the agent loop.

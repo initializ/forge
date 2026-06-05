@@ -269,9 +269,9 @@ func (c *AnthropicClient) parseAnthropicResponse(body io.Reader) (*llm.ChatRespo
 		ID:      resp.ID,
 		Message: msg,
 		Usage: llm.UsageInfo{
-			PromptTokens:     resp.Usage.InputTokens,
-			CompletionTokens: resp.Usage.OutputTokens,
-			TotalTokens:      resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			InputTokens:  resp.Usage.InputTokens,
+			OutputTokens: resp.Usage.OutputTokens,
+			TotalTokens:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
 		},
 		FinishReason: finishReason,
 	}, nil
@@ -369,7 +369,7 @@ func (c *AnthropicClient) readAnthropicStream(r io.Reader, ch chan<- llm.StreamD
 			ch <- llm.StreamDelta{
 				FinishReason: finishReason,
 				Usage: &llm.UsageInfo{
-					CompletionTokens: ev.Usage.OutputTokens,
+					OutputTokens: ev.Usage.OutputTokens,
 				},
 			}
 

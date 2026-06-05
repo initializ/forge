@@ -17,7 +17,9 @@ All runtime security events are emitted as structured NDJSON to stderr with corr
 | `tool_exec` | Tool execution start/end (with tool name) |
 | `egress_allowed` | Outbound request allowed (with domain, mode) |
 | `egress_blocked` | Outbound request blocked (with domain, mode) |
-| `llm_call` | LLM API call completed (with token count) |
+| `llm_call` | LLM API call completed (with `input_tokens`, `output_tokens`, `model`, `provider`, `duration_ms`, `request_id`). See [Token usage and duration](#token-usage-and-execution-duration). |
+| `llm_call_cancelled` | Streaming LLM call cancelled mid-flight; carries partial token counts captured up to cancellation. |
+| `invocation_complete` | A2A invocation finished (auth → dispatch → engine → response). Carries `duration_ms` (wall-clock) plus aggregated `input_tokens_total` / `output_tokens_total` / `llm_call_count` / `model` / `provider`. |
 | `guardrail_check` | Guardrail evaluation result |
 | `auth_verify` | Inbound request authenticated successfully (with `provider`, `user_id`, `org_id`, `token_kind`) |
 | `auth_fail` | Inbound request rejected (with `reason`, `token_kind`) |
@@ -38,6 +40,53 @@ The `source` field distinguishes in-process enforcer events from subprocess prox
 ### Workflow correlation
 
 When the inbound A2A request carries the orchestrator's correlation headers (`X-Workflow-ID`, `X-Workflow-Stage-ID`, `X-Workflow-Step-ID`, `X-Invocation-Caller`), every audit event emitted during that invocation is tagged with the matching `workflow_id` / `stage_id` / `step_id` / `invocation_caller` fields. Header names are vendor-neutral so any A2A-compatible orchestrator can populate them. Direct A2A invocations (no orchestrator) omit the fields entirely — emitted JSON is byte-identical to the pre-correlation shape. See [Workflow correlation IDs](workflow-correlation.md) for the full reference, including outbound propagation for agent-to-agent flows.
+
+### Token usage and execution duration
+
+Every `llm_call` audit event carries the normalized token counts the provider returned in its response metadata, plus the wall-clock time spent in the provider call. Field naming aligns with [OTel GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/) (`gen_ai.usage.input_tokens` / `gen_ai.usage.output_tokens`) so audit consumers can correlate Forge audit events with OTel traces without a translation table.
+
+```json
+{
+  "ts": "2026-06-04T15:21:09Z",
+  "event": "llm_call",
+  "correlation_id": "9b3d…",
+  "task_id": "task-42",
+  "model": "claude-sonnet-4-6",
+  "provider": "anthropic",
+  "input_tokens": 1240,
+  "output_tokens": 387,
+  "duration_ms": 2150,
+  "request_id": "msg_01H8…"
+}
+```
+
+| Field | Source | Notes |
+|---|---|---|
+| `input_tokens` | Provider response usage | Maps to `gen_ai.usage.input_tokens` |
+| `output_tokens` | Provider response usage | Maps to `gen_ai.usage.output_tokens` |
+| `tokens_unavailable` | Audit emitter | `true` when both counts are zero — some self-hosted Ollama setups don't return usage; billing consumers must distinguish "not measured" from "zero tokens used" |
+| `model` | Runtime model config | The model identifier the executor was configured with |
+| `provider` | Runtime model config | One of `anthropic`, `openai`, `ollama`, `custom` |
+| `duration_ms` | Captured at call site | Wall-clock time spent in `client.Chat`, in milliseconds |
+| `request_id` | Provider response | Opaque provider call ID (Anthropic `id`, OpenAI `id`) — debug-correlation handle only, never used for billing |
+
+Each `tool_exec` event (phase=end) carries `duration_ms` for the tool execution plus structured arg-shape metadata (`args_size`, `result_size`) — raw arg values are deliberately not included (payload stripping is FWS-8's concern). One `invocation_complete` event closes each A2A invocation with the total wall-clock duration and aggregated token totals across all LLM calls in the invocation.
+
+Workflow correlation fields (`workflow_id` / `stage_id` / `step_id` / `invocation_caller` from FWS-2) also auto-tag every `llm_call` / `tool_exec` / `invocation_complete` event when the inbound request carried orchestrator headers — billing and audit consumers can attribute cost not just to a task but to a specific workflow run / stage / step.
+
+A2A response headers carry the same per-invocation totals inline so an orchestrator can ceiling-check cost during parallel workflow execution without subscribing to the audit stream:
+
+| Header | Value |
+|---|---|
+| `X-Forge-Tokens-In` | Sum of `input_tokens` across all LLM calls in the invocation |
+| `X-Forge-Tokens-Out` | Sum of `output_tokens` across all LLM calls in the invocation |
+| `X-Forge-Duration-Ms` | Wall-clock invocation duration (auth → dispatch → engine → response) |
+| `X-Forge-Model` | Most-recently-used model |
+| `X-Forge-Provider` | Most-recently-used provider |
+
+Headers populate regardless of whether OTel tracing is enabled — they're the orchestration channel, not the observability channel.
+
+**Cost calculation is deliberately not in Forge.** Forge emits token counts; the platform applies price tables to compute dollar amounts. Price tables change frequently and shouldn't require agent redeploys.
 
 ### Authentication events
 

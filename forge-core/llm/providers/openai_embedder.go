@@ -121,8 +121,8 @@ func (e *OpenAIEmbedder) Embed(ctx context.Context, req *llm.EmbeddingRequest) (
 		Embeddings: embeddings,
 		Model:      embResp.Model,
 		Usage: llm.UsageInfo{
-			PromptTokens: embResp.Usage.PromptTokens,
-			TotalTokens:  embResp.Usage.TotalTokens,
+			InputTokens: embResp.Usage.PromptTokens,
+			TotalTokens: embResp.Usage.TotalTokens,
 		},
 	}, nil
 }

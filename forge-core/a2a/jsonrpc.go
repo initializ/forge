@@ -46,8 +46,17 @@ type GetTaskParams struct {
 }
 
 // CancelTaskParams are the parameters for tasks/cancel.
+//
+// Reason is optional. When set, it classifies why the orchestrator
+// (or operator) is cancelling — see runtime.CancellationReason for the
+// documented values. Unknown reason strings are accepted and forwarded
+// to the audit pipeline verbatim; the value flows straight through to
+// the invocation_cancelled audit event's fields.reason. Absent reason
+// resolves to external_signal at the runtime boundary. See issue
+// #88 / FWS-4.
 type CancelTaskParams struct {
-	ID string `json:"id"`
+	ID     string `json:"id"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // NewResponse creates a successful JSON-RPC 2.0 response.

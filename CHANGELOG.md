@@ -4,6 +4,31 @@
 
 ### Added
 
+- **Cancellation signal handling (issue #88, FWS-4).** The A2A
+  `tasks/cancel` JSON-RPC method now actually cancels in-flight
+  invocations instead of merely flipping the stored task state. A
+  per-Runner `CancellationRegistry` tracks every active invocation
+  by task ID; the cancel handler signals the registered
+  `context.CancelCauseFunc` with a typed reason
+  (`workflow_failure` / `cost_limit_exceeded` / `timeout` /
+  `external_signal`), which propagates through the executor's ctx.
+  The agent loop honors cancellation at the iteration boundary and
+  between tool calls within an iteration, so cancellation latency is
+  bounded by the current LLM call or tool exec. A new
+  `invocation_cancelled` audit event closes every cancelled
+  invocation with the classified reason, `duration_ms` up to
+  cancellation, and partial token totals consumed before the signal
+  (from the FWS-3 `LLMUsageAccumulator`). The A2A response carries
+  state `canceled` plus a `cancelled: <reason>` message so the
+  orchestrator can react. Cancel-after-complete is idempotent — a
+  cancel for a task that already finished returns the stored state
+  unchanged rather than corrupting it. `CancelTaskParams` gains an
+  optional `reason` field (unknown values are forwarded verbatim to
+  audit). The grace-period / hard-cancel concept maps to bounded
+  cancellation latency: Go's runtime can't kill a goroutine, so
+  Forge honors the signal at the next safe checkpoint and the
+  orchestrator-side timeout is its own concern. See
+  `docs/security/audit-logging.md#cancellation`.
 - **Token usage and execution duration emission (issue #87, FWS-3).**
   Every `llm_call` audit event now carries `input_tokens`,
   `output_tokens`, `model`, `provider`, `duration_ms`, and `request_id`

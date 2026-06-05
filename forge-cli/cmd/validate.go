@@ -8,27 +8,52 @@ import (
 
 	"github.com/initializ/forge/forge-cli/config"
 	"github.com/initializ/forge/forge-core/agentspec"
+	"github.com/initializ/forge/forge-core/security"
 	"github.com/initializ/forge/forge-core/validate"
 	"github.com/spf13/cobra"
 )
 
 var (
-	strict        bool
-	commandCompat bool
+	strict             bool
+	commandCompat      bool
+	platformPolicyPath string
 )
 
 var validateCmd = &cobra.Command{
 	Use:   "validate",
 	Short: "Validate the agent spec and forge.yaml",
-	RunE:  runValidate,
+	Long: `Validate the agent spec and forge.yaml.
+
+With --platform-policy=<file>, also lint a platform policy YAML file
+(typically the source for the forge-platform-policy ConfigMap) without
+needing a forge.yaml in scope. Used by operators / CI to gate policy
+changes before kubectl apply. See docs/security/platform-policy.md.`,
+	// Suppress cobra's usage dump after a RunE error — the validation
+	// error message is the relevant output, not the command help.
+	SilenceUsage: true,
+	RunE:         runValidate,
 }
 
 func init() {
 	validateCmd.Flags().BoolVar(&strict, "strict", false, "treat warnings as errors")
 	validateCmd.Flags().BoolVar(&commandCompat, "command-compat", false, "check Command platform import compatibility")
+	validateCmd.Flags().StringVar(&platformPolicyPath, "platform-policy", "", "validate a platform policy YAML file (standalone lint; no forge.yaml needed)")
 }
 
 func runValidate(cmd *cobra.Command, args []string) error {
+	// Standalone platform-policy lint (issue #89 / FWS-5). Returns
+	// non-zero on schema errors. Same UX shape as forge validate
+	// forge.yaml — operators wire this into CI to gate ConfigMap
+	// changes before kubectl apply.
+	if platformPolicyPath != "" {
+		if _, err := security.LoadPlatformPolicy(platformPolicyPath); err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+			return fmt.Errorf("platform policy validation failed")
+		}
+		fmt.Println("Platform policy validation passed.")
+		return nil
+	}
+
 	cfgPath := cfgFile
 	if !filepath.IsAbs(cfgPath) {
 		wd, err := os.Getwd()

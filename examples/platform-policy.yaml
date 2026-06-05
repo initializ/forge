@@ -1,0 +1,83 @@
+# Forge platform policy — workspace-level runtime safety net.
+#
+# This file documents the schema operators write when injecting a
+# platform-level policy into a Forge deployment. The agent reads this
+# document at startup (via the FORGE_PLATFORM_POLICY env var, which
+# `forge package` pre-wires into the generated Deployment manifest)
+# and refuses to start when forge.yaml's declaration exceeds the bound
+# set here.
+#
+# Workflow:
+#   1. Operator (or platform deployer like initializ Command, custom
+#      controller, GitOps tooling) writes a policy YAML based on this
+#      example.
+#   2. Operator validates it: `forge validate --platform-policy=<file>`.
+#   3. Operator creates the ConfigMap:
+#        kubectl create configmap forge-platform-policy \
+#          --from-file=platform-policy.yaml=<file>
+#   4. Every agent deployment in that namespace reads the policy on
+#      next pod restart.
+#
+# Absence of a policy ConfigMap is the normal case — the Deployment's
+# volume mount has `optional: true`, so an agent without a policy
+# starts with no constraints (pre-FWS-5 behavior).
+#
+# See docs/security/platform-policy.md for the full reference.
+
+# Workspace-level egress deny list. Each entry is matched
+# case-insensitively against the entries in forge.yaml's
+# `egress.allowed_domains`. If a forge.yaml lists any domain here, the
+# agent refuses to start and emits a `policy_violation_at_build_time`
+# audit event naming the offending entry and the forge.yaml field.
+#
+# Example use case: a workspace forbids agents from calling Slack
+# directly even if a developer adds api.slack.com to their forge.yaml.
+denied_egress_domains:
+  - api.slack.com
+  - hooks.slack.com
+
+# Workspace-level tool deny list. Each entry is a tool registry name
+# (case-sensitive — matches the name as it appears in the agent's
+# registered tools). Union semantics: forge.yaml's own deny list plus
+# this list are stripped from the agent's registry at startup.
+# Platform denies take precedence over user-selected builtins.
+#
+# Example use case: a workspace bans `cli_execute` across all agents
+# because the security team hasn't approved arbitrary shell exec yet.
+denied_tools:
+  - cli_execute
+  - http_request
+
+# Workspace-level model deny list. Each entry is a (provider, name)
+# pair — both fields are required (no wildcards). Applies to BOTH
+# the primary model and every fallback in forge.yaml.
+#
+# Example use cases:
+#   - cost-ceiling enforcement ("no Opus in this workspace")
+#   - data-residency requirement ("no third-party providers for
+#     tenants in jurisdiction X")
+forbidden_models:
+  - provider: anthropic
+    name: claude-opus-4
+  - provider: openai
+    name: gpt-4-32k
+
+# Defense against allowlist bloat. Hard caps on what forge.yaml may
+# declare. Zero (or omitted) means no cap.
+#
+# Rationale: a developer adding 200 third-party domains to their
+# egress allow list is almost certainly doing something they shouldn't.
+# A workspace policy can prevent this without naming every domain
+# individually.
+max_egress_allowlist_size: 50
+max_tool_count: 100
+
+# Workspace-level channel deny list. Reserved for the FWS-6
+# (issue #90) channel-policy work. Operators may already write this
+# field today — the schema parses it — but v1 of the runtime does
+# NOT enforce channel denies. The slot exists so operators write one
+# policy document instead of two.
+#
+# Will be enforced when FWS-6 ships.
+denied_channels:
+  - telegram

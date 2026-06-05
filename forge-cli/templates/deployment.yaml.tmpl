@@ -28,8 +28,13 @@ spec:
           ports:
             - containerPort: {{.Runtime.Port}}
           {{- end}}
-          {{- if or .Runtime.Env .RequiredEnvVars .OptionalEnvVars}}
           env:
+            # Platform policy file path (issue #89 / FWS-5). The volume
+            # mount below is optional; when no ConfigMap is present,
+            # the agent reads this path, finds it missing, and starts
+            # with no platform-policy constraints (pre-FWS-5 behavior).
+            - name: FORGE_PLATFORM_POLICY
+              value: /etc/forge/policy/platform-policy.yaml
             {{- range $key, $val := .Runtime.Env}}
             - name: {{$key}}
               value: "{{$val}}"
@@ -49,4 +54,23 @@ spec:
                   key: {{.}}
                   optional: true
             {{- end}}
-          {{- end}}
+          volumeMounts:
+            # Platform policy ConfigMap mount (issue #89 / FWS-5). Mounted
+            # readOnly. Operators (or platform deployers like initializ
+            # Command, custom controllers, GitOps tooling) create the
+            # `forge-platform-policy` ConfigMap with key `platform-policy.yaml`
+            # to apply workspace-level egress / tool / model bounds.
+            # See docs/security/platform-policy.md.
+            - name: platform-policy
+              mountPath: /etc/forge/policy
+              readOnly: true
+      volumes:
+        # Optional ConfigMap. When absent, the agent starts with no
+        # platform-policy constraints — same behavior as pre-FWS-5.
+        # `optional: true` is load-bearing: without it, the pod would
+        # fail to start when the ConfigMap doesn't exist, breaking
+        # self-managed deployments that don't need workspace bounds.
+        - name: platform-policy
+          configMap:
+            name: forge-platform-policy
+            optional: true

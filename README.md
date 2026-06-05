@@ -99,6 +99,7 @@ You write a `SKILL.md`. Forge compiles it into a secure, runnable agent with egr
 | [Build Signing](docs/security/build-signing.md) | Ed25519 signing and verification |
 | [Guardrails](docs/security/guardrails.md) | Content filtering and PII detection |
 | [Workflow Correlation](docs/security/workflow-correlation.md) | Orchestrator correlation IDs threaded through audit events |
+| [Platform Policy](docs/security/platform-policy.md) | Workspace-level deploy-time bounds on egress / tools / models |
 
 ### Operations
 

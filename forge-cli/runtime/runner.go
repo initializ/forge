@@ -258,6 +258,47 @@ func (r *Runner) Run(ctx context.Context) error {
 	// 4. Create audit logger (used by hooks and handlers)
 	auditLogger := coreruntime.NewAuditLogger(os.Stderr)
 
+	// 4a. Load + enforce platform policy (issue #89 / FWS-5). The
+	// platform-level workspace policy is the upper bound — forge.yaml
+	// is what the agent claims to do, the platform policy is what the
+	// workspace allows. If forge.yaml exceeds the bound, refuse to
+	// start with a clear error and emit policy_violation_at_build_time
+	// to audit so the violation lands in the operator's pipeline even
+	// though the agent never serves traffic.
+	//
+	// Absence of FORGE_PLATFORM_POLICY (or missing file) → zero policy
+	// → no constraints → backward compat with pre-FWS-5 behavior.
+	platformPolicy, policyErr := security.LoadPlatformPolicy(os.Getenv("FORGE_PLATFORM_POLICY"))
+	if policyErr != nil {
+		// Malformed policy is an operator mistake that must abort —
+		// silently treating a broken policy as "no policy" defeats the
+		// safety net.
+		return fmt.Errorf("loading platform policy: %w", policyErr)
+	}
+	if !platformPolicy.IsZero() {
+		auditLogger.EmitPolicyLoaded(map[string]any{
+			"source":                 os.Getenv("FORGE_PLATFORM_POLICY"),
+			"denied_egress_count":    len(platformPolicy.DeniedEgressDomains),
+			"denied_tools_count":     len(platformPolicy.DeniedTools),
+			"forbidden_models_count": len(platformPolicy.ForbiddenModels),
+			"max_egress_allowlist":   platformPolicy.MaxEgressAllowlistSize,
+			"max_tool_count":         platformPolicy.MaxToolCount,
+		})
+		if violations := security.EnforcePolicy(r.cfg.Config, platformPolicy); len(violations) > 0 {
+			// Emit one audit event per violation so cost / compliance
+			// dashboards can group by kind. Then abort with a combined
+			// developer-facing error listing every offence.
+			for _, v := range violations {
+				auditLogger.EmitPolicyViolationAtBuildTime(map[string]any{
+					"violation_kind":   string(v.Kind),
+					"offending_value":  v.OffendingValue,
+					"forge_yaml_field": v.ForgeYAMLField,
+				})
+			}
+			return fmt.Errorf("%s", security.FormatViolations(violations))
+		}
+	}
+
 	// 4b. Resolve egress config and start proxy (if not in container)
 	var egressClient *http.Client
 	var egressProxy *security.EgressProxy
@@ -269,8 +310,16 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Merge skill-derived egress domains with explicitly configured domains.
 	// Both sources may contain $VAR or ${VAR} references which are
 	// expanded from .env and OS environment (e.g. "$K8S_API_DOMAIN").
+	//
+	// Platform-policy intersection (issue #89 / FWS-5): the developer's
+	// forge.yaml allow list is filtered through the policy deny list
+	// BEFORE expansion. The EnforcePolicy check above already aborted
+	// startup on a declared-but-denied entry; this filter is the
+	// belt-and-suspenders defence-in-depth pass — any new code path
+	// that injects egress entries can call it independently.
+	declaredAllowed := security.EffectiveEgressAllowlist(r.cfg.Config, platformPolicy)
 	var egressDomains []string
-	for _, d := range r.cfg.Config.Egress.AllowedDomains {
+	for _, d := range declaredAllowed {
 		egressDomains = append(egressDomains, expandEgressDomains(d, envVars)...)
 	}
 	if r.derivedCLIConfig != nil && len(r.derivedCLIConfig.EgressDomains) > 0 {
@@ -469,17 +518,34 @@ func (r *Runner) Run(ctx context.Context) error {
 			// Register skill tools from skill files
 			r.registerSkillTools(reg, proxyURL)
 
-			// Remove denied tools from the registry, but preserve user-selected builtins
-			if r.derivedCLIConfig != nil && len(r.derivedCLIConfig.DeniedTools) > 0 {
+			// Remove denied tools from the registry. The effective deny
+			// list is the union of forge.yaml's denies (via the derived
+			// CLI config) and the platform policy's denies (issue #89 /
+			// FWS-5). User-selected builtins are preserved unless the
+			// platform policy denies them — a platform-level deny is
+			// not overridable by user selection.
+			var forgeDenied []string
+			if r.derivedCLIConfig != nil {
+				forgeDenied = r.derivedCLIConfig.DeniedTools
+			}
+			effectiveDenied := security.EffectiveDeniedTools(forgeDenied, platformPolicy)
+			if len(effectiveDenied) > 0 {
 				userSelected := make(map[string]bool, len(r.cfg.Config.BuiltinTools))
 				for _, name := range r.cfg.Config.BuiltinTools {
 					userSelected[name] = true
 				}
+				policyDenied := make(map[string]bool, len(platformPolicy.DeniedTools))
+				for _, name := range platformPolicy.DeniedTools {
+					policyDenied[name] = true
+				}
 
 				var removed []string
-				for _, denied := range r.derivedCLIConfig.DeniedTools {
-					if userSelected[denied] {
-						continue // user explicitly selected this tool, keep it
+				for _, denied := range effectiveDenied {
+					// User-selected builtins survive forge.yaml denies
+					// but NOT platform-policy denies — workspace policy
+					// outranks per-agent declaration.
+					if userSelected[denied] && !policyDenied[denied] {
+						continue
 					}
 					reg.Remove(denied)
 					removed = append(removed, denied)

@@ -62,6 +62,24 @@ const (
 	// the cancellation point. See issue #87 / FWS-3.
 	AuditLLMCallCancelled = "llm_call_cancelled"
 
+	// AuditPolicyLoaded is emitted once at agent startup when a
+	// non-zero platform policy is present. Carries a summary of the
+	// effective policy (sizes of deny lists, max bounds) so audit
+	// consumers can confirm which policy was active during a given
+	// run without parsing the policy file itself. Absent when no
+	// policy is configured. See issue #89 / FWS-5.
+	AuditPolicyLoaded = "policy_loaded"
+
+	// AuditPolicyViolationAtBuildTime is emitted when forge.yaml's
+	// declaration conflicts with the platform policy at startup
+	// (e.g., declares a domain on the policy deny list, declares a
+	// forbidden model, exceeds size bounds). Carries the conflict
+	// detail in Fields. Emitted ONCE per startup before the runner
+	// aborts with a non-zero exit, so the violation lands in the
+	// audit pipeline even though the agent never serves traffic.
+	// See issue #89 / FWS-5.
+	AuditPolicyViolationAtBuildTime = "policy_violation_at_build_time"
+
 	// AuditInvocationCancelled is emitted when an in-flight A2A
 	// invocation is cancelled by tasks/cancel (or internal cancellation
 	// like a parent ctx deadline). Carries the classified reason in
@@ -340,6 +358,41 @@ func (a *AuditLogger) EmitInvocationCancelled(ctx context.Context, reason Cancel
 		Event:      AuditInvocationCancelled,
 		DurationMs: &d,
 		Fields:     fields,
+	})
+}
+
+// EmitPolicyLoaded emits a policy_loaded audit event at agent startup
+// when a non-zero platform policy is active. Fields are a summary of
+// the effective policy (deny-list sizes, max bounds, source path) —
+// NOT the full policy contents, which can be large and may contain
+// internal infrastructure hints operators don't want in every audit
+// stream. Consumers that need the full policy can read the source
+// file via the path field.
+//
+// Emitted via plain Emit (not EmitFromContext) because no request
+// context exists at startup. See issue #89 / FWS-5.
+func (a *AuditLogger) EmitPolicyLoaded(fields map[string]any) {
+	a.Emit(AuditEvent{
+		Event:  AuditPolicyLoaded,
+		Fields: fields,
+	})
+}
+
+// EmitPolicyViolationAtBuildTime emits a policy_violation_at_build_time
+// audit event when forge.yaml's declaration conflicts with the
+// platform policy. Fields carry the conflict detail (which kind of
+// violation — denied_egress, denied_tool, forbidden_model, size_bound
+// — and the offending value(s)). Called once at startup before the
+// runner returns a non-zero exit; the audit lands even though the
+// agent never serves traffic, so the operator's audit pipeline
+// captures the violation.
+//
+// Emitted via plain Emit (not EmitFromContext) because no request
+// context exists at startup. See issue #89 / FWS-5.
+func (a *AuditLogger) EmitPolicyViolationAtBuildTime(fields map[string]any) {
+	a.Emit(AuditEvent{
+		Event:  AuditPolicyViolationAtBuildTime,
+		Fields: fields,
 	})
 }
 

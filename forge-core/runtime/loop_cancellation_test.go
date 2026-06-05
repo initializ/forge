@@ -141,22 +141,27 @@ func TestLLMExecutor_AgentLoop_CancelledBetweenToolCalls(t *testing.T) {
 	}
 }
 
-func TestLLMExecutor_LLMCallReturnsCtxError_PreservesTypedError(t *testing.T) {
-	// Regression for FWS-4 v1.1: when the LLM provider client returns
-	// a wrapped context.Canceled (which is what really happens when
-	// http.Client aborts mid-request), the loop must preserve the
-	// typed ctx error so executeTask can route to invocation_cancelled
-	// rather than wrapping it into the generic "something went wrong"
-	// failure message. Without this, a mid-LLM-call cancel surfaces to
-	// the orchestrator as state=failed, which is wrong.
+func TestLLMExecutor_LLMCallErrorWithCancelledCtx_RoutesToCancellation(t *testing.T) {
+	// Regression for FWS-4 v1.1: when ctx was cancelled AND the LLM
+	// client returns some non-typed error (the realistic case —
+	// net/http wraps inconsistently across DNS / TLS / body paths and
+	// the resulting err is rarely structurally errors.Is(context.Canceled)
+	// despite being caused by cancellation), the loop must use ctx.Err()
+	// to detect cancellation. Without this, every mid-flight cancel
+	// surfaces to the orchestrator as state=failed instead of
+	// state=canceled. The fix replaces the brittle errors.Is check
+	// with a direct ctx.Err() check at the LLM-error site.
+	clientCh := make(chan struct{})
 	exec := NewLLMExecutor(LLMExecutorConfig{
 		Client: &mockLLMClient{
 			chatFunc: func(ctx context.Context, req *llm.ChatRequest) (*llm.ChatResponse, error) {
-				// Simulate a provider client that returns a wrapped
-				// context.Canceled (the real Anthropic / OpenAI clients
-				// return "post: context canceled" with the typed error
-				// preserved via errors.Is chain).
-				return nil, fmt.Errorf("openai request: %w", context.Canceled)
+				close(clientCh) // signal the cancel goroutine
+				<-ctx.Done()    // wait for cancellation
+				// Return an error that does NOT structurally wrap
+				// context.Canceled — matches what net/http actually
+				// produces (a non-Unwrap-friendly chain that just
+				// stringifies to "context canceled" somewhere inside).
+				return nil, fmt.Errorf("openai request: net/http: request canceled")
 			},
 		},
 		Tools:     &mockToolExecutor{toolDefs: []llm.ToolDefinition{}},
@@ -164,12 +169,18 @@ func TestLLMExecutor_LLMCallReturnsCtxError_PreservesTypedError(t *testing.T) {
 		Provider:  "test",
 	})
 
-	_, err := exec.Execute(context.Background(),
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-clientCh
+		cancel()
+	}()
+
+	_, err := exec.Execute(ctx,
 		&a2a.Task{ID: "t1"},
 		&a2a.Message{Role: a2a.MessageRoleUser, Parts: []a2a.Part{a2a.NewTextPart("hi")}},
 	)
 	if !errors.Is(err, context.Canceled) {
-		t.Errorf("loop must preserve context.Canceled chain when LLM call returns wrapped ctx error; got %v", err)
+		t.Errorf("loop should return context.Canceled when ctx is cancelled at the LLM error site; got %v", err)
 	}
 	if err != nil && err.Error() == "something went wrong while processing your request, please try again" {
 		t.Errorf("loop wrapped the ctx error into the generic failure message — executeTask cannot route to invocation_cancelled")

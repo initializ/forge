@@ -62,6 +62,14 @@ const (
 	// the cancellation point. See issue #87 / FWS-3.
 	AuditLLMCallCancelled = "llm_call_cancelled"
 
+	// AuditInvocationCancelled is emitted when an in-flight A2A
+	// invocation is cancelled by tasks/cancel (or internal cancellation
+	// like a parent ctx deadline). Carries the classified reason in
+	// Fields["reason"], the wall-clock duration up to cancellation in
+	// DurationMs, and aggregated partial usage in Fields when any LLM
+	// calls completed before the cancel signal. See issue #88 / FWS-4.
+	AuditInvocationCancelled = "invocation_cancelled"
+
 	// Deprecated: use EventAuthVerify. Kept as a string alias so any
 	// audit-log consumer that grep'd for "auth_success" can be migrated.
 	// Scheduled for removal in v0.11.0.
@@ -300,6 +308,36 @@ func (a *AuditLogger) EmitInvocationComplete(ctx context.Context, duration time.
 	d := duration.Milliseconds()
 	a.EmitFromContext(ctx, AuditEvent{
 		Event:      AuditInvocationComplete,
+		DurationMs: &d,
+		Fields:     fields,
+	})
+}
+
+// EmitInvocationCancelled emits an invocation_cancelled audit event
+// for an in-flight A2A invocation that was signalled mid-execution
+// via tasks/cancel (or internal cancellation: parent ctx deadline,
+// graceful shutdown). Routed through EmitFromContext so workflow
+// correlation auto-tags. The reason is folded into Fields["reason"]
+// as a string — operators classify these via the CancellationReason
+// constants but consumers should pass-through unknown values.
+//
+// Partial usage data should be present in fields (the runner reads
+// the per-invocation LLMUsageAccumulator snapshot and adds
+// input_tokens_total / output_tokens_total / llm_call_count / model
+// / provider when llm_call_count > 0). When no LLM calls completed
+// before cancellation, the field map carries reason + state only —
+// downstream billing sees zero tokens which is correct: the
+// invocation was cancelled before incurring spend.
+//
+// See issue #88 / FWS-4.
+func (a *AuditLogger) EmitInvocationCancelled(ctx context.Context, reason CancellationReason, duration time.Duration, fields map[string]any) {
+	d := duration.Milliseconds()
+	if fields == nil {
+		fields = map[string]any{}
+	}
+	fields["reason"] = string(reason)
+	a.EmitFromContext(ctx, AuditEvent{
+		Event:      AuditInvocationCancelled,
 		DurationMs: &d,
 		Fields:     fields,
 	})

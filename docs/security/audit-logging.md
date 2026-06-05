@@ -20,6 +20,7 @@ All runtime security events are emitted as structured NDJSON to stderr with corr
 | `llm_call` | LLM API call completed (with `input_tokens`, `output_tokens`, `model`, `provider`, `duration_ms`, `request_id`). See [Token usage and duration](#token-usage-and-execution-duration). |
 | `llm_call_cancelled` | Streaming LLM call cancelled mid-flight; carries partial token counts captured up to cancellation. |
 | `invocation_complete` | A2A invocation finished (auth → dispatch → engine → response). Carries `duration_ms` (wall-clock) plus aggregated `input_tokens_total` / `output_tokens_total` / `llm_call_count` / `model` / `provider`. |
+| `invocation_cancelled` | A2A invocation cancelled mid-flight via `tasks/cancel` (or internal cancellation like parent ctx deadline). Carries `fields.reason` (one of `workflow_failure` / `cost_limit_exceeded` / `timeout` / `external_signal`), `duration_ms` up to cancellation, and any partial token totals consumed before the signal. See [Cancellation](#cancellation). |
 | `guardrail_check` | Guardrail evaluation result |
 | `auth_verify` | Inbound request authenticated successfully (with `provider`, `user_id`, `org_id`, `token_kind`) |
 | `auth_fail` | Inbound request rejected (with `reason`, `token_kind`) |
@@ -87,6 +88,55 @@ A2A response headers carry the same per-invocation totals inline so an orchestra
 Headers populate regardless of whether OTel tracing is enabled — they're the orchestration channel, not the observability channel.
 
 **Cost calculation is deliberately not in Forge.** Forge emits token counts; the platform applies price tables to compute dollar amounts. Price tables change frequently and shouldn't require agent redeploys.
+
+### Cancellation
+
+Forge accepts mid-invocation cancellation via the A2A `tasks/cancel` JSON-RPC method. The handler looks up the in-flight invocation in a per-Runner cancellation registry, fires a typed cancel-cause through the executor's `context.Context`, and the loop honors it at the next iteration boundary or between tool calls (whichever comes first). The current LLM call honors cancellation natively — `http.Client.Do` aborts the request on `ctx.Done()`.
+
+Cancellation latency is bounded by the time for the current LLM call or tool call to finish (typically seconds, not minutes). Go's runtime does not support force-terminating a goroutine, so "hard-cancel" semantically means "honor the signal at the next safe checkpoint." The orchestrator-side `cancel + give-up-wait-after-N-seconds` pattern is an A2A-client concern, not a Forge concern.
+
+```json
+{
+  "ts": "2026-06-04T15:23:47Z",
+  "event": "invocation_cancelled",
+  "correlation_id": "9b3d…",
+  "task_id": "task-42",
+  "duration_ms": 1820,
+  "fields": {
+    "reason": "cost_limit_exceeded",
+    "state": "canceled",
+    "input_tokens_total": 940,
+    "output_tokens_total": 215,
+    "llm_call_count": 2,
+    "model": "claude-sonnet-4-6",
+    "provider": "anthropic"
+  }
+}
+```
+
+| `fields.reason` | Set by | Meaning |
+|---|---|---|
+| `workflow_failure` | Orchestrator | Sibling step in a parallel stage failed under `fail_workflow`; abandon work. |
+| `cost_limit_exceeded` | Orchestrator | Workflow cumulative cost ceiling hit (typically derived from the FWS-3 `X-Forge-Tokens-*` headers). |
+| `timeout` | Orchestrator / Forge | Wall-clock budget exhausted. Parent ctx `context.DeadlineExceeded` auto-maps to this reason. |
+| `external_signal` | Operator / fallback | Operator-initiated stop, debugging cancel, or any cancellation without a typed reason. |
+
+**Cancel request shape:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tasks/cancel",
+  "params": { "id": "task-42", "reason": "cost_limit_exceeded" },
+  "id": "1"
+}
+```
+
+`reason` is optional. Unknown reason strings are accepted and forwarded to the audit event verbatim — the audit pipeline is the authority on classification.
+
+**Cancel after complete is idempotent.** A cancel issued for a task that already finished (or was never started) returns the stored task state unchanged — no error. The handler refuses to flip a terminal-state task to `canceled` because that would corrupt audit and orchestrator state.
+
+**Partial usage is preserved.** When LLM calls completed before the cancel signal, `input_tokens_total` / `output_tokens_total` / `llm_call_count` carry the accumulated counts so a downstream cost aggregator bills only for what was consumed. When no LLM call landed, the totals are absent and the event still carries `duration_ms` so wall-clock spend is visible.
 
 ### Authentication events
 

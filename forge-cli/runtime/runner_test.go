@@ -160,7 +160,11 @@ func TestRunner_MockIntegration(t *testing.T) {
 		}
 	})
 
-	// Test tasks/cancel
+	// Test tasks/cancel — after issue #88 / FWS-4, cancel on an
+	// already-completed task is an idempotent no-op: the registry has
+	// no entry (the in-flight invocation released on completion), so
+	// the stored task state stays Completed. Flipping a terminal-state
+	// task to Canceled would corrupt audit and orchestrator state.
 	t.Run("tasks/cancel", func(t *testing.T) {
 		rpcReq := a2a.JSONRPCRequest{
 			JSONRPC: "2.0",
@@ -186,8 +190,8 @@ func TestRunner_MockIntegration(t *testing.T) {
 		resultData, _ := json.Marshal(rpcResp.Result)
 		var task a2a.Task
 		json.Unmarshal(resultData, &task) //nolint:errcheck
-		if task.Status.State != a2a.TaskStateCanceled {
-			t.Errorf("state: got %q, want %q", task.Status.State, a2a.TaskStateCanceled)
+		if task.Status.State != a2a.TaskStateCompleted {
+			t.Errorf("cancel-after-complete should leave state at Completed, got %q", task.Status.State)
 		}
 	})
 

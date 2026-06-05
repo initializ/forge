@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -260,6 +261,15 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 		resp, err := e.client.Chat(ctx, req)
 		llmDuration := time.Since(llmStart)
 		if err != nil {
+			// Cancellation is not a "something went wrong" — preserve
+			// the typed ctx error so executeTask routes it to the
+			// invocation_cancelled path instead of the failure path.
+			// Otherwise a tasks/cancel mid-LLM-call shows up to the
+			// orchestrator as state=failed, which is wrong. See issue
+			// #88 / FWS-4.
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, err
+			}
 			_ = e.hooks.Fire(ctx, OnError, &HookContext{
 				Error:           err,
 				TaskID:          TaskIDFromContext(ctx),

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/initializ/forge/forge-core/a2a"
@@ -137,6 +138,41 @@ func TestLLMExecutor_AgentLoop_CancelledBetweenToolCalls(t *testing.T) {
 	}
 	if chatCalls != 1 {
 		t.Errorf("expected exactly 1 LLM call (no follow-up after cancellation), got %d", chatCalls)
+	}
+}
+
+func TestLLMExecutor_LLMCallReturnsCtxError_PreservesTypedError(t *testing.T) {
+	// Regression for FWS-4 v1.1: when the LLM provider client returns
+	// a wrapped context.Canceled (which is what really happens when
+	// http.Client aborts mid-request), the loop must preserve the
+	// typed ctx error so executeTask can route to invocation_cancelled
+	// rather than wrapping it into the generic "something went wrong"
+	// failure message. Without this, a mid-LLM-call cancel surfaces to
+	// the orchestrator as state=failed, which is wrong.
+	exec := NewLLMExecutor(LLMExecutorConfig{
+		Client: &mockLLMClient{
+			chatFunc: func(ctx context.Context, req *llm.ChatRequest) (*llm.ChatResponse, error) {
+				// Simulate a provider client that returns a wrapped
+				// context.Canceled (the real Anthropic / OpenAI clients
+				// return "post: context canceled" with the typed error
+				// preserved via errors.Is chain).
+				return nil, fmt.Errorf("openai request: %w", context.Canceled)
+			},
+		},
+		Tools:     &mockToolExecutor{toolDefs: []llm.ToolDefinition{}},
+		ModelName: "test",
+		Provider:  "test",
+	})
+
+	_, err := exec.Execute(context.Background(),
+		&a2a.Task{ID: "t1"},
+		&a2a.Message{Role: a2a.MessageRoleUser, Parts: []a2a.Part{a2a.NewTextPart("hi")}},
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("loop must preserve context.Canceled chain when LLM call returns wrapped ctx error; got %v", err)
+	}
+	if err != nil && err.Error() == "something went wrong while processing your request, please try again" {
+		t.Errorf("loop wrapped the ctx error into the generic failure message — executeTask cannot route to invocation_cancelled")
 	}
 }
 

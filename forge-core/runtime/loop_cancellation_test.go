@@ -19,18 +19,25 @@ import (
 
 func TestLLMExecutor_AgentLoop_CancelledAtIterationBoundary(t *testing.T) {
 	// Set up a client that returns a tool call on the first call,
-	// then would loop again. Cancel ctx after the first response, so
-	// the second iteration's boundary check exits with ctx.Err().
+	// then cancels ctx synchronously from inside chatFunc so the loop
+	// reaches the next boundary with a guaranteed-cancelled ctx. The
+	// earlier version of this test fired cancel from a goroutine after
+	// closing a signal channel — that races with iter 2's ctx.Err()
+	// check on slower CI machines, leading to a flake where the second
+	// LLM call fires before the cancel propagates. Synchronous cancel
+	// is race-free.
 	chatCalls := 0
-	cancelAfterFirstCall := make(chan struct{})
+	var cancel context.CancelFunc
 
 	exec := NewLLMExecutor(LLMExecutorConfig{
 		Client: &mockLLMClient{
-			chatFunc: func(ctx context.Context, req *llm.ChatRequest) (*llm.ChatResponse, error) {
+			chatFunc: func(_ context.Context, _ *llm.ChatRequest) (*llm.ChatResponse, error) {
 				chatCalls++
 				if chatCalls == 1 {
-					// Signal the cancel goroutine to fire.
-					close(cancelAfterFirstCall)
+					// Cancel SYNCHRONOUSLY so by the time the loop
+					// observes the next ctx.Err() boundary check, ctx
+					// is guaranteed cancelled. No goroutine race.
+					cancel()
 					return &llm.ChatResponse{
 						ID: "r1",
 						Message: llm.ChatMessage{
@@ -42,13 +49,16 @@ func TestLLMExecutor_AgentLoop_CancelledAtIterationBoundary(t *testing.T) {
 						},
 					}, nil
 				}
-				// Second call would happen after cancel — must not be reached.
+				// Second call would happen after cancel — must not be
+				// reached. Return an error (not nil resp) so a logic
+				// regression in the loop manifests as an error rather
+				// than a nil-pointer panic.
 				t.Errorf("LLM should not be called after cancel signal")
-				return nil, nil
+				return nil, fmt.Errorf("unexpected second LLM call after cancellation")
 			},
 		},
 		Tools: &mockToolExecutor{
-			executeFunc: func(ctx context.Context, name string, args json.RawMessage) (string, error) {
+			executeFunc: func(_ context.Context, _ string, _ json.RawMessage) (string, error) {
 				return "noop-result", nil
 			},
 			toolDefs: []llm.ToolDefinition{},
@@ -57,13 +67,9 @@ func TestLLMExecutor_AgentLoop_CancelledAtIterationBoundary(t *testing.T) {
 		Provider:  "test",
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	// Fire the cancel as soon as the first LLM call returns; the
-	// second iteration's boundary check picks it up.
-	go func() {
-		<-cancelAfterFirstCall
-		cancel()
-	}()
+	var ctx context.Context
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel() // ensure cleanup on any test exit path
 
 	_, err := exec.Execute(ctx,
 		&a2a.Task{ID: "t1"},

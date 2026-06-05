@@ -30,6 +30,7 @@ type LLMExecutor struct {
 	store              *MemoryStore
 	logger             Logger
 	modelName          string        // resolved model name for context budget
+	provider           string        // resolved provider name (anthropic, openai, ollama, custom)
 	charBudget         int           // resolved character budget
 	maxToolResultChars int           // computed from char budget
 	filesDir           string        // directory for file_create output
@@ -48,6 +49,7 @@ type LLMExecutorConfig struct {
 	Store          *MemoryStore
 	Logger         Logger
 	ModelName      string        // model name for context-aware budgeting
+	Provider       string        // provider name (anthropic, openai, ollama, custom) — for audit attribution
 	CharBudget     int           // explicit char budget override (0 = auto from model)
 	FilesDir       string        // directory for file_create output (default: $TMPDIR/forge-files)
 	SessionMaxAge  time.Duration // max idle time before session recovery is skipped (0 = 30m default)
@@ -103,6 +105,7 @@ func NewLLMExecutor(cfg LLMExecutorConfig) *LLMExecutor {
 		store:              cfg.Store,
 		logger:             logger,
 		modelName:          cfg.ModelName,
+		provider:           cfg.Provider,
 		charBudget:         budget,
 		maxToolResultChars: toolLimit,
 		filesDir:           cfg.FilesDir,
@@ -242,12 +245,20 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 			Tools:    toolDefs,
 		}
 
+		// Capture wall-clock duration of the provider call so the
+		// AfterLLMCall hook can stamp duration_ms on the llm_call audit
+		// event and X-Forge-Duration-Ms header. See issue #87 / FWS-3.
+		llmStart := time.Now()
 		resp, err := e.client.Chat(ctx, req)
+		llmDuration := time.Since(llmStart)
 		if err != nil {
 			_ = e.hooks.Fire(ctx, OnError, &HookContext{
-				Error:         err,
-				TaskID:        TaskIDFromContext(ctx),
-				CorrelationID: CorrelationIDFromContext(ctx),
+				Error:           err,
+				TaskID:          TaskIDFromContext(ctx),
+				CorrelationID:   CorrelationIDFromContext(ctx),
+				LLMCallDuration: llmDuration,
+				Provider:        e.provider,
+				Model:           e.modelName,
 			})
 			// Return user-friendly error (raw error is already logged via OnError hook)
 			return nil, fmt.Errorf("something went wrong while processing your request, please try again")
@@ -255,10 +266,13 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 
 		// Fire AfterLLMCall hook
 		if err := e.hooks.Fire(ctx, AfterLLMCall, &HookContext{
-			Messages:      messages,
-			Response:      resp,
-			TaskID:        TaskIDFromContext(ctx),
-			CorrelationID: CorrelationIDFromContext(ctx),
+			Messages:        messages,
+			Response:        resp,
+			TaskID:          TaskIDFromContext(ctx),
+			CorrelationID:   CorrelationIDFromContext(ctx),
+			LLMCallDuration: llmDuration,
+			Provider:        e.provider,
+			Model:           e.modelName,
 		}); err != nil {
 			return nil, fmt.Errorf("after LLM call hook: %w", err)
 		}
@@ -388,9 +402,21 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 				retryReq := &llm.ChatRequest{
 					Messages: mem.Messages(),
 				}
+				retryStart := time.Now()
 				if retryResp, retryErr := e.client.Chat(ctx, retryReq); retryErr == nil && strings.TrimSpace(retryResp.Message.Content) != "" {
 					resp = retryResp
 					mem.Append(resp.Message)
+					// Fire AfterLLMCall so audit + headers capture the retry's
+					// usage/duration alongside the original turn.
+					_ = e.hooks.Fire(ctx, AfterLLMCall, &HookContext{
+						Messages:        mem.Messages(),
+						Response:        retryResp,
+						TaskID:          TaskIDFromContext(ctx),
+						CorrelationID:   CorrelationIDFromContext(ctx),
+						LLMCallDuration: time.Since(retryStart),
+						Provider:        e.provider,
+						Model:           e.modelName,
+					})
 				}
 			}
 			if strings.TrimSpace(resp.Message.Content) == "" {
@@ -428,8 +454,12 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 				return nil, fmt.Errorf("before tool exec hook: %w", err)
 			}
 
-			// Execute tool
+			// Execute tool. Capture wall-clock duration so the
+			// AfterToolExec hook can stamp duration_ms on the tool_exec
+			// audit event. See issue #87 / FWS-3.
+			toolStart := time.Now()
 			result, execErr := e.tools.Execute(ctx, tc.Function.Name, json.RawMessage(tc.Function.Arguments))
+			toolDuration := time.Since(toolStart)
 			if execErr != nil {
 				result = fmt.Sprintf("Error executing tool %s: %s", tc.Function.Name, execErr.Error())
 			}
@@ -447,12 +477,13 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 
 			// Fire AfterToolExec hook -- hooks may redact ToolOutput.
 			afterHctx := &HookContext{
-				ToolName:      tc.Function.Name,
-				ToolInput:     tc.Function.Arguments,
-				ToolOutput:    result,
-				Error:         execErr,
-				TaskID:        TaskIDFromContext(ctx),
-				CorrelationID: CorrelationIDFromContext(ctx),
+				ToolName:         tc.Function.Name,
+				ToolInput:        tc.Function.Arguments,
+				ToolOutput:       result,
+				Error:            execErr,
+				TaskID:           TaskIDFromContext(ctx),
+				CorrelationID:    CorrelationIDFromContext(ctx),
+				ToolExecDuration: toolDuration,
 			}
 			if err := e.hooks.Fire(ctx, AfterToolExec, afterHctx); err != nil {
 				return nil, fmt.Errorf("after tool exec hook: %w", err)

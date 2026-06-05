@@ -45,6 +45,25 @@ func TestK8sStage_Execute(t *testing.T) {
 		t.Error("deployment.yaml missing container port")
 	}
 
+	// Platform policy mount + env (issue #89 / FWS-5). Every generated
+	// Deployment is policy-ready by default — operators just create the
+	// `forge-platform-policy` ConfigMap to apply workspace bounds. The
+	// `optional: true` flag preserves the no-policy default for
+	// deployments that don't need it. Lock this contract in so a
+	// future template refactor doesn't silently break it.
+	for _, want := range []string{
+		"FORGE_PLATFORM_POLICY",
+		"/etc/forge/policy/platform-policy.yaml",
+		"name: platform-policy",
+		"mountPath: /etc/forge/policy",
+		"name: forge-platform-policy",
+		"optional: true",
+	} {
+		if !strings.Contains(dep, want) {
+			t.Errorf("deployment.yaml missing platform-policy wiring fragment %q", want)
+		}
+	}
+
 	// Check service.yaml
 	svcData, err := os.ReadFile(filepath.Join(outDir, "k8s", "service.yaml"))
 	if err != nil {

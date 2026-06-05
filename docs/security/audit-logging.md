@@ -25,6 +25,8 @@ All runtime security events are emitted as structured NDJSON to stderr with corr
 | `auth_verify` | Inbound request authenticated successfully (with `provider`, `user_id`, `org_id`, `token_kind`) |
 | `auth_fail` | Inbound request rejected (with `reason`, `token_kind`) |
 | `agent_card_published` | Agent Card finalized at startup or hot-reload (with `name`, `version`, `protocol_version`, `url`, `skill_count`, `capabilities`, `security_schemes`, `card_size_bytes`, `card_sha256`). See [Agent Card reference](../reference/a2a-agent-card.md). |
+| `policy_loaded` | Emitted once at agent startup when a non-zero platform policy is active. Carries deny-list size counts + max bounds + source path. See [Platform Policy](platform-policy.md). |
+| `policy_violation_at_build_time` | One per violation when `forge.yaml` conflicts with the platform policy at startup. Agent refuses to start. Carries `fields.violation_kind` / `offending_value` / `forge_yaml_field`. See [Platform Policy](platform-policy.md). |
 
 ### Example
 

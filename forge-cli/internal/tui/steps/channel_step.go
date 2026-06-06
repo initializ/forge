@@ -11,6 +11,8 @@ import (
 	"github.com/initializ/forge/forge-cli/internal/devicecode"
 	"github.com/initializ/forge/forge-cli/internal/tui"
 	"github.com/initializ/forge/forge-cli/internal/tui/components"
+
+	"github.com/initializ/forge/forge-core/catalog"
 )
 
 type channelPhase int
@@ -62,14 +64,21 @@ type ChannelStep struct {
 	tokens      map[string]string
 }
 
+// channelSelectItems projects the catalog channels into TUI select items.
+func channelSelectItems() []components.SingleSelectItem {
+	cs := catalog.AllChannels()
+	items := make([]components.SingleSelectItem, 0, len(cs))
+	for _, c := range cs {
+		items = append(items, components.SingleSelectItem{
+			Label: c.Label, Value: c.ID, Description: c.Description, Icon: c.Icon,
+		})
+	}
+	return items
+}
+
 // NewChannelStep creates a new channel step.
 func NewChannelStep(styles *tui.StyleSet) *ChannelStep {
-	items := []components.SingleSelectItem{
-		{Label: "None", Value: "none", Description: "CLI / API only", Icon: "🚫"},
-		{Label: "Telegram", Value: "telegram", Description: "Easy setup, no public URL needed", Icon: "✈️"},
-		{Label: "Slack", Value: "slack", Description: "Socket Mode, no public URL needed", Icon: "💬"},
-		{Label: "MS Teams", Value: "msteams", Description: "Graph polling, no public URL needed", Icon: "👥"},
-	}
+	items := channelSelectItems()
 
 	selector := components.NewSingleSelect(
 		items,

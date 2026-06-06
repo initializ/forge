@@ -4,6 +4,47 @@
 
 ### Added
 
+- **Three-layer platform policy + channel scope (issue #90, FWS-6).**
+  Forge now reads platform policy from three layers at startup
+  (`/etc/forge/policy.yaml`, `~/.forge/policy.yaml`, and the path at
+  `FORGE_PLATFORM_POLICY` — system, user, and workspace respectively).
+  The schema is unchanged from FWS-5 and applies identically at every
+  layer; resolution unions deny lists and takes the smallest non-zero
+  max-bound across layers ("most restrictive wins"). For audit
+  attribution, the first layer (in load order: system → user →
+  workspace) to contain an offending value takes credit so operators
+  grepping `layer=system` see every sysadmin-enforced violation
+  without false positives from per-user overrides. Every audit event
+  the policy subsystem emits (`policy_loaded`,
+  `policy_violation_at_build_time`, `channel_denied_by_policy`) now
+  carries `fields.layer` (`system` / `user` / `workspace`) and
+  `fields.source` (the on-disk path). Channel deny is now first-class:
+  `denied_channels` in any layer skips the named adapter at startup
+  with a `channel_denied_by_policy` event; `forge run --with` filters
+  and `forge channel serve` refuses to start a denied target outright.
+  Channel skip is non-fatal — the agent runs with the remaining
+  channels. New `forge channel disable <name>` and
+  `forge channel enable <name>` CLI subcommands edit
+  `~/.forge/policy.yaml` by default (the user layer); pass `--system`
+  to edit `/etc/forge/policy.yaml` instead (warns when not root). Both
+  are idempotent and remove the policy file entirely when the
+  resulting document is empty. New `GET /api/user-policy` and
+  `PUT /api/user-policy` endpoints in `forge ui` surface all three
+  layers (user editable, system + workspace read-only); the agent
+  card renders denied channels as locked / dimmed chips and clicking
+  an editable chip flips the entry in the user layer.
+  **Migration from FWS-6's first cut:** the `disabled_channels:`
+  field that briefly shipped in `forge.yaml` was rejected on review —
+  channel disable is laptop-level or workspace-level, never agent
+  declaration. Move any `disabled_channels:` block from `forge.yaml`
+  into `~/.forge/policy.yaml`'s `denied_channels:` (developer scope),
+  `/etc/forge/policy.yaml` (laptop-wide), or the workspace ConfigMap
+  (deployed-agent). `forge channel disable <name>` does this
+  automatically. The `channel_disabled_by_config` audit event was
+  retired in the same pass; `channel_denied_by_policy` (with layer
+  attribution) carries every skip. See
+  `docs/security/platform-policy.md` and
+  `examples/platform-policy.yaml`.
 - **Platform policy enforcement at runtime (issue #89, FWS-5).** Forge
   agents now accept a deploy-time policy file defining workspace-level
   upper bounds on egress destinations, registered tools, allowed

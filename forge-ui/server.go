@@ -87,6 +87,13 @@ func (s *UIServer) Start(ctx context.Context) error {
 	mux.HandleFunc("GET /api/agents/{id}/config", s.handleGetConfig)
 	mux.HandleFunc("PUT /api/agents/{id}/config", s.handleUpdateConfig)
 	mux.HandleFunc("POST /api/agents/{id}/config/validate", s.handleValidateConfig)
+	// User-policy surface (issue #90 / FWS-6 three-layer). Read /
+	// write the user-level ~/.forge/policy.yaml that bounds every
+	// agent the user runs locally. System and workspace layers are
+	// not editable via the UI — sysadmins push the system file, and
+	// workspace policy is the operator's ConfigMap.
+	mux.HandleFunc("GET /api/user-policy", s.handleGetUserPolicy)
+	mux.HandleFunc("PUT /api/user-policy", s.handlePutUserPolicy)
 	mux.HandleFunc("GET /api/skills", s.handleListSkills)
 	mux.HandleFunc("GET /api/skills/{name}/content", s.handleGetSkillContent)
 	mux.HandleFunc("GET /api/tools", s.handleListBuiltinTools)

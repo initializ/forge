@@ -258,45 +258,49 @@ func (r *Runner) Run(ctx context.Context) error {
 	// 4. Create audit logger (used by hooks and handlers)
 	auditLogger := coreruntime.NewAuditLogger(os.Stderr)
 
-	// 4a. Load + enforce platform policy (issue #89 / FWS-5). The
-	// platform-level workspace policy is the upper bound — forge.yaml
-	// is what the agent claims to do, the platform policy is what the
-	// workspace allows. If forge.yaml exceeds the bound, refuse to
-	// start with a clear error and emit policy_violation_at_build_time
-	// to audit so the violation lands in the operator's pipeline even
-	// though the agent never serves traffic.
+	// 4a. Load + enforce platform policy across three layers
+	// (issue #90 / FWS-6, building on FWS-5):
 	//
-	// Absence of FORGE_PLATFORM_POLICY (or missing file) → zero policy
-	// → no constraints → backward compat with pre-FWS-5 behavior.
-	platformPolicy, policyErr := security.LoadPlatformPolicy(os.Getenv("FORGE_PLATFORM_POLICY"))
+	//   - system    → /etc/forge/policy.yaml  (sysadmin-managed)
+	//   - user      → ~/.forge/policy.yaml    (developer-managed via
+	//                                          TUI/GUI)
+	//   - workspace → FORGE_PLATFORM_POLICY   (operator-managed at
+	//                                          deploy)
+	//
+	// Each layer is optional. The runtime unions the deny lists and
+	// takes the most-restrictive max bound across all loaded layers.
+	// A malformed file at any layer aborts startup (silently treating
+	// a broken policy as "no policy" defeats the safety net).
+	platformLayers, policyErr := security.LoadAllPolicyLayers()
 	if policyErr != nil {
-		// Malformed policy is an operator mistake that must abort —
-		// silently treating a broken policy as "no policy" defeats the
-		// safety net.
-		return fmt.Errorf("loading platform policy: %w", policyErr)
+		return fmt.Errorf("loading platform policy layers: %w", policyErr)
 	}
-	if !platformPolicy.IsZero() {
+	for _, layer := range platformLayers {
 		auditLogger.EmitPolicyLoaded(map[string]any{
-			"source":                 os.Getenv("FORGE_PLATFORM_POLICY"),
-			"denied_egress_count":    len(platformPolicy.DeniedEgressDomains),
-			"denied_tools_count":     len(platformPolicy.DeniedTools),
-			"forbidden_models_count": len(platformPolicy.ForbiddenModels),
-			"max_egress_allowlist":   platformPolicy.MaxEgressAllowlistSize,
-			"max_tool_count":         platformPolicy.MaxToolCount,
+			"layer":                  layer.Source,
+			"source":                 layer.Path,
+			"denied_egress_count":    len(layer.Policy.DeniedEgressDomains),
+			"denied_tools_count":     len(layer.Policy.DeniedTools),
+			"forbidden_models_count": len(layer.Policy.ForbiddenModels),
+			"denied_channels_count":  len(layer.Policy.DeniedChannels),
+			"max_egress_allowlist":   layer.Policy.MaxEgressAllowlistSize,
+			"max_tool_count":         layer.Policy.MaxToolCount,
 		})
-		if violations := security.EnforcePolicy(r.cfg.Config, platformPolicy); len(violations) > 0 {
-			// Emit one audit event per violation so cost / compliance
-			// dashboards can group by kind. Then abort with a combined
-			// developer-facing error listing every offence.
-			for _, v := range violations {
-				auditLogger.EmitPolicyViolationAtBuildTime(map[string]any{
-					"violation_kind":   string(v.Kind),
-					"offending_value":  v.OffendingValue,
-					"forge_yaml_field": v.ForgeYAMLField,
-				})
-			}
-			return fmt.Errorf("%s", security.FormatViolations(violations))
+	}
+	if violations := security.EnforcePolicy(r.cfg.Config, platformLayers); len(violations) > 0 {
+		// One audit event per violation so cost / compliance dashboards
+		// can group by kind AND by deciding layer; then abort with a
+		// combined developer-facing error listing every offence.
+		for _, v := range violations {
+			auditLogger.EmitPolicyViolationAtBuildTime(map[string]any{
+				"violation_kind":   string(v.Kind),
+				"offending_value":  v.OffendingValue,
+				"forge_yaml_field": v.ForgeYAMLField,
+				"layer":            v.Layer,
+				"source":           v.LayerPath,
+			})
 		}
+		return fmt.Errorf("%s", security.FormatViolations(violations))
 	}
 
 	// 4b. Resolve egress config and start proxy (if not in container)
@@ -317,7 +321,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// startup on a declared-but-denied entry; this filter is the
 	// belt-and-suspenders defence-in-depth pass — any new code path
 	// that injects egress entries can call it independently.
-	declaredAllowed := security.EffectiveEgressAllowlist(r.cfg.Config, platformPolicy)
+	declaredAllowed := security.EffectiveEgressAllowlist(r.cfg.Config, platformLayers)
 	var egressDomains []string
 	for _, d := range declaredAllowed {
 		egressDomains = append(egressDomains, expandEgressDomains(d, envVars)...)
@@ -528,15 +532,21 @@ func (r *Runner) Run(ctx context.Context) error {
 			if r.derivedCLIConfig != nil {
 				forgeDenied = r.derivedCLIConfig.DeniedTools
 			}
-			effectiveDenied := security.EffectiveDeniedTools(forgeDenied, platformPolicy)
+			effectiveDenied := security.EffectiveDeniedTools(forgeDenied, platformLayers)
 			if len(effectiveDenied) > 0 {
 				userSelected := make(map[string]bool, len(r.cfg.Config.BuiltinTools))
 				for _, name := range r.cfg.Config.BuiltinTools {
 					userSelected[name] = true
 				}
-				policyDenied := make(map[string]bool, len(platformPolicy.DeniedTools))
-				for _, name := range platformPolicy.DeniedTools {
-					policyDenied[name] = true
+				// Union every policy layer's tool denies. A user-selected
+				// builtin survives forge.yaml-only denies but NOT any
+				// policy-layer deny (system/user/workspace all outrank
+				// per-agent selection).
+				policyDenied := make(map[string]bool)
+				for _, l := range platformLayers {
+					for _, name := range l.Policy.DeniedTools {
+						policyDenied[name] = true
+					}
 				}
 
 				var removed []string

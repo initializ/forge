@@ -13,6 +13,8 @@ import (
 	"github.com/initializ/forge/forge-cli/templates"
 	"github.com/initializ/forge/forge-core/auth"
 	corechannels "github.com/initializ/forge/forge-core/channels"
+	coreruntime "github.com/initializ/forge/forge-core/runtime"
+	"github.com/initializ/forge/forge-core/security"
 	"github.com/initializ/forge/forge-plugins/channels/msteams"
 	"github.com/initializ/forge/forge-plugins/channels/slack"
 	"github.com/initializ/forge/forge-plugins/channels/telegram"
@@ -42,9 +44,65 @@ var channelServeCmd = &cobra.Command{
 	RunE:      runChannelServe,
 }
 
+// channelDisableCmd adds a channel name to the user (or system)
+// policy file's denied_channels list. The denial applies to every
+// agent the user runs on this machine — not just the agent in the
+// current working directory. Mirrors the GUI chip toggle.
+// See issue #90 / FWS-6 (three-layer model).
+var channelDisableCmd = &cobra.Command{
+	Use:   "disable <name>",
+	Short: "Disable a channel via the user (or system) policy file",
+	Long: `Disable a channel adapter by adding it to a policy file's denied_channels list.
+
+By default edits ~/.forge/policy.yaml (user-layer policy: applies to every agent
+this user runs on this machine). Pass --system to edit /etc/forge/policy.yaml
+(system-layer policy: applies to every user on this machine — sysadmin scope,
+warns if not run as root).
+
+Idempotent — disabling an already-denied channel is a no-op. The disable
+does NOT modify any agent's forge.yaml; policy lives separately from agent
+declaration.`,
+	Args:    cobra.ExactArgs(1),
+	RunE:    runChannelDisable,
+	Aliases: []string{"off"},
+}
+
+// channelEnableCmd removes a channel name from the user (or system)
+// policy file's denied_channels list. Idempotent. Important: this
+// only undoes a disable in the SAME layer — a user-layer enable does
+// not lift a system-layer or workspace-layer deny.
+var channelEnableCmd = &cobra.Command{
+	Use:   "enable <name>",
+	Short: "Re-enable a previously disabled channel",
+	Long: `Remove a channel adapter from a policy file's denied_channels list.
+
+By default edits ~/.forge/policy.yaml. Pass --system to edit /etc/forge/policy.yaml
+(warns if not root).
+
+Idempotent — enabling a channel that isn't denied in the target layer is a
+no-op. Important: enabling at the user layer does NOT override a system-layer
+or workspace-layer deny. If a sysadmin has denied a channel in
+/etc/forge/policy.yaml, no per-user enable can lift it.`,
+	Args:    cobra.ExactArgs(1),
+	RunE:    runChannelEnable,
+	Aliases: []string{"on"},
+}
+
+// channelSystemFlag selects the system policy file (/etc/forge/policy.yaml)
+// for the disable/enable subcommands. Default false → user layer
+// (~/.forge/policy.yaml).
+var channelSystemFlag bool
+
+func init() {
+	channelDisableCmd.Flags().BoolVar(&channelSystemFlag, "system", false, "edit /etc/forge/policy.yaml (system policy) instead of ~/.forge/policy.yaml (user policy); requires write access (typically root)")
+	channelEnableCmd.Flags().BoolVar(&channelSystemFlag, "system", false, "edit /etc/forge/policy.yaml (system policy) instead of ~/.forge/policy.yaml (user policy); requires write access (typically root)")
+}
+
 func init() {
 	channelCmd.AddCommand(channelAddCmd)
 	channelCmd.AddCommand(channelServeCmd)
+	channelCmd.AddCommand(channelDisableCmd)
+	channelCmd.AddCommand(channelEnableCmd)
 }
 
 func runChannelAdd(cmd *cobra.Command, args []string) error {
@@ -104,6 +162,22 @@ func runChannelServe(cmd *cobra.Command, args []string) error {
 	adapter := args[0]
 	if adapter != "slack" && adapter != "telegram" && adapter != "msteams" {
 		return fmt.Errorf("unsupported adapter: %s (supported: slack, telegram, msteams)", adapter)
+	}
+
+	// Honor every layer's denied_channels list (issue #90 / FWS-6
+	// three-layer). Standalone serve typically runs one container per
+	// channel under docker-compose / k8s; each container loads the
+	// same policy layers (system from /etc/forge, user from $HOME,
+	// workspace from FORGE_PLATFORM_POLICY) and refuses to start if
+	// its target is denied at any layer.
+	layers, layerErr := security.LoadAllPolicyLayers()
+	if layerErr != nil {
+		return fmt.Errorf("loading platform policy layers: %w", layerErr)
+	}
+	if src := security.FirstLayerDenyingChannel(layers, adapter); src != nil {
+		audit := coreruntime.NewAuditLogger(os.Stderr)
+		audit.EmitChannelDeniedByPolicy(adapter, src.Source, src.Path)
+		return fmt.Errorf("channel %q denied by %s policy (%s) — refusing to start", adapter, src.Source, src.Path)
 	}
 
 	// Load channel config
@@ -397,4 +471,162 @@ func printSetupInstructions(adapter string) {
 	fmt.Println(strings.Repeat("─", 40))
 	fmt.Printf("Config: %s-config.yaml\n", adapter)
 	fmt.Printf("Test:   forge run --with %s\n", adapter)
+}
+
+// runChannelDisable handles `forge channel disable <name>`. Adds the
+// name to the target policy file's denied_channels list. Default
+// target is ~/.forge/policy.yaml (user layer); --system targets
+// /etc/forge/policy.yaml (sysadmin layer). Idempotent — disabling an
+// already-denied channel reports "already disabled" and returns 0.
+// See issue #90 / FWS-6.
+func runChannelDisable(_ *cobra.Command, args []string) error {
+	name := args[0]
+	path, layerLabel, err := resolveChannelPolicyTarget()
+	if err != nil {
+		return err
+	}
+	added, err := mutateDeniedChannelsInPolicy(path, name, true)
+	if err != nil {
+		return err
+	}
+	if !added {
+		fmt.Printf("Channel %q is already denied in %s policy (%s).\n", name, layerLabel, path)
+		return nil
+	}
+	fmt.Printf("Disabled channel %q via %s policy (%s). The adapter is skipped on next 'forge run'.\n", name, layerLabel, path)
+	return nil
+}
+
+// runChannelEnable handles `forge channel enable <name>`. Removes the
+// name from the target policy file's denied_channels list.
+// Idempotent. Important: a user-layer enable does NOT override a
+// system-layer or workspace-layer deny — the runtime unions all
+// loaded layers, so the channel stays denied if any other layer
+// names it.
+func runChannelEnable(_ *cobra.Command, args []string) error {
+	name := args[0]
+	path, layerLabel, err := resolveChannelPolicyTarget()
+	if err != nil {
+		return err
+	}
+	removed, err := mutateDeniedChannelsInPolicy(path, name, false)
+	if err != nil {
+		return err
+	}
+	if !removed {
+		fmt.Printf("Channel %q is not in %s policy denied_channels (%s) — nothing to enable.\n", name, layerLabel, path)
+		fmt.Printf("If it's still denied at runtime, check the other policy layers (system / workspace).\n")
+		return nil
+	}
+	fmt.Printf("Enabled channel %q in %s policy (%s). Adapter starts on next 'forge run' (subject to other layers).\n", name, layerLabel, path)
+	return nil
+}
+
+// resolveChannelPolicyTarget returns the policy file path + label
+// based on the --system flag. For the system path it warns when
+// euid != 0 (the write will likely fail without root); doesn't refuse
+// outright because /etc/forge/policy.yaml may be writable by a
+// dedicated group on some sysadmin setups.
+func resolveChannelPolicyTarget() (path, label string, err error) {
+	if channelSystemFlag {
+		path = security.SystemPolicyPath()
+		label = "system"
+		if os.Geteuid() != 0 {
+			fmt.Fprintf(os.Stderr, "Note: editing system policy at %s without root — write may fail. Use sudo or omit --system to edit the user policy at ~/.forge/policy.yaml.\n", path)
+		}
+		return path, label, nil
+	}
+	path = security.UserPolicyPath()
+	if path == "" {
+		return "", "", fmt.Errorf("could not determine user home directory; cannot edit user policy. Use --system or set $HOME")
+	}
+	return path, "user", nil
+}
+
+// mutateDeniedChannelsInPolicy reads the policy file (treating
+// missing as empty), adds OR removes `name` from denied_channels, and
+// writes the file back. Returns true when a change was applied;
+// false when the file already reflected the requested state.
+//
+// Creates the parent directory if missing (~/.forge/ may not exist
+// on first use). Uses yaml round-trip via map[string]any so the
+// runtime's strict-decoder (KnownFields(true)) still loads the file
+// after the mutation.
+func mutateDeniedChannelsInPolicy(path, name string, add bool) (bool, error) {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return false, fmt.Errorf("creating %s: %w", dir, err)
+	}
+
+	var doc map[string]any
+	if data, err := os.ReadFile(path); err == nil {
+		if err := yaml.Unmarshal(data, &doc); err != nil {
+			return false, fmt.Errorf("parsing %s: %w", path, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return false, fmt.Errorf("reading %s: %w", path, err)
+	}
+	if doc == nil {
+		doc = map[string]any{}
+	}
+
+	var list []string
+	if existing, ok := doc["denied_channels"]; ok {
+		if arr, ok := existing.([]any); ok {
+			for _, v := range arr {
+				if s, ok := v.(string); ok {
+					list = append(list, s)
+				}
+			}
+		}
+	}
+
+	idx := -1
+	for i, c := range list {
+		if c == name {
+			idx = i
+			break
+		}
+	}
+	if add {
+		if idx >= 0 {
+			return false, nil
+		}
+		list = append(list, name)
+	} else {
+		if idx < 0 {
+			return false, nil
+		}
+		list = append(list[:idx], list[idx+1:]...)
+	}
+
+	if len(list) == 0 {
+		delete(doc, "denied_channels")
+	} else {
+		out := make([]any, len(list))
+		for i, s := range list {
+			out[i] = s
+		}
+		doc["denied_channels"] = out
+	}
+
+	// If the document is now empty (no other policy fields), remove
+	// the file entirely so a "clean" enable-everything state has no
+	// on-disk noise. Operators inspecting ~/.forge can tell at a
+	// glance whether any user policy is set.
+	if len(doc) == 0 {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return false, fmt.Errorf("removing empty policy %s: %w", path, err)
+		}
+		return true, nil
+	}
+
+	marshalled, err := yaml.Marshal(doc)
+	if err != nil {
+		return false, fmt.Errorf("marshalling policy: %w", err)
+	}
+	if err := os.WriteFile(path, marshalled, 0o644); err != nil {
+		return false, fmt.Errorf("writing %s: %w", path, err)
+	}
+	return true, nil
 }

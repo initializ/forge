@@ -311,10 +311,125 @@ body {
   color: var(--text-muted);
 }
 
+/* Channel toggle chips (issue #90 / FWS-6). Each chip is one channel
+ * in the agent's channels list; click to flip its enabled state. The
+ * disabled state shows the chip dimmed with strikethrough so a quick
+ * glance at the agent card tells the operator which channels are off. */
+.channel-chip-group {
+  display: inline-flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+/* Enabled chip: green-tinted "on" pill — distinct from neutral info
+ * tags (model / fw / tools / port) so the eye separates "current state"
+ * from "static metadata". Color matches the running-status indicator. */
+.channel-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: rgba(34, 197, 94, 0.14);
+  color: var(--green);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  cursor: pointer;
+  user-select: none;
+  font-size: 11px;
+  font-weight: 500;
+  transition: background 0.1s, color 0.1s, opacity 0.1s, border-color 0.1s;
+}
+
+.channel-chip::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  flex-shrink: 0;
+}
+
+.channel-chip:hover {
+  background: rgba(34, 197, 94, 0.22);
+  border-color: var(--green);
+}
+
+/* Disabled chip: muted grey with strikethrough. The leading dot fades
+ * out too so the entire chip reads as "off." Hover lifts opacity to
+ * cue clickability. */
+.channel-chip.disabled {
+  background: transparent;
+  color: var(--text-muted);
+  border-color: var(--border-color);
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+
+.channel-chip.disabled::before {
+  background: var(--text-muted);
+  opacity: 0.5;
+}
+
+.channel-chip.disabled:hover {
+  opacity: 1;
+  color: var(--text-secondary);
+}
+
+/* Brief in-flight state while the PUT to /api/user-policy is pending.
+ * Pointer-events off so a fast double-click doesn't fire two requests. */
+.channel-chip.saving {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* Locked chip: denied by system OR workspace layer; user can't toggle
+ * it from the UI. Cursor + tooltip carry the "why". */
+.channel-chip.locked {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.channel-chip.locked:hover {
+  background: rgba(34, 197, 94, 0.14);
+  border-color: rgba(34, 197, 94, 0.35);
+}
+.channel-chip.locked.disabled:hover {
+  background: transparent;
+  border-color: var(--border-color);
+}
+
+/* Pre-launch hint shown above Start: previews what
+ * `forge serve start --with …` will actually bring up after the
+ * three-layer policy filter runs. Single line; overflow truncated
+ * with ellipsis; full list available via the title tooltip. */
+.agent-card-start-hint {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.start-hint-label {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.start-hint-list {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
 .agent-card-actions {
   display: flex;
   gap: 8px;
   padding-top: 14px;
+  margin-top: 8px;
   border-top: 1px solid var(--border-color);
 }
 

@@ -42,38 +42,38 @@ type PlatformPolicy struct {
 	// Domain matching is exact-host (no wildcards in this list).
 	// Wildcard semantics belong in forge.yaml; the platform deny list
 	// is operator-supplied and intentionally simple.
-	DeniedEgressDomains []string `yaml:"denied_egress_domains,omitempty"`
+	DeniedEgressDomains []string `yaml:"denied_egress_domains,omitempty" json:"denied_egress_domains,omitempty"`
 
 	// DeniedTools is the union with forge.yaml's denied tools. Tool
 	// names match the registry name (e.g. "cli_execute", "http_request",
 	// MCP-namespaced "linear__create_issue"). A tool denied here is
 	// stripped from the agent's registry at startup — same code path
 	// as forge.yaml's deny list.
-	DeniedTools []string `yaml:"denied_tools,omitempty"`
+	DeniedTools []string `yaml:"denied_tools,omitempty" json:"denied_tools,omitempty"`
 
 	// ForbiddenModels lists provider/name pairs the agent must NOT
 	// use. If forge.yaml's model OR any model in model.fallbacks
 	// matches an entry here, the agent refuses to start. Use cases:
 	// cost ceilings ("no Opus in this workspace"), data-residency
 	// requirements ("no third-party providers for tenant X").
-	ForbiddenModels []ModelMatcher `yaml:"forbidden_models,omitempty"`
+	ForbiddenModels []ModelMatcher `yaml:"forbidden_models,omitempty" json:"forbidden_models,omitempty"`
 
 	// MaxEgressAllowlistSize caps the number of entries forge.yaml's
 	// egress.allowed_domains may declare. Defense against allowlist
 	// bloat — a developer adding 200 third-party domains to their
 	// allowlist is almost certainly doing something they shouldn't.
 	// Zero means no cap (today's behavior).
-	MaxEgressAllowlistSize int `yaml:"max_egress_allowlist_size,omitempty"`
+	MaxEgressAllowlistSize int `yaml:"max_egress_allowlist_size,omitempty" json:"max_egress_allowlist_size,omitempty"`
 
 	// MaxToolCount caps the number of tools the agent may register
 	// (after intersection/union math). Same rationale as
 	// MaxEgressAllowlistSize. Zero means no cap.
-	MaxToolCount int `yaml:"max_tool_count,omitempty"`
+	MaxToolCount int `yaml:"max_tool_count,omitempty" json:"max_tool_count,omitempty"`
 
 	// DeniedChannels reserved for FWS-6 (#90) — channel-policy
 	// injection. Not consumed by the runtime in v1; the field is on
 	// the schema so operators write one policy document, not two.
-	DeniedChannels []string `yaml:"denied_channels,omitempty"`
+	DeniedChannels []string `yaml:"denied_channels,omitempty" json:"denied_channels,omitempty"`
 }
 
 // ModelMatcher identifies one forbidden model. Both fields are
@@ -82,8 +82,8 @@ type PlatformPolicy struct {
 // patterns ("anthropic/*") are a footgun (provider adds a new model,
 // nobody updates the policy, model leaks through).
 type ModelMatcher struct {
-	Provider string `yaml:"provider"`
-	Name     string `yaml:"name"`
+	Provider string `yaml:"provider" json:"provider"`
+	Name     string `yaml:"name" json:"name"`
 }
 
 // String returns "provider/name" for log + error message use.
@@ -213,6 +213,21 @@ func (p PlatformPolicy) ToolDenied(name string) bool {
 func (p PlatformPolicy) ModelForbidden(provider, name string) bool {
 	for _, m := range p.ForbiddenModels {
 		if m.Provider == provider && m.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// ChannelDenied reports whether the given channel name is on the
+// platform deny list. Match is case-sensitive — channel names are
+// registry identifiers (e.g. "slack", "telegram", "msteams"), same
+// convention as tool names. Used by the runtime at channel adapter
+// init to skip denied channels and emit a channel_denied_by_policy
+// audit event. See issue #90 / FWS-6.
+func (p PlatformPolicy) ChannelDenied(name string) bool {
+	for _, c := range p.DeniedChannels {
+		if c == name {
 			return true
 		}
 	}

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/initializ/forge/forge-core/security"
 	"github.com/initializ/forge/forge-core/types"
 	"github.com/initializ/forge/forge-core/util/process"
 )
@@ -86,6 +87,27 @@ func (s *Scanner) scanDir(dir string) (*AgentInfo, error) {
 
 	skillCount := countSkills(dir)
 
+	// Compute the effective denied_channels set across system + user +
+	// workspace policy layers (issue #90 / FWS-6). The frontend uses
+	// this to render denied channels as locked/dimmed chips. Best-
+	// effort — load failure (e.g. malformed system file the user
+	// can't edit) is logged on the runtime path but treated as zero
+	// here so a broken file doesn't blank out the agent card.
+	var deniedChannels []string
+	if layers, err := security.LoadAllPolicyLayers(); err == nil {
+		seen := make(map[string]struct{})
+		for _, ch := range cfg.Channels {
+			if security.FirstLayerDenyingChannel(layers, ch) == nil {
+				continue
+			}
+			if _, dup := seen[ch]; dup {
+				continue
+			}
+			seen[ch] = struct{}{}
+			deniedChannels = append(deniedChannels, ch)
+		}
+	}
+
 	info := &AgentInfo{
 		ID:        cfg.AgentID,
 		Version:   cfg.Version,
@@ -96,6 +118,7 @@ func (s *Scanner) scanDir(dir string) (*AgentInfo, error) {
 		},
 		Tools:           toolNames,
 		Channels:        cfg.Channels,
+		DeniedChannels:  deniedChannels,
 		Skills:          skillCount,
 		Directory:       dir,
 		Status:          StateStopped,

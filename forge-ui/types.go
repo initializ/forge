@@ -20,12 +20,19 @@ const (
 
 // AgentInfo describes a discovered agent and its runtime state.
 type AgentInfo struct {
-	ID              string       `json:"id"`
-	Version         string       `json:"version"`
-	Framework       string       `json:"framework"`
-	Model           AgentModel   `json:"model"`
-	Tools           []string     `json:"tools"`
-	Channels        []string     `json:"channels"`
+	ID        string     `json:"id"`
+	Version   string     `json:"version"`
+	Framework string     `json:"framework"`
+	Model     AgentModel `json:"model"`
+	Tools     []string   `json:"tools"`
+	Channels  []string   `json:"channels"`
+	// DeniedChannels is the channel deny set after resolving
+	// system / user / workspace policy layers. The agent card uses
+	// this to render denied channels with a visual disabled state.
+	// Toggling a chip mutates the user policy file via
+	// PUT /api/user-policy, NOT this list directly. See issue #90 /
+	// FWS-6 (three-layer policy resolution).
+	DeniedChannels  []string     `json:"denied_channels,omitempty"`
 	Skills          int          `json:"skills"`
 	Directory       string       `json:"directory"`
 	Status          ProcessState `json:"status"`

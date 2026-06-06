@@ -10,6 +10,8 @@ import (
 
 	"github.com/initializ/forge/forge-cli/internal/tui"
 	"github.com/initializ/forge/forge-cli/internal/tui/components"
+
+	"github.com/initializ/forge/forge-core/catalog"
 )
 
 // authPhase is the internal state machine of the auth step.
@@ -97,52 +99,21 @@ type AuthStep struct {
 	complete bool
 }
 
+// authSelectItems projects the catalog auth modes into TUI select items.
+func authSelectItems() []components.SingleSelectItem {
+	ms := catalog.AllAuthModes()
+	items := make([]components.SingleSelectItem, 0, len(ms))
+	for _, m := range ms {
+		items = append(items, components.SingleSelectItem{
+			Label: m.Label, Value: m.ID, Description: m.Description, Icon: m.Icon,
+		})
+	}
+	return items
+}
+
 // NewAuthStep constructs the auth step.
 func NewAuthStep(styles *tui.StyleSet) *AuthStep {
-	items := []components.SingleSelectItem{
-		{
-			Label:       "None",
-			Value:       AuthModeNone,
-			Description: "Anonymous access — no auth: block in forge.yaml",
-			Icon:        "🔓",
-		},
-		{
-			Label:       "OIDC (JWT)",
-			Value:       AuthModeOIDC,
-			Description: "Auth0, Keycloak, Azure AD, Google, Okta-OIDC, …",
-			Icon:        "🔐",
-		},
-		{
-			Label:       "HTTP Verifier",
-			Value:       AuthModeHTTPVerifier,
-			Description: "Legacy — POST tokens to your own /verify endpoint",
-			Icon:        "🔁",
-		},
-		{
-			Label:       "AWS Sigv4 (IAM)",
-			Value:       AuthModeAWSSigv4,
-			Description: "Verify AWS-IAM callers via STS GetCallerIdentity (Phase 2)",
-			Icon:        "🅰️",
-		},
-		{
-			Label:       "GCP Identity-Aware Proxy",
-			Value:       AuthModeGCPIAP,
-			Description: "Forge behind a GCP HTTPS LB+IAP (Phase 2)",
-			Icon:        "🇬",
-		},
-		{
-			Label:       "Azure AD / Entra ID",
-			Value:       AuthModeAzureAD,
-			Description: "Single-tenant Entra tokens (Phase 2 — multi-tenant via YAML)",
-			Icon:        "🇦",
-		},
-		{
-			Label:       "Custom",
-			Value:       AuthModeCustom,
-			Description: "Write a commented stub — I'll edit forge.yaml myself",
-			Icon:        "✏️",
-		},
-	}
+	items := authSelectItems()
 
 	selector := components.NewSingleSelect(
 		items,

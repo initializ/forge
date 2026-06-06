@@ -8,6 +8,8 @@ import (
 
 	"github.com/initializ/forge/forge-cli/internal/tui"
 	"github.com/initializ/forge/forge-cli/internal/tui/components"
+
+	"github.com/initializ/forge/forge-core/catalog"
 )
 
 type providerPhase int
@@ -38,20 +40,33 @@ type modelOption struct {
 	ModelID     string
 }
 
-// openAIOAuthModels are available when using browser-based OAuth login.
-var openAIOAuthModels = []modelOption{
-	{DisplayName: "GPT 5.4", ModelID: "gpt-5.4"},
-	{DisplayName: "GPT 5 Mini", ModelID: "gpt-5-mini"},
-	{DisplayName: "GPT 5 Nano", ModelID: "gpt-5-nano"},
-	{DisplayName: "GPT 4.1", ModelID: "gpt-4.1"},
+// openAIOAuthModels (OAuth login) and openAIAPIKeyModels (API key) are sourced
+// from the central catalog so the wizard, forge-ui, and console stay in sync.
+var (
+	openAIOAuthModels  = openAIModelOptions()
+	openAIAPIKeyModels = openAIModelOptions()
+)
+
+// openAIModelOptions projects the catalog's OpenAI models into modelOption.
+func openAIModelOptions() []modelOption {
+	p, _ := catalog.ProviderByID("openai")
+	out := make([]modelOption, 0, len(p.Models))
+	for _, m := range p.Models {
+		out = append(out, modelOption{DisplayName: m.Label, ModelID: m.ModelID})
+	}
+	return out
 }
 
-// openAIAPIKeyModels are available when using an API key.
-var openAIAPIKeyModels = []modelOption{
-	{DisplayName: "GPT 5.4", ModelID: "gpt-5.4"},
-	{DisplayName: "GPT 5 Mini", ModelID: "gpt-5-mini"},
-	{DisplayName: "GPT 5 Nano", ModelID: "gpt-5-nano"},
-	{DisplayName: "GPT 4.1", ModelID: "gpt-4.1"},
+// providerSelectItems projects the catalog providers into TUI select items.
+func providerSelectItems() []components.SingleSelectItem {
+	ps := catalog.AllProviders()
+	items := make([]components.SingleSelectItem, 0, len(ps))
+	for _, p := range ps {
+		items = append(items, components.SingleSelectItem{
+			Label: p.Label, Value: p.ID, Description: p.Description, Icon: p.Icon,
+		})
+	}
+	return items
 }
 
 // ProviderStep handles model provider selection and API key entry.
@@ -82,13 +97,7 @@ type ProviderStep struct {
 // NewProviderStep creates a new provider selection step.
 // oauthFn is optional — pass nil to disable OAuth login.
 func NewProviderStep(styles *tui.StyleSet, validateFn ValidateKeyFunc, oauthFn ...OAuthFlowFunc) *ProviderStep {
-	items := []components.SingleSelectItem{
-		{Label: "OpenAI", Value: "openai", Description: "GPT 5.4, GPT 5 Mini, GPT 5 Nano", Icon: "🔷"},
-		{Label: "Anthropic", Value: "anthropic", Description: "Claude Sonnet, Haiku, Opus", Icon: "🟠"},
-		{Label: "Google Gemini", Value: "gemini", Description: "Gemini 2.5 Flash, Pro", Icon: "🔵"},
-		{Label: "Ollama (local)", Value: "ollama", Description: "Run models locally, no API key needed", Icon: "🦙"},
-		{Label: "Custom URL", Value: "custom", Description: "Any OpenAI-compatible endpoint", Icon: "⚙️"},
-	}
+	items := providerSelectItems()
 
 	selector := components.NewSingleSelect(
 		items,

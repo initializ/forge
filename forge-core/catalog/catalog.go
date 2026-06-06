@@ -14,17 +14,17 @@ package catalog
 
 // Provider is a selectable LLM provider.
 type Provider struct {
-	ID            string  `json:"id"`             // stable identifier, e.g. "openai"
-	Label         string  `json:"label"`          // human label, e.g. "OpenAI"
-	Description   string  `json:"description"`    // short blurb shown under the label
-	Icon          string  `json:"icon"`           // emoji/icon hint
-	NeedsAPIKey   bool    `json:"needsApiKey"`    // prompt for an API key
-	SupportsOAuth bool    `json:"supportsOAuth"`  // offer browser-based OAuth login
-	SupportsOrgID bool    `json:"supportsOrgId"`  // offer an optional organization ID
-	IsCustom      bool    `json:"isCustom"`       // user supplies base URL + model name
-	APIKeyEnvVar  string  `json:"apiKeyEnvVar"`   // env var the key is written to (if any)
-	Models        []Model `json:"models"`         // selectable models (empty ⇒ no picker)
-	DefaultModel  string  `json:"defaultModel"`   // model used when none is picked
+	ID            string  `json:"id"`            // stable identifier, e.g. "openai"
+	Label         string  `json:"label"`         // human label, e.g. "OpenAI"
+	Description   string  `json:"description"`   // short blurb shown under the label
+	Icon          string  `json:"icon"`          // emoji/icon hint
+	NeedsAPIKey   bool    `json:"needsApiKey"`   // prompt for an API key
+	SupportsOAuth bool    `json:"supportsOAuth"` // offer browser-based OAuth login
+	SupportsOrgID bool    `json:"supportsOrgId"` // offer an optional organization ID
+	IsCustom      bool    `json:"isCustom"`      // user supplies base URL + model name
+	APIKeyEnvVar  string  `json:"apiKeyEnvVar"`  // env var the key is written to (if any)
+	Models        []Model `json:"models"`        // selectable models (empty ⇒ no picker)
+	DefaultModel  string  `json:"defaultModel"`  // model used when none is picked
 }
 
 // Model is a selectable model for a Provider.

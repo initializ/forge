@@ -1,15 +1,36 @@
-# Forge platform policy — workspace-level runtime safety net.
+# Forge platform policy — three-layer runtime safety net.
 #
-# This file documents the schema operators write when injecting a
-# platform-level policy into a Forge deployment. The agent reads this
-# document at startup (via the FORGE_PLATFORM_POLICY env var, which
-# `forge package` pre-wires into the generated Deployment manifest)
-# and refuses to start when forge.yaml's declaration exceeds the bound
-# set here.
+# This file documents the schema that applies, identically, at every
+# one of the three layers Forge reads at startup:
 #
-# Workflow:
-#   1. Operator (or platform deployer like initializ Command, custom
-#      controller, GitOps tooling) writes a policy YAML based on this
+#   system    /etc/forge/policy.yaml          # sysadmin (corporate
+#                                             # laptop image, MDM)
+#                                             # FORGE_SYSTEM_POLICY env
+#                                             # overrides path for tests
+#                                             # / non-root installs.
+#
+#   user      ~/.forge/policy.yaml            # the developer themselves,
+#                                             # via `forge channel disable`
+#                                             # or the Web UI chip toggle.
+#                                             # Applies to every agent
+#                                             # this user runs on this
+#                                             # machine.
+#
+#   workspace path at FORGE_PLATFORM_POLICY   # operator (Initializ
+#                                             # Command, custom controller,
+#                                             # GitOps tooling). `forge
+#                                             # package` pre-wires this env
+#                                             # into generated Deployment
+#                                             # manifests. Applies to the
+#                                             # one deployed agent.
+#
+# Resolution: deny lists union across layers; max-bound caps use the
+# smallest non-zero value across layers ("most restrictive wins").
+# Audit attribution credits the first layer (in load order: system →
+# user → workspace) that contains the offending value.
+#
+# Workspace-layer rollout via Kubernetes:
+#   1. Operator (or platform deployer) writes a policy YAML based on this
 #      example.
 #   2. Operator validates it: `forge validate --platform-policy=<file>`.
 #   3. Operator creates the ConfigMap:
@@ -18,17 +39,23 @@
 #   4. Every agent deployment in that namespace reads the policy on
 #      next pod restart.
 #
-# Absence of a policy ConfigMap is the normal case — the Deployment's
-# volume mount has `optional: true`, so an agent without a policy
-# starts with no constraints (pre-FWS-5 behavior).
+# System-layer rollout (sysadmin): drop the file at /etc/forge/policy.yaml
+# via your usual machine-provisioning channels (MDM / Ansible / etc).
+#
+# User-layer rollout (developer): no manual editing required — `forge
+# channel disable <name>` and the Web UI chip toggle both update
+# ~/.forge/policy.yaml in place.
+#
+# Absence of all three layers is the normal case and behaves like
+# pre-FWS-5 (no constraints).
 #
 # See docs/security/platform-policy.md for the full reference.
 
-# Workspace-level egress deny list. Each entry is matched
-# case-insensitively against the entries in forge.yaml's
-# `egress.allowed_domains`. If a forge.yaml lists any domain here, the
-# agent refuses to start and emits a `policy_violation_at_build_time`
-# audit event naming the offending entry and the forge.yaml field.
+# Egress deny list. Each entry is matched case-insensitively against
+# the entries in forge.yaml's `egress.allowed_domains`. If a forge.yaml
+# lists any domain denied by ANY layer, the agent refuses to start and
+# emits a `policy_violation_at_build_time` audit event naming the
+# offending entry, the forge.yaml field, and the deciding layer + path.
 #
 # Example use case: a workspace forbids agents from calling Slack
 # directly even if a developer adds api.slack.com to their forge.yaml.
@@ -36,21 +63,21 @@ denied_egress_domains:
   - api.slack.com
   - hooks.slack.com
 
-# Workspace-level tool deny list. Each entry is a tool registry name
-# (case-sensitive — matches the name as it appears in the agent's
-# registered tools). Union semantics: forge.yaml's own deny list plus
-# this list are stripped from the agent's registry at startup.
-# Platform denies take precedence over user-selected builtins.
+# Tool deny list. Each entry is a tool registry name (case-sensitive —
+# matches the name as it appears in the agent's registered tools).
+# Union semantics: every layer's deny list plus forge.yaml's own deny
+# list are stripped from the agent's registry at startup.
 #
-# Example use case: a workspace bans `cli_execute` across all agents
-# because the security team hasn't approved arbitrary shell exec yet.
+# Example use case: a sysadmin bans `cli_execute` across all agents on
+# a corporate laptop because the security team hasn't approved arbitrary
+# shell exec yet.
 denied_tools:
   - cli_execute
   - http_request
 
-# Workspace-level model deny list. Each entry is a (provider, name)
-# pair — both fields are required (no wildcards). Applies to BOTH
-# the primary model and every fallback in forge.yaml.
+# Model deny list. Each entry is a (provider, name) pair — both fields
+# are required (no wildcards). Applies to BOTH the primary model and
+# every fallback in forge.yaml.
 #
 # Example use cases:
 #   - cost-ceiling enforcement ("no Opus in this workspace")
@@ -62,22 +89,29 @@ forbidden_models:
   - provider: openai
     name: gpt-4-32k
 
+# Channel deny list. Each entry is a channel adapter name
+# (case-sensitive — e.g. "slack", "telegram", "msteams"). At runtime,
+# `forge run --with` skips any channel denied by any layer (one
+# `channel_denied_by_policy` audit event per skip) and `forge channel
+# serve` refuses to start outright when its target is denied. Channel
+# skip is non-fatal — unlike egress / tool / model violations, the
+# agent runs with the remaining channels rather than aborting.
+#
+# This is the same field at every layer. There is no per-agent
+# `disabled_channels` in forge.yaml — channel disable is laptop-level
+# (user policy) or fleet-level (system / workspace policy), never agent
+# declaration. Developers toggle their user layer via the CLI
+# (`forge channel disable <name>`) or the Web UI chip — no manual YAML
+# editing required.
+denied_channels:
+  - telegram
+
 # Defense against allowlist bloat. Hard caps on what forge.yaml may
-# declare. Zero (or omitted) means no cap.
+# declare. Zero (or omitted) means no cap. When multiple layers set a
+# non-zero cap, the smallest wins ("most restrictive across layers").
 #
 # Rationale: a developer adding 200 third-party domains to their
 # egress allow list is almost certainly doing something they shouldn't.
-# A workspace policy can prevent this without naming every domain
-# individually.
+# A policy can prevent this without naming every domain individually.
 max_egress_allowlist_size: 50
 max_tool_count: 100
-
-# Workspace-level channel deny list. Reserved for the FWS-6
-# (issue #90) channel-policy work. Operators may already write this
-# field today — the schema parses it — but v1 of the runtime does
-# NOT enforce channel denies. The slot exists so operators write one
-# policy document instead of two.
-#
-# Will be enforced when FWS-6 ships.
-denied_channels:
-  - telegram

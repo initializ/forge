@@ -80,6 +80,24 @@ const (
 	// See issue #89 / FWS-5.
 	AuditPolicyViolationAtBuildTime = "policy_violation_at_build_time"
 
+	// AuditChannelDeniedByPolicy is emitted at agent startup when a
+	// channel adapter would have been started but a policy layer
+	// (system / user / workspace) names it on its denied_channels
+	// list. The channel is NOT started; the runner continues with
+	// the remaining channels rather than aborting — unlike the
+	// egress/tool/model violations, channel deny is treated as a
+	// scope-down, not as a forge.yaml conflict.
+	//
+	// Carries fields.channel (registry name), fields.layer
+	// ("system" / "user" / "workspace") identifying which file
+	// enforced, and fields.source (path to that file). When the
+	// channel is denied by multiple layers, the first-match wins
+	// for attribution (system > user > workspace precedence; the
+	// most restrictive layer takes credit).
+	//
+	// See issue #90 / FWS-6.
+	AuditChannelDeniedByPolicy = "channel_denied_by_policy"
+
 	// AuditInvocationCancelled is emitted when an in-flight A2A
 	// invocation is cancelled by tasks/cancel (or internal cancellation
 	// like a parent ctx deadline). Carries the classified reason in
@@ -393,6 +411,25 @@ func (a *AuditLogger) EmitPolicyViolationAtBuildTime(fields map[string]any) {
 	a.Emit(AuditEvent{
 		Event:  AuditPolicyViolationAtBuildTime,
 		Fields: fields,
+	})
+}
+
+// EmitChannelDeniedByPolicy records that a channel adapter was skipped
+// at startup because a policy layer's denied_channels list named it.
+// `layer` identifies which file enforced ("system" / "user" /
+// "workspace"); `source` is that file's path. Unlike egress/tool/model
+// violations, channel deny does NOT abort startup — the agent runs
+// without the denied channel. Operators see the skip in their audit
+// pipeline and group by layer to understand which policy file owns
+// the decision. See issue #90 / FWS-6.
+func (a *AuditLogger) EmitChannelDeniedByPolicy(channel, layer, source string) {
+	a.Emit(AuditEvent{
+		Event: AuditChannelDeniedByPolicy,
+		Fields: map[string]any{
+			"channel": channel,
+			"layer":   layer,
+			"source":  source,
+		},
 	})
 }
 

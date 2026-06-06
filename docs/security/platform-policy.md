@@ -1,32 +1,50 @@
 ---
 title: "Platform Policy"
-description: "Workspace-level runtime safety net bounding what a forge.yaml is allowed to declare."
+description: "Three-layer policy that bounds what a forge.yaml is allowed to declare — system, user, and workspace files compose by union and most-restrictive."
 order: 8
 ---
 
 # Platform Policy
 
-Forge agents accept a deploy-time policy that defines workspace-level upper bounds on egress destinations, registered tools, allowed models, and configuration sizes. The agent's `forge.yaml` is what it claims to do; the platform policy is the ceiling — the agent refuses to start when its declaration exceeds the bound.
+Forge agents read a layered set of policy files at startup that bound what their `forge.yaml` is allowed to declare — egress destinations, registered tools, allowed models, channel adapters, and configuration sizes. The agent's `forge.yaml` is what it claims to do; the policy stack is the ceiling. The agent refuses to start when its declaration exceeds the bound (egress / tool / model / size) and skips individual channels when its channel declaration overlaps the deny list.
 
-This is the runtime safety net for the case where a developer pushes a `forge.yaml` that adds a forbidden domain or tool, intentionally or by mistake. PR-time linters help catch this at config time; the platform policy enforces it at startup regardless.
+This is the runtime safety net for the case where a developer's `forge.yaml` adds a forbidden domain or tool — intentionally or by mistake. PR-time linters help catch this at config time; the platform policy enforces it at startup regardless.
+
+## The three layers
+
+Three independent policy files are read at startup. Each is optional; an agent with none of them present runs exactly as it did pre-FWS-5.
+
+| Layer | Path | Set by | Scope |
+|---|---|---|---|
+| **system** | `/etc/forge/policy.yaml` (override: `FORGE_SYSTEM_POLICY` env) | Sysadmin (corporate-laptop image, MDM profile) | Every agent run by anyone on the machine |
+| **user** | `~/.forge/policy.yaml` | The developer themselves, via `forge channel disable` / the Web UI chip toggle / direct edit | Every agent run by that user on that machine |
+| **workspace** | path at `FORGE_PLATFORM_POLICY` env | Workspace operator (Initializ Command, custom controller, GitOps tooling) | The single deployed agent (unchanged from FWS-5) |
+
+All three layers share the same [schema](#schema). The loader silently skips an empty or absent file; a malformed file at any layer is an error that aborts startup.
+
+### Resolution semantics
+
+When the same value appears on multiple layers' deny lists, the **union** is enforced. When a max-bound (size cap) is set at multiple layers, the **smallest non-zero value wins** ("most restrictive across layers"). Both rules apply consistently to every field — egress, tools, models, channels, max counts.
+
+For audit attribution, the **first layer to deny in load order takes credit** (system → user → workspace). This means a `denied_egress` violation that's on the system layer's list will be attributed to `layer=system` in audit events even if the user layer also denied it — operators grepping for `layer=system` see every sysadmin-enforced violation without false positives from per-user overrides.
 
 ## When is a policy applied
 
-The agent reads `FORGE_PLATFORM_POLICY` at startup and loads the policy file at that path. Three outcomes:
+Per-layer behavior at startup:
 
 | Condition | Result |
 |---|---|
-| `FORGE_PLATFORM_POLICY` unset | No policy applied. Backward-compatible with pre-FWS-5 behavior. |
-| `FORGE_PLATFORM_POLICY` set, file missing | No policy applied (matches `forge package`'s `optional: true` ConfigMap mount). |
-| `FORGE_PLATFORM_POLICY` set, file malformed | Agent refuses to start. Malformed policy is an operator mistake that must fail loudly. |
-| `FORGE_PLATFORM_POLICY` set, file valid + `forge.yaml` conflict | Agent refuses to start with a multi-line error listing every violation; emits one `policy_violation_at_build_time` audit event per violation. |
-| `FORGE_PLATFORM_POLICY` set, file valid + no conflict | Agent starts; emits one `policy_loaded` audit event with a summary of the effective policy. |
+| All three layer files absent / empty | No policy applied. Backward-compatible with pre-FWS-5 / pre-FWS-6 behavior. |
+| Layer file present but malformed | Agent refuses to start. Operator / sysadmin / developer mistake that must fail loudly. |
+| Any layer denies a value `forge.yaml` declared (egress / tool / model / size) | Agent refuses to start with a multi-line error listing every violation; emits one `policy_violation_at_build_time` audit event per violation, each carrying the deciding layer + path. |
+| Any layer denies a channel `forge.yaml` declared | Agent starts without that channel adapter; emits one `channel_denied_by_policy` event per skip, carrying the deciding layer + path. (Channel deny is a scope-down, not a hard error.) |
+| All layers pass | Agent starts; emits one `policy_loaded` audit event per non-empty layer summarizing its contents. |
 
-Policy is read **once at startup**. Live reload is deliberately out of scope — policy changes require a pod restart. This keeps the running agent's state predictable and traceable to a specific policy file.
+Policy is read **once at startup**. Live reload is deliberately out of scope — policy changes require a pod restart (workspace) or process restart (system / user). This keeps the running agent's state predictable and traceable to a specific policy file snapshot.
 
-## How `forge package` wires this up
+## How `forge package` wires the workspace layer
 
-Every Deployment manifest generated by `forge package` is policy-ready by default:
+The workspace layer is the deploy-time slot. Every Deployment manifest generated by `forge package` is policy-ready by default:
 
 ```yaml
 containers:
@@ -59,9 +77,11 @@ kubectl create configmap forge-platform-policy \
 
 The Initializ Platform (or any custom controller / GitOps tooling) creates this ConfigMap from its own source of truth at deploy time.
 
+The **system** and **user** layers do not flow through `forge package` — they're laptop-local. Sysadmins drop `/etc/forge/policy.yaml` onto a corporate image via MDM / Ansible / the same channels they use to provision any other system config. Developers edit `~/.forge/policy.yaml` via the [CLI](#disabling-a-channel-from-the-cli) or the Web UI chip toggle (no manual YAML editing required).
+
 ## Schema
 
-See `examples/platform-policy.yaml` for a fully-commented working example.
+The same schema applies to all three layers. See `examples/platform-policy.yaml` for a fully-commented working example.
 
 ```yaml
 denied_egress_domains:
@@ -74,75 +94,147 @@ forbidden_models:
   - provider: anthropic
     name: claude-opus-4   # both fields required, no wildcards
 
+denied_channels:
+  - telegram              # registry name, case-sensitive
+
 max_egress_allowlist_size: 50   # 0 (or omitted) = no cap
 max_tool_count: 100             # 0 (or omitted) = no cap
-
-denied_channels:         # reserved for FWS-6 (#90); parsed but
-  - telegram             # not enforced in v1
 ```
 
 Decoding is strict — unknown fields are rejected so operator typos (`deinied_egress_domains:`) fail loudly instead of silently no-opping.
 
 | Field | Semantics |
 |---|---|
-| `denied_egress_domains` | Set-difference with `forge.yaml`'s `egress.allowed_domains`. Match is case-insensitive exact-host. Wildcard patterns belong in `forge.yaml` only; the platform deny list is operator-supplied and intentionally simple. |
-| `denied_tools` | Union with `forge.yaml`'s denied tools (typically from the derived CLI config). User-selected builtins survive `forge.yaml` denies but NOT platform-policy denies — workspace policy outranks per-agent declaration. |
+| `denied_egress_domains` | Set-difference with `forge.yaml`'s `egress.allowed_domains`. Match is case-insensitive exact-host. Wildcard patterns belong in `forge.yaml` only; the platform deny list is operator-supplied and intentionally simple. The union across all layers reaches the EgressEnforcer. |
+| `denied_tools` | Union across all layers with `forge.yaml`'s denied tools (typically from the derived CLI config). User-selected builtins survive `forge.yaml` denies but NOT policy denies — policy outranks per-agent declaration. |
 | `forbidden_models` | Applied to the primary model AND every fallback. Both `provider` and `name` are required to prevent loose patterns like "any anthropic model" that would silently let a new model in. |
-| `max_egress_allowlist_size` | Cap on the declared count (not the policy-filtered count). Defense against allowlist bloat. |
-| `max_tool_count` | Cap on the **effective** tool count (after policy strip). Stripping a denied tool must NOT cause a spurious bound violation. |
-| `denied_channels` | Reserved for FWS-6 (#90). Parsed but not enforced in v1. |
+| `denied_channels` | Per-layer channel deny list. Each entry is a channel adapter name (`slack`, `telegram`, `msteams`). At runtime: `forge run --with` skips denied channels (one `channel_denied_by_policy` audit event per skip); `forge channel serve` refuses to start outright when its target is denied. Match is case-sensitive. |
+| `max_egress_allowlist_size` | Cap on the declared count (not the policy-filtered count). Defense against allowlist bloat. Smallest non-zero value across layers wins. |
+| `max_tool_count` | Cap on the **effective** tool count (after policy strip). Stripping a denied tool must NOT cause a spurious bound violation. Smallest non-zero value across layers wins. |
 
 ## Conflict semantics
 
-When `forge.yaml` declares something the platform policy forbids, the runner:
+When `forge.yaml` declares an egress / tool / model / size value any layer forbids, the runner:
 
-1. Emits one `policy_violation_at_build_time` audit event per violation. The event carries `violation_kind`, `offending_value`, and `forge_yaml_field` so cost / compliance dashboards can group by kind and operator alerts can name the exact field to fix.
-2. Returns a multi-line error from `NewRunner` listing every violation. The developer sees every problem in one pass — fix the `forge.yaml` once and re-run, instead of ping-ponging through one error at a time.
+1. Emits one `policy_violation_at_build_time` audit event per violation. The event carries `violation_kind`, `offending_value`, `forge_yaml_field`, **`layer`** (which file decided), and **`source`** (the path to that file) so cost / compliance dashboards can group by kind or by enforcing authority.
+2. Returns a multi-line error from `NewRunner` listing every violation. The developer sees every problem in one pass — fix the `forge.yaml` once and re-run, instead of ping-ponging through one error at a time. Each error line names the deciding layer + path so they know which file owns the rule (and who to ask for an exception — sysadmin, themselves, or the platform operator).
+
+Channel violations are **non-fatal**: the agent starts without the named adapter and emits `channel_denied_by_policy`. See [Channels](#channels) below.
 
 Violation kinds:
 
 | `violation_kind` | What it means |
 |---|---|
-| `denied_egress` | `forge.yaml` `egress.allowed_domains` lists a domain on the policy deny list |
-| `denied_tool` | `forge.yaml` `tools[]` or `builtin_tools[]` lists a tool on the policy deny list |
-| `forbidden_model` | `forge.yaml` `model` or `model.fallbacks[]` uses a `(provider, name)` pair on the policy deny list |
-| `egress_bound_exceeded` | `len(forge.yaml.egress.allowed_domains)` exceeds `max_egress_allowlist_size` |
-| `tool_bound_exceeded` | Effective tool count (after policy strip) exceeds `max_tool_count` |
+| `denied_egress` | `forge.yaml` `egress.allowed_domains` lists a domain on a layer's deny list |
+| `denied_tool` | `forge.yaml` `tools[]` or `builtin_tools[]` lists a tool on a layer's deny list |
+| `forbidden_model` | `forge.yaml` `model` or `model.fallbacks[]` uses a `(provider, name)` pair on a layer's deny list |
+| `egress_bound_exceeded` | `len(forge.yaml.egress.allowed_domains)` exceeds the most-restrictive `max_egress_allowlist_size` across layers |
+| `tool_bound_exceeded` | Effective tool count (after policy strip) exceeds the most-restrictive `max_tool_count` across layers |
 
 ## Audit events
 
-Two events fire from this subsystem; both go through `AuditLogger.Emit` (no request ctx exists at startup, so the workflow / task correlation fields are absent).
+Three events fire from this subsystem; all go through `AuditLogger.Emit` (no request ctx exists at startup, so the workflow / task correlation fields are absent).
 
-**`policy_loaded`** — emitted once when a non-zero policy is loaded successfully. Fields summarize the policy without dumping its contents (which may contain internal infrastructure hints operators don't want in every audit stream):
+**`policy_loaded`** — one event per non-empty layer at startup. Fields summarize the layer's policy without dumping its contents (which may contain internal infrastructure hints operators don't want in every audit stream):
 
 ```json
 {
-  "ts": "2026-06-05T18:30:00Z",
+  "ts": "2026-06-06T18:30:00Z",
   "event": "policy_loaded",
   "fields": {
-    "source": "/etc/forge/policy/platform-policy.yaml",
+    "layer": "system",
+    "source": "/etc/forge/policy.yaml",
     "denied_egress_count": 2,
     "denied_tools_count": 1,
     "forbidden_models_count": 1,
+    "denied_channels_count": 1,
     "max_egress_allowlist": 50,
     "max_tool_count": 100
   }
 }
 ```
 
-**`policy_violation_at_build_time`** — one event per violation when `forge.yaml` conflicts with policy. Emitted before the runner aborts, so the audit pipeline captures the violation even though the agent never serves traffic:
+**`policy_violation_at_build_time`** — one event per violation when `forge.yaml` conflicts with any layer's policy. Emitted before the runner aborts, so the audit pipeline captures the violation even though the agent never serves traffic:
 
 ```json
 {
-  "ts": "2026-06-05T18:30:00Z",
+  "ts": "2026-06-06T18:30:00Z",
   "event": "policy_violation_at_build_time",
   "fields": {
     "violation_kind": "denied_egress",
     "offending_value": "api.slack.com",
-    "forge_yaml_field": "egress.allowed_domains"
+    "forge_yaml_field": "egress.allowed_domains",
+    "layer": "system",
+    "source": "/etc/forge/policy.yaml"
   }
 }
 ```
+
+**`channel_denied_by_policy`** — one event per channel skip at startup. The agent continues running with the remaining channels.
+
+```json
+{
+  "ts": "2026-06-06T18:30:00Z",
+  "event": "channel_denied_by_policy",
+  "fields": {
+    "channel": "slack",
+    "layer": "user",
+    "source": "/home/dev/.forge/policy.yaml"
+  }
+}
+```
+
+## Channels
+
+`denied_channels` is the same schema field at every layer. There is no per-agent `disabled_channels` in `forge.yaml` — channel disable is always a property of the machine (sysadmin policy or developer preference), never of the agent declaration itself. The reasoning: a developer who wants Telegram off in dev is making a laptop-level statement, not modifying the agent's published capability set.
+
+When `forge.yaml` declares `channels: [slack, telegram]` and any layer's `denied_channels` contains `telegram`, the runner:
+
+- Starts `slack` normally.
+- Skips `telegram` and emits `channel_denied_by_policy` attributed to the first layer that denied it.
+- Continues. Channel deny is a scope-down, not a hard error.
+
+### Disabling a channel from the CLI
+
+```bash
+forge channel disable slack             # edits ~/.forge/policy.yaml (user layer)
+forge channel enable slack              # ditto
+
+forge channel disable slack --system    # edits /etc/forge/policy.yaml (system layer)
+forge channel enable slack --system     # ditto
+```
+
+Both subcommands are idempotent — disabling an already-denied channel reports "already denied" and returns 0. They edit the resolved policy file in place, adding or removing the entry from `denied_channels`. When the resulting policy is empty (every field zero), the file is removed entirely so a "no policy" state has no on-disk noise.
+
+The `--system` flag writes to the system path. The CLI prints a warning if the effective uid is not root, since `/etc/forge/policy.yaml` typically requires elevated permissions to write — the warning surfaces the failure mode before `os.WriteFile` returns `EACCES`.
+
+### Disabling a channel from the Web UI
+
+`forge ui` renders each declared channel on the agent card as a chip. Channels denied by any layer are shown locked / dimmed with a tooltip naming the deciding layer. Clicking an editable chip toggles the channel in the user layer (`~/.forge/policy.yaml`); the system and workspace layers are display-only.
+
+REST shape (`GET/PUT /api/user-policy`):
+
+```bash
+# Read all three layers — user is editable, system + workspace are read-only.
+GET /api/user-policy
+    → {
+        "path": "/home/dev/.forge/policy.yaml",
+        "user": { "denied_channels": ["telegram"], "denied_tools": [] },
+        "system": { "denied_channels": ["msteams"] },
+        "system_path": "/etc/forge/policy.yaml",
+        "workspace": { "denied_egress_domains": ["api.notion.com"] },
+        "workspace_path": "/run/forge/workspace.yaml"
+      }
+
+# Write the user layer only. Body is the full PlatformPolicy doc.
+PUT /api/user-policy
+    ← { "user": { "denied_channels": ["slack", "telegram"] } }
+    → 200 + the same shape as GET, refreshed.
+```
+
+When the submitted user policy is the zero value (every field empty), the on-disk file is removed so a "no policy" state has no on-disk noise. The frontend renders chips by checking `denied_channels` from any layer; clicking an editable chip flips the entry in the `user` block and PUTs it back.
+
+**Important**: enabling a channel only undoes a deny on the layer being edited. It does NOT override a deny on a higher-precedence layer — if a sysadmin has denied a channel in `/etc/forge/policy.yaml`, no `forge channel enable slack` (without `--system`, which would require root) can lift it. The chip stays locked.
 
 ## Validating a policy file standalone
 
@@ -150,17 +242,18 @@ Two events fire from this subsystem; both go through `AuditLogger.Emit` (no requ
 forge validate --platform-policy=path/to/policy.yaml
 ```
 
-Schema-only lint. Returns non-zero on parse errors, unknown fields, or invalid values. Use this as a CI gate before `kubectl apply` of the ConfigMap.
+Schema-only lint. Returns non-zero on parse errors, unknown fields, or invalid values. Use this as a CI gate before `kubectl apply` of the workspace ConfigMap, before pushing a system policy to a corporate-laptop image, or before committing a `~/.forge/policy.yaml` to dotfiles.
 
 ## What's deliberately NOT in v1
 
-- **Live policy reload.** Policy changes require a pod restart. Simpler and more predictable trust boundary.
+- **Live policy reload.** Policy changes require a process restart. Simpler and more predictable trust boundary.
 - **Computed allow / deny lists in the audit summary.** The `policy_loaded` event reports counts, not contents. Operators can read the source file via the `source` field if they need the full policy.
+- **Per-agent disable in `forge.yaml`.** Channel disable is always laptop-level, never declared in agent source. (Removed in FWS-6 after FWS-5's prototype shipped a `disabled_channels:` field — see CHANGELOG.)
 - **Platform policy applied to non-Forge agents.** Out of scope here. The orchestrator enforces platform policy at the orchestration boundary for non-Forge agents (e.g., refuses to invoke if their declared capabilities violate policy).
 
 ## Cross-references
 
-- **Issue #89 / FWS-5** — this feature
-- **Issue #90 / FWS-6** — channel-policy enforcement; will populate the reserved `denied_channels` slot
+- **Issue #89 / FWS-5** — single-layer (workspace) policy enforcement, original design
+- **Issue #90 / FWS-6** — three-layer redesign + channel-policy enforcement (this doc)
 - **Issue #31** — Forge's per-IP rate limiter, the original deployment-time bound
-- **FWS-3 / FWS-4 audit events** — `invocation_complete`, `invocation_cancelled`, `policy_loaded`, and `policy_violation_at_build_time` are all on the same audit stream
+- **FWS-3 / FWS-4 audit events** — `invocation_complete`, `invocation_cancelled`, `policy_loaded`, `policy_violation_at_build_time`, and `channel_denied_by_policy` are all on the same audit stream

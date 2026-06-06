@@ -14,6 +14,8 @@ import (
 	"github.com/initializ/forge/forge-cli/runtime"
 	"github.com/initializ/forge/forge-core/a2a"
 	corechannels "github.com/initializ/forge/forge-core/channels"
+	coreruntime "github.com/initializ/forge/forge-core/runtime"
+	"github.com/initializ/forge/forge-core/security"
 	"github.com/spf13/cobra"
 )
 
@@ -131,13 +133,30 @@ func runRun(cmd *cobra.Command, args []string) error {
 		// Collect initialized plugins so the scheduler can deliver results.
 		activePlugins := make(map[string]corechannels.ChannelPlugin)
 
-		names := strings.Split(runWithChannels, ",")
-		for _, name := range names {
-			name = strings.TrimSpace(name)
-			if name == "" {
-				continue
+		// Apply channel filtering (issue #90 / FWS-6 three-layer):
+		// each declared channel runs through the union of system / user
+		// / workspace policy denies. One channel_denied_by_policy
+		// audit event per skip (carrying the deciding layer). Effective
+		// list goes on to start adapters.
+		channelLayers, channelLayerErr := security.LoadAllPolicyLayers()
+		if channelLayerErr != nil {
+			return fmt.Errorf("loading policy layers for channel filter: %w", channelLayerErr)
+		}
+		requested := strings.Split(runWithChannels, ",")
+		var trimmed []string
+		for _, n := range requested {
+			if n = strings.TrimSpace(n); n != "" {
+				trimmed = append(trimmed, n)
 			}
+		}
+		effective, skipped := security.EffectiveChannels(trimmed, channelLayers)
+		channelAudit := coreruntime.NewAuditLogger(os.Stderr)
+		for _, s := range skipped {
+			channelAudit.EmitChannelDeniedByPolicy(s.Channel, s.Layer, s.LayerPath)
+			fmt.Fprintf(os.Stderr, "  Channel:    %s skipped (denied by %s policy)\n", s.Channel, s.Layer)
+		}
 
+		for _, name := range effective {
 			plugin := registry.Get(name)
 			if plugin == nil {
 				return fmt.Errorf("unknown channel adapter: %s", name)

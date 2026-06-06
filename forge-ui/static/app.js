@@ -659,9 +659,13 @@ function StatusDot({ status }) {
   return html`<span class="status-dot ${status}" />`;
 }
 
-function AgentCard({ agent, onStart, onStop }) {
+function AgentCard({ agent, onStart, onStop, onChannelsChanged }) {
   const isActive = agent.status === 'running' || agent.status === 'starting';
   const isBusy = agent.status === 'starting' || agent.status === 'stopping';
+  // Optimistic chip state — flipped immediately on click so the UI
+  // reflects intent before /api/user-policy responds. Cleared back to
+  // the authoritative agent.denied_channels on every render.
+  const [pendingChannel, setPendingChannel] = useState(null);
 
   return html`
     <div class="agent-card" onClick=${() => isActive && navigate('agent/' + agent.id)}>
@@ -705,7 +709,57 @@ function AgentCard({ agent, onStart, onStop }) {
         ${(agent.channels?.length > 0) && html`
           <span class="agent-card-tag">
             <span class="tag-label">channels</span>
-            ${agent.channels.join(', ')}
+            <span class="channel-chip-group">
+              ${agent.channels.map(ch => {
+                // denied_channels is the EFFECTIVE deny set across
+                // system + user + workspace layers (server computes
+                // it). Click toggles the user-layer entry in
+                // ~/.forge/policy.yaml.
+                const denied = new Set(agent.denied_channels || []);
+                const lockedBy = agent.denied_channels_locked?.[ch];
+                const isDenied = pendingChannel === ch ? !denied.has(ch) : denied.has(ch);
+                const isSaving = pendingChannel === ch;
+                const isLocked = !!lockedBy && lockedBy !== 'user';
+                const title = isLocked
+                  ? `Denied by ${lockedBy} policy (read-only — edit the policy file directly)`
+                  : `Click to ${isDenied ? 'enable' : 'disable'} ${ch} (edits ~/.forge/policy.yaml)`;
+                const flip = async (e) => {
+                  e.stopPropagation();
+                  if (isLocked || isSaving) return;
+                  setPendingChannel(ch);
+                  try {
+                    const cur = await fetch('/api/user-policy').then(r => r.json());
+                    const user = cur.user || {};
+                    const userDenies = user.denied_channels || [];
+                    const userDenied = userDenies.includes(ch);
+                    const next = userDenied
+                      ? userDenies.filter(c => c !== ch)
+                      : [...userDenies, ch];
+                    const updatedUser = { ...user, denied_channels: next };
+                    const res = await fetch('/api/user-policy', {
+                      method: 'PUT',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ user: updatedUser }),
+                    });
+                    if (!res.ok) throw new Error('PUT /api/user-policy failed');
+                    if (onChannelsChanged) await onChannelsChanged();
+                  } catch (err) {
+                    console.error('channel toggle failed', err);
+                  } finally {
+                    setPendingChannel(null);
+                  }
+                };
+                const klass = ['channel-chip',
+                  isDenied ? 'disabled' : '',
+                  isSaving ? 'saving' : '',
+                  isLocked ? 'locked' : ''].filter(Boolean).join(' ');
+                return html`
+                  <span class=${klass} title=${title} onClick=${flip}>
+                    ${ch}
+                  </span>
+                `;
+              })}
+            </span>
           </span>
         `}
         ${agent.port > 0 && html`
@@ -719,6 +773,23 @@ function AgentCard({ agent, onStart, onStop }) {
       ${agent.error && html`
         <div class="agent-card-error">${agent.error}</div>
       `}
+
+      ${!isActive && agent.channels?.length > 0 && (() => {
+        // Pre-launch hint: what `forge serve start --with …` will
+        // actually bring up (declared channels minus policy denies).
+        // Single-line, ellipsis on overflow, full list in tooltip.
+        const denied = new Set(agent.denied_channels || []);
+        const effective = agent.channels.filter(c => !denied.has(c));
+        const text = effective.length === 0
+          ? 'no channels (all denied by policy)'
+          : effective.join(', ');
+        return html`
+          <div class="agent-card-start-hint" title=${'starts with: ' + text}>
+            <span class="start-hint-label">starts with</span>
+            <span class="start-hint-list">${text}</span>
+          </div>
+        `;
+      })()}
 
       <div class="agent-card-actions">
         ${!isActive && html`
@@ -818,7 +889,7 @@ function Sidebar({ agents, activeAgentId, activePage, version }) {
   `;
 }
 
-function Dashboard({ agents, onStart, onStop, onRescan, loading }) {
+function Dashboard({ agents, onStart, onStop, onRescan, onChannelsChanged, loading }) {
   return html`
     <main class="main">
       <div class="main-header">
@@ -845,6 +916,7 @@ function Dashboard({ agents, onStart, onStop, onRescan, loading }) {
                 agent=${a}
                 onStart=${onStart}
                 onStop=${onStop}
+                onChannelsChanged=${onChannelsChanged}
               />
             `)}
           </div>
@@ -2887,6 +2959,7 @@ function App() {
           onStart=${handleStart}
           onStop=${handleStop}
           onRescan=${handleRescan}
+          onChannelsChanged=${loadAgents}
           loading=${loading}
         />`;
     }

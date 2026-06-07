@@ -132,7 +132,13 @@ func NewRunner(cfg RunnerConfig) (*Runner, error) {
 	if cfg.Port <= 0 {
 		cfg.Port = 8080
 	}
-	logger := coreruntime.NewJSONLogger(os.Stderr, cfg.Verbose)
+	// FWS-9 (issue #100): ops logs go to stdout so audit NDJSON on
+	// stderr can be consumed as a single-stream concern by container
+	// log collectors and SIEM pipelines — no payload parsing needed
+	// to split ops from audit. Audit destination is unchanged; it
+	// remains on stderr (with the FWS-7 dedicated sink overlay when
+	// configured).
+	logger := coreruntime.NewJSONLogger(os.Stdout, cfg.Verbose)
 	return &Runner{
 		cfg:            cfg,
 		logger:         logger,

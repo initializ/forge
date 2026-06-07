@@ -303,14 +303,30 @@ interesting happens, instrumentation emits to OTel **and** to audit at
 the same call site. They are deliberately not coupled: do not tap one
 from the other.
 
-### Companion follow-up: stream separation
+## Streams (FWS-9)
 
-Forge currently puts both ops logs (`r.logger.Info(...)` startup
-banners, request logs) **and** audit NDJSON on stderr. A SIEM pipeline
-that wants audit-only records can split by parsing the `event` field,
-but stream-level separation would be cleaner. Tracked as FWS-9 (#100):
-*"Move ops logger output from stderr to stdout (stream separation from
-audit)."* Independent of FWS-7 in code.
+`forge run` / `forge serve` use the OS streams as a stream-level
+audit-vs-ops split, so container log collectors and SIEM pipelines
+can route the two concerns separately without parsing any payload:
+
+| Stream | Carries | Consumer |
+|---|---|---|
+| **stdout** | Ops logs — startup banner, request lines, runtime errors emitted via the structured `JSONLogger` (`r.logger.Info/Warn/Error`). | Container log collector / local debugging. |
+| **stderr** | Audit NDJSON — every `event` constant defined in the table above. | SIEM pipeline today. After FWS-7, also lands on the dedicated UDS / HTTP sink in parallel (stderr stays as the safety-net fallback). |
+| UDS / HTTP sink (FWS-7) | Audit NDJSON (primary, when configured). | initializ platform sidecar / customer SIEM. |
+
+Migration note: pre-FWS-9, ops logs and audit both went to stderr —
+SIEM rules had to filter by the presence of the `event` JSON field.
+After FWS-9, the split is clean. Operators who used to redirect
+`forge run 2> ops.log` for ops capture must switch to
+`forge run > ops.log` (and `2> audit.log` for audit). Container
+deployments that capture both streams via the runtime's standard
+log collector are unaffected.
+
+Interactive CLI commands (`forge init`, `forge build`, `forge channel`)
+keep writing warnings and errors to stderr — those are user-facing UX
+messages, not server ops logs, and the stream-split policy doesn't
+apply to them.
 
 ## Schema contract (FWS-8)
 

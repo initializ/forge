@@ -52,6 +52,14 @@ egress:
 cors_origins:                       # CORS allowed origins for A2A server
   - "https://app.example.com"      # (default: localhost variants)
 
+server:                              # A2A server tuning (optional)
+  rate_limit:                        # per-IP rate limits (issue #110 / FWS-10)
+    read_rps: 1.0                    # GET/HEAD/OPTIONS req/sec (default 1.0 = 60/min)
+    read_burst: 10                   # GET/HEAD/OPTIONS burst (default 10)
+    write_rps: 1.0                   # POST/PUT/DELETE req/sec (default 1.0 = 60/min)
+    write_burst: 20                  # POST/PUT/DELETE burst (default 20)
+    cancel_exempt: true              # tasks/cancel skips the write bucket (default true)
+
 package:
   alpine: false                     # Prefer Alpine base image
   slim: false                       # Minimize image size
@@ -138,3 +146,51 @@ schedules:                          # Recurring scheduled tasks (optional)
     channel: "telegram"             # Optional channel for delivery
     channel_target: "-100123456"    # Destination chat/channel ID
 ```
+
+## `server.rate_limit` — per-IP A2A rate limits (FWS-10)
+
+Bounds the per-IP request rate on the A2A HTTP server. Defaults
+(applied when the block is omitted) target orchestrated workloads —
+60/min sustained on both read and write surfaces, with burst headroom
+for parallel-task dispatch and cron bursts.
+
+| Field | Default | Notes |
+|---|---|---|
+| `read_rps` | `1.0` | Sustained req/sec for `GET` / `HEAD` / `OPTIONS`. |
+| `read_burst` | `10` | Burst headroom for reads. |
+| `write_rps` | `1.0` | Sustained req/sec for `POST` / `PUT` / `DELETE`. Bumped from `10/60` in FWS-10 to absorb orchestrator dispatch. |
+| `write_burst` | `20` | Burst headroom for writes. Bumped from `3` in FWS-10. |
+| `cancel_exempt` | `true` | When true, `tasks/cancel` JSON-RPC calls skip the write bucket entirely. The cost-ceiling cancel-burst case (orchestrator firing N parallel cancels when a workflow budget trips) is the motivating example — sharing the write bucket with `tasks/send` would throttle cancels at exactly the moment cancellation matters most. DoS via cancel-spam is bounded by the cancellation registry's O(1) unknown-task lookup. |
+
+### Resolution order
+
+Per-field, in precedence:
+
+1. **CLI flag** — `--rate-limit-read-rps`, `--rate-limit-read-burst`, `--rate-limit-write-rps`, `--rate-limit-write-burst`, `--rate-limit-cancel-exempt` (works on both `forge run` and `forge serve start`)
+2. **Env var** — `FORGE_RATE_LIMIT_READ_RPS`, `FORGE_RATE_LIMIT_READ_BURST`, `FORGE_RATE_LIMIT_WRITE_RPS`, `FORGE_RATE_LIMIT_WRITE_BURST`, `FORGE_RATE_LIMIT_CANCEL_EXEMPT`
+3. **`server.rate_limit:` block in `forge.yaml`**
+4. **Built-in defaults** (the table above)
+
+Each field falls through layer by layer — a CLI flag for `--rate-limit-write-rps` overrides only that one field; the others still come from env / yaml / default.
+
+### Stricter than default (public-facing agent)
+
+A typical config for a public-facing agent on the open internet:
+
+```yaml
+server:
+  rate_limit:
+    read_rps: 0.5     # 30/min reads
+    read_burst: 5
+    write_rps: 0.1    # 6/min writes — anonymous DoS protection
+    write_burst: 3
+    cancel_exempt: true  # keep cancel responsive even under attack
+```
+
+### Per-IP grouping limitation
+
+The limiter keys on the remote IP. In Kubernetes, multiple orchestrator
+pods behind a single service IP share one bucket. If that becomes a
+practical problem, the right fix is auth-aware rate limiting (per-user
+buckets keyed by `auth.user_id`) — out of scope for FWS-10; file
+separately.

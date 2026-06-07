@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -43,6 +44,17 @@ var (
 	runAuditSocket       string
 	runAuditHTTPEndpoint string
 	runAuditWriteTimeout time.Duration
+
+	// FWS-10 rate-limit overrides (issue #110). Sentinel zero / "" means
+	// "flag not passed; fall through to env → yaml → defaults". The
+	// cancel-exempt flag is a string ("true"/"false"/"") so the
+	// resolver can distinguish "not passed" from "explicitly false" —
+	// cobra's BoolVar collapses those.
+	runRateLimitReadRPS      float64
+	runRateLimitReadBurst    int
+	runRateLimitWriteRPS     float64
+	runRateLimitWriteBurst   int
+	runRateLimitCancelExempt string
 )
 
 var runCmd = &cobra.Command{
@@ -76,6 +88,15 @@ func init() {
 	runCmd.Flags().StringVar(&runAuditSocket, "audit-socket", "", "Unix socket path to export audit events to (sidecar consumer); empty = stderr only")
 	runCmd.Flags().StringVar(&runAuditHTTPEndpoint, "audit-http-endpoint", "", "localhost HTTP endpoint to POST audit events to (used only when --audit-socket is empty)")
 	runCmd.Flags().DurationVar(&runAuditWriteTimeout, "audit-write-timeout", 0, "per-event timeout for the audit socket/HTTP sink (default 50ms)")
+
+	// FWS-10 — per-IP A2A rate limits (issue #110). All five default
+	// to the matching FORGE_RATE_LIMIT_* env / yaml block / built-in
+	// default (60/min read + write, burst 10/20, cancel exempt).
+	runCmd.Flags().Float64Var(&runRateLimitReadRPS, "rate-limit-read-rps", 0, "per-IP request/sec for read methods (default 1.0 = 60/min)")
+	runCmd.Flags().IntVar(&runRateLimitReadBurst, "rate-limit-read-burst", 0, "per-IP burst size for read methods (default 10)")
+	runCmd.Flags().Float64Var(&runRateLimitWriteRPS, "rate-limit-write-rps", 0, "per-IP request/sec for write methods (default 1.0 = 60/min)")
+	runCmd.Flags().IntVar(&runRateLimitWriteBurst, "rate-limit-write-burst", 0, "per-IP burst size for write methods (default 20)")
+	runCmd.Flags().StringVar(&runRateLimitCancelExempt, "rate-limit-cancel-exempt", "", "exempt tasks/cancel from the write bucket (true/false; default true)")
 }
 
 func runRun(cmd *cobra.Command, args []string) error {
@@ -114,6 +135,11 @@ func runRun(cmd *cobra.Command, args []string) error {
 		auditExport.WriteTimeout = runAuditWriteTimeout
 	}
 
+	// FWS-10 — assemble the CLI-side rate-limit override. Only
+	// explicitly-set flags propagate; everything else stays nil so
+	// the resolver falls through to env → yaml → defaults.
+	rateLimitOverride := buildRateLimitOverride()
+
 	runner, err := runtime.NewRunner(runtime.RunnerConfig{
 		Config:            cfg,
 		WorkDir:           workDir,
@@ -133,6 +159,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		AuthOrgID:         runAuthOrgID,
 		CORSOrigins:       corsOrigins,
 		AuditExport:       auditExport,
+		RateLimitOverride: rateLimitOverride,
 	})
 	if err != nil {
 		return fmt.Errorf("creating runner: %w", err)
@@ -233,4 +260,46 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 
 	return runner.Run(ctx)
+}
+
+// buildRateLimitOverride translates the runRateLimit* flag vars into
+// the resolver's pointer-typed override struct. Only flags that were
+// explicitly set (non-zero float / non-zero int / non-empty bool
+// string) propagate; the rest stay nil so the resolver falls through
+// to FORGE_RATE_LIMIT_* env vars, then `server.rate_limit:` in
+// forge.yaml, then the built-in defaults. Returns nil when nothing
+// was set.
+func buildRateLimitOverride() *runtime.RateLimitOverride {
+	out := &runtime.RateLimitOverride{}
+	any := false
+	if runRateLimitReadRPS != 0 {
+		v := runRateLimitReadRPS
+		out.ReadRPS = &v
+		any = true
+	}
+	if runRateLimitReadBurst != 0 {
+		v := runRateLimitReadBurst
+		out.ReadBurst = &v
+		any = true
+	}
+	if runRateLimitWriteRPS != 0 {
+		v := runRateLimitWriteRPS
+		out.WriteRPS = &v
+		any = true
+	}
+	if runRateLimitWriteBurst != 0 {
+		v := runRateLimitWriteBurst
+		out.WriteBurst = &v
+		any = true
+	}
+	if runRateLimitCancelExempt != "" {
+		if b, err := strconv.ParseBool(runRateLimitCancelExempt); err == nil {
+			out.CancelExempt = &b
+			any = true
+		}
+	}
+	if !any {
+		return nil
+	}
+	return out
 }

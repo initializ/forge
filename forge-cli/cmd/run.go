@@ -35,6 +35,14 @@ var (
 	runAuthURL           string
 	runAuthOrgID         string
 	runCORSOrigins       string
+
+	// FWS-7 audit export sink flags (issue #95). Default zero means
+	// "stderr only" — fully backward-compatible with pre-FWS-7. The
+	// initializ deploy receiver sets the matching FORGE_AUDIT_* env
+	// vars when running an agent under the platform.
+	runAuditSocket       string
+	runAuditHTTPEndpoint string
+	runAuditWriteTimeout time.Duration
 )
 
 var runCmd = &cobra.Command{
@@ -60,6 +68,14 @@ func init() {
 	runCmd.Flags().StringVar(&runAuthURL, "auth-url", "", "external auth provider URL for token validation (e.g. https://auth.example.com/verify)")
 	runCmd.Flags().StringVar(&runAuthOrgID, "auth-org-id", "", "org_id sent to the external auth provider")
 	runCmd.Flags().StringVar(&runCORSOrigins, "cors-origins", "", "comma-separated CORS allowed origins (default: localhost only, use '*' for wildcard)")
+
+	// FWS-7 — audit export (issue #95). All three default to the
+	// matching FORGE_AUDIT_* env var (resolved in runRun) so
+	// platform deployers can inject via env without per-agent CLI
+	// args. Flag wins when set explicitly.
+	runCmd.Flags().StringVar(&runAuditSocket, "audit-socket", "", "Unix socket path to export audit events to (sidecar consumer); empty = stderr only")
+	runCmd.Flags().StringVar(&runAuditHTTPEndpoint, "audit-http-endpoint", "", "localhost HTTP endpoint to POST audit events to (used only when --audit-socket is empty)")
+	runCmd.Flags().DurationVar(&runAuditWriteTimeout, "audit-write-timeout", 0, "per-event timeout for the audit socket/HTTP sink (default 50ms)")
 }
 
 func runRun(cmd *cobra.Command, args []string) error {
@@ -84,6 +100,20 @@ func runRun(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Resolve audit-export config. Start with env-var defaults; flag
+	// values (when non-empty / non-zero) override. Empty after this
+	// merge means "no export sink; stderr only" — pre-FWS-7 behavior.
+	auditExport := coreruntime.AuditExportConfigFromEnv()
+	if runAuditSocket != "" {
+		auditExport.SocketPath = runAuditSocket
+	}
+	if runAuditHTTPEndpoint != "" {
+		auditExport.HTTPEndpoint = runAuditHTTPEndpoint
+	}
+	if runAuditWriteTimeout > 0 {
+		auditExport.WriteTimeout = runAuditWriteTimeout
+	}
+
 	runner, err := runtime.NewRunner(runtime.RunnerConfig{
 		Config:            cfg,
 		WorkDir:           workDir,
@@ -102,6 +132,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		AuthURL:           runAuthURL,
 		AuthOrgID:         runAuthOrgID,
 		CORSOrigins:       corsOrigins,
+		AuditExport:       auditExport,
 	})
 	if err != nil {
 		return fmt.Errorf("creating runner: %w", err)

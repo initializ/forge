@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"os"
 	"sync"
 	"time"
 )
@@ -183,26 +184,113 @@ type AuditEvent struct {
 	Fields map[string]any `json:"fields,omitempty"`
 }
 
-// AuditLogger writes structured NDJSON audit events to an io.Writer.
+// AuditLogger fans serialized NDJSON audit events out to a slice of
+// Sinks. The traditional single-writer constructor wraps the writer in
+// a writerSink; the FWS-7 multi-sink constructor (NewAuditLoggerFromConfig)
+// composes a stderr safety-net sink with an optional Unix socket or
+// localhost HTTP sink for export to a sidecar.
+//
+// Emit-side semantics:
+//   - Each sink's Write is called sequentially. Each sink is responsible
+//     for its own timeout/drop behavior; the AuditLogger never spawns a
+//     goroutine per event. This bounds emit latency to the sum of sink
+//     timeouts (stderr is microseconds; socket/HTTP is the configured
+//     per-write timeout, default 50ms).
+//   - Errors from a sink are logged once per (sink, error-class) and
+//     suppressed thereafter — a broken sidecar must not flood the
+//     operational logs.
+//   - Events leaving each sink are byte-identical. No sink transforms
+//     the payload.
 type AuditLogger struct {
-	mu sync.Mutex
-	w  io.Writer
+	mu      sync.Mutex
+	sinks   []Sink
+	logOnce map[string]bool // sink_name → first-error-already-logged for that sink
+	opsLog  Logger          // optional structured logger for sink-error reporting; nil disables
 }
 
-// NewAuditLogger creates a new AuditLogger writing to w.
+// NewAuditLogger creates a single-sink AuditLogger wrapping the given
+// writer. Backward-compatible with pre-FWS-7 callers; tests and the
+// CLI's per-command audit loggers (channel.go / run.go) continue to
+// use this. Production code paths that need the export sink should use
+// NewAuditLoggerFromConfig.
 func NewAuditLogger(w io.Writer) *AuditLogger {
-	return &AuditLogger{w: w}
+	name := "writer"
+	if w == os.Stderr {
+		name = "stderr"
+	}
+	return &AuditLogger{
+		sinks:   []Sink{newWriterSink(w, name)},
+		logOnce: map[string]bool{},
+	}
 }
 
-// Emit writes an audit event as a single NDJSON line. If Timestamp is empty
-// it is set to the current time in RFC3339 format.
+// SetOpsLogger wires a structured logger into the audit pipeline for
+// reporting sink failures (one log per (sink, error-class)). nil
+// disables ops logging; in that mode sink errors are silently
+// swallowed — appropriate for tests and for the channel CLI subcommand
+// where there's no logger in scope.
+func (a *AuditLogger) SetOpsLogger(l Logger) {
+	a.mu.Lock()
+	a.opsLog = l
+	a.mu.Unlock()
+}
+
+// AddSink appends a sink to the fan-out. Safe to call after
+// construction (e.g. from a delayed sidecar discovery), but most
+// callers should construct via NewAuditLoggerFromConfig.
+func (a *AuditLogger) AddSink(s Sink) {
+	a.mu.Lock()
+	a.sinks = append(a.sinks, s)
+	a.mu.Unlock()
+}
+
+// Sinks returns a snapshot of currently registered sinks. Used by the
+// periodic audit_export_status emitter to read per-sink stats.
+func (a *AuditLogger) Sinks() []Sink {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]Sink, len(a.sinks))
+	copy(out, a.sinks)
+	return out
+}
+
+// Close drains every sink with the given deadline. Honors the context;
+// sinks that don't drain in time are abandoned (each sink's Close is
+// responsible for its own per-sink deadline derivation from ctx).
+// Returns the first non-nil error from any sink so callers can surface
+// shutdown problems; later errors are still logged via opsLog.
+func (a *AuditLogger) Close(ctx context.Context) error {
+	a.mu.Lock()
+	sinks := append([]Sink(nil), a.sinks...)
+	opsLog := a.opsLog
+	a.mu.Unlock()
+
+	var firstErr error
+	for _, s := range sinks {
+		if err := s.Close(ctx); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			if opsLog != nil {
+				opsLog.Warn("audit sink close failed", map[string]any{
+					"sink":  s.Name(),
+					"error": err.Error(),
+				})
+			}
+		}
+	}
+	return firstErr
+}
+
+// Emit serializes an event and fans it out to every registered sink.
+// Timestamp is populated to RFC3339 (UTC) if absent. Marshal failures
+// are silently dropped — they indicate a programmer error (an
+// AuditEvent with a non-serializable Fields value), and dropping
+// matches the pre-FWS-7 behavior. Per-sink errors are logged once.
 //
 // Callers that have a request context.Context in scope should prefer
-// EmitFromContext, which automatically tags CorrelationID, TaskID, and
-// the workflow-correlation fields (WorkflowID, StageID, StepID,
-// InvocationCaller) from the context. Emit is kept for the few sites
-// that emit outside a request scope (e.g. agent_card_published at
-// startup).
+// EmitFromContext, which auto-tags CorrelationID, TaskID, and
+// workflow-correlation fields.
 func (a *AuditLogger) Emit(event AuditEvent) {
 	if event.Timestamp == "" {
 		event.Timestamp = time.Now().UTC().Format(time.RFC3339)
@@ -214,8 +302,43 @@ func (a *AuditLogger) Emit(event AuditEvent) {
 	data = append(data, '\n')
 
 	a.mu.Lock()
-	a.w.Write(data) //nolint:errcheck
+	sinks := a.sinks
+	opsLog := a.opsLog
 	a.mu.Unlock()
+
+	for _, s := range sinks {
+		// Per-event context with a generous parent deadline; each sink
+		// further bounds the actual I/O via its own configured timeout.
+		// We use context.Background here because Emit is called from
+		// non-request scopes too (startup banners, policy_loaded).
+		// Sink writes are bounded internally.
+		if err := s.Write(context.Background(), data); err != nil {
+			a.logSinkErrorOnce(opsLog, s.Name(), err)
+		}
+	}
+}
+
+// logSinkErrorOnce dedupes "sink is misbehaving" warnings to one line
+// per sink lifetime. The first error from each sink hits the ops log;
+// subsequent ones are suppressed. Stats counters carry the ongoing
+// drop count for operators who want quantitative health.
+func (a *AuditLogger) logSinkErrorOnce(opsLog Logger, sinkName string, err error) {
+	if opsLog == nil {
+		return
+	}
+	a.mu.Lock()
+	already := a.logOnce[sinkName]
+	if !already {
+		a.logOnce[sinkName] = true
+	}
+	a.mu.Unlock()
+	if already {
+		return
+	}
+	opsLog.Warn("audit sink write failed (further errors suppressed)", map[string]any{
+		"sink":  sinkName,
+		"error": err.Error(),
+	})
 }
 
 // EmitFromContext writes an audit event after auto-tagging

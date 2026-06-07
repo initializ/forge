@@ -40,6 +40,14 @@ var (
 	serveAuthURL           string
 	serveAuthOrgID         string
 	serveCORSOrigins       string
+
+	// FWS-7 audit export (issue #95). Forwarded to the forked
+	// `forge run` so the daemon process inherits the sink config.
+	// Env vars (FORGE_AUDIT_*) flow through via os.Environ() and
+	// take effect even when the flags are not set; flag wins when set.
+	serveAuditSocket       string
+	serveAuditHTTPEndpoint string
+	serveAuditWriteTimeout time.Duration
 )
 
 var serveCmd = &cobra.Command{
@@ -105,6 +113,9 @@ func registerServeFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&serveAuthURL, "auth-url", "", "external auth provider URL for token validation (e.g. https://auth.example.com/verify)")
 	cmd.Flags().StringVar(&serveAuthOrgID, "auth-org-id", "", "org_id sent to the external auth provider")
 	cmd.Flags().StringVar(&serveCORSOrigins, "cors-origins", "", "comma-separated CORS allowed origins (default: localhost only, use '*' for wildcard)")
+	cmd.Flags().StringVar(&serveAuditSocket, "audit-socket", "", "Unix socket path to export audit events to (sidecar consumer); empty = stderr only")
+	cmd.Flags().StringVar(&serveAuditHTTPEndpoint, "audit-http-endpoint", "", "localhost HTTP endpoint to POST audit events to (used only when --audit-socket is empty)")
+	cmd.Flags().DurationVar(&serveAuditWriteTimeout, "audit-write-timeout", 0, "per-event timeout for the audit socket/HTTP sink (default 50ms)")
 }
 
 func init() {
@@ -208,6 +219,15 @@ func serveStartRun(cmd *cobra.Command, args []string) error {
 	}
 	if serveCORSOrigins != "" {
 		runArgs = append(runArgs, "--cors-origins", serveCORSOrigins)
+	}
+	if serveAuditSocket != "" {
+		runArgs = append(runArgs, "--audit-socket", serveAuditSocket)
+	}
+	if serveAuditHTTPEndpoint != "" {
+		runArgs = append(runArgs, "--audit-http-endpoint", serveAuditHTTPEndpoint)
+	}
+	if serveAuditWriteTimeout > 0 {
+		runArgs = append(runArgs, "--audit-write-timeout", serveAuditWriteTimeout.String())
 	}
 
 	// Ensure .forge directory exists

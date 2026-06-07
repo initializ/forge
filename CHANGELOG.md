@@ -14,6 +14,34 @@
   `read_rps`, `read_burst`, `write_rps`, `write_burst`, `cancel_exempt`.
   See `docs/reference/forge-yaml-schema.md#serverrate_limit--per-ip-a2a-rate-limits-fws-10`.
 
+### Fixed
+
+- **`tasks/send` now rejects malformed messages at the entry point with a
+  clear diagnostic instead of letting the executor produce a confused
+  reply (issue #119).** The most common failure was a client sending the
+  pre-0.3.0 `"type": "text"` discriminator instead of the A2A 0.3.0
+  spec-correct `"kind": "text"`. `encoding/json` silently dropped the
+  unknown `type` field, leaving `Part.Kind` empty; the executor then
+  produced a reply like *"It looks like your message didn't come
+  through"* — confusing the caller about what actually went wrong.
+  New `Part.Validate()` and `Message.Validate()` (in `forge-core/a2a`)
+  catch this case along with empty `Kind` on a populated part,
+  unknown `Kind` values, missing `role`, and empty `parts` arrays.
+  The validator is invoked on all four `tasks/send` entry points
+  (JSON-RPC sync + SSE, REST sync + SSE) and returns
+  `JSON-RPC -32602 InvalidParams` / `HTTP 400` with the spec
+  divergence named in the message text — e.g. *"parts[0]: part kind
+  is required (A2A 0.3.0); got empty kind with non-empty content —
+  did you send `\"type\"` instead of `\"kind\"`? `\"type\"` is from
+  the pre-0.3.0 dialect and is silently ignored by the decoder"*.
+  Operators see a structured `Warn` log
+  (`tasks/send rejected: invalid message shape` with `task_id`,
+  `reason`, and `remote_addr`) so they can grep for clients still
+  emitting the legacy shape. Sentinel errors
+  (`ErrPartKindMissing`, `ErrPartKindUnknown`, `ErrMessageRoleMissing`,
+  `ErrMessagePartsEmpty`) are exposed for callers that want to branch
+  on the specific cause without parsing strings.
+
 ### Changed
 
 - **A2A server rate-limit defaults bumped for orchestrated workloads

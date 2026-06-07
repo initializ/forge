@@ -931,6 +931,20 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 		if err := json.Unmarshal(rawParams, &params); err != nil {
 			return a2a.NewErrorResponse(id, a2a.ErrCodeInvalidParams, "invalid params: "+err.Error())
 		}
+		// Validate the message shape per A2A 0.3.0 (issue #119). The
+		// most common failure is a client sending `"type": "text"`
+		// instead of `"kind": "text"` — encoding/json silently drops
+		// the unknown field, Part.Kind stays "", and the executor
+		// downstream would respond with a confused "your message
+		// didn't come through" rather than name the spec divergence.
+		// Reject loudly with a diagnostic the operator can act on.
+		if err := params.Message.Validate(); err != nil {
+			r.logger.Warn("tasks/send rejected: invalid message shape", map[string]any{
+				"task_id": params.ID,
+				"reason":  err.Error(),
+			})
+			return a2a.NewErrorResponse(id, a2a.ErrCodeInvalidParams, "invalid message: "+err.Error())
+		}
 		r.logger.Info("tasks/send", map[string]any{"task_id": params.ID})
 		// Delegate to executeTask so JSON-RPC and REST share the same
 		// audit + accumulator + invocation_complete wiring (issue #87 /
@@ -961,6 +975,20 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 		var params a2a.SendTaskParams
 		if err := json.Unmarshal(rawParams, &params); err != nil {
 			server.WriteSSEEvent(w, flusher, "error", a2a.NewErrorResponse(id, a2a.ErrCodeInvalidParams, err.Error())) //nolint:errcheck
+			return
+		}
+		// A2A 0.3.0 message-shape validation (issue #119). Same
+		// rationale as the JSON-RPC tasks/send path: reject malformed
+		// requests at the entry point with a clear diagnostic instead
+		// of letting the executor produce a confusing "didn't come
+		// through" reply.
+		if err := params.Message.Validate(); err != nil {
+			r.logger.Warn("tasks/sendSubscribe rejected: invalid message shape", map[string]any{
+				"task_id": params.ID,
+				"reason":  err.Error(),
+			})
+			server.WriteSSEEvent(w, flusher, "error", //nolint:errcheck
+				a2a.NewErrorResponse(id, a2a.ErrCodeInvalidParams, "invalid message: "+err.Error()))
 			return
 		}
 
@@ -1398,6 +1426,19 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 			ID:      body.Task.ID,
 			Message: body.Task.Message,
 		}
+		// A2A 0.3.0 message-shape validation (issue #119). Catches the
+		// pre-0.3.0 `type` vs `kind` discriminator mismatch + missing
+		// role / empty parts at the entry point so the executor never
+		// sees a malformed message.
+		if err := params.Message.Validate(); err != nil {
+			r.logger.Warn("REST /tasks/send rejected: invalid message shape", map[string]any{
+				"task_id":     params.ID,
+				"reason":      err.Error(),
+				"remote_addr": req.RemoteAddr,
+			})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid message: " + err.Error()})
+			return
+		}
 
 		// Pull workflow correlation headers (issue #86 / FWS-2) so audit
 		// events tagged via EmitFromContext carry the orchestrator's
@@ -1429,6 +1470,18 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 		}
 		if body.Task.ID == "" {
 			body.Task.ID = coreruntime.GenerateID()
+		}
+		// A2A 0.3.0 message-shape validation (issue #119). Reject before
+		// we commit SSE response headers — once Content-Type is set
+		// to text/event-stream the client expects a stream, not a 400.
+		if err := body.Task.Message.Validate(); err != nil {
+			r.logger.Warn("REST /tasks/sendSubscribe rejected: invalid message shape", map[string]any{
+				"task_id":     body.Task.ID,
+				"reason":      err.Error(),
+				"remote_addr": req.RemoteAddr,
+			})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid message: " + err.Error()})
+			return
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")

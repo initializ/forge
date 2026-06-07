@@ -4,6 +4,31 @@
 
 ### Added
 
+- **Per-IP rate-limit configurability — `server.rate_limit` block +
+  CLI flags + env vars (issue #110, FWS-10).** The A2A server's
+  per-IP rate limiter (originally from issue #31) is now configurable
+  end-to-end via a new top-level `server.rate_limit:` block in
+  `forge.yaml`, matching `--rate-limit-*` CLI flags on both `forge run`
+  and `forge serve start`, and `FORGE_RATE_LIMIT_*` env vars. Resolution
+  order is per-field: CLI > env > yaml > defaults. Five fields exposed:
+  `read_rps`, `read_burst`, `write_rps`, `write_burst`, `cancel_exempt`.
+  See `docs/reference/forge-yaml-schema.md#serverrate_limit--per-ip-a2a-rate-limits-fws-10`.
+
+### Changed
+
+- **A2A server rate-limit defaults bumped for orchestrated workloads
+  (issue #110, FWS-10).** Write limits raised from `10/min` + burst `3`
+  to `60/min` + burst `20`. The old defaults predated parallel workflow
+  execution and cron bursts — a 10-step parallel stage was getting
+  serialized after the 3rd dispatch. **`tasks/cancel` is now exempt
+  from the write bucket by default** (configurable via
+  `cancel_exempt: false`). The cost-ceiling cancel-burst case
+  (orchestrator firing N parallel cancels when a workflow budget trips)
+  was hitting `-32603: rate limit exceeded` at exactly the moment
+  cancellation matters most — that's the failure mode FWS-4's manual
+  test surfaced. Read defaults (`60/min`, burst `10`) unchanged.
+  Operators with stricter threat models can lock down via the new
+  config surface (example for a public-facing agent in the schema docs).
 - **Hardened audit emission — sequence numbers + schema version + opt-in
   payload capture (issue #91, FWS-8).** Every audit event now carries
   `schema_version: "1.0"` (the audit schema is documented as a stable,

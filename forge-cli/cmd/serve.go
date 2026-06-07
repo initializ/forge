@@ -48,6 +48,15 @@ var (
 	serveAuditSocket       string
 	serveAuditHTTPEndpoint string
 	serveAuditWriteTimeout time.Duration
+
+	// FWS-10 rate-limit overrides (issue #110). Forwarded to the
+	// forked `forge run`. Sentinel zero / "" means "not set; let the
+	// child resolve from env / yaml / defaults."
+	serveRateLimitReadRPS      float64
+	serveRateLimitReadBurst    int
+	serveRateLimitWriteRPS     float64
+	serveRateLimitWriteBurst   int
+	serveRateLimitCancelExempt string
 )
 
 var serveCmd = &cobra.Command{
@@ -116,6 +125,11 @@ func registerServeFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&serveAuditSocket, "audit-socket", "", "Unix socket path to export audit events to (sidecar consumer); empty = stderr only")
 	cmd.Flags().StringVar(&serveAuditHTTPEndpoint, "audit-http-endpoint", "", "localhost HTTP endpoint to POST audit events to (used only when --audit-socket is empty)")
 	cmd.Flags().DurationVar(&serveAuditWriteTimeout, "audit-write-timeout", 0, "per-event timeout for the audit socket/HTTP sink (default 50ms)")
+	cmd.Flags().Float64Var(&serveRateLimitReadRPS, "rate-limit-read-rps", 0, "per-IP request/sec for read methods (default 1.0 = 60/min)")
+	cmd.Flags().IntVar(&serveRateLimitReadBurst, "rate-limit-read-burst", 0, "per-IP burst size for read methods (default 10)")
+	cmd.Flags().Float64Var(&serveRateLimitWriteRPS, "rate-limit-write-rps", 0, "per-IP request/sec for write methods (default 1.0 = 60/min)")
+	cmd.Flags().IntVar(&serveRateLimitWriteBurst, "rate-limit-write-burst", 0, "per-IP burst size for write methods (default 20)")
+	cmd.Flags().StringVar(&serveRateLimitCancelExempt, "rate-limit-cancel-exempt", "", "exempt tasks/cancel from the write bucket (true/false; default true)")
 }
 
 func init() {
@@ -228,6 +242,21 @@ func serveStartRun(cmd *cobra.Command, args []string) error {
 	}
 	if serveAuditWriteTimeout > 0 {
 		runArgs = append(runArgs, "--audit-write-timeout", serveAuditWriteTimeout.String())
+	}
+	if serveRateLimitReadRPS != 0 {
+		runArgs = append(runArgs, "--rate-limit-read-rps", strconv.FormatFloat(serveRateLimitReadRPS, 'g', -1, 64))
+	}
+	if serveRateLimitReadBurst != 0 {
+		runArgs = append(runArgs, "--rate-limit-read-burst", strconv.Itoa(serveRateLimitReadBurst))
+	}
+	if serveRateLimitWriteRPS != 0 {
+		runArgs = append(runArgs, "--rate-limit-write-rps", strconv.FormatFloat(serveRateLimitWriteRPS, 'g', -1, 64))
+	}
+	if serveRateLimitWriteBurst != 0 {
+		runArgs = append(runArgs, "--rate-limit-write-burst", strconv.Itoa(serveRateLimitWriteBurst))
+	}
+	if serveRateLimitCancelExempt != "" {
+		runArgs = append(runArgs, "--rate-limit-cancel-exempt", serveRateLimitCancelExempt)
 	}
 
 	// Ensure .forge directory exists

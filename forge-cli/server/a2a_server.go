@@ -302,7 +302,15 @@ func (s *Server) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
 
 	// Check regular handlers
 	if h, ok := s.handlers[req.Method]; ok {
+		// Attach a per-request response-header stage so the handler
+		// can publish FWS-3 X-Forge-* invocation-usage headers (or
+		// future per-method headers) without needing access to the
+		// http.ResponseWriter, which the JSON-RPC Handler signature
+		// deliberately omits. The dispatcher drains the stage onto
+		// the writer's Header() before writeJSON emits the body.
+		ctx = WithResponseHeaderStage(ctx)
 		resp := h(ctx, req.ID, req.Params)
+		DrainResponseHeaderStage(ctx, w.Header())
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}

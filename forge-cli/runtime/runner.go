@@ -75,6 +75,13 @@ type RunnerConfig struct {
 	// flags default off (metadata-only audit). See issue #91 / FWS-8
 	// and docs/security/audit-logging.md#payload-capture-fws-8.
 	AuditPayloadCapture coreruntime.AuditPayloadCapture
+
+	// RateLimitOverride carries CLI-flag-derived overrides for the
+	// per-IP A2A rate limiter. Nil = no CLI overrides; the resolver
+	// will fall through to FORGE_RATE_LIMIT_* env vars and
+	// cfg.Server.RateLimit before defaulting to the FWS-10 baseline.
+	// See issue #110 / FWS-10.
+	RateLimitOverride *RateLimitOverride
 }
 
 // ScheduleNotifier is called after a scheduled task completes to deliver the
@@ -848,7 +855,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		corsOrigins = server.DefaultAllowedOrigins()
 	}
 
-	// 6. Create A2A server
+	// 6. Create A2A server. Rate limit resolution order
+	// (FWS-10 / issue #110): CLI flags > FORGE_RATE_LIMIT_* env >
+	// cfg.Server.RateLimit in forge.yaml > built-in defaults
+	// (60/min read+write, burst 10/20, tasks/cancel exempt). nil
+	// return means "no overrides anywhere" — let the server install
+	// its own defaults.
+	rateLimit := ResolveRateLimit(r.cfg.Config, r.cfg.RateLimitOverride)
 	r.startTime = time.Now()
 	srv := server.NewServer(server.ServerConfig{
 		Port:            r.cfg.Port,
@@ -857,6 +870,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		AgentCard:       card,
 		AuthMiddleware:  auth.Middleware(authCfg),
 		AllowedOrigins:  corsOrigins,
+		RateLimit:       rateLimit,
 	})
 
 	// 7. Register JSON-RPC handlers

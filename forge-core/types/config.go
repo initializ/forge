@@ -29,6 +29,29 @@ type ForgeConfig struct {
 	CORSOrigins    []string         `yaml:"cors_origins,omitempty"`
 	Package        PackageConfig    `yaml:"package,omitempty"`
 	GuardrailsPath string           `yaml:"guardrails_path,omitempty"` // path to guardrails.json (default: "guardrails.json")
+	Server         ServerConfig     `yaml:"server,omitempty"`
+}
+
+// ServerConfig groups A2A-server-side knobs that don't fit elsewhere
+// in the schema. Today it carries only the rate-limit sub-block; new
+// server-level concerns (TLS, request-size limits) belong here.
+// See issue #110 / FWS-10.
+type ServerConfig struct {
+	RateLimit RateLimitYAML `yaml:"rate_limit,omitempty"`
+}
+
+// RateLimitYAML mirrors the runtime RateLimitConfig but lives in
+// forge-core/types so it can be unmarshaled from forge.yaml without
+// importing forge-cli/server. The runner copies the populated fields
+// into the runtime RateLimitConfig. Zero values mean "use the
+// runtime default" — so an empty server.rate_limit block in
+// forge.yaml is equivalent to no block at all.
+type RateLimitYAML struct {
+	ReadRPS      float64 `yaml:"read_rps,omitempty"`
+	ReadBurst    int     `yaml:"read_burst,omitempty"`
+	WriteRPS     float64 `yaml:"write_rps,omitempty"`
+	WriteBurst   int     `yaml:"write_burst,omitempty"`
+	CancelExempt *bool   `yaml:"cancel_exempt,omitempty"` // pointer so "explicitly false" can override the true default
 }
 
 // MCPConfig declares Model Context Protocol servers for the agent.

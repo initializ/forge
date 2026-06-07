@@ -1,10 +1,12 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"net"
@@ -26,12 +28,31 @@ type Handler func(ctx context.Context, id any, rawParams json.RawMessage) *a2a.J
 // SSEHandler streams SSE events for a JSON-RPC request.
 type SSEHandler func(ctx context.Context, id any, rawParams json.RawMessage, w http.ResponseWriter, flusher http.Flusher)
 
-// RateLimitConfig controls per-IP rate limiting.
+// RateLimitConfig controls per-IP rate limiting on the A2A server.
+//
+// Defaults (see defaultRateLimitConfig): 60/min for both reads and
+// writes, with burst 10 / 20 respectively, and tasks/cancel exempt
+// from the write bucket entirely. The bumped write defaults (vs the
+// original #31 design of 10/min) reflect operational reality —
+// orchestrated parallel-task dispatch and cron-fire bursts blow past
+// the old 10/min in seconds. The cancel exemption is the most
+// important change: cancel is "stop doing work," it's the recovery
+// mechanism for runaway invocations, and throttling it amplifies the
+// problem it's trying to solve. See issue #110 / FWS-10.
 type RateLimitConfig struct {
 	ReadRPS    float64 // requests per second for read operations (GET/HEAD/OPTIONS)
 	ReadBurst  int     // burst size for reads
 	WriteRPS   float64 // requests per second for write operations (POST/PUT/DELETE)
 	WriteBurst int     // burst size for writes
+	// CancelExempt skips the write limiter for `tasks/cancel` JSON-RPC
+	// requests entirely. Default true. The cost-ceiling cancel-burst
+	// case (orchestrator firing N parallel cancels when a workflow
+	// budget trips) is the canonical example of why this exists —
+	// sharing the write bucket with tasks/send means the cancels are
+	// throttled at exactly the moment cancellation matters most.
+	// DoS via cancel-spam is naturally bounded by the registry's
+	// O(1) unknown-task lookup. See issue #110 / FWS-10.
+	CancelExempt bool
 }
 
 // ServerConfig configures the A2A HTTP server.
@@ -411,12 +432,20 @@ func isAddrInUse(err error) bool {
 }
 
 // defaultRateLimitConfig returns sensible defaults for the A2A server.
+//
+// Write defaults bumped from the original #31 design (10/min, burst 3)
+// to 60/min, burst 20 — large enough to absorb orchestrated
+// parallel-task dispatch and cron-fire bursts without silent throttling,
+// small enough to still bound anonymous-public-internet DoS at
+// 1 task/sec sustained. Cancel is exempt by default; see RateLimitConfig.
+// See issue #110 / FWS-10.
 func defaultRateLimitConfig() *RateLimitConfig {
 	return &RateLimitConfig{
-		ReadRPS:    1.0,         // ~60/min
-		ReadBurst:  10,          //
-		WriteRPS:   10.0 / 60.0, // ~10/min
-		WriteBurst: 3,           //
+		ReadRPS:      1.0, // 60/min
+		ReadBurst:    10,
+		WriteRPS:     1.0, // 60/min (was 10/60 ≈ 10/min)
+		WriteBurst:   20,  // (was 3)
+		CancelExempt: true,
 	}
 }
 
@@ -472,6 +501,20 @@ func rateLimitMiddleware(cfg *RateLimitConfig) func(http.Handler) http.Handler {
 				ip = host
 			}
 
+			// FWS-10: tasks/cancel exemption. Only POST requests to "/"
+			// carry a JSON-RPC envelope, so the peek is gated on that —
+			// no body-read for /healthz, /.well-known/*, GET /. The
+			// peek caps at 4 KiB so a malicious caller can't force the
+			// middleware to buffer a giant body; if the cap is hit
+			// without finding the method field, we fall back to the
+			// standard write classification.
+			if cfg.CancelExempt && r.Method == http.MethodPost && r.URL.Path == "/" {
+				if isTasksCancel(r) {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+
 			v := getVisitor(ip)
 			var limiter *rate.Limiter
 			switch r.Method {
@@ -491,6 +534,41 @@ func rateLimitMiddleware(cfg *RateLimitConfig) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// jsonRPCPeekCap bounds how many bytes the rate-limit middleware
+// reads off the request body when checking whether it's a tasks/cancel
+// call. 4 KiB is generous for the `method` field (typically the body
+// preamble is well under 100 bytes) without giving a malicious caller
+// a knob to force unbounded buffering.
+const jsonRPCPeekCap = 4 << 10
+
+// isTasksCancel returns true when the request body's JSON-RPC `method`
+// field is "tasks/cancel". The body is read up to jsonRPCPeekCap bytes
+// and then restored via io.NopCloser so downstream handlers see the
+// full payload. Any error (read failure, unparseable JSON, method
+// missing) returns false — the caller falls back to standard write
+// classification.
+func isTasksCancel(r *http.Request) bool {
+	if r.Body == nil {
+		return false
+	}
+	buf := make([]byte, jsonRPCPeekCap)
+	n, _ := io.ReadFull(r.Body, buf)
+	body := buf[:n]
+	// Drain any tail past the cap so r.Body.Close() doesn't leak the
+	// connection — and stitch the cap'd prefix back into a new reader.
+	rest, _ := io.ReadAll(r.Body)
+	_ = r.Body.Close()
+	r.Body = io.NopCloser(bytes.NewReader(append(body, rest...)))
+
+	var env struct {
+		Method string `json:"method"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		return false
+	}
+	return env.Method == "tasks/cancel"
 }
 
 func init() {

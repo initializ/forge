@@ -114,6 +114,15 @@ You write a `SKILL.md`. Forge compiles it into a secure, runnable agent with egr
 | [Plugins](docs/reference/framework-plugins.md) | Framework plugin system |
 | [Command Integration](docs/reference/command-integration.md) | Initializ Command platform guide |
 
+### For Claude / LLM-assisted contributors
+
+| File | Description |
+|------|-------------|
+| [Forge knowledge skill](.claude/skills/forge.md) | Single comprehensive markdown — drop it into a Claude conversation for full Forge context (architecture, security, APIs, CLI, audit pipeline, how to build agents + skills). |
+| [Forge skill-builder skill](.claude/skills/forge-skill-builder.md) | Same prompt the `forge ui` Skill Builder uses. Author a valid `SKILL.md` (frontmatter + body + optional scripts) in any Claude chat — no `forge ui` needed. |
+
+`/sync-docs` keeps both skills current — see `.claude/commands/sync-docs.md`.
+
 ## Philosophy
 
 Running agents that do real work requires **atomicity** (explicit skills, defined tools, declared dependencies), **security** (restricted egress, encrypted secrets, audit trails), and **portability** (runs locally, in containers, in Kubernetes, in cloud — same agent, anywhere).

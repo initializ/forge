@@ -33,6 +33,8 @@ After feature work, update the affected documentation to reflect code changes.
    | `forge-skills/` | `docs/skills/writing-custom-skills.md`, `docs/skills/contributing-a-skill.md` |
    | `forge-core/types/` / `forge.yaml` | `docs/reference/forge-yaml-schema.md` |
    | `CHANGELOG.md` | (rendered into release notes; no per-doc sync needed) |
+   | Any of `forge-core/**`, `forge-cli/**`, `forge-ui/**`, `forge-plugins/**`, `forge-skills/**`, `docs/**`, `CHANGELOG.md`, `forge.yaml` schema | `.claude/skills/forge.md` — refresh the affected section(s) of the comprehensive knowledge skill. Sweep the specific section that maps to the changed area; don't rewrite the whole file. Keep the table-of-contents anchors in sync with the section headings. |
+   | `forge-ui/skill_builder_context.go` (specifically the `skillBuilderSystemPrompt` constant) | `.claude/skills/forge-skill-builder.md` — re-port verbatim. The body must remain byte-identical to the Go constant apart from un-doing the Go string-concatenation escapes (`` ` + "```" + ` `` → triple-backticks, etc.). Do not edit either side without updating the other. |
 
 3. **Read the diff** — For each mapped doc, read the relevant `git diff main` output to understand what changed.
 
@@ -65,3 +67,4 @@ After feature work, update the affected documentation to reflect code changes.
 - Link, don't repeat — cross-reference other docs
 - Keep ASCII diagrams (they render everywhere)
 - Code examples must be runnable
+- When `.claude/skills/forge.md` is updated, the table of contents at the top must stay synchronized with the section anchors below it. When `.claude/skills/forge-skill-builder.md` is updated, the body must remain byte-identical to `forge-ui/skill_builder_context.go`'s `skillBuilderSystemPrompt` constant (apart from un-doing the Go string-concatenation escapes — the only difference is markdown rendering).

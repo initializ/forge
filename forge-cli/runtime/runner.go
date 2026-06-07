@@ -64,6 +64,11 @@ type RunnerConfig struct {
 	AuthURL           string   // external auth provider URL for token validation
 	AuthOrgID         string   // org_id sent to external auth provider
 	CORSOrigins       []string // CORS allowed origins (from --cors-origins flag)
+
+	// AuditExport configures the FWS-7 audit export sinks (Unix socket
+	// or localhost HTTP fallback). Zero value = pre-FWS-7 behavior
+	// (stderr only). See issue #95.
+	AuditExport coreruntime.AuditExportConfig
 }
 
 // ScheduleNotifier is called after a scheduled task completes to deliver the
@@ -255,8 +260,27 @@ func (r *Runner) Run(ctx context.Context) error {
 	coreruntime.PopulateSecuritySchemes(card, r.cfg.Config)
 	r.enrichAgentCardWithSkills(card)
 
-	// 4. Create audit logger (used by hooks and handlers)
-	auditLogger := coreruntime.NewAuditLogger(os.Stderr)
+	// 4. Create audit logger. FWS-7 (issue #95): when AuditExport is
+	// configured (--audit-socket / --audit-http-endpoint), a second
+	// sink is registered alongside the stderr safety-net so the
+	// in-pod sidecar can consume events. Zero config = stderr only,
+	// pre-FWS-7 compatible.
+	auditLogger := coreruntime.NewAuditLoggerFromConfig(r.cfg.AuditExport)
+	auditLogger.SetOpsLogger(r.logger)
+	// Periodic audit_export_status — one event every 60s with per-sink
+	// health counters. Operators tail the audit stream to answer
+	// "is my sidecar healthy?". The stop func blocks until the
+	// goroutine exits, so this is safe to defer alongside Close.
+	stopAuditStatus := coreruntime.StartAuditExportStatus(ctx, auditLogger)
+	defer func() {
+		stopAuditStatus()
+		// Drain export sinks (no-op for stderr-only). Bound the close
+		// to 2s per the FWS-7 contract — slow sinks must not block
+		// shutdown.
+		closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = auditLogger.Close(closeCtx)
+	}()
 
 	// 4a. Load + enforce platform policy across three layers
 	// (issue #90 / FWS-6, building on FWS-5):

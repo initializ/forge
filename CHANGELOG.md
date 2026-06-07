@@ -4,6 +4,31 @@
 
 ### Added
 
+- **Audit event export capability — Unix Domain Socket sink + HTTP
+  fallback (issue #95, FWS-7).** Audit events can now be exported to a
+  local Unix Domain Socket (preferred) or localhost HTTP endpoint
+  *in addition to* the existing NDJSON-to-stderr stream — letting an
+  in-pod sidecar (e.g. the initializ platform receiver) consume audit
+  with low latency while preserving stderr as the safety-net fallback.
+  Configure via `--audit-socket=/path/to/audit.sock`,
+  `--audit-http-endpoint=http://127.0.0.1:9097/v1/audit`, or the
+  matching `FORGE_AUDIT_SOCKET` / `FORGE_AUDIT_HTTP_ENDPOINT` /
+  `FORGE_AUDIT_WRITE_TIMEOUT` env vars (works on both `forge run` and
+  `forge serve start`; flag wins over env). The default zero config is
+  unchanged from pre-FWS-7 — stderr only — so existing deployments are
+  unaffected. New `coreruntime.Sink` interface with three
+  implementations: `writerSink` (the safety net), `socketSink` (UDS
+  with lazy reconnect + 50ms per-write timeout + exponential backoff,
+  drops on timeout without back-pressuring the emitter), and `httpSink`
+  (localhost POST fallback). Per-sink stats counters (`writes_ok`,
+  `drops_timeout`, `drops_dial`, `connected`) feed a new
+  `audit_export_status` audit event emitted every 60s so operators can
+  tail the audit stream itself to confirm export health. Sinks are
+  fire-and-forget: buffering is the sidecar's concern. Events leaving
+  each sink are byte-identical; no sink transforms the payload. The
+  audit event schema, the event types, and the `AuditLogger.Emit()`
+  API are unchanged — this is purely an additive transport layer. See
+  `docs/security/audit-logging.md`.
 - **Three-layer platform policy + channel scope (issue #90, FWS-6).**
   Forge now reads platform policy from three layers at startup
   (`/etc/forge/policy.yaml`, `~/.forge/policy.yaml`, and the path at

@@ -4,6 +4,30 @@
 
 ### Added
 
+- **Hardened audit emission — sequence numbers + schema version + opt-in
+  payload capture (issue #91, FWS-8).** Every audit event now carries
+  `schema_version: "1.0"` (the audit schema is documented as a stable,
+  additive-by-default contract — version only bumps on removals or
+  semantic changes). Every event emitted on behalf of an A2A invocation
+  also carries a monotonically increasing `seq` field starting at `1`,
+  so consumers detect gaps and reordering by grouping
+  `(correlation_id, task_id)`. Sequences are scoped per-invocation;
+  startup events (`policy_loaded`, `agent_card_published`,
+  `audit_export_status`) omit `seq`. The default audit posture remains
+  metadata-only: token counts, sizes, durations, tool names — never raw
+  prompt text, completion text, or tool args / results. A new
+  `AuditPayloadCapture` config (off by default; opt-in field by field
+  via `LLMMessages` / `LLMResponse` / `ToolArgs` / `ToolResult`) lets
+  customers who need raw payloads in audit (debug, supervised-learning
+  corpora, compliance replay) capture them, with per-field byte caps
+  and `…[truncated:N]` markers so a runaway prompt or gigabyte tool
+  output cannot bloat one event. A regression test (`TestNoPayloadByDefault_LLMCall`)
+  pins the metadata-only invariant — any future caller that smuggles
+  raw user content into a default audit event will fail it. Audit-event
+  signing is deferred per the issue's architectural recommendation
+  ("ship if a customer asks") — sequence numbers cover gap detection
+  in the meantime. See
+  `docs/security/audit-logging.md#schema-contract-fws-8`.
 - **Audit event export capability — Unix Domain Socket sink + HTTP
   fallback (issue #95, FWS-7).** Audit events can now be exported to a
   local Unix Domain Socket (preferred) or localhost HTTP endpoint

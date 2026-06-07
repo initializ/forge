@@ -311,3 +311,116 @@ that wants audit-only records can split by parsing the `event` field,
 but stream-level separation would be cleaner. Tracked as FWS-9 (#100):
 *"Move ops logger output from stderr to stdout (stream separation from
 audit)."* Independent of FWS-7 in code.
+
+## Schema contract (FWS-8)
+
+The audit event schema is a **stable, versioned contract**. Consumers
+(the initializ platform, custom SIEM pipelines, cost-attribution
+dashboards) depend on field names and types. Forge treats the schema
+as an external interface: backward-compatible additions do not bump
+the version; removals or semantic changes do.
+
+Every emitted event carries:
+
+| Field | Type | Always present? | Notes |
+|---|---|---|---|
+| `ts` | string (RFC3339) | yes | Emission timestamp in UTC |
+| `event` | string | yes | Event-type constant — see "Event Types" above |
+| `schema_version` | string | yes | Current contract version. `"1.0"` as of FWS-8. |
+| `seq` | int64 | per-invocation only | Monotonic per-invocation counter. Absent on startup events (`policy_loaded`, `agent_card_published`, `audit_export_status`). |
+| `correlation_id` | string | request-scoped only | Per-invocation ID; groups all events for one A2A invocation |
+| `task_id` | string | request-scoped only | A2A task identifier (`params.id` on `tasks/send`) |
+| `workflow_id` / `stage_id` / `step_id` / `invocation_caller` | string | optional | Populated when the request carried `X-Workflow-*` headers (FWS-2) |
+| `model` / `provider` | string | optional | LLM call attribution (FWS-3) |
+| `input_tokens` / `output_tokens` / `tokens_unavailable` | int / bool | optional | LLM call usage (FWS-3) |
+| `duration_ms` | int64 | optional | Wall-clock duration (FWS-3) |
+| `request_id` | string | optional | Provider-specific call identifier (FWS-3) |
+| `fields` | map | optional | Per-event structured metadata (see each event type) |
+
+### Sequence numbers
+
+Every audit event emitted on behalf of an A2A invocation carries a
+monotonically increasing `seq` field. Sequences start at `1` for the
+first event of an invocation and advance by `1` per emit. Consumers
+detect gaps (lost events) and reordering (export-side races) by
+inspecting `seq` within a `(correlation_id, task_id)` group.
+
+Sequences are scoped to a single invocation — different invocations
+start their own counters. Events emitted outside any invocation scope
+(`policy_loaded`, `agent_card_published`, `audit_export_status`) omit
+`seq` entirely.
+
+### Schema versioning policy
+
+| Change | Bumps version? |
+|---|---|
+| Add a new optional field with `omitempty` | No |
+| Add a new event type constant | No |
+| Add a new `fields[]` key inside an existing event | No |
+| Rename a field, drop a field, or change a field's type | Yes (major bump) |
+| Change the semantic meaning of an existing field value | Yes (major bump) |
+
+Consumers that don't recognize a `schema_version` should keep
+processing — the schema is additive-by-default.
+
+## Payload capture (FWS-8)
+
+By default, audit events are **metadata only** — token counts, sizes,
+durations, tool names, provider attribution. No prompt text, no
+completion text, no raw tool arguments, no raw tool results. This is
+the baseline contract every operator can rely on regardless of
+configuration.
+
+Customers who need raw payloads in audit (debugging incidents,
+supervised-learning corpora, compliance replay) opt in field by field
+via `AuditPayloadCapture` on the runner config:
+
+```go
+RunnerConfig{
+  AuditPayloadCapture: coreruntime.AuditPayloadCapture{
+    LLMMessages: true,             // prompt messages in llm_call
+    LLMResponse: true,             // completion text in llm_call
+    ToolArgs:    true,             // raw tool input in tool_exec
+    ToolResult:  true,             // raw tool output in tool_exec
+    // Per-field byte caps; 0 = use DefaultPayloadCaptureCapBytes (16 KiB)
+    CapLLMMessagesBytes: 32 << 10,
+    CapToolResultBytes:  64 << 10,
+  },
+}
+```
+
+Captured strings are truncated to a per-field byte cap (default 16 KiB)
+with a `…[truncated:N]` marker so a runaway prompt or gigabyte tool
+output can't bloat one audit event. The cap is enforced by
+`coreruntime.TruncateForAudit`.
+
+**Security note.** Once any capture flag is enabled, the audit
+transport (FWS-7 sink or stderr safety net) lands captured payloads
+verbatim — including any PII or secret that flowed through the prompt
+or completion. Operators are responsible for routing the audit stream
+to a store appropriate to the captured payloads' sensitivity. Forge
+does not redact captured content.
+
+### What each flag turns on
+
+| Flag | Adds to event | Adds field |
+|---|---|---|
+| `LLMMessages` | `llm_call` / `llm_call_cancelled` | `prompt_messages` (JSON-encoded `[]ChatMessage`), `prompt_messages_count` |
+| `LLMResponse` | `llm_call` | `completion_text` (`Response.Message.Content`) |
+| `ToolArgs` | `tool_exec` (start hook) | `args` (raw `ToolInput`) |
+| `ToolResult` | `tool_exec` (end hook) | `result` (raw `ToolOutput`) |
+
+The default size-only fields (`args_size`, `result_size`,
+`prompt_messages_count`) always land regardless of capture
+configuration so consumers can size-check even without raw bodies.
+
+### What FWS-8 does NOT include
+
+- **Audit event signing.** The issue's architectural recommendation
+  was to defer signing until a customer specifically asks
+  (complexity around key management, rotation, and customer-side
+  verification). Sequence numbers cover gap detection in the
+  meantime. Tracked as a follow-up.
+- **Per-agent capture flags in `forge.yaml`.** Capture is set via
+  `RunnerConfig` programmatically today. A YAML surface can be added
+  if customers ask; the runtime semantics are already in place.

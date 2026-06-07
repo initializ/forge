@@ -69,6 +69,12 @@ type RunnerConfig struct {
 	// or localhost HTTP fallback). Zero value = pre-FWS-7 behavior
 	// (stderr only). See issue #95.
 	AuditExport coreruntime.AuditExportConfig
+
+	// AuditPayloadCapture is the opt-in raw-payload capture for audit
+	// events: LLM messages / completions, tool args / results. All
+	// flags default off (metadata-only audit). See issue #91 / FWS-8
+	// and docs/security/audit-logging.md#payload-capture-fws-8.
+	AuditPayloadCapture coreruntime.AuditPayloadCapture
 }
 
 // ScheduleNotifier is called after a scheduled task completes to deliver the
@@ -938,6 +944,11 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 		ctx = security.WithEgressClient(ctx, egressClient)
 		ctx = coreruntime.WithCorrelationID(ctx, correlationID)
 		ctx = coreruntime.WithTaskID(ctx, params.ID)
+		// FWS-8: per-invocation sequence counter so every audit event
+		// emitted on behalf of this request carries a monotonically
+		// increasing `seq` field — consumers detect gaps + ordering
+		// at the export side.
+		ctx = coreruntime.WithSequenceCounter(ctx, new(coreruntime.SequenceCounter))
 		sseAcc := coreruntime.NewLLMUsageAccumulator()
 		ctx = coreruntime.WithLLMUsageAccumulator(ctx, sseAcc)
 		defer func() {
@@ -1149,6 +1160,8 @@ func (r *Runner) executeTask(
 	ctx = security.WithEgressClient(ctx, egressClient)
 	ctx = coreruntime.WithCorrelationID(ctx, correlationID)
 	ctx = coreruntime.WithTaskID(ctx, params.ID)
+	// FWS-8: per-invocation sequence counter (see issue #91 / FWS-8).
+	ctx = coreruntime.WithSequenceCounter(ctx, new(coreruntime.SequenceCounter))
 	// Per-invocation usage accumulator so AfterLLMCall hooks can fold
 	// each call's tokens/duration into running totals the response
 	// handler reads back for X-Forge-* headers + the
@@ -1400,6 +1413,11 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 		ctx := security.WithEgressClient(req.Context(), egressClient)
 		ctx = coreruntime.WithCorrelationID(ctx, correlationID)
 		ctx = coreruntime.WithTaskID(ctx, params.ID)
+		// FWS-8: per-invocation sequence counter so every audit event
+		// emitted on behalf of this request carries a monotonically
+		// increasing `seq` field — consumers detect gaps + ordering
+		// at the export side.
+		ctx = coreruntime.WithSequenceCounter(ctx, new(coreruntime.SequenceCounter))
 		// Pull workflow correlation headers (issue #86 / FWS-2) before
 		// the accumulator setup so invocation_complete inherits workflow
 		// tagging via EmitFromContext.
@@ -1674,13 +1692,33 @@ func (r *Runner) registerLoggingHooks(hooks *coreruntime.HookRegistry) {
 }
 
 // registerAuditHooks adds structured audit event hooks to the LLM executor's agent loop.
+// The default audit posture is metadata-only — token counts, sizes,
+// durations, tool names, no raw bytes. r.cfg.AuditPayloadCapture
+// (issue #91 / FWS-8) opts each capture surface in individually:
+// LLMMessages, LLMResponse, ToolArgs, ToolResult. Captured strings
+// are truncated to a per-field byte cap so a runaway prompt or
+// gigabyte tool output cannot bloat one event.
 func (r *Runner) registerAuditHooks(hooks *coreruntime.HookRegistry, auditLogger *coreruntime.AuditLogger) {
+	capture := r.cfg.AuditPayloadCapture
+
 	hooks.Register(coreruntime.BeforeToolExec, func(_ context.Context, hctx *coreruntime.HookContext) error {
+		fields := map[string]any{"tool": hctx.ToolName, "phase": "start"}
+		// FWS-8: opt-in raw tool args. We only emit them here at the
+		// start hook (the end hook has them too — duplicating would
+		// double the audit footprint). args_size always lands; args
+		// itself only when capture is enabled.
+		if hctx.ToolInput != "" {
+			fields["args_size"] = len(hctx.ToolInput)
+			if capture.ToolArgs {
+				fields["args"] = coreruntime.TruncateForAudit(hctx.ToolInput,
+					coreruntime.CapOrDefault(capture.CapToolArgsBytes))
+			}
+		}
 		auditLogger.Emit(coreruntime.AuditEvent{
 			Event:         coreruntime.AuditToolExec,
 			CorrelationID: hctx.CorrelationID,
 			TaskID:        hctx.TaskID,
-			Fields:        map[string]any{"tool": hctx.ToolName, "phase": "start"},
+			Fields:        fields,
 		})
 		return nil
 	})
@@ -1690,14 +1728,16 @@ func (r *Runner) registerAuditHooks(hooks *coreruntime.HookRegistry, auditLogger
 		if hctx.Error != nil {
 			fields["error"] = hctx.Error.Error()
 		}
-		// Structured arg-shape metadata (sizes only — never raw values;
-		// raw-arg-value emission is FWS-8's payload-stripping concern,
-		// not FWS-3's). See issue #87 / FWS-3.
 		if hctx.ToolInput != "" {
 			fields["args_size"] = len(hctx.ToolInput)
 		}
 		if hctx.ToolOutput != "" {
 			fields["result_size"] = len(hctx.ToolOutput)
+			// FWS-8: opt-in raw tool result.
+			if capture.ToolResult {
+				fields["result"] = coreruntime.TruncateForAudit(hctx.ToolOutput,
+					coreruntime.CapOrDefault(capture.CapToolResultBytes))
+			}
 		}
 		ms := hctx.ToolExecDuration.Milliseconds()
 		auditLogger.Emit(coreruntime.AuditEvent{
@@ -1719,12 +1759,33 @@ func (r *Runner) registerAuditHooks(hooks *coreruntime.HookRegistry, auditLogger
 			usage.TotalTokens = hctx.Response.Usage.TotalTokens
 			requestID = hctx.Response.ID
 		}
+		// FWS-8 payload-capture surfaces. Fields stays nil in the
+		// default (metadata-only) posture so the emitted event's
+		// `fields` key omits cleanly.
+		var fields map[string]any
+		if capture.LLMMessages && len(hctx.Messages) > 0 {
+			if fields == nil {
+				fields = map[string]any{}
+			}
+			marshaled, _ := json.Marshal(hctx.Messages)
+			fields["prompt_messages"] = coreruntime.TruncateForAudit(string(marshaled),
+				coreruntime.CapOrDefault(capture.CapLLMMessagesBytes))
+			fields["prompt_messages_count"] = len(hctx.Messages)
+		}
+		if capture.LLMResponse && hctx.Response != nil && hctx.Response.Message.Content != "" {
+			if fields == nil {
+				fields = map[string]any{}
+			}
+			fields["completion_text"] = coreruntime.TruncateForAudit(hctx.Response.Message.Content,
+				coreruntime.CapOrDefault(capture.CapLLMResponseBytes))
+		}
 		auditLogger.EmitLLMCall(ctx, coreruntime.LLMCallAuditArgs{
 			Model:     hctx.Model,
 			Provider:  hctx.Provider,
 			RequestID: requestID,
 			Usage:     usage,
 			Duration:  hctx.LLMCallDuration,
+			Fields:    fields,
 		})
 		// Accumulate per-invocation usage totals so the response handler
 		// can populate X-Forge-Tokens-In/Out + X-Forge-Duration-Ms +
@@ -3262,6 +3323,9 @@ func (r *Runner) makeScheduleDispatcher(executor coreruntime.AgentExecutor, egre
 		ctx = security.WithEgressClient(ctx, egressClient)
 		ctx = coreruntime.WithCorrelationID(ctx, correlationID)
 		ctx = coreruntime.WithTaskID(ctx, taskID)
+		// FWS-8: scheduled invocations also need a per-invocation
+		// sequence counter so their audit stream is gap-detectable.
+		ctx = coreruntime.WithSequenceCounter(ctx, new(coreruntime.SequenceCounter))
 
 		auditLogger.Emit(coreruntime.AuditEvent{
 			Event:         coreruntime.AuditScheduleFire,

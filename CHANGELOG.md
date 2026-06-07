@@ -233,6 +233,22 @@
 
 ### Changed
 
+- **`forge run` / `forge serve` ops logs now write to stdout (was
+  stderr) — stream separation from audit (issue #100, FWS-9).** The
+  structured `JSONLogger` (`r.logger.Info/Warn/Error`: startup banner,
+  request lines, runtime errors) now writes to **stdout**. Audit NDJSON
+  continues to write to **stderr** (and to the dedicated FWS-7 sink
+  when configured). Container log collectors and SIEM pipelines can
+  now split ops from audit at the stream level — no payload parsing
+  needed. **Operator migration:** if you previously captured ops logs
+  via `forge run 2> ops.log`, switch to `forge run > ops.log` (and
+  `2> audit.log` for audit). Container deployments that capture both
+  streams via the runtime's standard log collector are unaffected.
+  Interactive CLI commands (`forge init`, `forge build`,
+  `forge channel`) still write user-facing warnings + errors to
+  stderr — those are UX messages, not server ops logs, and the
+  stream-split policy doesn't apply. See
+  `docs/security/audit-logging.md#streams-fws-9`.
 - **`SkillBuilderCodegenModel` no longer overrides the operator's model
   (issue #92).** The function previously forced `gpt-4.1` for openai and
   `claude-opus-4-6` for anthropic regardless of what the agent (or

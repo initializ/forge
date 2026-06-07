@@ -938,9 +938,20 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 		// ctx from inbound headers per issue #86 / FWS-2, so every audit
 		// event executeTask emits carries workflow correlation fields
 		// when present.
-		task, _, err := r.executeTask(ctx, params, store, executor, guardrails, egressClient, auditLogger)
+		task, snap, err := r.executeTask(ctx, params, store, executor, guardrails, egressClient, auditLogger)
 		if err != nil {
 			return a2a.NewErrorResponse(id, a2a.ErrCodeInternal, err.Error())
+		}
+		// FWS-3 X-Forge-* response headers. The REST path at
+		// POST /tasks/send stamps directly on w.Header() because the
+		// REST handler has the writer in scope. The JSON-RPC Handler
+		// signature deliberately omits the writer, so we publish the
+		// snapshot-derived headers through the dispatcher's per-request
+		// stage; handleJSONRPC drains the stage onto the writer before
+		// writeJSON. Without this stamp the JSON-RPC path silently drops
+		// the FWS-3 telemetry that orchestrators ceiling-check against.
+		if stage := server.ResponseHeaderStageFromContext(ctx); stage != nil {
+			applyForgeUsageHeaders(stage, snap)
 		}
 		return a2a.NewResponse(id, task)
 	})

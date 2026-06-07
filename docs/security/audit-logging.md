@@ -28,6 +28,7 @@ All runtime security events are emitted as structured NDJSON to stderr with corr
 | `policy_loaded` | One per non-empty policy layer at startup (system / user / workspace). Carries `fields.layer`, `source` (file path), deny-list size counts, and max bounds. See [Platform Policy](platform-policy.md). |
 | `policy_violation_at_build_time` | One per violation when `forge.yaml` conflicts with any policy layer. Agent refuses to start. Carries `fields.violation_kind` / `offending_value` / `forge_yaml_field` plus `layer` + `source` identifying the enforcing file. See [Platform Policy](platform-policy.md). |
 | `channel_denied_by_policy` | One per channel adapter skipped at startup because a policy layer's `denied_channels` list names it. Non-fatal; the agent runs with the remaining channels. Carries `fields.channel`, `layer` (`system` / `user` / `workspace`), and `source` (file path). See [Platform Policy — Channels](platform-policy.md#channels). |
+| `audit_export_status` | One event every 60s when an export sink is configured. Carries `fields.sinks[]`, one entry per registered sink with `name`, `writes_ok`, `drops_timeout`, `drops_dial`, `connected`. Operators tail the audit stream to confirm export health. See [Audit Event Export (FWS-7)](#audit-event-export-fws-7). |
 
 ### Example
 
@@ -218,3 +219,95 @@ jq -r 'select(.event=="auth_verify") | "\(.fields.user_id)"' forge.log | sort -u
 
 See [Authentication](authentication.md) for the full provider chain and how
 each provider populates these fields.
+
+## Audit Event Export (FWS-7)
+
+By default, audit events go to **stderr only** — the long-standing
+NDJSON-on-stderr safety net. FWS-7 (issue #95) adds a parallel export
+path so an in-pod sidecar can consume audit at low latency without
+parsing every container-log line.
+
+The export sink does NOT replace stderr. Both paths emit
+byte-identical NDJSON; the export sink is purely additive. If the
+export sink is down, the operator can still grep audit out of the
+container logs.
+
+### Configuration
+
+| Flag | Env var | Purpose | Default |
+|---|---|---|---|
+| `--audit-socket` | `FORGE_AUDIT_SOCKET` | Unix Domain Socket path (preferred) | empty (no export sink) |
+| `--audit-http-endpoint` | `FORGE_AUDIT_HTTP_ENDPOINT` | localhost HTTP POST endpoint (fallback when UDS unavailable) | empty |
+| `--audit-write-timeout` | `FORGE_AUDIT_WRITE_TIMEOUT` | Per-event sink timeout (Go duration syntax: `50ms`, `200ms`) | `50ms` |
+
+Both `forge run` and `forge serve start` accept these flags; `forge
+serve start` forwards them to the daemon process. Env vars flow
+through to the daemon via `os.Environ()` even without the flags. When
+both `--audit-socket` and `--audit-http-endpoint` are set, the socket
+wins.
+
+### Operational model
+
+- **Lazy connect.** The socket need not exist when the agent starts;
+  the first emit triggers the dial. Sidecar deploys that come up
+  *after* the agent will pick up future events without restarting the
+  agent.
+- **Per-event timeout.** Each emit at the sink gets up to
+  `--audit-write-timeout` (default 50ms) before being dropped and
+  counted as a `drops_timeout`. A slow sidecar can never back-pressure
+  the agent.
+- **Exponential backoff between failed dials.** 100ms → 200ms → 400ms
+  → … → 5s cap. During the backoff window, writes drop without
+  attempting a dial — so a permanently-down sidecar does not slow the
+  emit path beyond a cheap clock check.
+- **No buffering on the sink.** Buffering is the sidecar's job. The
+  sink is fire-and-forget.
+- **No transformation.** Events leaving the export sink are
+  byte-identical to events leaving stderr.
+
+### Sink health: `audit_export_status`
+
+Every 60 seconds the runtime emits one `audit_export_status` event
+carrying per-sink counters. The event flows through the same fan-out
+so operators tail the audit stream itself to confirm export health.
+
+```json
+{
+  "ts": "2026-06-06T18:30:00Z",
+  "event": "audit_export_status",
+  "fields": {
+    "sinks": [
+      {"name": "stderr",      "writes_ok": 4137, "drops_timeout": 0, "drops_dial": 0, "connected": 0},
+      {"name": "unix-socket", "writes_ok": 4135, "drops_timeout": 0, "drops_dial": 2, "connected": 1}
+    ]
+  }
+}
+```
+
+| Counter | Meaning |
+|---|---|
+| `writes_ok` | Events successfully delivered to this sink |
+| `drops_timeout` | Events dropped because the per-event Write missed its deadline (slow / unresponsive peer) |
+| `drops_dial` | Events dropped because the connection was down (sidecar offline or in backoff window) |
+| `connected` | `1` when a working connection is held, `0` otherwise. Sticky `0` for fire-and-forget sinks (writerSink) |
+
+### Why a separate path from OTel
+
+Audit cannot be sampled (every policy decision and cost-relevant event
+must land). OTel traces can be sampled. Audit needs separate retention
+from observability. Failure-domain isolation: if OTel export breaks,
+audit must continue, and vice versa.
+
+The two pipelines share signal sources in Forge — when something
+interesting happens, instrumentation emits to OTel **and** to audit at
+the same call site. They are deliberately not coupled: do not tap one
+from the other.
+
+### Companion follow-up: stream separation
+
+Forge currently puts both ops logs (`r.logger.Info(...)` startup
+banners, request logs) **and** audit NDJSON on stderr. A SIEM pipeline
+that wants audit-only records can split by parsing the `event` field,
+but stream-level separation would be cleaner. Tracked as FWS-9 (#100):
+*"Move ops logger output from stderr to stdout (stream separation from
+audit)."* Independent of FWS-7 in code.

@@ -10,26 +10,99 @@ import (
 
 // ForgeConfig represents the top-level forge.yaml configuration.
 type ForgeConfig struct {
-	AgentID        string           `yaml:"agent_id"`
-	Version        string           `yaml:"version"`
-	Framework      string           `yaml:"framework"`
-	Entrypoint     string           `yaml:"entrypoint"`
-	Model          ModelRef         `yaml:"model,omitempty"`
-	Tools          []ToolRef        `yaml:"tools,omitempty"`
-	BuiltinTools   []string         `yaml:"builtin_tools,omitempty"`
-	Channels       []string         `yaml:"channels,omitempty"`
-	Registry       string           `yaml:"registry,omitempty"`
-	Egress         EgressRef        `yaml:"egress,omitempty"`
-	Skills         SkillsRef        `yaml:"skills,omitempty"`
-	Memory         MemoryConfig     `yaml:"memory,omitempty"`
-	Secrets        SecretsConfig    `yaml:"secrets,omitempty"`
-	Auth           AuthConfig       `yaml:"auth,omitempty"`
-	MCP            MCPConfig        `yaml:"mcp,omitempty"`
-	Schedules      []ScheduleConfig `yaml:"schedules,omitempty"`
-	CORSOrigins    []string         `yaml:"cors_origins,omitempty"`
-	Package        PackageConfig    `yaml:"package,omitempty"`
-	GuardrailsPath string           `yaml:"guardrails_path,omitempty"` // path to guardrails.json (default: "guardrails.json")
-	Server         ServerConfig     `yaml:"server,omitempty"`
+	AgentID        string              `yaml:"agent_id"`
+	Version        string              `yaml:"version"`
+	Framework      string              `yaml:"framework"`
+	Entrypoint     string              `yaml:"entrypoint"`
+	Model          ModelRef            `yaml:"model,omitempty"`
+	Tools          []ToolRef           `yaml:"tools,omitempty"`
+	BuiltinTools   []string            `yaml:"builtin_tools,omitempty"`
+	Channels       []string            `yaml:"channels,omitempty"`
+	Registry       string              `yaml:"registry,omitempty"`
+	Egress         EgressRef           `yaml:"egress,omitempty"`
+	Skills         SkillsRef           `yaml:"skills,omitempty"`
+	Memory         MemoryConfig        `yaml:"memory,omitempty"`
+	Secrets        SecretsConfig       `yaml:"secrets,omitempty"`
+	Auth           AuthConfig          `yaml:"auth,omitempty"`
+	MCP            MCPConfig           `yaml:"mcp,omitempty"`
+	Schedules      []ScheduleConfig    `yaml:"schedules,omitempty"`
+	CORSOrigins    []string            `yaml:"cors_origins,omitempty"`
+	Package        PackageConfig       `yaml:"package,omitempty"`
+	GuardrailsPath string              `yaml:"guardrails_path,omitempty"` // path to guardrails.json (default: "guardrails.json")
+	Server         ServerConfig        `yaml:"server,omitempty"`
+	Observability  ObservabilityConfig `yaml:"observability,omitempty"`
+}
+
+// ObservabilityConfig groups telemetry-related sub-blocks. Today it
+// carries only `tracing:` (OTel Tracing v1, issue #108). Future
+// metrics / logs configuration belongs here too so operators have a
+// single observability stanza in forge.yaml.
+type ObservabilityConfig struct {
+	Tracing TracingYAML `yaml:"tracing,omitempty"`
+}
+
+// TracingYAML is the yaml-facing tracing configuration. It maps onto
+// (a subset of) observability.TracingConfig at runtime; the cli's
+// resolver layers env + CLI flags on top before calling
+// observability.NewTracerProvider. Operator-facing only — fields the
+// cli derives at runtime (ServiceVersion from cfg.Version,
+// RuntimeVersion from the build) are not exposed here.
+//
+// Off by default per the initiative ruling (#108): an absent or empty
+// `observability.tracing:` block leaves Enabled false, which means
+// the runner installs the noop tracer and emits no telemetry.
+type TracingYAML struct {
+	// Enabled gates the whole subsystem. Default false.
+	Enabled bool `yaml:"enabled,omitempty"`
+
+	// Endpoint is the OTLP target URL. Required when Enabled=true.
+	// For http/protobuf: "https://collector.svc.cluster.local:4318/v1/traces".
+	// For gRPC: "collector.svc.cluster.local:4317".
+	Endpoint string `yaml:"endpoint,omitempty"`
+
+	// Protocol selects the OTLP encoding. One of "http/protobuf"
+	// (default) or "grpc". HTTP is recommended because the
+	// in-process egress enforcer can wrap it; gRPC relies on the
+	// build-time allowlist + NetworkPolicy.
+	Protocol string `yaml:"protocol,omitempty"`
+
+	// Sampler is one of the standard OTEL_TRACES_SAMPLER names:
+	// always_on, always_off, traceidratio, parentbased_always_on
+	// (default), parentbased_always_off, parentbased_traceidratio.
+	Sampler string `yaml:"sampler,omitempty"`
+
+	// SamplerRatio applies to the *traceidratio* samplers (0.0–1.0).
+	// Ignored for the always_on / always_off variants. Default 1.0.
+	SamplerRatio float64 `yaml:"sampler_ratio,omitempty"`
+
+	// Headers are extra OTLP request headers (typically auth tokens).
+	// Prefer env-driven values (OTEL_EXPORTER_OTLP_HEADERS) so
+	// secrets do not end up committed to forge.yaml.
+	Headers map[string]string `yaml:"headers,omitempty"`
+
+	// Timeout bounds each exporter request. Default 10s.
+	Timeout time.Duration `yaml:"timeout,omitempty"`
+
+	// ServiceName is the OTel `service.name` resource attribute.
+	// Empty means the cli will derive one (OTEL_SERVICE_NAME env
+	// var, then AgentID).
+	ServiceName string `yaml:"service_name,omitempty"`
+
+	// ResourceAttrs are extra OTel resource attributes merged with
+	// the service.* / forge.* attributes the cli derives. Operators
+	// can also append via OTEL_RESOURCE_ATTRIBUTES.
+	ResourceAttrs map[string]string `yaml:"resource_attrs,omitempty"`
+
+	// Redact controls whether prompt / completion / tool I/O content
+	// in spans is scrubbed before export. Default true. Honored by
+	// the Phase 3 (#104) span instrumentation; surfaced here so the
+	// cli layer wires every tracing knob in one place.
+	Redact *bool `yaml:"redact,omitempty"`
+
+	// CaptureContent is the enterprise opt-in for raw prompt /
+	// completion content on spans. Default false (metadata only,
+	// matching the FWS-8 audit posture). Honored by Phase 3.
+	CaptureContent bool `yaml:"capture_content,omitempty"`
 }
 
 // ServerConfig groups A2A-server-side knobs that don't fit elsewhere

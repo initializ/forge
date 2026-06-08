@@ -426,7 +426,20 @@ func (r *Runner) Run(ctx context.Context) error {
 				Fields:        map[string]any{"domain": domain, "mode": string(egressCfg.Mode)},
 			})
 		}
-		egressClient = &http.Client{Transport: enforcer}
+		// Phase 3 (#104) — wrap the egress-enforced transport with
+		// otelhttp instrumentation so every outbound HTTP request the
+		// in-process clients (LLM providers, MCP, channels, OAuth)
+		// make through this client produces an "http.client" span
+		// automatically. The wrap also injects the OTel
+		// traceparent + baggage headers on outbound requests (Phase 0
+		// installed the composite propagator), which is the wire-level
+		// precursor to Phase 5 (#106) end-to-end propagation.
+		//
+		// When tracing is disabled the otelhttp wrapper is a near
+		// pass-through (the noop TracerProvider short-circuits span
+		// creation), so this is safe to always-wrap regardless of
+		// observability.tracing.enabled.
+		egressClient = &http.Client{Transport: observability.WrapHTTPTransport(enforcer)}
 
 		// Start local proxy for subprocess egress enforcement
 		if !security.InContainer() && egressCfg.Mode != security.ModeDevOpen {

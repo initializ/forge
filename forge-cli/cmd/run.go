@@ -55,6 +55,23 @@ var (
 	runRateLimitWriteRPS     float64
 	runRateLimitWriteBurst   int
 	runRateLimitCancelExempt string
+
+	// Phase 2 OTel flags (issue #103 / initiative #108). All optional;
+	// when a flag is not passed the resolver falls through to
+	// OTEL_* env vars and the observability.tracing block of
+	// forge.yaml. We use cmd.Flags().Changed(...) to distinguish
+	// "explicit zero" from "not passed" instead of sentinel values,
+	// because --otel-sampler-ratio 0 is a legitimate "drop everything"
+	// request.
+	runOTelEnabled        bool
+	runOTelEndpoint       string
+	runOTelProtocol       string
+	runOTelSampler        string
+	runOTelSamplerRatio   float64
+	runOTelTimeout        time.Duration
+	runOTelServiceName    string
+	runOTelCaptureContent bool
+	runOTelRedact         bool
 )
 
 var runCmd = &cobra.Command{
@@ -97,6 +114,21 @@ func init() {
 	runCmd.Flags().Float64Var(&runRateLimitWriteRPS, "rate-limit-write-rps", 0, "per-IP request/sec for write methods (default 1.0 = 60/min)")
 	runCmd.Flags().IntVar(&runRateLimitWriteBurst, "rate-limit-write-burst", 0, "per-IP burst size for write methods (default 20)")
 	runCmd.Flags().StringVar(&runRateLimitCancelExempt, "rate-limit-cancel-exempt", "", "exempt tasks/cancel from the write bucket (true/false; default true)")
+
+	// OTel Tracing v1 — Phase 2 (issue #103, initiative #108). All
+	// flags fall through to OTEL_* env / forge.yaml when not set;
+	// detection uses cmd.Flags().Changed("...") inside
+	// buildTracingFlags so explicit zero values (e.g. --otel-sampler-ratio 0)
+	// distinguish from "flag not passed."
+	runCmd.Flags().BoolVar(&runOTelEnabled, "otel-enabled", false, "enable OTLP tracing export (falls back to OTEL_SDK_DISABLED env / observability.tracing.enabled in forge.yaml)")
+	runCmd.Flags().StringVar(&runOTelEndpoint, "otel-endpoint", "", "OTLP target URL (e.g. https://collector:4318/v1/traces); falls back to OTEL_EXPORTER_OTLP_TRACES_ENDPOINT / OTEL_EXPORTER_OTLP_ENDPOINT")
+	runCmd.Flags().StringVar(&runOTelProtocol, "otel-protocol", "", "OTLP protocol: http/protobuf (default) or grpc")
+	runCmd.Flags().StringVar(&runOTelSampler, "otel-sampler", "", "OTEL_TRACES_SAMPLER name (e.g. parentbased_always_on, always_off, traceidratio)")
+	runCmd.Flags().Float64Var(&runOTelSamplerRatio, "otel-sampler-ratio", 0, "sampler ratio for *traceidratio* samplers (0.0–1.0)")
+	runCmd.Flags().DurationVar(&runOTelTimeout, "otel-timeout", 0, "per-request exporter timeout (default 10s)")
+	runCmd.Flags().StringVar(&runOTelServiceName, "otel-service-name", "", "OTel service.name resource attribute (default: agent_id)")
+	runCmd.Flags().BoolVar(&runOTelCaptureContent, "otel-capture-content", false, "include prompt/completion/tool I/O content on spans (enterprise opt-in; default false)")
+	runCmd.Flags().BoolVar(&runOTelRedact, "otel-redact", true, "redact PII before exporting span content (default true; ignored unless --otel-capture-content)")
 }
 
 func runRun(cmd *cobra.Command, args []string) error {
@@ -140,6 +172,12 @@ func runRun(cmd *cobra.Command, args []string) error {
 	// the resolver falls through to env → yaml → defaults.
 	rateLimitOverride := buildRateLimitOverride()
 
+	// Phase 2 OTel — assemble the CLI-side tracing overrides. Same
+	// pattern: only flags the operator passed propagate; everything
+	// else stays nil so the resolver falls through to OTEL_* env
+	// then observability.tracing in forge.yaml.
+	tracingFlags := buildTracingFlags(cmd)
+
 	runner, err := runtime.NewRunner(runtime.RunnerConfig{
 		Config:            cfg,
 		WorkDir:           workDir,
@@ -160,6 +198,8 @@ func runRun(cmd *cobra.Command, args []string) error {
 		CORSOrigins:       corsOrigins,
 		AuditExport:       auditExport,
 		RateLimitOverride: rateLimitOverride,
+		TracingFlags:      tracingFlags,
+		RuntimeVersion:    appVersion,
 	})
 	if err != nil {
 		return fmt.Errorf("creating runner: %w", err)
@@ -302,4 +342,57 @@ func buildRateLimitOverride() *runtime.RateLimitOverride {
 		return nil
 	}
 	return out
+}
+
+// buildTracingFlags translates the run* OTel flag vars into the
+// resolver's pointer-typed TracingFlags. Only flags the operator
+// explicitly passed propagate; everything else stays nil so
+// ResolveTracingConfig falls through to OTEL_* env vars and
+// observability.tracing in forge.yaml.
+//
+// We rely on cmd.Flags().Changed(name) rather than checking against a
+// sentinel (zero) because for OTel flags every "zero" value is a
+// legitimate explicit ask: --otel-enabled=false, --otel-sampler-ratio=0,
+// --otel-timeout=0 (let the SDK pick). Sentinel-based detection (the
+// pattern used for rate limits) would conflate "not passed" with
+// "explicitly off."
+func buildTracingFlags(cmd *cobra.Command) runtime.TracingFlags {
+	flags := runtime.TracingFlags{}
+	if cmd.Flags().Changed("otel-enabled") {
+		v := runOTelEnabled
+		flags.Enabled = &v
+	}
+	if cmd.Flags().Changed("otel-endpoint") {
+		v := runOTelEndpoint
+		flags.Endpoint = &v
+	}
+	if cmd.Flags().Changed("otel-protocol") {
+		v := runOTelProtocol
+		flags.Protocol = &v
+	}
+	if cmd.Flags().Changed("otel-sampler") {
+		v := runOTelSampler
+		flags.Sampler = &v
+	}
+	if cmd.Flags().Changed("otel-sampler-ratio") {
+		v := runOTelSamplerRatio
+		flags.SamplerRatio = &v
+	}
+	if cmd.Flags().Changed("otel-timeout") {
+		v := runOTelTimeout
+		flags.Timeout = &v
+	}
+	if cmd.Flags().Changed("otel-service-name") {
+		v := runOTelServiceName
+		flags.ServiceName = &v
+	}
+	if cmd.Flags().Changed("otel-capture-content") {
+		v := runOTelCaptureContent
+		flags.CaptureContent = &v
+	}
+	if cmd.Flags().Changed("otel-redact") {
+		v := runOTelRedact
+		flags.Redact = &v
+	}
+	return flags
 }

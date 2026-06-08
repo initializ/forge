@@ -32,6 +32,7 @@ import (
 	"github.com/initializ/forge/forge-core/llm/oauth"
 	"github.com/initializ/forge/forge-core/llm/providers"
 	"github.com/initializ/forge/forge-core/memory"
+	"github.com/initializ/forge/forge-core/observability"
 	coreruntime "github.com/initializ/forge/forge-core/runtime"
 	"github.com/initializ/forge/forge-core/scheduler"
 	"github.com/initializ/forge/forge-core/secrets"
@@ -82,6 +83,18 @@ type RunnerConfig struct {
 	// cfg.Server.RateLimit before defaulting to the FWS-10 baseline.
 	// See issue #110 / FWS-10.
 	RateLimitOverride *RateLimitOverride
+
+	// TracingFlags carries CLI-flag-derived OTel tracing overrides.
+	// Zero value = "no CLI overrides"; the runner's tracing resolver
+	// falls through to env (OTEL_*) and the
+	// observability.tracing block of forge.yaml. See issue #103 / OTel
+	// Tracing v1 (initiative #108).
+	TracingFlags TracingFlags
+
+	// RuntimeVersion is the Forge cli's own build version. Used for
+	// the `forge.runtime.version` OTel resource attribute so backends
+	// can compare agent runs across Forge upgrade waves. Empty = "dev".
+	RuntimeVersion string
 }
 
 // ScheduleNotifier is called after a scheduled task completes to deliver the
@@ -441,6 +454,66 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 	if egressProxy != nil {
 		defer egressProxy.Stop() //nolint:errcheck
+	}
+
+	// 4c. OTel tracing (Phase 2, issue #103 / initiative #108).
+	//
+	// Ordering: this runs AFTER the egress enforcer is built so the
+	// OTLP/HTTP exporter inherits the same egress-enforced transport
+	// every other in-process Forge HTTP client uses. The egress
+	// allowlist + post-DNS IP guard therefore bound where Forge can
+	// send spans — the operator declares the collector host in
+	// forge.yaml egress, and a misconfigured exporter cannot exfiltrate
+	// span content to an unapproved destination.
+	//
+	// Resolver precedence: forge.yaml < OTEL_* env vars < CLI flags
+	// (see ResolveTracingConfig).
+	//
+	// Disabled paths: a nil/Enabled=false config returns ErrDisabled
+	// from observability.NewTracerProvider; we install the noop tracer
+	// in that case (the default already set in forge-core/runtime/
+	// tracing.go) and continue. Tracing is off-by-default per the
+	// initiative ruling — a misconfigured exporter must never crash
+	// the agent.
+	tracingCfg := ResolveTracingConfig(
+		r.cfg.Config.Observability.Tracing,
+		r.cfg.TracingFlags,
+		r.cfg.Config.AgentID,
+		r.cfg.Config.Version,
+		r.cfg.RuntimeVersion,
+	)
+	var tracingTransport http.RoundTripper
+	if egressClient != nil {
+		tracingTransport = egressClient.Transport
+	}
+	tp, tpErr := observability.NewTracerProvider(ctx, tracingCfg, tracingTransport)
+	switch {
+	case errors.Is(tpErr, observability.ErrDisabled):
+		r.logger.Info("tracing disabled", nil)
+	case tpErr != nil:
+		// Telemetry failures must not crash the agent. Log loudly and
+		// fall through with the noop tracer the package default already
+		// installed. An operator watching the audit stream sees this in
+		// the ops log right alongside other startup diagnostics.
+		r.logger.Warn("tracing setup failed; falling back to noop tracer", map[string]any{
+			"error":    tpErr.Error(),
+			"endpoint": tracingCfg.Endpoint,
+		})
+	default:
+		coreruntime.SetTracerProvider(tp)
+		r.logger.Info(FormatTracingStartupLine(tracingCfg), nil)
+		// Shutdown drains the batch span processor and closes the OTLP
+		// exporter. Bound to 5s — slow collectors must not block agent
+		// shutdown. Registered AFTER the audit-logger defer above so it
+		// runs FIRST on shutdown (LIFO): tracer flushes its final batch
+		// while the egress proxy is still alive, then audit drains.
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := tp.Shutdown(shutdownCtx); err != nil {
+				r.logger.Warn("tracer provider shutdown error", map[string]any{"error": err.Error()})
+			}
+		}()
 	}
 
 	// 5. Choose executor and optional lifecycle runtime

@@ -18,7 +18,11 @@ import (
 	"time"
 
 	"github.com/initializ/forge/forge-core/a2a"
+	"github.com/initializ/forge/forge-core/observability"
 	coreruntime "github.com/initializ/forge/forge-core/runtime"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/time/rate"
 )
 
@@ -286,6 +290,34 @@ func (s *Server) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
 	ctx := coreruntime.WithWorkflowContext(r.Context(),
 		coreruntime.WorkflowContextFromHTTPHeaders(r.Header))
 
+	// Phase 3 (#104) — open the inbound dispatch span. Span name
+	// mirrors the JSON-RPC method ("a2a.tasks/send", "a2a.tasks/get",
+	// "a2a.tasks/cancel") so backend dashboards key by the same
+	// vocabulary the audit events use. When tracing is disabled the
+	// noop tracer returns a non-recording span and the SetAttributes /
+	// End calls are near-zero cost.
+	//
+	// The span sits ABOVE the SSE/handler branches so it covers both —
+	// streaming and unary methods share the same dispatch envelope.
+	// Per-iteration LLM and tool spans live in the executor (Phase 3
+	// continues in forge-core/runtime/loop.go); this is the root for
+	// every inbound A2A request.
+	ctx, span := coreruntime.Tracer().Start(ctx, "a2a."+req.Method,
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(attribute.String(observability.AttrForgeA2AMethod, req.Method)),
+	)
+	defer span.End()
+	if wf := coreruntime.WorkflowContextFromContext(ctx); !wf.IsZero() {
+		// FWS-2 orchestrator correlation surfaces on the span so a
+		// trace browser can pivot from a workflow run to every Forge
+		// agent invocation that workflow triggered.
+		span.SetAttributes(
+			attribute.String(observability.AttrForgeWorkflowID, wf.WorkflowID),
+			attribute.String(observability.AttrForgeWorkflowStageID, wf.StageID),
+			attribute.String(observability.AttrForgeWorkflowStepID, wf.StepID),
+		)
+	}
+
 	// Check SSE handlers first (for streaming methods)
 	if h, ok := s.sseHandlers[req.Method]; ok {
 		flusher, ok := w.(http.Flusher)
@@ -311,10 +343,21 @@ func (s *Server) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
 		ctx = WithResponseHeaderStage(ctx)
 		resp := h(ctx, req.ID, req.Params)
 		DrainResponseHeaderStage(ctx, w.Header())
+		if resp != nil && resp.Error != nil {
+			// JSON-RPC errors surface as Error/Ok on the span (the
+			// HTTP response itself is still 200 — JSON-RPC semantics).
+			// Numeric code stays attribute-only; descriptive text goes
+			// on the status so trace browsers display it inline.
+			span.SetAttributes(attribute.Int("rpc.jsonrpc.error_code", resp.Error.Code))
+			span.SetStatus(codes.Error, resp.Error.Message)
+		}
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 
+	// Method not found also surfaces as a span error so an operator
+	// scanning traces sees the misroute without having to grep the body.
+	span.SetStatus(codes.Error, "method not found: "+req.Method)
 	writeJSON(w, http.StatusOK, a2a.NewErrorResponse(req.ID, a2a.ErrCodeMethodNotFound, "method not found: "+req.Method))
 }
 

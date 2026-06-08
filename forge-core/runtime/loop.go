@@ -10,6 +10,9 @@ import (
 
 	"github.com/initializ/forge/forge-core/a2a"
 	"github.com/initializ/forge/forge-core/llm"
+	"github.com/initializ/forge/forge-core/observability"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 // ToolExecutor provides tool execution capabilities to the engine.
@@ -115,9 +118,52 @@ func NewLLMExecutor(cfg LLMExecutorConfig) *LLMExecutor {
 }
 
 // Execute processes a message through the LLM agent loop.
-func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Message) (*a2a.Message, error) {
+func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Message) (outMsg *a2a.Message, outErr error) {
 	if e.filesDir != "" {
 		ctx = WithFilesDir(ctx, e.filesDir)
+	}
+
+	// Phase 3 (#104) — open the agent-execution span. Parent (when
+	// present) is the inbound dispatch span set by
+	// forge-cli/server/a2a_server.go; otherwise this span is a root
+	// (the scheduler, channel adapters, and other non-A2A entry
+	// points run without a parent span). Final attributes
+	// (iteration count, final state) are stamped just before End via
+	// the deferred closure below — using named returns so the closure
+	// can read the actual returned error without us having to mutate
+	// finalState at every return site.
+	ctx, span := Tracer().Start(ctx, "agent.execute")
+	finalIter := 0
+	defer func() {
+		state := "completed"
+		switch {
+		case ctx.Err() != nil:
+			// Cancellation / deadline propagated up — distinct from a
+			// regular failure so the trace browser can group "operator
+			// cancelled" separately from "agent crashed."
+			state = "canceled"
+		case outErr != nil:
+			state = "failed"
+			span.RecordError(outErr)
+			span.SetStatus(codes.Error, outErr.Error())
+		}
+		span.SetAttributes(
+			attribute.Int(observability.AttrForgeLoopIteration, finalIter),
+			attribute.String(observability.AttrForgeTaskFinalState, state),
+		)
+		span.End()
+	}()
+	if task != nil && task.ID != "" {
+		span.SetAttributes(attribute.String(observability.AttrForgeTaskID, task.ID))
+	}
+	if cid := CorrelationIDFromContext(ctx); cid != "" {
+		span.SetAttributes(attribute.String(observability.AttrForgeCorrelationID, cid))
+	}
+	if e.provider != "" {
+		span.SetAttributes(attribute.String(observability.AttrGenAISystem, e.provider))
+	}
+	if e.modelName != "" {
+		span.SetAttributes(attribute.String(observability.AttrGenAIRequestModel, e.modelName))
 	}
 
 	mem := NewMemory(e.systemPrompt, e.charBudget, e.modelName)
@@ -219,6 +265,9 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 
 	// Agent loop
 	for i := 0; i < e.maxIter; i++ {
+		// Record iteration count on the outer span — the closure stamps
+		// the final value before End.
+		finalIter = i + 1
 		// Honor cancellation at iteration boundary. Returning ctx.Err()
 		// here propagates context.Canceled / DeadlineExceeded up to the
 		// runner, which maps it to TaskStateCanceled +
@@ -257,9 +306,24 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 		// AfterLLMCall hook can stamp duration_ms on the llm_call audit
 		// event and X-Forge-Duration-Ms header. See issue #87 / FWS-3.
 		llmStart := time.Now()
-		resp, err := e.client.Chat(ctx, req)
+		// Phase 3 (#104) — child span around the provider call. The
+		// span carries the same gen_ai.* attributes the audit event
+		// does so a backend can join the two by trace_id without a
+		// translation table. Span ends right after the response is
+		// observed (before AfterLLMCall hook) so the hook runs in the
+		// parent span's context — the hook is a Forge-internal step,
+		// not part of the LLM call's wall-clock measurement.
+		llmCtx, llmSpan := Tracer().Start(ctx, "llm.completion")
+		llmSpan.SetAttributes(
+			attribute.String(observability.AttrGenAISystem, e.provider),
+			attribute.String(observability.AttrGenAIRequestModel, e.modelName),
+		)
+		resp, err := e.client.Chat(llmCtx, req)
 		llmDuration := time.Since(llmStart)
 		if err != nil {
+			llmSpan.RecordError(err)
+			llmSpan.SetStatus(codes.Error, err.Error())
+			llmSpan.End()
 			// Cancellation is not a "something went wrong." When ctx was
 			// cancelled, the provider's error (whatever its concrete type
 			// — net/http wraps inconsistently across DNS / TLS / body
@@ -282,6 +346,18 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 			// Return user-friendly error (raw error is already logged via OnError hook)
 			return nil, fmt.Errorf("something went wrong while processing your request, please try again")
 		}
+		// Happy-path: stamp usage + finish_reason from the response,
+		// then close the span. Doing this BEFORE the AfterLLMCall hook
+		// keeps the hook's redaction / audit work outside the LLM
+		// span's duration — the span is the provider call alone.
+		llmSpan.SetAttributes(
+			attribute.Int(observability.AttrGenAIUsageInputTokens, resp.Usage.InputTokens),
+			attribute.Int(observability.AttrGenAIUsageOutputTokens, resp.Usage.OutputTokens),
+		)
+		if resp.FinishReason != "" {
+			llmSpan.SetAttributes(attribute.StringSlice(observability.AttrGenAIResponseFinishReasons, []string{resp.FinishReason}))
+		}
+		llmSpan.End()
 
 		// Fire AfterLLMCall hook
 		if err := e.hooks.Fire(ctx, AfterLLMCall, &HookContext{
@@ -483,11 +559,23 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 			// AfterToolExec hook can stamp duration_ms on the tool_exec
 			// audit event. See issue #87 / FWS-3.
 			toolStart := time.Now()
-			result, execErr := e.tools.Execute(ctx, tc.Function.Name, json.RawMessage(tc.Function.Arguments))
+			// Phase 3 (#104) — child span around the tool call. Span
+			// name is "tool.<tool_name>" so a flame graph groups tools
+			// by kind without a query. Tool args / results are NOT
+			// recorded as attributes here — Phase 3 is metadata-only;
+			// content capture lands when the FWS-8 redactor can be
+			// reused for spans.
+			toolCtx, toolSpan := Tracer().Start(ctx, "tool."+tc.Function.Name)
+			toolSpan.SetAttributes(attribute.String(observability.AttrForgeToolName, tc.Function.Name))
+			result, execErr := e.tools.Execute(toolCtx, tc.Function.Name, json.RawMessage(tc.Function.Arguments))
 			toolDuration := time.Since(toolStart)
 			if execErr != nil {
+				toolSpan.RecordError(execErr)
+				toolSpan.SetStatus(codes.Error, execErr.Error())
+				toolSpan.SetAttributes(attribute.String(observability.AttrForgeToolError, execErr.Error()))
 				result = fmt.Sprintf("Error executing tool %s: %s", tc.Function.Name, execErr.Error())
 			}
+			toolSpan.End()
 			iterResults = append(iterResults, toolIterResult{
 				Name:     tc.Function.Name,
 				Failed:   execErr != nil,

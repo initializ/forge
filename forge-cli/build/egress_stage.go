@@ -31,12 +31,18 @@ func (s *EgressStage) Execute(ctx context.Context, bc *pipeline.BuildContext) er
 		}
 	}
 
-	// Merge auth + MCP domains into the explicit allowlist BEFORE
-	// resolving. Without this, an OIDC issuer or an MCP server URL
-	// configured in forge.yaml would be silently blocked at runtime.
+	// Merge auth + MCP + OTel collector domains into the explicit
+	// allowlist BEFORE resolving. Without this an OIDC issuer, MCP
+	// server URL, or OTLP collector configured in forge.yaml would be
+	// silently blocked at runtime — spans would accumulate in the
+	// BatchSpanProcessor queue and drop on shutdown timeout, leaving
+	// the operator with an inexplicably empty trace backend. Phase 6
+	// of OTel Tracing v1 (#107 / #108) closes the loop: "tracing on in
+	// forge.yaml" implies "tracing reaches the backend."
 	allowed := append([]string{}, cfg.AllowedDomains...)
 	allowed = append(allowed, security.AuthDomains(bc.Config.Auth)...)
 	allowed = append(allowed, security.MCPDomains(bc.Config.MCP)...)
+	allowed = append(allowed, security.OTelDomain(bc.Config.Observability.Tracing)...)
 
 	resolved, err := security.Resolve(cfg.Profile, cfg.Mode, allowed, toolNames, cfg.Capabilities)
 	if err != nil {

@@ -215,6 +215,15 @@ forge run [flags]
 | `--with` | | Comma-separated channel adapters (e.g., `slack,telegram`) |
 | `--auth-url` | | External auth provider URL for token validation |
 | `--cors-origins` | localhost | Comma-separated CORS allowed origins (e.g., `https://app.example.com,https://admin.example.com`). Use `*` to allow all origins |
+| `--otel-enabled` | `false` | Enable OTLP tracing export. Falls back to `OTEL_SDK_DISABLED` env and `observability.tracing.enabled` in forge.yaml. See [Observability — Tracing](../core-concepts/observability-tracing.md). |
+| `--otel-endpoint` | | OTLP target URL. Falls back to `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `OTEL_EXPORTER_OTLP_ENDPOINT`. |
+| `--otel-protocol` | `http/protobuf` | OTLP protocol: `http/protobuf` or `grpc`. HTTP is recommended (the egress enforcer can wrap it). |
+| `--otel-sampler` | `parentbased_always_on` | Standard `OTEL_TRACES_SAMPLER` name. |
+| `--otel-sampler-ratio` | `1.0` | Ratio for `*traceidratio*` samplers (0.0–1.0). |
+| `--otel-timeout` | `10s` | Per-request exporter timeout. |
+| `--otel-service-name` | `agent_id` | OTel `service.name` resource attribute. |
+| `--otel-capture-content` | `false` | Reserved — enterprise opt-in for prompt/completion content on spans. Phase 3 ships metadata-only. |
+| `--otel-redact` | `true` | PII redaction posture flag. |
 
 ### Examples
 
@@ -236,6 +245,17 @@ forge run --enforce-guardrails --env .env.production
 
 # Run with custom CORS origins (for K8s ingress)
 forge run --cors-origins 'https://app.example.com,https://admin.example.com'
+
+# Run with OpenTelemetry tracing enabled (export to local collector)
+forge run --otel-enabled \
+  --otel-endpoint http://localhost:4318/v1/traces \
+  --otel-sampler always_on
+
+# Same, but service name + protocol override
+forge run --otel-enabled \
+  --otel-endpoint otel.example.com:4317 \
+  --otel-protocol grpc \
+  --otel-service-name my-agent-staging
 ```
 
 ---

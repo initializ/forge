@@ -300,8 +300,35 @@ audit must continue, and vice versa.
 
 The two pipelines share signal sources in Forge — when something
 interesting happens, instrumentation emits to OTel **and** to audit at
-the same call site. They are deliberately not coupled: do not tap one
-from the other.
+the same call site. They are deliberately not coupled at the export
+level (one breaking does not break the other), but as of OTel v1
+(#108 / Phase 4) every audit event emitted from a request-scoped
+context carries the active span's `trace_id` + `span_id`. See
+[trace cross-link](#trace-cross-link-otel-v1-105) below for the
+join-key semantics.
+
+### Trace cross-link (OTel v1, #105)
+
+When OpenTelemetry tracing is enabled (see
+[Observability — Tracing](../core-concepts/observability-tracing.md)),
+`EmitFromContext` automatically stamps the active span's `trace_id`
+and `span_id` on every audit event. Operators paste either value
+directly into a trace backend's search box to pivot between the two
+streams:
+
+| Pivot direction | How |
+|---|---|
+| **audit row → trace** | Paste the row's `trace_id` into Tempo / Jaeger / Honeycomb to land on the matching trace. Paste the `span_id` to jump directly to the span (an `llm_call` row's `span_id` resolves to the `llm.completion` span carrying matching `gen_ai.usage.*` tokens). |
+| **trace → audit row** | Copy `trace_id` from a trace browser; grep the audit log for the corresponding row to get the FWS-8 payload metadata the trace does not carry. |
+
+Format: lowercase hex matching W3C `traceparent` semantics — 32-char
+(128-bit) `trace_id`, 16-char (64-bit) `span_id`.
+
+**Backward compatibility:** both fields use `omitempty`. When tracing
+is off (default), audit JSON is byte-identical to the pre-Phase-4
+shape — no `trace_id` / `span_id` keys appear. The
+`AuditSchemaVersion` is NOT bumped: adding optional fields is a
+schema-compatible change per the policy above.
 
 ## Streams (FWS-9)
 
@@ -351,6 +378,7 @@ Every emitted event carries:
 | `input_tokens` / `output_tokens` / `tokens_unavailable` | int / bool | optional | LLM call usage (FWS-3) |
 | `duration_ms` | int64 | optional | Wall-clock duration (FWS-3) |
 | `request_id` | string | optional | Provider-specific call identifier (FWS-3) |
+| `trace_id` / `span_id` | string | tracing-on only | W3C-format lowercase hex (32/16 chars) of the OTel span active at emit time. Pivots audit row ↔ trace tree. See [trace cross-link](#trace-cross-link-otel-v1-105). |
 | `fields` | map | optional | Per-event structured metadata (see each event type) |
 
 ### Sequence numbers

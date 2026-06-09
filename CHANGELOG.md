@@ -4,6 +4,38 @@
 
 ### Added
 
+- **OpenTelemetry tracing v1 — full end-to-end distributed tracing
+  (initiative #108, PRs #122–#128).** Off-by-default OTLP export
+  covering A2A dispatch (`a2a.<method>` SpanKindServer), the
+  executor loop (`agent.execute`), every LLM completion
+  (`llm.completion` with GenAI semconv `gen_ai.usage.*_tokens`),
+  every tool call (`tool.<name>`), and every outbound HTTP request
+  (auto via `otelhttp` on the egress-enforced transport). New
+  `observability.tracing` block in `forge.yaml`, nine `--otel-*`
+  CLI flags, and all 10 standard `OTEL_*` env vars
+  (`OTEL_EXPORTER_OTLP_*`, `OTEL_TRACES_SAMPLER`, `OTEL_SERVICE_NAME`,
+  ...) honored with full precedence (CLI > env > yaml > defaults).
+  Audit events emitted via `EmitFromContext` carry `trace_id` +
+  `span_id` so operators pivot audit row ↔ trace tree with a single
+  copy-paste (`omitempty` — tracing-off audit JSON is byte-identical
+  to pre-Phase-4). The composite W3C `tracecontext + baggage`
+  propagator is installed at startup; the dispatcher extracts inbound
+  `traceparent` and outbound HTTP re-injects it, so multi-hop A2A
+  flows display as one connected trace. The OTLP HTTP exporter rides
+  through the same egress enforcer as every other in-process client
+  — a misconfigured collector URL cannot exfiltrate spans. `forge
+  package` and `forge run` auto-add the collector hostname to
+  `egress_allowlist.json` so the generated NetworkPolicy admits
+  OTLP traffic with no second egress edit. Phase 3 ships
+  metadata-only; content capture (the `capture_content` knob) is
+  a follow-up that will reuse the FWS-8 audit redactor. See
+  `docs/core-concepts/observability-tracing.md` for the full
+  reference. Issue breakdown: #101 (Phase 0, seam, PR #122), #102
+  (Phase 1, OTLP provider, PR #123), #103 (Phase 2, config wiring,
+  PR #124), #104 (Phase 3, span instrumentation, PR #125), #105
+  (Phase 4, audit cross-link, PR #126), #106 (Phase 5, inbound
+  propagation, PR #127), #107 (Phase 6, build-time egress, PR #128).
+
 - **Per-IP rate-limit configurability — `server.rate_limit` block +
   CLI flags + env vars (issue #110, FWS-10).** The A2A server's
   per-IP rate limiter (originally from issue #31) is now configurable

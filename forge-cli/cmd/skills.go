@@ -193,6 +193,38 @@ func runSkillsAdd(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Check one_of env groups (issue #135). Pre-fix, OneOfEnv was not
+	// checked at all here — operators with their key encrypted in
+	// .forge/secrets.enc got no confirmation that it was detected, and
+	// operators with neither key set got no diagnostic. Mirrors the
+	// RequiredEnv check above with the "group is satisfied iff at least
+	// one member is found in any of the three sources" semantic. No
+	// interactive prompt: operators using encrypted secrets use
+	// `forge secret set` rather than typing keys into a shell prompt.
+	if len(info.OneOfEnv) > 0 {
+		fmt.Println("\n  Environment requirements (one of):")
+		foundLabel := ""
+		for _, env := range info.OneOfEnv {
+			switch {
+			case os.Getenv(env) != "":
+				foundLabel = env + " (environment)"
+			case dotEnv[env] != "":
+				foundLabel = env + " (.env)"
+			case secretKeys[env]:
+				foundLabel = env + " (secrets)"
+			}
+			if foundLabel != "" {
+				break
+			}
+		}
+		if foundLabel != "" {
+			fmt.Printf("    %s — ok\n", foundLabel)
+		} else {
+			fmt.Printf("    one of [%s] — NOT SET\n", strings.Join(info.OneOfEnv, ", "))
+			fmt.Println("    Tip: 'forge secret set <KEY>' stores one of these in .forge/secrets.enc")
+		}
+	}
+
 	// Prompt for missing env vars
 	if len(missingEnvs) > 0 {
 		if hasSecretKeys(missingEnvs) {

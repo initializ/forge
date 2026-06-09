@@ -1,5 +1,112 @@
 # Changelog
 
+## v0.14.1 — 2026-06-09
+
+### Fixed
+
+- **Session persistence no longer poisons followup turns when the LLM returns
+  empty content after `finish_reason: length` (issue #131, PR #132).**
+  Long-running Slack threads (and any session-persistent channel) succeeded on
+  the first message and then failed every subsequent followup with
+  `"something went wrong while processing your request, please try again"`.
+  The executor wrote the LLM's assistant message to memory unconditionally
+  before checking content. When the provider hit `finish_reason: length` and
+  returned an assistant turn with empty content AND no tool_calls, that
+  invalid-per-OpenAI-spec shape landed in mem. The in-loop empty-response
+  recovery papered over it for the current task, but `persistSession` wrote
+  the polluted memory to `.forge/sessions/<task_id>.json`. The next request
+  recovered it and strict OpenAI-spec providers (Moonshot, hosted OpenRouter,
+  OpenAI strict mode) returned HTTP 400. Fix substitutes a placeholder
+  content string (`"(continuing — previous response was truncated by output
+  token limit)"`) when the LLM returns the bad shape, AND extends
+  `sanitizeMessages` on `LoadFromStore` with a new `stripEmptyAssistantTurns`
+  pass to rescue sessions already on disk without an `rm` migration.
+
+- **Duplicate user message at the start of every fresh session no longer
+  trips strict-mode providers like `gpt-5-nano` (issue #143, PR #144).**
+  Same symptom as #131 — `"something went wrong"` on followup — different
+  root cause. The runner pre-appends `params.Message` to `task.History`
+  before calling `Execute` so SSE clients see the inbound message in the
+  in-flight task. The executor's `!recovered` first-interaction path then
+  iterated `task.History` AND appended `*msg` separately, producing two
+  consecutive identical user turns at the start of every fresh conversation.
+  OpenAI reasoning models (`gpt-5-nano`, `o1`, `o3`) and strict
+  OpenAI-compatible gateways (Together's Kimi) reject consecutive same-role
+  messages with HTTP 400. Fix strips the trailing `task.History` entry when
+  it equals `*msg` (new `a2aMessagesEqual` helper) AND extends
+  `sanitizeMessages` with a `collapseConsecutiveDuplicates` pass to rescue
+  sessions already on disk. The collapse is surgical: only EXACT same-role
+  same-content tool-call-free pairs collapse; workflow nudges and
+  tool-bearing turns are preserved.
+
+- **The `code-review` skill no longer routes Anthropic-first when both API
+  keys are set (issue #133, PR #134).** The skill's `code-review-diff.sh`
+  and `code-review-file.sh` scripts picked Anthropic whenever
+  `ANTHROPIC_API_KEY` was non-empty, even when the operator's `forge.yaml`
+  pointed at an OpenAI-compatible provider (Together.ai, OpenRouter, Groq,
+  Fireworks, Anyscale, vLLM, llama.cpp's server) via `OPENAI_BASE_URL` and
+  `REVIEW_MODEL` was clearly a non-Anthropic model. Operators with a stale
+  `ANTHROPIC_API_KEY` co-resident with a live `OPENAI_API_KEY` in
+  `.forge/secrets.enc` got `Anthropic API returned status 401` and assumed
+  the skill was broken. Fix adds an explicit `REVIEW_PROVIDER` env var
+  (values `anthropic` or `openai`) that wins always. When unset,
+  auto-detected from `REVIEW_MODEL` prefix (`claude-*` or `anthropic/*` →
+  Anthropic; anything else → OpenAI), then by sole API key, then defaults
+  to OpenAI when both are set with no other signal. The
+  `OPENAI_BASE_URL`-as-Responses-API-toggle was also wrong (Together,
+  OpenRouter, Groq, etc. only implement `/chat/completions`; the OpenAI
+  Responses API is proprietary); decoupled into a separate
+  `OPENAI_USE_RESPONSES_API=1` opt-in.
+
+- **The `code-review` skill now uses `max_completion_tokens` instead of
+  the deprecated `max_tokens` on the OpenAI Chat Completions branch (issue
+  #141, PR #142).** OpenAI deprecated `max_tokens` in favor of
+  `max_completion_tokens`; reasoning models (`o1`, `o1-preview`, `o3`,
+  `gpt-5`) and strict OpenAI-compatible providers (Together.ai's Kimi-K2.6
+  series, Moonshot) reject the legacy field with HTTP 400 `"Unsupported
+  parameter: 'max_tokens' is not supported with this model. Use
+  'max_completion_tokens' instead."`. The Anthropic branch keeps
+  `max_tokens` (correct field for Anthropic's API).
+
+- **Skill subprocesses now inherit `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`,
+  `OLLAMA_BASE_URL`, and `GEMINI_BASE_URL` from the parent env even when
+  the SKILL.md doesn't declare them (issue #137, PR #138).** Pre-fix
+  `SkillCommandExecutor` built a whitelist-only env where `OPENAI_ORG_ID`
+  was always-passed but the standard SDK base-URL pointers were not —
+  unless each `SKILL.md` author remembered to declare each variable in
+  `env.optional`. Every LLM-calling skill that forgot silently broke for
+  OpenAI-compatible deployments. Fix special-cases the four standard SDK
+  variables alongside `OPENAI_ORG_ID`, so every skill that uses the
+  industry-standard env conventions just works.
+
+- **The CLI wizard now shows `(secrets) — ok` for `one_of` env keys
+  encrypted in `.forge/secrets.enc` AND no longer pre-writes a misleading
+  `ANTHROPIC_API_KEY=` placeholder when no key is provided (issue #135,
+  PR #136).** `forge skills add` didn't validate `one_of` groups at all —
+  operators got no confirmation that their encrypted key was detected.
+  `forge init`'s fallback wrote `opts.EnvVars[OneOfEnv[0]] = ""` (the
+  first key in the list, `ANTHROPIC_API_KEY` for `code-review`), producing
+  an empty `.env` line that misled operators about which provider was
+  expected. Fix mirrors `RequiredEnv`'s three-source check
+  (`os.Getenv` / `.env` / `loadSecretPlaceholders`) for `one_of` groups
+  and drops the placeholder pollution.
+
+- **`forge package` and `forge run` now auto-add the LLM provider's
+  custom base URL host to the egress allowlist + generated
+  `NetworkPolicy` (issue #139, PR #140).** Operators configuring an
+  OpenAI-compatible provider via `OPENAI_BASE_URL=https://api.together.ai/v1`
+  shipped a `NetworkPolicy` that blocked the provider's hostname —
+  deployed agents 401d or timed out depending on which side noticed
+  first. Same trap Phase 6 of OTel Tracing v1 fixed for the OTLP
+  collector (issue #107), but for the LLM provider. Fix adds
+  `ModelRef.BaseURL` and `ModelFallback.BaseURL` fields to the schema and
+  two new helpers — `security.LLMProviderDomains` (cfg-driven, used by
+  build + runtime) and `security.LLMProviderEnvDomains` (env-driven
+  runtime safety net for `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` /
+  `OLLAMA_BASE_URL` / `GEMINI_BASE_URL`). Both wired into
+  `egress_stage.go` and `runner.go` alongside the existing
+  `AuthDomains` / `MCPDomains` / `OTelDomain` merges.
+
 ## v0.14.0 — 2026-06-09
 
 ### Added

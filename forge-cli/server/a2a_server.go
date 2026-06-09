@@ -20,8 +20,10 @@ import (
 	"github.com/initializ/forge/forge-core/a2a"
 	"github.com/initializ/forge/forge-core/observability"
 	coreruntime "github.com/initializ/forge/forge-core/runtime"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/time/rate"
 )
@@ -281,13 +283,30 @@ func (s *Server) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Phase 5 (#106) — extract the inbound W3C tracecontext + baggage
+	// BEFORE wrapping with workflow context so the dispatcher span
+	// becomes a CHILD of the upstream caller's span when a
+	// `traceparent` header is present. Multi-hop A2A flows
+	// (orchestrator → agent → downstream agent) then display as a
+	// single trace in the backend instead of N disconnected roots.
+	//
+	// The propagator is the composite TraceContext + Baggage installed
+	// on the OTel global by Phase 0's SetTracerProvider. When the
+	// inbound request has NO traceparent header the propagator returns
+	// the ctx unchanged — and Tracer().Start below opens a new root,
+	// matching the pre-Phase-5 behavior verbatim.
+	ctx := otel.GetTextMapPropagator().Extract(
+		r.Context(),
+		propagation.HeaderCarrier(r.Header),
+	)
+
 	// Extract initializ orchestration headers (issue #86 / FWS-2) ONCE
 	// at the dispatch boundary so every downstream handler sees the
 	// same WorkflowContext via ctx without having to parse headers
 	// itself. Absent headers produce an IsZero WorkflowContext —
 	// audit events then omit the workflow fields, matching pre-FWS-2
 	// shape (backward compatible).
-	ctx := coreruntime.WithWorkflowContext(r.Context(),
+	ctx = coreruntime.WithWorkflowContext(ctx,
 		coreruntime.WorkflowContextFromHTTPHeaders(r.Header))
 
 	// Phase 3 (#104) — open the inbound dispatch span. Span name
@@ -301,7 +320,8 @@ func (s *Server) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
 	// streaming and unary methods share the same dispatch envelope.
 	// Per-iteration LLM and tool spans live in the executor (Phase 3
 	// continues in forge-core/runtime/loop.go); this is the root for
-	// every inbound A2A request.
+	// every inbound A2A request — OR a child of the upstream span
+	// when Phase 5's propagator extracted one above.
 	ctx, span := coreruntime.Tracer().Start(ctx, "a2a."+req.Method,
 		trace.WithSpanKind(trace.SpanKindServer),
 		trace.WithAttributes(attribute.String(observability.AttrForgeA2AMethod, req.Method)),

@@ -15,6 +15,23 @@ import (
 	"go.opentelemetry.io/otel/codes"
 )
 
+// emptyAssistantPlaceholder is the content substituted for an assistant
+// message that came back with both empty content AND no tool calls —
+// typically because the provider hit `finish_reason: length` (the
+// model's max output token cap). Without this substitution the
+// assistant turn would be invalid per the OpenAI chat-completions
+// schema, and strict providers (Moonshot, hosted OpenRouter, OpenAI
+// strict mode) reject every subsequent conversation that includes the
+// turn — silently breaking every followup message in long-running
+// channel threads via session recovery. See issue #131.
+//
+// The string is intentionally human-readable so an operator inspecting
+// `.forge/sessions/<task>.json` understands the truncation. It is
+// also the sentinel sanitizeMessages strips on session recovery, so
+// both the persisted shape and the recovery path agree on what an
+// "empty turn" looks like.
+const emptyAssistantPlaceholder = "(continuing — previous response was truncated by output token limit)"
+
 // ToolExecutor provides tool execution capabilities to the engine.
 // The tools.Registry satisfies this interface via Go structural typing.
 type ToolExecutor interface {
@@ -372,8 +389,32 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 			return nil, fmt.Errorf("after LLM call hook: %w", err)
 		}
 
-		// Append assistant message to memory
-		mem.Append(resp.Message)
+		// Append assistant message to memory.
+		//
+		// Issue #131 — when the LLM hits finish_reason=length (or otherwise
+		// returns empty content) AND made no tool calls, the assistant turn
+		// has neither content nor tool_calls. That shape is invalid per the
+		// OpenAI chat-completions schema; strict providers (Moonshot,
+		// hosted OpenRouter, OpenAI strict mode) reject any subsequent
+		// conversation that includes such a turn with HTTP 400. The in-loop
+		// recovery below at "If the LLM returned empty text after executing
+		// tools" papers over it for the current task, but `persistSession`
+		// at the end of Execute writes the polluted memory to disk — and
+		// the next request that recovers this session hits the strict
+		// validator and returns "something went wrong" to every followup.
+		//
+		// Substitute a placeholder content string instead of skipping the
+		// Append entirely. Skipping would break the assistant↔user turn
+		// pairing the empty-content recovery branch relies on (it appends
+		// a user nudge that must follow an assistant turn). The placeholder
+		// is non-empty so strict validators accept the message, and it
+		// names the failure mode so an operator scanning a recovered
+		// session understands what happened.
+		assistantMsg := resp.Message
+		if assistantMsg.Content == "" && len(assistantMsg.ToolCalls) == 0 {
+			assistantMsg.Content = emptyAssistantPlaceholder
+		}
+		mem.Append(assistantMsg)
 
 		// Check if we're done: the definitive signal is the absence of tool
 		// calls. FinishReason is unreliable — some providers return "stop"

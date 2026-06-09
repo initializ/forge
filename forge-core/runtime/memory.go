@@ -119,15 +119,37 @@ func (m *Memory) Messages() []llm.ChatMessage {
 }
 
 // LoadFromStore restores memory state from a persisted SessionData.
-// It sanitizes the loaded messages by stripping orphaned tool calls —
-// assistant messages whose tool_calls have no matching tool result.
-// This prevents the Responses API from rejecting recovered sessions
-// with "No tool output found for function call".
+// It runs the loaded messages through sanitizeMessages, which strips
+// the two known kinds of corruption that cause strict providers to
+// reject the recovered conversation:
+//
+//  1. Orphaned tool_calls — assistant messages whose tool_calls have
+//     no matching tool result (Responses API: "No tool output found
+//     for function call").
+//  2. Empty assistant turns — assistant messages with both empty
+//     content AND no tool_calls (issue #131). The OpenAI
+//     chat-completions schema considers that shape invalid; Moonshot,
+//     hosted OpenRouter, and OpenAI strict mode return HTTP 400 if a
+//     recovered conversation contains one. Such turns appear when the
+//     provider hits `finish_reason: length` and the in-loop empty-
+//     response recovery fires — pre-#131 builds persisted the empty
+//     turn alongside the recovered real response. Stripping on load
+//     rescues sessions written by those builds without a migration.
 func (m *Memory) LoadFromStore(data *SessionData) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.messages = sanitizeToolCalls(data.Messages)
+	m.messages = sanitizeMessages(data.Messages)
 	m.existingSummary = data.Summary
+}
+
+// sanitizeMessages strips the two known kinds of corruption from a
+// loaded message slice (see LoadFromStore). The two passes are kept
+// separate so a future caller that only needs one (or wants to add a
+// third) can compose them individually.
+func sanitizeMessages(msgs []llm.ChatMessage) []llm.ChatMessage {
+	msgs = sanitizeToolCalls(msgs)
+	msgs = stripEmptyAssistantTurns(msgs)
+	return msgs
 }
 
 // sanitizeToolCalls removes tool calls from assistant messages that have
@@ -157,6 +179,25 @@ func sanitizeToolCalls(msgs []llm.ChatMessage) []llm.ChatMessage {
 		}
 	}
 	return msgs
+}
+
+// stripEmptyAssistantTurns drops assistant messages that have both
+// empty content AND no tool_calls. See LoadFromStore for the full
+// rationale (issue #131). This is the defense-in-depth half of the
+// fix — the Execute loop now substitutes a placeholder content
+// string before persisting so newly-written sessions never contain
+// the bad shape, but sessions already on disk from pre-#131 builds
+// (and any future regression of the source-side guard) still get
+// rescued on load.
+func stripEmptyAssistantTurns(msgs []llm.ChatMessage) []llm.ChatMessage {
+	out := msgs[:0]
+	for _, m := range msgs {
+		if m.Role == llm.RoleAssistant && m.Content == "" && len(m.ToolCalls) == 0 {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 // Reset clears the conversation history (keeps the system prompt).

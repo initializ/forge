@@ -401,6 +401,21 @@ func (r *Runner) Run(ctx context.Context) error {
 	// `forge package`-then-deploy behave identically on the
 	// allowlist surface.
 	egressDomains = append(egressDomains, security.OTelDomain(r.cfg.Config.Observability.Tracing)...)
+	// Issue #139 — auto-merge LLM provider base URLs. Two sources:
+	//   1. The new ModelRef.BaseURL field (the durable signal that
+	//      also flows through `forge package` to the deployed
+	//      NetworkPolicy). This is the canonical path going forward.
+	//   2. The standard SDK base-URL env vars (OPENAI_BASE_URL /
+	//      ANTHROPIC_BASE_URL / OLLAMA_BASE_URL / GEMINI_BASE_URL).
+	//      Safety-net for deployments that haven't migrated to the
+	//      schema field yet — `envVars` already carries the resolved
+	//      .env + .forge/secrets.enc state at this point.
+	// Both are deduped via the helper. Without these merges, an agent
+	// using a custom OpenAI-compatible / Anthropic-compatible /
+	// remote-Ollama endpoint would be silently blocked by the egress
+	// enforcer at runtime.
+	egressDomains = append(egressDomains, security.LLMProviderDomains(r.cfg.Config)...)
+	egressDomains = append(egressDomains, security.LLMProviderEnvDomains(envVars)...)
 	egressCfg, egressErr := security.Resolve(
 		r.cfg.Config.Egress.Profile,
 		r.cfg.Config.Egress.Mode,

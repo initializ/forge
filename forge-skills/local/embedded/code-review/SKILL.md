@@ -22,10 +22,13 @@ metadata:
           - ANTHROPIC_API_KEY
           - OPENAI_API_KEY
         optional:
+          - REVIEW_PROVIDER
           - REVIEW_MODEL
           - REVIEW_MAX_DIFF_BYTES
           - GH_TOKEN
           - FORGE_REVIEW_STANDARDS_DIR
+          - OPENAI_BASE_URL
+          - OPENAI_USE_RESPONSES_API
     egress_domains:
       - api.anthropic.com
       - api.openai.com
@@ -45,15 +48,28 @@ AI-powered code review that analyzes diffs and individual files for bugs, securi
 Set at least one LLM API key:
 
 ```bash
-# Option A: Anthropic (preferred)
+# Option A: Anthropic
 export ANTHROPIC_API_KEY="sk-ant-..."
 
-# Option B: OpenAI
+# Option B: OpenAI or any OpenAI-compatible provider (Together, OpenRouter, Groq, ...)
 export OPENAI_API_KEY="sk-..."
+export OPENAI_BASE_URL="https://api.together.ai/v1"   # only when not using openai.com
 
 # Optional: override the model (defaults: claude-sonnet-4-20250514 / gpt-4o)
-export REVIEW_MODEL="claude-sonnet-4-20250514"
+export REVIEW_MODEL="moonshotai/Kimi-K2.6"
+
+# Optional: force a specific provider when both keys are set
+export REVIEW_PROVIDER="openai"   # or "anthropic"
 ```
+
+**Provider selection** (auto-detected when `REVIEW_PROVIDER` is unset):
+
+1. If `REVIEW_PROVIDER` is set, it wins.
+2. Else if `REVIEW_MODEL` starts with `claude-` or `anthropic/`, use Anthropic.
+3. Else if only one API key is set, use that provider.
+4. Else (both keys, no model hint): use OpenAI.
+
+This precedence fixes the common deployment where both `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` live in `.forge/secrets.enc` (one is stale or for a different skill). Pre-fix the skill always preferred Anthropic and returned 401 against the stale key.
 
 For GitHub PR review, also set:
 
@@ -73,12 +89,15 @@ This skill only reads diffs — it never posts comments, applies labels, or merg
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| ANTHROPIC_API_KEY | one-of | Anthropic API key (preferred) |
-| OPENAI_API_KEY | one-of | OpenAI API key (fallback) |
-| REVIEW_MODEL | no | Override LLM model name |
+| ANTHROPIC_API_KEY | one-of | Anthropic API key |
+| OPENAI_API_KEY | one-of | OpenAI or OpenAI-compatible (Together, OpenRouter, Groq, ...) API key |
+| REVIEW_PROVIDER | no | Explicit provider override: `anthropic` or `openai`. When unset, auto-detected from `REVIEW_MODEL` prefix, then by which key is set. Prefers `openai` when both keys exist and no model hint disambiguates |
+| REVIEW_MODEL | no | Override LLM model name. Default: `claude-sonnet-4-20250514` (anthropic) / `gpt-5.4` (openai) |
 | REVIEW_MAX_DIFF_BYTES | no | Max diff size before truncation (default: 100000) |
 | GH_TOKEN | no | GitHub token for PR diffs — read-only access is sufficient |
 | FORGE_REVIEW_STANDARDS_DIR | no | Path to `.forge-review/standards/` directory for custom rules |
+| OPENAI_BASE_URL | no | Base URL for OpenAI-compatible providers (default: `https://api.openai.com/v1`). Always uses `/chat/completions` — see `OPENAI_USE_RESPONSES_API` for the proprietary Responses API |
+| OPENAI_USE_RESPONSES_API | no | Set to `1` to use OpenAI's proprietary `/responses` endpoint (Codex/OAuth flow). Default off. Only relevant when `OPENAI_BASE_URL` points at `api.openai.com` |
 
 ## Tool: code_review_diff
 

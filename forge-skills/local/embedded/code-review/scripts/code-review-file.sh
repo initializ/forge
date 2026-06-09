@@ -4,7 +4,17 @@
 #
 # Requires: curl, jq
 # Env: ANTHROPIC_API_KEY or OPENAI_API_KEY (at least one)
-# Optional: REVIEW_MODEL, GH_TOKEN, FORGE_REVIEW_STANDARDS_DIR
+# Optional:
+#   REVIEW_PROVIDER          — "anthropic" or "openai"; explicit override.
+#                              Auto-detected when unset (see #133).
+#   REVIEW_MODEL             — provider-specific model name.
+#   GH_TOKEN                 — GitHub token.
+#   FORGE_REVIEW_STANDARDS_DIR — custom standards dir.
+#   OPENAI_BASE_URL          — base URL for OpenAI-compatible providers.
+#                              Always uses /chat/completions; see
+#                              OPENAI_USE_RESPONSES_API to opt into
+#                              OpenAI's proprietary Responses API.
+#   OPENAI_USE_RESPONSES_API — set to "1" for OpenAI Responses API.
 set -euo pipefail
 
 # --- Read and validate input first (agent can fix these) ---
@@ -182,8 +192,44 @@ USER_PROMPT="${USER_PROMPT}:
 
 ${FILE_CONTENT}"
 
+# --- Select provider (see code-review-diff.sh and #133 for rationale) ---
+PROVIDER="${REVIEW_PROVIDER:-}"
+if [ -z "$PROVIDER" ]; then
+  if [ -n "${REVIEW_MODEL:-}" ]; then
+    case "$REVIEW_MODEL" in
+      claude-*|anthropic/*) PROVIDER="anthropic" ;;
+      *)                    PROVIDER="openai"    ;;
+    esac
+  elif [ -n "${ANTHROPIC_API_KEY:-}" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
+    PROVIDER="anthropic"
+  elif [ -n "${OPENAI_API_KEY:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+    PROVIDER="openai"
+  else
+    PROVIDER="openai"
+  fi
+fi
+
+case "$PROVIDER" in
+  anthropic)
+    if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+      echo '{"error": "REVIEW_PROVIDER=anthropic (or REVIEW_MODEL inferred Anthropic) but ANTHROPIC_API_KEY is not set"}' >&2
+      exit 1
+    fi
+    ;;
+  openai)
+    if [ -z "${OPENAI_API_KEY:-}" ]; then
+      echo '{"error": "REVIEW_PROVIDER=openai (or REVIEW_MODEL inferred OpenAI) but OPENAI_API_KEY is not set"}' >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "{\"error\": \"REVIEW_PROVIDER must be 'anthropic' or 'openai'; got: $PROVIDER\"}" >&2
+    exit 1
+    ;;
+esac
+
 # --- Route to LLM API ---
-if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+if [ "$PROVIDER" = "anthropic" ]; then
   MODEL="${REVIEW_MODEL:-claude-sonnet-4-20250514}"
 
   TEMP_SYSTEM=$(mktemp)
@@ -223,8 +269,10 @@ if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
 
   REVIEW_TEXT=$(echo "$BODY" | jq -r '.content[0].text // empty')
 
-elif [ -n "${OPENAI_API_KEY:-}" ]; then
-  # OpenAI API — supports both Chat Completions and Responses API (OAuth)
+elif [ "$PROVIDER" = "openai" ]; then
+  # OpenAI / OpenAI-compatible API. See code-review-diff.sh for the
+  # full rationale on the OPENAI_BASE_URL vs OPENAI_USE_RESPONSES_API
+  # decoupling (closes #133 Bug 2).
   MODEL="${REVIEW_MODEL:-gpt-5.4}"
   OPENAI_BASE="${OPENAI_BASE_URL:-https://api.openai.com/v1}"
 
@@ -234,8 +282,8 @@ elif [ -n "${OPENAI_API_KEY:-}" ]; then
   printf '%s' "$SYSTEM_PROMPT" > "$TEMP_SYSTEM"
   printf '%s' "$USER_PROMPT" > "$TEMP_USER"
 
-  if [ -n "${OPENAI_BASE_URL:-}" ]; then
-    # Responses API (OAuth/Codex flow) — requires streaming
+  if [ "${OPENAI_USE_RESPONSES_API:-0}" = "1" ]; then
+    # OpenAI proprietary Responses API (Codex/OAuth flow) — requires streaming
     API_PAYLOAD=$(jq -n \
       --arg model "$MODEL" \
       --rawfile instructions "$TEMP_SYSTEM" \

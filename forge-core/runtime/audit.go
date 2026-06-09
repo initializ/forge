@@ -9,6 +9,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Audit event type constants.
@@ -203,6 +205,27 @@ type AuditEvent struct {
 	// `id`, OpenAI `id`, etc.) — kept as an opaque debug-correlation
 	// handle, never used for cost attribution.
 	RequestID string `json:"request_id,omitempty"`
+
+	// TraceID + SpanID cross-link this audit event to the OTel trace
+	// the same logical operation produced (Phase 4 of the OTel
+	// Tracing v1 initiative — issue #105 / #108). Populated by
+	// EmitFromContext when the context carries a recording span;
+	// omitted when there is no span on the context or the tracer is
+	// the noop default (tracing disabled).
+	//
+	// Format: lowercase hex, matching W3C traceparent semantics —
+	// trace_id is 32 hex chars (128-bit), span_id is 16 hex chars
+	// (64-bit). Operators paste these directly into their trace
+	// backend's search box to pivot from an audit row to the parent
+	// trace, and vice versa.
+	//
+	// Backward compatibility: both fields use omitempty so consumers
+	// that have not been upgraded continue to see the pre-Phase-4
+	// shape verbatim (no trace_id / span_id keys at all). The
+	// AuditSchemaVersion is NOT bumped — adding optional fields is a
+	// schema-compatible change per the documented policy.
+	TraceID string `json:"trace_id,omitempty"`
+	SpanID  string `json:"span_id,omitempty"`
 
 	Fields map[string]any `json:"fields,omitempty"`
 }
@@ -404,6 +427,24 @@ func (a *AuditLogger) EmitFromContext(ctx context.Context, event AuditEvent) {
 	// See issue #91 / FWS-8.
 	if event.Sequence == 0 {
 		event.Sequence = NextSequence(ctx)
+	}
+	// Phase 4 (#105) — stamp the active span's trace_id + span_id when
+	// the context carries a recording span. SpanContext.IsValid() is
+	// false for both "no span at all" (Background context) and "noop
+	// span" (tracing disabled — the package-default tracer Phase 0
+	// installed), so the omitempty tag drops both keys whenever
+	// tracing isn't producing real spans. Net effect: when tracing is
+	// off the audit JSON is byte-identical to pre-Phase-4 output.
+	if event.TraceID == "" || event.SpanID == "" {
+		sc := trace.SpanFromContext(ctx).SpanContext()
+		if sc.IsValid() {
+			if event.TraceID == "" {
+				event.TraceID = sc.TraceID().String()
+			}
+			if event.SpanID == "" {
+				event.SpanID = sc.SpanID().String()
+			}
+		}
 	}
 	a.Emit(event)
 }

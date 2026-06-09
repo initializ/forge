@@ -217,8 +217,28 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 	}
 
 	// Load task history only if not recovered from disk.
+	//
+	// Issue #143 — the runner pre-appends params.Message to
+	// task.History at the three tasks/send entry points
+	// (runner.go:1174 / 1410 / 1672) so SSE observers see the
+	// in-flight task with the inbound user message visible before
+	// Execute completes. Execute treats task.History as PRIOR history
+	// and *msg as the NEW message separately, so we strip the
+	// trailing duplicate here to avoid emitting two consecutive
+	// identical user turns into the LLM. Strict-mode providers
+	// (gpt-5-nano and the other OpenAI reasoning models, Together's
+	// Kimi gateway, ...) reject that shape and the executor returns
+	// the canned "something went wrong" fallback.
+	//
+	// The `recovered` branch below has its own dedup logic against
+	// the persisted memory; this is the symmetric guard for the
+	// first-interaction path.
 	if !recovered {
-		for _, histMsg := range task.History {
+		historyToLoad := task.History
+		if n := len(historyToLoad); n > 0 && a2aMessagesEqual(historyToLoad[n-1], *msg) {
+			historyToLoad = historyToLoad[:n-1]
+		}
+		for _, histMsg := range historyToLoad {
 			mem.Append(a2aMessageToLLM(histMsg))
 		}
 	}
@@ -796,6 +816,22 @@ func a2aMessageToLLM(msg a2a.Message) llm.ChatMessage {
 		Role:    role,
 		Content: strings.Join(textParts, "\n"),
 	}
+}
+
+// a2aMessagesEqual reports whether two A2A messages have the same role
+// and the same concatenated text content. Used by Execute's history-
+// load path (issue #143) to detect the runner's pre-appended
+// params.Message in task.History and avoid emitting it as a duplicate
+// alongside the *msg argument.
+//
+// Only the LLM-visible projection matters here (role + text content) —
+// the message envelope's part-kind enumeration and metadata are
+// irrelevant to whether the LLM sees a duplicate user turn.
+func a2aMessagesEqual(a, b a2a.Message) bool {
+	if a.Role != b.Role {
+		return false
+	}
+	return a2aMessageToLLM(a).Content == a2aMessageToLLM(b).Content
 }
 
 // detectFileType inspects tool output content and returns an appropriate

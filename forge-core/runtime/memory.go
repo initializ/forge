@@ -142,13 +142,14 @@ func (m *Memory) LoadFromStore(data *SessionData) {
 	m.existingSummary = data.Summary
 }
 
-// sanitizeMessages strips the two known kinds of corruption from a
-// loaded message slice (see LoadFromStore). The two passes are kept
-// separate so a future caller that only needs one (or wants to add a
-// third) can compose them individually.
+// sanitizeMessages strips the known kinds of corruption from a loaded
+// message slice (see LoadFromStore). The passes are kept separate so
+// a future caller that only needs one (or wants to add another) can
+// compose them individually.
 func sanitizeMessages(msgs []llm.ChatMessage) []llm.ChatMessage {
 	msgs = sanitizeToolCalls(msgs)
 	msgs = stripEmptyAssistantTurns(msgs)
+	msgs = collapseConsecutiveDuplicates(msgs)
 	return msgs
 }
 
@@ -196,6 +197,49 @@ func stripEmptyAssistantTurns(msgs []llm.ChatMessage) []llm.ChatMessage {
 			continue
 		}
 		out = append(out, m)
+	}
+	return out
+}
+
+// collapseConsecutiveDuplicates drops adjacent same-role messages with
+// identical content (issue #143). Pre-fix the runner pre-appended
+// params.Message to task.History before calling Execute, and the
+// !recovered path of Execute then also appended *msg — producing two
+// consecutive identical user turns at the start of every fresh
+// session. Strict-mode providers (gpt-5-nano and other OpenAI
+// reasoning models, Together's Kimi gateway) reject consecutive
+// same-role messages.
+//
+// The source-side fix lives at loop.go's Execute; this is the
+// defense-in-depth pass that rescues sessions already on disk from
+// pre-fix builds without an `rm` workaround.
+//
+// Surgical by design — only drops EXACT same-role + same-content
+// pairs. Legitimate consecutive same-role sequences (workflow nudges
+// where the loop appends a user-role nudge after an existing user
+// message; assistant follow-on turns from finish_reason=length
+// recoveries) have DIFFERENT content and are preserved.
+//
+// Messages with tool_calls (assistant) or tool_call_id (tool) are
+// never collapsed — those are structurally distinct turns even when
+// content matches superficially.
+func collapseConsecutiveDuplicates(msgs []llm.ChatMessage) []llm.ChatMessage {
+	if len(msgs) < 2 {
+		return msgs
+	}
+	out := msgs[:1]
+	for i := 1; i < len(msgs); i++ {
+		prev := out[len(out)-1]
+		cur := msgs[i]
+		if prev.Role == cur.Role &&
+			prev.Content == cur.Content &&
+			len(prev.ToolCalls) == 0 && len(cur.ToolCalls) == 0 &&
+			prev.ToolCallID == "" && cur.ToolCallID == "" {
+			// Adjacent same-role + same-content + tool-call-free
+			// pair → drop the second.
+			continue
+		}
+		out = append(out, cur)
 	}
 	return out
 }

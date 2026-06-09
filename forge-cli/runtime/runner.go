@@ -394,6 +394,13 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Same for MCP servers — without this, every HTTPS MCP call would
 	// be silently blocked. Mirror the AuthDomains pattern.
 	egressDomains = append(egressDomains, security.MCPDomains(r.cfg.Config.MCP)...)
+	// Phase 6 (#107 / #108) — same for the OTel collector. Without
+	// this, dev runs with `observability.tracing.enabled: true` and
+	// `egress.mode: allowlist` would silently drop spans on shutdown.
+	// Matches the build pipeline's egress_stage so `forge run` and
+	// `forge package`-then-deploy behave identically on the
+	// allowlist surface.
+	egressDomains = append(egressDomains, security.OTelDomain(r.cfg.Config.Observability.Tracing)...)
 	egressCfg, egressErr := security.Resolve(
 		r.cfg.Config.Egress.Profile,
 		r.cfg.Config.Egress.Mode,

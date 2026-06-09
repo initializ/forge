@@ -451,14 +451,25 @@ elif [ "$PROVIDER" = "openai" ]; then
       | jq -j 'select(.type == "response.output_text.delta") | .delta // empty' 2>/dev/null)
     rm -f "$STREAM_TMPFILE"
   else
-    # Standard Chat Completions API
+    # Standard Chat Completions API.
+    #
+    # Use max_completion_tokens (NOT max_tokens) — closes #141. OpenAI
+    # deprecated max_tokens in favor of max_completion_tokens for Chat
+    # Completions; reasoning models (o1, o3, gpt-5) and strict
+    # OpenAI-compatible providers (Together.ai's Kimi-K2.6, Moonshot,
+    # ...) reject the legacy field with HTTP 400 "Unsupported
+    # parameter". max_completion_tokens is accepted by every current
+    # OpenAI model AND every tested OpenAI-compatible provider —
+    # forward-compatible and backward-tolerant. Sending both fields
+    # together is rejected by strict-mode OpenAI; the new name has
+    # to win exclusively.
     API_PAYLOAD=$(jq -n \
       --arg model "$MODEL" \
       --rawfile system "$TEMP_SYSTEM" \
       --rawfile user "$TEMP_USER" \
       '{
         model: $model,
-        max_tokens: 4096,
+        max_completion_tokens: 4096,
         messages: [
           {role: "system", content: $system},
           {role: "user", content: $user}

@@ -312,8 +312,21 @@ type SkillsRef struct {
 
 // ModelRef identifies the model an agent uses.
 type ModelRef struct {
-	Provider       string          `yaml:"provider"`
-	Name           string          `yaml:"name"`
+	Provider string `yaml:"provider"`
+	Name     string `yaml:"name"`
+
+	// BaseURL overrides the provider's default API host. Operators
+	// configure this when running against an OpenAI-compatible
+	// (Together.ai, OpenRouter, Groq, Fireworks, Anyscale, vLLM,
+	// llama.cpp's server), Anthropic-compatible (Bedrock proxy,
+	// custom gateway), or remotely-served Ollama endpoint. The
+	// canonical env vars (OPENAI_BASE_URL / ANTHROPIC_BASE_URL /
+	// OLLAMA_BASE_URL / GEMINI_BASE_URL) still take precedence at
+	// runtime — this field exists so the build pipeline can
+	// auto-merge the hostname into egress_allowlist.json + the
+	// generated NetworkPolicy. See issue #139.
+	BaseURL string `yaml:"base_url,omitempty"`
+
 	Version        string          `yaml:"version,omitempty"`
 	OrganizationID string          `yaml:"organization_id,omitempty"`
 	Fallbacks      []ModelFallback `yaml:"fallbacks,omitempty"`
@@ -321,8 +334,14 @@ type ModelRef struct {
 
 // ModelFallback identifies an alternative LLM provider for fallback.
 type ModelFallback struct {
-	Provider       string `yaml:"provider"`
-	Name           string `yaml:"name,omitempty"`
+	Provider string `yaml:"provider"`
+	Name     string `yaml:"name,omitempty"`
+
+	// BaseURL — same semantics as ModelRef.BaseURL. Fallback
+	// providers commonly run on a different base URL than the
+	// primary; both need to make it into the egress allowlist.
+	BaseURL string `yaml:"base_url,omitempty"`
+
 	OrganizationID string `yaml:"organization_id,omitempty"`
 }
 

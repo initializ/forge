@@ -87,6 +87,7 @@ You write a `SKILL.md`. Forge compiles it into a secure, runnable agent with egr
 | [Memory](docs/core-concepts/memory-system.md) | Session persistence and long-term memory |
 | [Channels](docs/core-concepts/channels.md) | Slack and Telegram adapter setup |
 | [Scheduling](docs/core-concepts/scheduling.md) | Cron configuration and schedule tools |
+| [Tracing](docs/core-concepts/observability-tracing.md) | OpenTelemetry distributed tracing — spans, propagation, audit cross-link |
 
 ### Security
 

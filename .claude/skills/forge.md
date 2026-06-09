@@ -606,6 +606,70 @@ a third party).
 
 **Read**: `docs/security/trust-model.md`, `docs/security/overview.md`.
 
+### 12.9 Observability — OpenTelemetry tracing (OTel v1, #108)
+
+Off by default. When enabled (`observability.tracing.enabled: true` in
+`forge.yaml`), Forge exports OTLP spans covering A2A dispatch, agent
+execution, every LLM completion, every tool call, and every outbound
+HTTP request. Span hierarchy:
+
+```
+a2a.<method>                          [SpanKindServer; dispatcher]
+└── agent.execute                     [outer loop; root for the task]
+    ├── llm.completion (× N turns)    [per LLM provider call]
+    │   └── http.client (× outbound)  [auto via otelhttp]
+    └── tool.<tool_name> (× M calls)
+        └── http.client (if HTTP)
+```
+
+Key design points:
+
+- **Off by default.** The tracer seam (Phase 0) returns a noop tracer
+  unless the cli explicitly installs one. Audit pipeline is the
+  always-on compliance stream; tracing is the opt-in observability
+  stream.
+- **Standard config surface.** All 10 standard OTel SDK env vars are
+  honored (`OTEL_EXPORTER_OTLP_*`, `OTEL_TRACES_SAMPLER`,
+  `OTEL_SERVICE_NAME`, ...). Precedence: defaults < yaml < env < CLI
+  flags.
+- **Egress-enforced.** The OTLP HTTP exporter rides through the same
+  egress enforcer as every other in-process client — a misconfigured
+  collector URL cannot exfiltrate spans to an unapproved destination.
+- **End-to-end propagation.** Composite W3C `tracecontext + baggage`
+  propagator installed at startup. The dispatcher extracts inbound
+  `traceparent` so multi-hop A2A flows show as one connected trace.
+  Outbound HTTP through the egress-enforced transport auto-injects
+  the current span's `traceparent` (via otelhttp).
+- **Audit cross-link.** `EmitFromContext` stamps the active span's
+  `trace_id` + `span_id` on every audit event. Operators paste either
+  value into their backend to pivot audit row ↔ span node. Both
+  fields use `omitempty` — when tracing is off, audit JSON is
+  byte-identical to the pre-Phase-4 shape.
+- **Build-time egress merge.** `forge package` extracts the collector
+  hostname and auto-injects it into `egress_allowlist.json` (mirrored
+  at `forge run`). Disabled tracing produces no entry. No second
+  egress edit, no NetworkPolicy patch.
+- **Telemetry failures never crash the agent.** Bad endpoint,
+  malformed traceparent, unreachable collector — every failure mode
+  falls through to the noop tracer with a warning in the ops log.
+
+GenAI semconv attributes on `llm.completion`: `gen_ai.system`,
+`gen_ai.request.model`, `gen_ai.usage.input_tokens`,
+`gen_ai.usage.output_tokens`, `gen_ai.response.finish_reasons`.
+Forge-specific attributes use the `forge.*` namespace
+(`forge.task.id`, `forge.task.final_state`, `forge.tool.name`,
+`forge.workflow.id`, ...).
+
+Phase 3 ships **metadata-only** spans. `capture_content` is plumbed
+through the config schema but not yet honored by the instrumentation;
+content capture is a follow-up that will reuse the FWS-8 audit
+redactor.
+
+**Read**: `docs/core-concepts/observability-tracing.md`,
+`docs/reference/forge-yaml-schema.md` § `observability.tracing`,
+`docs/security/audit-logging.md` § Trace cross-link,
+`docs/security/egress-control.md` § OTel collector auto-extension.
+
 ---
 
 ## 13. CLI surface
@@ -617,7 +681,7 @@ Full reference: `docs/reference/cli-reference.md`.
 | `forge init` | Scaffold a new agent: `forge.yaml`, `.env`, `SKILL.md`, `guardrails.json`. Interactive TUI by default; `--non-interactive` for CI | `--model-provider`, `--model-name`, `--channels`, `--auth`, `--from-skills` |
 | `forge build` | Run the build pipeline → `.forge-output/agent.json` + container Dockerfile + K8s manifests + (optional) signature | `--output-dir`, `--sign` |
 | `forge validate` | Lint `forge.yaml` + SKILL.md. `--platform-policy=PATH` lints a policy file standalone | `--strict`, `--command-compat`, `--platform-policy` |
-| `forge run` | Dev-mode A2A server with hot-reload | `--port`, `--host`, `--with slack,telegram`, `--mock-tools`, `--no-auth`, `--cors-origins`, `--audit-socket`, `--audit-http-endpoint`, `--rate-limit-*` |
+| `forge run` | Dev-mode A2A server with hot-reload | `--port`, `--host`, `--with slack,telegram`, `--mock-tools`, `--no-auth`, `--cors-origins`, `--audit-socket`, `--audit-http-endpoint`, `--rate-limit-*`, `--otel-enabled`, `--otel-endpoint`, `--otel-sampler` |
 | `forge serve start \| stop \| status \| logs` | Daemonized A2A server (forks `forge run`). Forwards CLI flags + env to the child | `--port`, `--shutdown-timeout`, `--with` |
 | `forge export` | Export `agent.json` for registry upload | |
 | `forge package` | Generate Dockerfile + Kubernetes manifests + `egress_allowlist.json`. `--prod` rejects `dev-open` egress + dev-only tools | `--registry`, `--tag`, `--base`, `--prod` |
@@ -714,6 +778,20 @@ package:
   bin_overrides:
     forge: { local: "/path/to/forge" }
     jq: { apt: "jq" }
+
+observability:                       # OTel Tracing v1 (#108) — off by default
+  tracing:
+    enabled: true
+    endpoint: https://otel-collector.monitoring.svc.cluster.local:4318/v1/traces
+    protocol: http/protobuf          # or "grpc"
+    sampler: parentbased_always_on   # standard OTEL_TRACES_SAMPLER name
+    sampler_ratio: 1.0
+    timeout: 10s
+    service_name: ""                 # default: agent_id
+    headers: { x-tenant: demo }
+    resource_attrs: { deployment.environment: prod }
+    redact: true
+    capture_content: false           # Phase 3 ships metadata-only
 
 skills:
   path: SKILL.md                     # main agent skill file
@@ -830,6 +908,13 @@ Sourced from `forge-core/runtime/audit.go` constants. See
 `docs/security/audit-logging.md` for the full per-event field
 inventory.
 
+Every event emitted via `EmitFromContext` (the typed helpers —
+`EmitLLMCall`, `EmitToolExec`, `EmitInvocationComplete`,
+`EmitInvocationCancelled`, the egress allow/block emit, the FWS-3
+stamping path) auto-includes optional `trace_id` + `span_id` fields
+when OTel tracing is enabled (OTel v1 / Phase 4 / #105). Both use
+`omitempty` — tracing-off deploys see byte-identical pre-Phase-4 JSON.
+
 | Event constant | Wire value | When |
 |---|---|---|
 | `AuditSessionStart` | `session_start` | New task session begins |
@@ -868,7 +953,7 @@ Every event also carries `schema_version: "1.0"` (FWS-8) and `seq`
 
 ---
 
-## 18. Workstream recap — FWS-1 through FWS-10
+## 18. Workstream recap — FWS-1 through FWS-10 + OTel v1
 
 | # | Issue | Title | Doc |
 |---|---|---|---|
@@ -882,6 +967,7 @@ Every event also carries `schema_version: "1.0"` (FWS-8) and `seq`
 | **FWS-8** | #91 | Hardened audit emission — `schema_version` + monotonic `seq` per invocation; default metadata-only invariant pinned by regression test; opt-in `AuditPayloadCapture` with per-field byte caps | `docs/security/audit-logging.md` § Schema contract |
 | **FWS-9** | #100 | Ops logger output stream separation — stdout for `JSONLogger`, stderr stays for audit NDJSON | `docs/security/audit-logging.md` § Streams |
 | **FWS-10** | #110 | Rate-limit configurability + orchestration-friendly defaults + cancel exemption — `server.rate_limit:` yaml block + CLI flags + env; `tasks/cancel` exempt from the write bucket by default | `docs/reference/forge-yaml-schema.md` § `server.rate_limit` |
+| **OTel v1** | #108 | OpenTelemetry tracing — shipped across phases #101-#107 (PRs #122-#128). Tracer seam → OTLP provider → config resolver + CLI flags → span instrumentation across A2A/executor/LLM/tool → audit ↔ trace cross-link → end-to-end A2A propagation → build-time egress merge. Off by default; reuses the egress-enforced transport. | `docs/core-concepts/observability-tracing.md` |
 
 Side issues filed during this run: FWS-9 was filed as a companion to
 FWS-7's "stream separation would be cleaner" callout; FWS-10 was filed
@@ -910,7 +996,8 @@ docs/
 │   ├── skill-md-format.md        ← SKILL.md schema
 │   ├── channels.md
 │   ├── memory-system.md
-│   └── scheduling.md
+│   ├── scheduling.md
+│   └── observability-tracing.md  ← OTel v1 (#108) — spans, propagation, audit cross-link
 ├── security/
 │   ├── overview.md               ← start here for security
 │   ├── trust-model.md
@@ -977,3 +1064,6 @@ and which canonical doc to deep-dive.
 | "Can I disable rate limiting entirely?" | § 12.5 | Don't. Set `WriteRPS` / `ReadRPS` very high in `server.rate_limit` if you trust your network, but anonymous public-facing agents need the limiter for DoS protection |
 | "How do I capture LLM prompts in audit for debugging?" | § 12.4 | `AuditPayloadCapture{LLMMessages: true, LLMResponse: true}`; payloads truncated to 16 KiB per field with `…[truncated:N]` markers; route the audit stream to a store appropriate to the captured content's sensitivity |
 | "How do I extend `sync-docs` for my new doc?" | n/a | `.claude/commands/sync-docs.md` — add a row to the mapping table mapping the changed code path to the affected doc |
+| "How do I enable distributed tracing?" | § 12.9 | `docs/core-concepts/observability-tracing.md`; set `observability.tracing.enabled: true` + `endpoint` in forge.yaml (or `--otel-enabled --otel-endpoint`); collector host is auto-allowlisted at build time |
+| "How do I pivot from an audit row to a trace?" | § 12.4 + § 12.9 | Audit rows carry `trace_id` + `span_id` when tracing is on; paste either into Tempo / Jaeger / Honeycomb. `docs/security/audit-logging.md` § Trace cross-link |
+| "How do multi-hop A2A traces connect?" | § 12.9 | Phase 5 (#106): the dispatcher extracts the inbound W3C `traceparent` header; outbound HTTP through the egress-enforced transport auto-injects `traceparent` via otelhttp. Both pair to form one connected trace tree |

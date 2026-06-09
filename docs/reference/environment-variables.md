@@ -30,3 +30,27 @@ order: 3
 | `FORGE_AGENT_ID` | Agent identifier for DB guardrails (falls back to `agent_id` in YAML) |
 | `FORGE_ORG_ID` | Organization identifier for DB guardrails |
 | `FORGE_PASSPHRASE` | Passphrase for encrypted secrets file |
+
+## OpenTelemetry tracing (OTel v1, #108)
+
+Forge honors the standard OpenTelemetry SDK environment variables for
+the `observability.tracing` subsystem. They sit between
+`forge.yaml` and `--otel-*` CLI flags in the precedence stack — env
+overrides yaml, flags override env. A set-but-empty env var does
+**not** wipe a non-empty yaml value (absence-of-value is "no override").
+
+See [Observability — Tracing](../core-concepts/observability-tracing.md)
+for the full reference.
+
+| Variable | Maps to |
+|---|---|
+| `OTEL_SDK_DISABLED` | inverted → `observability.tracing.enabled` |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | `endpoint` (preferred — signal-specific) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `endpoint` (generic fallback) |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `protocol` (`http/protobuf` or `grpc`) |
+| `OTEL_EXPORTER_OTLP_HEADERS` | `headers` (merged with yaml; env wins on key collision) |
+| `OTEL_EXPORTER_OTLP_TIMEOUT` | `timeout` (milliseconds) |
+| `OTEL_SERVICE_NAME` | `service_name` |
+| `OTEL_RESOURCE_ATTRIBUTES` | `resource_attrs` (merged with yaml) |
+| `OTEL_TRACES_SAMPLER` | `sampler` (standard names) |
+| `OTEL_TRACES_SAMPLER_ARG` | `sampler_ratio` |

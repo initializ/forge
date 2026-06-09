@@ -82,6 +82,27 @@ func (e *SkillCommandExecutor) Run(ctx context.Context, command string, args []s
 	if orgID := os.Getenv("OPENAI_ORG_ID"); orgID != "" {
 		env = append(env, "OPENAI_ORG_ID="+orgID)
 	}
+	// Issue #137 — always-pass standard provider base URL env vars when
+	// present in the parent env. These are the canonical SDK-recognized
+	// variables operators use to redirect provider-shape API calls to a
+	// compatible host (Together.ai, OpenRouter, Groq, Fireworks,
+	// Anyscale via OPENAI_BASE_URL; Bedrock proxy via
+	// ANTHROPIC_BASE_URL; remotely-served Ollama via OLLAMA_BASE_URL).
+	// Treating them like OPENAI_ORG_ID above means every skill that
+	// calls an LLM API directly just works for compatible-provider
+	// deployments without each SKILL.md author having to remember to
+	// declare them in env.optional. Pre-fix every such skill silently
+	// hit the wrong (default-OpenAI) endpoint.
+	for _, name := range []string{
+		"OPENAI_BASE_URL",
+		"ANTHROPIC_BASE_URL",
+		"OLLAMA_BASE_URL",
+		"GEMINI_BASE_URL",
+	} {
+		if v := os.Getenv(name); v != "" {
+			env = append(env, name+"="+v)
+		}
+	}
 	// Pass configured model to skill scripts (e.g., code-review uses REVIEW_MODEL).
 	// This ensures OAuth/Codex users get a compatible model instead of the
 	// script's default (gpt-4o) which may not be supported.

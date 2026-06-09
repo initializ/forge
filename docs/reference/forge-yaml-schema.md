@@ -145,6 +145,22 @@ schedules:                          # Recurring scheduled tasks (optional)
     skill: ""                       # Optional skill to invoke
     channel: "telegram"             # Optional channel for delivery
     channel_target: "-100123456"    # Destination chat/channel ID
+
+observability:                      # OpenTelemetry tracing (off by default)
+  tracing:
+    enabled: true                   # Phase 0-6 / OTel Tracing v1 (#108)
+    endpoint: https://otel-collector.monitoring.svc.cluster.local:4318/v1/traces
+    protocol: "http/protobuf"       # or "grpc"
+    sampler: "parentbased_always_on"
+    sampler_ratio: 1.0              # only for *traceidratio* samplers
+    timeout: 10s                    # per-request exporter timeout
+    service_name: ""                # defaults to agent_id
+    headers:                        # OTLP request headers (auth tokens etc.)
+      x-tenant: demo
+    resource_attrs:                 # extra OTel resource attributes
+      deployment.environment: prod
+    redact: true                    # PII redaction posture flag
+    capture_content: false          # reserved — Phase 3 ships metadata-only
 ```
 
 ## `server.rate_limit` — per-IP A2A rate limits (FWS-10)
@@ -194,3 +210,45 @@ pods behind a single service IP share one bucket. If that becomes a
 practical problem, the right fix is auth-aware rate limiting (per-user
 buckets keyed by `auth.user_id`) — out of scope for FWS-10; file
 separately.
+
+## `observability.tracing` — OpenTelemetry distributed tracing
+
+Off by default. When enabled, Forge exports OTLP spans covering the
+A2A dispatcher, the executor loop, every LLM completion, every tool
+call, and every outbound HTTP request. See the dedicated
+[Observability — Tracing](../core-concepts/observability-tracing.md)
+doc for the full reference (span hierarchy, propagation, audit
+cross-link, build-time egress).
+
+| Field | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | Off by default per the OTel v1 initiative ruling. |
+| `endpoint` | — | Required when `enabled: true`. Empty endpoint collapses to "off." |
+| `protocol` | `http/protobuf` | Or `grpc`. HTTP is recommended (egress enforcer wraps it). |
+| `sampler` | `parentbased_always_on` | Standard `OTEL_TRACES_SAMPLER` name. See [tracing doc](../core-concepts/observability-tracing.md#samplers). |
+| `sampler_ratio` | `1.0` | Used by `traceidratio` variants. |
+| `timeout` | `10s` | Per-request exporter timeout. |
+| `service_name` | `agent_id` | `OTEL_SERVICE_NAME` env wins if set. |
+| `headers` | — | OTLP request headers; prefer env (`OTEL_EXPORTER_OTLP_HEADERS`) for secrets. |
+| `resource_attrs` | — | Merged with the auto-stamped `service.*` + `forge.runtime.version`. |
+| `redact` | `true` | PII redaction posture flag. |
+| `capture_content` | `false` | Reserved — Phase 3 ships metadata-only spans. |
+
+### Resolution order
+
+Same pattern as `server.rate_limit`:
+
+1. `--otel-*` CLI flags
+2. `OTEL_*` env vars (standard SDK names)
+3. `observability.tracing` block in this file
+4. Built-in defaults (the table above)
+
+A set-but-empty env var does NOT wipe a non-empty yaml field —
+absence-of-value is "no override," not "unset."
+
+### Egress auto-merge
+
+`forge package` and `forge run` both extract the endpoint hostname and
+auto-add it to `egress_allowlist.json`. No second egress edit needed.
+Disabled tracing produces no entry — turning tracing off in yaml does
+NOT leave a stale entry in the generated NetworkPolicy.

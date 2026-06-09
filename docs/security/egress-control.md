@@ -234,6 +234,35 @@ to add `sts.us-east-1.amazonaws.com` themselves when they configure
 sees the full outbound surface for review in a single screen. See
 [Authentication](authentication.md) for the per-provider auth model.
 
+### MCP server domain auto-extension
+
+Configuring an `mcp.servers[]` entry with `transport: http` adds the host
+of the server `url` to the allowlist automatically — operators don't have
+to remember to add `mcp.linear.app` when they configure a Linear MCP
+server. See `security.MCPDomains` for the canonical mapping.
+
+### OTel collector domain auto-extension (OTel v1, #107)
+
+Configuring `observability.tracing` with an endpoint adds the
+collector's hostname to the allowlist automatically. Without this, a
+deployment with tracing enabled in `forge.yaml` would ship a
+NetworkPolicy that blocks OTLP traffic — spans accumulate in the
+batch processor and drop on shutdown timeout, leaving the operator
+with an inexplicably empty trace backend.
+
+| Source field | Host added |
+|---|---|
+| `observability.tracing.endpoint` (when `enabled: true`) | bare hostname (port stripped) |
+
+The auto-merge fires at **both** build time (`forge package` →
+`egress_allowlist.json` → generated NetworkPolicy) **and** runtime
+(`forge run` dev mode), so dev and prod behave identically. Disabled
+tracing produces no entry — turning tracing off in yaml does NOT
+leave a stale entry punched through. Malformed endpoints are silently
+skipped: the build never blocks on telemetry config. See
+[Observability — Tracing](../core-concepts/observability-tracing.md)
+for the full reference.
+
 ## Build Artifacts
 
 The `EgressStage` generates:

@@ -57,3 +57,38 @@ forge serve logs
 ```
 
 See [Audit Logging](/docs/security/audit-logging) for details on the event format and DB mode audit storage.
+
+## Distributed Tracing (OpenTelemetry)
+
+As of OTel Tracing v1 (#108), Forge exports OTLP spans for every A2A
+request — dispatcher, executor loop, LLM completions, tool calls, and
+outbound HTTP. Multi-hop A2A flows display as a single connected
+trace, and every audit row carries the active span's `trace_id` +
+`span_id` for cross-pipeline pivoting.
+
+Enable in `forge.yaml`:
+
+```yaml
+observability:
+  tracing:
+    enabled: true
+    endpoint: https://otel-collector.monitoring.svc.cluster.local:4318/v1/traces
+    sampler: parentbased_always_on
+```
+
+Or via env / CLI:
+
+```bash
+forge run --otel-enabled \
+  --otel-endpoint http://localhost:4318/v1/traces \
+  --otel-sampler always_on
+```
+
+The collector hostname is auto-added to the egress allowlist at build
+time (`forge package`) and at runtime, so no second egress edit is
+needed. Compatible with any OTLP-aware backend (Tempo, Jaeger,
+Honeycomb, Datadog, Grafana Cloud).
+
+See [Observability — Tracing](/docs/core-concepts/observability-tracing)
+for the full reference (span hierarchy, attributes, propagation,
+audit cross-link, samplers).

@@ -43,6 +43,13 @@ func (s *EgressStage) Execute(ctx context.Context, bc *pipeline.BuildContext) er
 	allowed = append(allowed, security.AuthDomains(bc.Config.Auth)...)
 	allowed = append(allowed, security.MCPDomains(bc.Config.MCP)...)
 	allowed = append(allowed, security.OTelDomain(bc.Config.Observability.Tracing)...)
+	// Issue #139 — auto-merge LLM provider base URLs declared on
+	// model.base_url (and on each fallback). Without this an agent
+	// configured against an OpenAI-compatible provider (Together.ai,
+	// OpenRouter, Groq, ...) ships a NetworkPolicy that blocks the
+	// provider's hostname, and the deployed agent's LLM calls 401 /
+	// time out depending on which side notices first.
+	allowed = append(allowed, security.LLMProviderDomains(bc.Config)...)
 
 	resolved, err := security.Resolve(cfg.Profile, cfg.Mode, allowed, toolNames, cfg.Capabilities)
 	if err != nil {

@@ -4,7 +4,26 @@
 #
 # Requires: curl, jq, git
 # Env: ANTHROPIC_API_KEY or OPENAI_API_KEY (at least one)
-# Optional: REVIEW_MODEL, REVIEW_MAX_DIFF_BYTES, GH_TOKEN, FORGE_REVIEW_STANDARDS_DIR
+# Optional:
+#   REVIEW_PROVIDER          — "anthropic" or "openai"; explicit operator override.
+#                              When unset, auto-detected from REVIEW_MODEL prefix
+#                              ("claude-*" → anthropic) then by which API key is
+#                              present, then prefers openai when both are set
+#                              (fixes #133: Anthropic-first was wrong when both
+#                              keys exist, e.g. via .forge/secrets.enc).
+#   REVIEW_MODEL             — provider-specific model name; falls back per provider.
+#   REVIEW_MAX_DIFF_BYTES    — cap on diff size; default 100000.
+#   GH_TOKEN                 — GitHub token for `gh pr diff` / API fallback.
+#   FORGE_REVIEW_STANDARDS_DIR — directory of *.md standards to inject as context.
+#   OPENAI_BASE_URL          — base URL for OpenAI-compatible providers
+#                              (Together.ai, OpenRouter, Groq, Fireworks, ...).
+#                              Default: https://api.openai.com/v1. Uses
+#                              /chat/completions regardless of value — see
+#                              OPENAI_USE_RESPONSES_API to opt into the
+#                              proprietary Responses API.
+#   OPENAI_USE_RESPONSES_API — set to "1" to use OpenAI's proprietary /responses
+#                              endpoint (Codex/OAuth flow). Default off. Only
+#                              relevant when OPENAI_BASE_URL points at openai.com.
 set -euo pipefail
 
 # --- Read and validate input first (agent can fix these) ---
@@ -267,8 +286,59 @@ if [ "$TRUNCATED" = "true" ]; then
 [NOTE: Diff was truncated at ${MAX_DIFF_BYTES} bytes. Some files may be missing from the review.]"
 fi
 
+# --- Select provider ---
+#
+# Precedence (closes #133):
+#   1. REVIEW_PROVIDER if set — explicit operator override, wins always.
+#   2. REVIEW_MODEL prefix — "claude-*" → anthropic, otherwise → openai.
+#      Most operators set REVIEW_MODEL when they care which provider; the
+#      model name carries the signal.
+#   3. If only one of the two API keys is set, use that one.
+#   4. If both keys are set with no other signal, prefer openai.
+#      (Pre-#133 default was anthropic-first, which broke every operator
+#      who had a stale ANTHROPIC_API_KEY co-resident with a live
+#      OPENAI_API_KEY in .forge/secrets.enc.)
+PROVIDER="${REVIEW_PROVIDER:-}"
+if [ -z "$PROVIDER" ]; then
+  if [ -n "${REVIEW_MODEL:-}" ]; then
+    case "$REVIEW_MODEL" in
+      claude-*|anthropic/*) PROVIDER="anthropic" ;;
+      *)                    PROVIDER="openai"    ;;
+    esac
+  elif [ -n "${ANTHROPIC_API_KEY:-}" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
+    PROVIDER="anthropic"
+  elif [ -n "${OPENAI_API_KEY:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+    PROVIDER="openai"
+  else
+    # Both present (or neither, which fails the key check below). Default
+    # to openai — see precedence comment above.
+    PROVIDER="openai"
+  fi
+fi
+
+# Validate the selected provider has its key. Fail with a clear message
+# instead of letting the curl call return a confusing 401.
+case "$PROVIDER" in
+  anthropic)
+    if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+      echo '{"error": "REVIEW_PROVIDER=anthropic (or REVIEW_MODEL inferred Anthropic) but ANTHROPIC_API_KEY is not set"}' >&2
+      exit 1
+    fi
+    ;;
+  openai)
+    if [ -z "${OPENAI_API_KEY:-}" ]; then
+      echo '{"error": "REVIEW_PROVIDER=openai (or REVIEW_MODEL inferred OpenAI) but OPENAI_API_KEY is not set"}' >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "{\"error\": \"REVIEW_PROVIDER must be 'anthropic' or 'openai'; got: $PROVIDER\"}" >&2
+    exit 1
+    ;;
+esac
+
 # --- Route to LLM API ---
-if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+if [ "$PROVIDER" = "anthropic" ]; then
   # Anthropic Claude API
   MODEL="${REVIEW_MODEL:-claude-sonnet-4-20250514}"
 
@@ -311,8 +381,27 @@ if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   # Extract text content from Anthropic response
   REVIEW_TEXT=$(echo "$BODY" | jq -r '.content[0].text // empty')
 
-elif [ -n "${OPENAI_API_KEY:-}" ]; then
-  # OpenAI API — supports both Chat Completions and Responses API (OAuth)
+elif [ "$PROVIDER" = "openai" ]; then
+  # OpenAI / OpenAI-compatible API.
+  #
+  # Endpoint shape selection (closes #133 Bug 2):
+  #
+  # OPENAI_BASE_URL is a base URL pointer. It is set by operators using
+  # OpenAI-compatible providers (Together.ai, OpenRouter, Groq,
+  # Fireworks, Anyscale, vLLM, llama.cpp's server, ...) — none of which
+  # implement OpenAI's proprietary /responses endpoint. They all
+  # implement /chat/completions only.
+  #
+  # The pre-#133 logic used "OPENAI_BASE_URL is set" as the Responses
+  # API toggle, which was exactly backwards: the variable is
+  # NEGATIVELY correlated with wanting the Responses API. Operators
+  # who set OPENAI_BASE_URL=https://api.together.ai/v1 silently got
+  # POST .../v1/responses → 404.
+  #
+  # Post-fix: always use /chat/completions, regardless of
+  # OPENAI_BASE_URL value. Operators who genuinely need the OpenAI
+  # Responses API (the Codex OAuth flow) opt in explicitly via
+  # OPENAI_USE_RESPONSES_API=1.
   MODEL="${REVIEW_MODEL:-gpt-5.4}"
   OPENAI_BASE="${OPENAI_BASE_URL:-https://api.openai.com/v1}"
 
@@ -322,8 +411,8 @@ elif [ -n "${OPENAI_API_KEY:-}" ]; then
   printf '%s' "$SYSTEM_PROMPT" > "$TEMP_SYSTEM"
   printf '%s' "$USER_PROMPT" > "$TEMP_USER"
 
-  if [ -n "${OPENAI_BASE_URL:-}" ]; then
-    # Responses API (OAuth/Codex flow) — requires streaming
+  if [ "${OPENAI_USE_RESPONSES_API:-0}" = "1" ]; then
+    # OpenAI proprietary Responses API (Codex/OAuth flow) — requires streaming
     API_PAYLOAD=$(jq -n \
       --arg model "$MODEL" \
       --rawfile instructions "$TEMP_SYSTEM" \

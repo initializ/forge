@@ -589,7 +589,20 @@ func checkSkillRequirements(opts *initOptions) {
 			}
 		}
 
-		// Check one-of env vars
+		// Check one-of env vars. At init time the agent dir does not exist
+		// yet (no .env, no .forge/secrets.enc), so only os.Getenv +
+		// opts.EnvVars are available — both reflect the in-flight wizard
+		// state.
+		//
+		// Pre-fix (#135) the fallback wrote opts.EnvVars[OneOfEnv[0]] = ""
+		// as a placeholder. That picked whichever key happened to be
+		// listed first in the skill's SKILL.md (e.g. ANTHROPIC_API_KEY
+		// for code-review) — even when the operator intended OpenAI —
+		// and produced an empty .env line that misled the operator about
+		// which provider was expected. The runtime resolver
+		// (forge-skills/resolver/env_resolver.go) already surfaces a
+		// missing one_of group clearly at `forge run` if neither key is
+		// set, so the wizard need not pre-write a placeholder.
 		if len(info.OneOfEnv) > 0 {
 			found := false
 			for _, env := range info.OneOfEnv {
@@ -603,9 +616,8 @@ func checkSkillRequirements(opts *initOptions) {
 				}
 			}
 			if !found {
-				fmt.Printf("  Note: skill %q requires one of: %s (will be added to .env)\n",
+				fmt.Printf("  Note: skill %q requires one of: %s — set via 'forge secret set <KEY>' or add to .env after scaffolding\n",
 					skillName, strings.Join(info.OneOfEnv, ", "))
-				opts.EnvVars[info.OneOfEnv[0]] = ""
 			}
 		}
 	}
@@ -1316,8 +1328,17 @@ func buildEnvVars(opts *initOptions) []envVarEntry {
 				if written[env] {
 					continue
 				}
-				written[env] = true
 				val := opts.EnvVars[env]
+				// Issue #135 — only emit a .env line for one_of keys
+				// the operator actually provided. Pre-fix every one_of
+				// key got an empty placeholder line ("ANTHROPIC_API_KEY="
+				// + "OPENAI_API_KEY=") which misled operators about
+				// which provider was expected; the runtime resolver
+				// already surfaces a missing one_of group at run time.
+				if val == "" {
+					continue
+				}
+				written[env] = true
 				vars = append(vars, envVarEntry{
 					Key:     env,
 					Value:   val,

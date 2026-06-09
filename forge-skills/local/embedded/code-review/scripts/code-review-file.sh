@@ -274,14 +274,21 @@ elif [ -n "${OPENAI_API_KEY:-}" ]; then
       | jq -j 'select(.type == "response.output_text.delta") | .delta // empty' 2>/dev/null)
     rm -f "$STREAM_TMPFILE"
   else
-    # Standard Chat Completions API
+    # Standard Chat Completions API.
+    #
+    # max_completion_tokens (NOT max_tokens) — see #141 / mirror of
+    # the equivalent block in code-review-diff.sh for the full
+    # rationale. OpenAI deprecated max_tokens; reasoning models and
+    # strict OpenAI-compatible providers (Together.ai's Kimi-K2.6
+    # series, Moonshot, ...) reject the legacy field with HTTP 400.
+    # max_completion_tokens is forward-compatible and backward-tolerant.
     API_PAYLOAD=$(jq -n \
       --arg model "$MODEL" \
       --rawfile system "$TEMP_SYSTEM" \
       --rawfile user "$TEMP_USER" \
       '{
         model: $model,
-        max_tokens: 4096,
+        max_completion_tokens: 4096,
         messages: [
           {role: "system", content: $system},
           {role: "user", content: $user}

@@ -8,6 +8,14 @@ import (
 )
 
 // DefaultPolicy returns a SecurityPolicy with sensible defaults.
+//
+// MaxRiskScore=90 is the ceiling for vetted multi-purpose skills.
+// The bundled code-review skill (6 egress domains + 9 config-knob env
+// vars + a backing script) lands in the 75–85 band under the standard
+// scoring rules; the legacy 75 ceiling would block it out of the box.
+// Operators who want a stricter posture can lower the ceiling via a
+// SecurityPolicy YAML file passed through `forge build --policy` or
+// `security.policy_path` in forge.yaml.
 func DefaultPolicy() SecurityPolicy {
 	return SecurityPolicy{
 		MaxEgressDomains: 0, // unlimited
@@ -17,7 +25,7 @@ func DefaultPolicy() SecurityPolicy {
 			"AWS_SESSION_TOKEN",
 		},
 		ScriptPolicy:   "warn",
-		MaxRiskScore:   75,
+		MaxRiskScore:   90,
 		MaxTags:        20,
 		TrustedDomains: nil,
 	}

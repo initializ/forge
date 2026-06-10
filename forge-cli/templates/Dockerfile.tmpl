@@ -73,11 +73,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 {{- end}}
 {{- end}}
 
-{{- if .HasSkills}}
-COPY compiled/skills/ /app/skills/
-COPY compiled/prompt.txt /app/compiled/prompt.txt
-{{- end}}
-
 {{- if .Runtime.HealthCheck}}
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD {{.Runtime.HealthCheck}}

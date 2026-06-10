@@ -8,7 +8,6 @@ import (
 
 	cliskills "github.com/initializ/forge/forge-cli/skills"
 	"github.com/initializ/forge/forge-core/pipeline"
-	skillcompiler "github.com/initializ/forge/forge-skills/compiler"
 	"github.com/initializ/forge/forge-skills/contract"
 	"github.com/initializ/forge/forge-skills/requirements"
 )
@@ -61,23 +60,20 @@ func (s *SkillsStage) Execute(ctx context.Context, bc *pipeline.BuildContext) er
 		bc.SkillRequirements = reqs
 	}
 
-	compiled, err := skillcompiler.Compile(entries)
-	if err != nil {
-		return fmt.Errorf("compiling skills: %w", err)
-	}
+	// We deliberately do not write compiled/prompt.txt or
+	// compiled/skills/skills.json. The runtime re-globs skills/
+	// SKILL.md on every startup (runner.discoverSkillFiles +
+	// buildSkillCatalog) and never opens either file. Generating
+	// them just bloated the build output and the container image
+	// for no consumer benefit. See issue #147 for the trace.
+	// External library consumers (forgecore.Compile) still get the
+	// in-memory CompiledSkills struct directly.
 
-	if err := cliskills.WriteArtifacts(bc.Opts.OutputDir, compiled); err != nil {
-		return fmt.Errorf("writing skills artifacts: %w", err)
-	}
-
-	bc.SkillsCount = compiled.Count
+	bc.SkillsCount = len(entries)
 	if bc.Spec != nil {
 		bc.Spec.SkillsSpecVersion = "agentskills-v1"
 		bc.Spec.ForgeSkillsExtVersion = "1.0"
 	}
-
-	bc.AddFile("compiled/skills/skills.json", filepath.Join(bc.Opts.OutputDir, "compiled", "skills", "skills.json"))
-	bc.AddFile("compiled/prompt.txt", filepath.Join(bc.Opts.OutputDir, "compiled", "prompt.txt"))
 	return nil
 }
 

@@ -31,6 +31,27 @@ type ForgeConfig struct {
 	GuardrailsPath string              `yaml:"guardrails_path,omitempty"` // path to guardrails.json (default: "guardrails.json")
 	Server         ServerConfig        `yaml:"server,omitempty"`
 	Observability  ObservabilityConfig `yaml:"observability,omitempty"`
+	Security       SecurityConfig      `yaml:"security,omitempty"`
+}
+
+// SecurityConfig groups build-time security knobs. Today it carries
+// only the security-policy override; future build-time security
+// concerns (e.g. signing requirements, allowlisted base images) belong
+// here too so operators have a single security stanza in forge.yaml.
+//
+// The `forge skills audit --policy` flag and the `forge build`
+// security-analysis stage both consume `analyzer.SecurityPolicy` files
+// — populating `policy_path` here lets a committed forge.yaml gate
+// builds on the same custom policy without re-typing the flag at
+// every invocation. See issue #145.
+type SecurityConfig struct {
+	// PolicyPath points at a YAML SecurityPolicy file
+	// (analyzer.SecurityPolicy schema). When set, the build's
+	// security-analysis stage loads it instead of using the
+	// builtin defaults. Resolved relative to the forge.yaml's
+	// directory when not absolute. The `forge build --policy`
+	// flag overrides this field.
+	PolicyPath string `yaml:"policy_path,omitempty"`
 }
 
 // ObservabilityConfig groups telemetry-related sub-blocks. Today it

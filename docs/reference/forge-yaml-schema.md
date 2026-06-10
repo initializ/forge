@@ -252,3 +252,16 @@ absence-of-value is "no override," not "unset."
 auto-add it to `egress_allowlist.json`. No second egress edit needed.
 Disabled tracing produces no entry — turning tracing off in yaml does
 NOT leave a stale entry in the generated NetworkPolicy.
+
+## `security` — build-time security knobs
+
+```yaml
+security:
+  policy_path: ./security-policy.yaml
+```
+
+| Field | Default | Notes |
+|---|---|---|
+| `policy_path` | `""` | Path to a YAML `SecurityPolicy` file ([schema](../skills/skills-cli.md#policy-yaml)) consumed by the build's `security-analysis` stage. Resolved relative to the `forge.yaml` directory when not absolute. Overridden by `forge build --policy` when both are set. Empty = use the builtin `DefaultPolicy` (`max_risk_score: 90`, deny `nc`/`ncat`/`netcat`/`nmap`/`ssh`/`scp`, warn on scripts). |
+
+The same SecurityPolicy schema is consumed by `forge skills audit --policy`, so a single committed `security-policy.yaml` can gate both interactive audits and `forge build` runs. See [Skills CLI / Security Audit](../skills/skills-cli.md#security-audit) for the policy YAML reference, scoring overrides, and audit output shape.

@@ -20,10 +20,11 @@ import (
 )
 
 var (
-	signingKey  string
-	buildSlim   bool
-	buildAlpine bool
-	localBins   []string
+	signingKey      string
+	buildSlim       bool
+	buildAlpine     bool
+	localBins       []string
+	buildPolicyPath string
 )
 
 var buildCmd = &cobra.Command{
@@ -37,6 +38,7 @@ func init() {
 	buildCmd.Flags().BoolVar(&buildSlim, "slim", false, "minimize image size (skip heavy/optional binaries)")
 	buildCmd.Flags().BoolVar(&buildAlpine, "alpine", false, "prefer Alpine base image")
 	buildCmd.Flags().StringArrayVar(&localBins, "local-bin", nil, "local binary override as name=/path/to/file (repeatable)")
+	buildCmd.Flags().StringVar(&buildPolicyPath, "policy", "", "Path to a YAML security policy file (overrides forge.yaml security.policy_path and the builtin DefaultPolicy)")
 
 }
 
@@ -112,7 +114,7 @@ func runBuild(cmd *cobra.Command, args []string) error {
 		&build.ToolsStage{},
 		&build.ToolFilterStage{},
 		&build.SkillsStage{},
-		&build.SecurityAnalysisStage{},
+		&build.SecurityAnalysisStage{PolicyPathOverride: buildPolicyPath},
 		&build.RequirementsStage{},
 		&build.ChannelsStage{},
 		&build.PolicyStage{},

@@ -11,8 +11,8 @@ func TestDefaultPolicy(t *testing.T) {
 	if p.ScriptPolicy != "warn" {
 		t.Fatalf("expected script_policy 'warn', got %q", p.ScriptPolicy)
 	}
-	if p.MaxRiskScore != 75 {
-		t.Fatalf("expected max_risk_score 75, got %d", p.MaxRiskScore)
+	if p.MaxRiskScore != 90 {
+		t.Fatalf("expected max_risk_score 90, got %d", p.MaxRiskScore)
 	}
 	if len(p.BinaryDenylist) == 0 {
 		t.Fatal("expected non-empty binary denylist")

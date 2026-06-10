@@ -143,6 +143,7 @@ Uses global `--config` and `--output-dir` flags. Output is written to `.forge-ou
 | `--slim` | `false` | Minimize image size (skip heavy/optional binaries) |
 | `--alpine` | `false` | Prefer Alpine base image |
 | `--local-bin` | | Local binary override as `name=/path/to/file` (repeatable) |
+| `--policy` | | Path to a YAML `SecurityPolicy` file for the build's `security-analysis` stage (overrides `forge.yaml security.policy_path` and the builtin `DefaultPolicy`). Same schema as `forge skills audit --policy`. See [Skills CLI / Security Audit](../skills/skills-cli.md#security-audit). |
 
 ### Examples
 
@@ -158,7 +159,12 @@ forge build --local-bin forge=/path/to/linux/forge
 
 # Build with Alpine base and slim image
 forge build --alpine --slim
+
+# Build with a custom security policy (e.g. acknowledged internal egress domains)
+forge build --policy ./security-policy.yaml
 ```
+
+When the `security-analysis` stage fails the policy check, per-skill rule + message detail is printed to stderr along with the path to `compiled/security-audit.json` (the full risk-factor breakdown) and a hint about overriding the active policy. The legacy "2 error(s)" summary is preserved in the returned error for programmatic consumers.
 
 ---
 

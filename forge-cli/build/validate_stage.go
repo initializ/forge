@@ -38,20 +38,6 @@ func (s *ValidateStage) Execute(ctx context.Context, bc *pipeline.BuildContext) 
 		}
 	}
 
-	// Validate skills artifacts if skills were compiled
-	if bc.SkillsCount > 0 {
-		skillsArtifacts := []string{
-			filepath.Join("compiled", "skills", "skills.json"),
-			filepath.Join("compiled", "prompt.txt"),
-		}
-		for _, f := range skillsArtifacts {
-			path := filepath.Join(bc.Opts.OutputDir, f)
-			if _, err := os.Stat(path); os.IsNotExist(err) {
-				return fmt.Errorf("expected skills artifact missing: %s", f)
-			}
-		}
-	}
-
 	// Validate egress artifact if egress was resolved
 	if bc.EgressResolved != nil {
 		egressPath := filepath.Join(bc.Opts.OutputDir, "compiled", "egress_allowlist.json")

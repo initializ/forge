@@ -295,12 +295,39 @@ func copyDir(src, dst string) error {
 }
 
 func (s *DockerfileStage) writeDockerignore(bc *pipeline.BuildContext) error {
-	dockerignoreContent := `.env
+	// Two categories of exclusions:
+	//   1. Secrets — never bake credentials into a layered image.
+	//   2. Operator-side artifacts the runtime does not open. The
+	//      Dockerfile uses `COPY . .` from .forge-output/, so without
+	//      these every operator-side helper lands in /app/, padding
+	//      the image and leaking build metadata. The runtime opens
+	//      only forge.yaml, guardrails.json, <channel>-config.yaml,
+	//      agent.json, policy-scaffold.json, skills/, and
+	//      checksums.json — anything outside that set is excluded.
+	dockerignoreContent := `# --- Secrets ---
+.env
 .env.*
 *.enc
 secrets.enc
 *.key
 *.pem
+
+# --- Operator-side artifacts (issue #147) ---
+# k8s/ is for kubectl apply on the host, not the runtime image.
+k8s/
+# build-manifest.json is consumed by forge package / forge export.
+build-manifest.json
+# compiled/ holds the egress allowlist (used by forge package and
+# the K8s NetworkPolicy) plus the security audit report; the runtime
+# never opens any of them. compiled/prompt.txt and
+# compiled/skills/skills.json are no longer generated (#147).
+compiled/
+# Recursive — the Dockerfile shouldn't be baked into its own image.
+Dockerfile
+.dockerignore
+# Build-only local binary stash; binaries land in /usr/local/bin via
+# the bin stage already.
+.local-bins/
 `
 	ignorePath := filepath.Join(bc.Opts.OutputDir, ".dockerignore")
 	if err := os.WriteFile(ignorePath, []byte(dockerignoreContent), 0644); err != nil {

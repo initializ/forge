@@ -64,12 +64,15 @@ Summarize text content.
 		t.Errorf("SkillsSpecVersion = %q, want %q", bc.Spec.SkillsSpecVersion, "agentskills-v1")
 	}
 
-	// Check artifacts exist
-	if _, err := os.Stat(filepath.Join(outDir, "compiled", "skills", "skills.json")); os.IsNotExist(err) {
-		t.Error("skills.json not created")
+	// Issue #147: the stage no longer writes compiled/skills/skills.json or
+	// compiled/prompt.txt — the runtime never opened them and they bloated
+	// the container image. Assert they are NOT present so a future change
+	// reintroducing the dead writers is caught.
+	if _, err := os.Stat(filepath.Join(outDir, "compiled", "skills", "skills.json")); err == nil {
+		t.Error("compiled/skills/skills.json should not be generated (issue #147)")
 	}
-	if _, err := os.Stat(filepath.Join(outDir, "compiled", "prompt.txt")); os.IsNotExist(err) {
-		t.Error("prompt.txt not created")
+	if _, err := os.Stat(filepath.Join(outDir, "compiled", "prompt.txt")); err == nil {
+		t.Error("compiled/prompt.txt should not be generated (issue #147)")
 	}
 }
 

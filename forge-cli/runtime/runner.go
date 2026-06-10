@@ -242,7 +242,19 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	// 0b. Verify build output integrity if checksums.json exists.
+	// Inside a Forge container, .forge-output/ is flattened into
+	// WorkDir (typically /app) — the .dockerignore drops the dir
+	// while keeping checksums.json at /app/checksums.json. On the
+	// operator side `forge run` is invoked next to forge.yaml, so
+	// the build output still lives under <WorkDir>/.forge-output/.
+	// Try the operator-side layout first, then fall back to the
+	// flattened container layout (issue #147).
 	outputDir := filepath.Join(r.cfg.WorkDir, ".forge-output")
+	if _, err := os.Stat(filepath.Join(outputDir, "checksums.json")); os.IsNotExist(err) {
+		if _, err := os.Stat(filepath.Join(r.cfg.WorkDir, "checksums.json")); err == nil {
+			outputDir = r.cfg.WorkDir
+		}
+	}
 	if err := VerifyBuildOutput(outputDir); err != nil {
 		r.logger.Warn("build output verification failed", map[string]any{"error": err.Error()})
 	}

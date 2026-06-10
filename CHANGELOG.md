@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.14.2 — 2026-06-10
+
+### Fixed
+
+- **`forge build` no longer fails the bundled `code-review` skill on a fresh
+  agent (issue #145, PR TBD).** The build's `security-analysis` stage
+  evaluated skills against `analyzer.DefaultPolicy` (MaxRiskScore=75), and
+  the bundled `code_review_diff` / `code_review_file` skills routinely scored
+  100 — three of their declared egress domains (`chatgpt.com`,
+  `patch-diff.githubusercontent.com`, `raw.githubusercontent.com`) were not
+  in the builtin `trustedDomains` map and racked up 30 points; the 9
+  config-knob env vars added another 45. The operator saw only
+  `security policy check failed: 2 error(s), 0 warning(s)` — no rule
+  detail, no path to the audit JSON, no override knob (only
+  `forge skills audit` accepted `--policy`). Three-layer fix:
+  - Extended `trustedDomains` with the GitHub-owned content endpoints
+    (`raw.githubusercontent.com`, `patch-diff.githubusercontent.com`,
+    `gist.githubusercontent.com`, `objects.githubusercontent.com`) and
+    `chatgpt.com` (OpenAI product redirect).
+  - Capped the env category at 25 points so multi-purpose skills declaring
+    many config knobs aren't penalized linearly. Per-item factors are still
+    emitted; only the points contribution to the aggregate is bounded.
+  - Raised `DefaultPolicy.MaxRiskScore` from 75 → 90 so vetted bundled
+    skills clear the default. Operators wanting a stricter posture can
+    lower the ceiling in a policy YAML.
+  - Added `security.policy_path` to `forge.yaml` and `--policy` to
+    `forge build`, mirroring `forge skills audit --policy`. The flag wins
+    over the yaml field; both point at the same `analyzer.SecurityPolicy`
+    schema. A missing file is a hard load error (no silent fallback).
+  - Rewrote the `security-analysis` failure path: per-skill rule + message
+    + recommendations + audit JSON path + policy source + remediation hint
+    print to stderr; the returned error still includes the violation count
+    for programmatic consumers.
+
 ## v0.14.1 — 2026-06-09
 
 ### Fixed

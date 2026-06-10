@@ -8,18 +8,35 @@ import (
 )
 
 // Well-known trusted domains that receive lower risk scores.
+//
+// Entries are operator-evident "everyone uses these" endpoints for
+// LLM providers, channels, and source-control surfaces bundled skills
+// target. Adding to this map is a project-level acknowledgement that
+// the domain is owned by a vetted vendor. Per-agent acknowledgements
+// belong in SecurityPolicy.TrustedDomains so operators can extend
+// trust without patching the analyzer.
 var trustedDomains = map[string]bool{
-	"api.github.com":    true,
-	"github.com":        true,
+	// GitHub-owned surfaces.
+	"api.github.com":                   true,
+	"github.com":                       true,
+	"raw.githubusercontent.com":        true, // raw-file endpoint
+	"patch-diff.githubusercontent.com": true, // PR-diff endpoint
+	"gist.githubusercontent.com":       true, // gist endpoint
+	"objects.githubusercontent.com":    true, // release-asset CDN
+	// LLM providers (canonical endpoints; OpenAI-compatible gateways
+	// belong in SecurityPolicy.TrustedDomains per-agent).
 	"api.openai.com":    true,
+	"chatgpt.com":       true, // OpenAI product-domain redirect target
 	"api.anthropic.com": true,
-	"api.tavily.com":    true,
-	"api.slack.com":     true,
-	"hooks.slack.com":   true,
-	"api.telegram.org":  true,
-	"googleapis.com":    true,
 	"api.together.ai":   true,
 	"api.cohere.com":    true,
+	"api.tavily.com":    true,
+	// Channels.
+	"api.slack.com":    true,
+	"hooks.slack.com":  true,
+	"api.telegram.org": true,
+	// Cloud APIs.
+	"googleapis.com": true,
 }
 
 // High-risk binaries that may allow arbitrary code execution.
@@ -194,6 +211,18 @@ func scoreBinaries(bins []string, policy SecurityPolicy) []RiskFactor {
 	return factors
 }
 
+// envCategoryCap bounds how much the env-var category can contribute
+// to a skill's total risk score. Without a cap, a multi-purpose skill
+// that declares many config-knob env vars (e.g. the bundled
+// code-review skill's 9 OneOf/Optional vars) racks up 45+ points on
+// the env axis alone, which is disproportionate — most of those
+// names are operator-tunable knobs, not credentials. The cap kicks in
+// at the equivalent of 5 non-sensitive vars or 2.5 sensitive vars and
+// prevents the env axis from dominating the aggregate score. Per-item
+// risk factors are still emitted (and the audit report shows every
+// declared var) — only the points-contribution is capped.
+const envCategoryCap = 25
+
 func scoreEnv(reqEnv, oneOfEnv, optEnv []string, policy SecurityPolicy) []RiskFactor {
 	acknowledged := make(map[string]bool, len(policy.AcknowledgedEnv))
 	for _, e := range policy.AcknowledgedEnv {
@@ -228,6 +257,22 @@ func scoreEnv(reqEnv, oneOfEnv, optEnv []string, policy SecurityPolicy) []RiskFa
 			})
 		}
 	}
+
+	// Apply the category cap by attributing the overage to a single
+	// negative-points adjustment so the per-item factors stay visible
+	// in the audit report.
+	total := 0
+	for _, f := range factors {
+		total += f.Points
+	}
+	if total > envCategoryCap {
+		factors = append(factors, RiskFactor{
+			Category:    "env",
+			Description: fmt.Sprintf("category cap applied (%d → %d, %d declared)", total, envCategoryCap, len(allEnv)),
+			Points:      envCategoryCap - total,
+		})
+	}
+
 	return factors
 }
 

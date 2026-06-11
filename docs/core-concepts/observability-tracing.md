@@ -45,8 +45,8 @@ observability:
       x-tenant: demo
     resource_attrs:                          # extra OTel resource attributes
       deployment.environment: prod
-    redact: true                             # default true — Phase 3 metadata-only ships now
-    capture_content: false                   # enterprise opt-in for prompt/completion content
+    redact: true                             # scrub vendor secret tokens when capture_content is on
+    capture_content: false                   # opt-in: stamp prompt/completion/tool I/O on spans
 ```
 
 | Field | Type | Default | Notes |
@@ -60,8 +60,8 @@ observability:
 | `service_name` | string | `agent_id` | `OTEL_SERVICE_NAME` env wins if set. |
 | `headers` | map | — | OTLP HTTP/gRPC headers. Env is the preferred path for secrets. |
 | `resource_attrs` | map | — | Merged with the auto-stamped `service.*` + `forge.runtime.version`. |
-| `redact` | bool | `true` | PII redaction posture flag (consumed by Phase 3+ instrumentation). |
-| `capture_content` | bool | `false` | Reserved — metadata-only spans ship now; content capture is a follow-up. |
+| `redact` | bool | `true` | When `capture_content: true`, scrub vendor secret tokens (Anthropic / OpenAI / GitHub / AWS / Slack / private keys / Telegram) before stamping content attributes. See [Span content capture](#span-content-capture). |
+| `capture_content` | bool | `false` | Stamp prompt / completion / tool I/O as span attributes. Off by default; metadata-only spans ship. See [Span content capture](#span-content-capture). |
 
 ## Config precedence
 
@@ -152,9 +152,22 @@ Forge mixes OTel GenAI semconv with Forge-specific `forge.*` namespaced attribut
 
 Tool errors do **not** fail the outer `agent.execute` span — they surface to the LLM as text and the loop continues. The tool span carries the failure detail so operators can pivot from a trace to the specific failed invocation.
 
-### Phase 3 is metadata-only
+### Span content capture
 
-Tool args / results, prompts, completions are **not** recorded as span attributes today. The `capture_content` + `redact` knobs are plumbed but not yet honored by the instrumentation — content capture is a follow-up that will reuse the FWS-8 audit redactor.
+Prompts, completions, tool args, and tool results are **off by default** — Phase 3 spans ship metadata only (provider, model, usage, finish reasons, tool name). Operators who need content attributes for in-trace debugging or supervised-learning corpora opt in via `observability.tracing.capture_content: true` (Phase 3.5 / issue #130).
+
+| `forge.yaml` knob | Span | Attribute keys added when `capture_content: true` |
+|---|---|---|
+| (always) | `llm.completion` | `gen_ai.system`, `gen_ai.request.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.response.finish_reasons` |
+| `capture_content: true` | `llm.completion` | `gen_ai.prompt` (JSON-serialized inbound messages), `gen_ai.completion` (response text) |
+| (always) | `tool.<name>` | `forge.tool.name`, `forge.tool.error` (on failure) |
+| `capture_content: true` | `tool.<name>` | `forge.tool.args` (raw arguments JSON), `forge.tool.result` (raw output) |
+
+When `capture_content: true` and `redact: true` (the default when capture is on), attribute values pass through a redactor that scrubs the same vendor secret-token shapes the runtime guardrails default rules cover (Anthropic `sk-ant-…`, OpenAI `sk-…`, GitHub `ghp_/gho_/ghs_/github_pat_…`, AWS `AKIA…`, Slack `xoxb-/xoxp-…`, RSA/EC/OPENSSH/PRIVATE key blocks, Telegram bot tokens). Matched values become `[REDACTED]`. Setting `redact: false` is the enterprise raw-capture path — content is stamped verbatim with the byte cap still applied.
+
+Every captured value is byte-capped at **4 KiB** (below the 5 KiB attribute soft-cap most backends apply). When the input exceeds the cap, the value ends with a `…[truncated:N]` marker where `N` is the original byte length. The marker is **byte-identical** to what the audit payload-capture path emits for the same input, so an operator grepping `[truncated:` across span attributes and audit rows sees aligned output.
+
+**Default posture** (no opt-in): the `gen_ai.prompt`, `gen_ai.completion`, `forge.tool.args`, `forge.tool.result` keys are **absent** from spans — not set to empty string. Backends that gate dashboards on "is this key present?" can distinguish "metadata-only by default" from "operator opted in but the field happened to be empty."
 
 ## End-to-end propagation (Phase 5)
 

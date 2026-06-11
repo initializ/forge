@@ -330,6 +330,37 @@ shape — no `trace_id` / `span_id` keys appear. The
 `AuditSchemaVersion` is NOT bumped: adding optional fields is a
 schema-compatible change per the policy above.
 
+### Content-capture parity
+
+When `observability.tracing.capture_content: true` is set, prompt /
+completion / tool-args / tool-result content appears on **both** the
+linked OTel span and the FWS-8 audit row for the same logical event.
+The two pipelines run the captured content through the same redact-
+then-truncate helper (`runtime.PrepareSpanContent` /
+`runtime.TruncateForAudit`) so:
+
+- The redaction marker is identical (`[REDACTED]`) — operators
+  grepping either sink for vendor secret-token shapes see the same
+  match.
+- The truncation marker is byte-identical (`…[truncated:N]` where
+  `N` is the original byte length of the input). Grepping
+  `[truncated:` across audit rows and span attributes returns
+  aligned, comparable results.
+- The redact patterns mirror the runtime guardrails CustomRules
+  defaults (Anthropic / OpenAI / GitHub / AWS / Slack / private key
+  blocks / Telegram bot tokens). Adding a new vendor pattern to one
+  pipeline implies adding it to the other.
+
+The audit pipeline's byte cap (16 KiB per field, see
+`AuditPayloadCapture.Cap*Bytes`) is intentionally larger than the
+span cap (4 KiB — below the soft attribute-length limit most
+observability backends apply). The two caps are independent: a single
+event may be truncated on the span side and survive intact on the
+audit side. The trailing marker shape is the same either way.
+
+See [Observability — Span content capture](../core-concepts/observability-tracing.md#span-content-capture) for the
+span-side attribute keys and opt-in switches.
+
 ## Streams (FWS-9)
 
 `forge run` / `forge serve` use the OS streams as a stream-level

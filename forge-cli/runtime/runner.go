@@ -834,6 +834,15 @@ func (r *Runner) Run(ctx context.Context) error {
 						MaxIterations: 100,
 						CharBudget:    charBudget,
 						FilesDir:      filepath.Join(r.cfg.WorkDir, ".forge", "files"),
+						// Issue #130 — the same resolved TracingConfig
+						// already passed to NewTracerProvider drives Phase
+						// 3.5 span-content capture inside the executor
+						// loop. Disabled state (Enabled=false +
+						// CaptureContent=false) is the zero-value default,
+						// so missing this on an older config schema is
+						// equivalent to "metadata-only spans" — the
+						// posture this initiative preserves.
+						TracingConfig: tracingCfg,
 					}
 					if r.derivedCLIConfig != nil {
 						execCfg.WorkflowPhases = r.derivedCLIConfig.WorkflowPhases

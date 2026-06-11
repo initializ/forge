@@ -660,10 +660,19 @@ Forge-specific attributes use the `forge.*` namespace
 (`forge.task.id`, `forge.task.final_state`, `forge.tool.name`,
 `forge.workflow.id`, ...).
 
-Phase 3 ships **metadata-only** spans. `capture_content` is plumbed
-through the config schema but not yet honored by the instrumentation;
-content capture is a follow-up that will reuse the FWS-8 audit
-redactor.
+**Default posture is metadata-only.** Prompts, completions, tool
+args, and tool results are NOT stamped on spans unless
+`observability.tracing.capture_content: true` is set (Phase 3.5 /
+#130). When opted-in: `llm.completion` gains `gen_ai.prompt` (JSON-
+serialized inbound messages) + `gen_ai.completion` (response text);
+`tool.<name>` gains `forge.tool.args` + `forge.tool.result`.
+Captured values pass through a redactor (vendor secret-token shapes:
+Anthropic / OpenAI / GitHub / AWS / Slack / private keys / Telegram)
+when `redact: true` (default with capture). Each value is byte-capped
+at 4 KiB with a `…[truncated:N]` marker byte-identical to the audit
+payload-capture marker, so an operator grepping `[truncated:` across
+spans and audit rows sees aligned output. `redact: false` is the
+enterprise raw-capture path.
 
 **Read**: `docs/core-concepts/observability-tracing.md`,
 `docs/reference/forge-yaml-schema.md` § `observability.tracing`,
@@ -790,8 +799,8 @@ observability:                       # OTel Tracing v1 (#108) — off by default
     service_name: ""                 # default: agent_id
     headers: { x-tenant: demo }
     resource_attrs: { deployment.environment: prod }
-    redact: true
-    capture_content: false           # Phase 3 ships metadata-only
+    redact: true                     # scrub vendor secrets when capture is on
+    capture_content: false           # off by default; opt in to span content
 
 skills:
   path: SKILL.md                     # main agent skill file

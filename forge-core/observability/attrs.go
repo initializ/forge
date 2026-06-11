@@ -106,14 +106,18 @@ const (
 	// so the same scrub passes both the OTel pipeline and (in the
 	// future) the audit payload-capture path.
 
-	// AttrGenAIPrompt is the serialized inbound chat-messages array
-	// the agent sent to the LLM (JSON-encoded role+content pairs).
-	// Per the OTel GenAI semantic conventions.
-	AttrGenAIPrompt = "gen_ai.prompt"
+	// AttrGenAIInputMessages is the structured inbound message array
+	// the agent sent to the LLM — a JSON array of role+content pairs.
+	// Per OTel GenAI semantic conventions (current). Supersedes the
+	// deprecated `gen_ai.prompt` flat-string attribute.
+	AttrGenAIInputMessages = "gen_ai.input.messages"
 
-	// AttrGenAICompletion is the model's response text on success.
-	// Per the OTel GenAI semantic conventions.
-	AttrGenAICompletion = "gen_ai.completion"
+	// AttrGenAIOutputMessages is the structured response array from
+	// the model — a JSON array of role+content pairs (single element
+	// for a non-streaming, single-choice completion). Per OTel GenAI
+	// semantic conventions (current). Supersedes the deprecated
+	// `gen_ai.completion` flat-string attribute.
+	AttrGenAIOutputMessages = "gen_ai.output.messages"
 
 	// AttrForgeToolArgs is the raw arguments JSON the agent passed to
 	// a tool. Set on tool.<name> spans.

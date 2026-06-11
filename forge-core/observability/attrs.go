@@ -88,9 +88,7 @@ const (
 	AttrForgeLoopIteration = "forge.loop.iteration"
 
 	// AttrForgeToolName / AttrForgeToolError name the tool call
-	// instrumentation. Tool args / results are NOT recorded here —
-	// Phase 3 is metadata-only. A future "capture_content=true with
-	// PII redaction" phase will add args/result attribute keys.
+	// instrumentation.
 	AttrForgeToolName  = "forge.tool.name"
 	AttrForgeToolError = "forge.tool.error"
 
@@ -98,4 +96,30 @@ const (
 	// resolved to — "completed", "failed", "canceled". Set on the
 	// agent.execute span just before End.
 	AttrForgeTaskFinalState = "forge.task.final_state"
+
+	// ─── Content-capture attributes (Phase 3.5 / issue #130) ─────
+	//
+	// These attributes are set only when TracingConfig.CaptureContent
+	// is true. The default posture remains metadata-only: an absent
+	// attribute is the signal that an operator did not opt in. Set
+	// values pass through PrepareSpanContent (redact-then-truncate)
+	// so the same scrub passes both the OTel pipeline and (in the
+	// future) the audit payload-capture path.
+
+	// AttrGenAIPrompt is the serialized inbound chat-messages array
+	// the agent sent to the LLM (JSON-encoded role+content pairs).
+	// Per the OTel GenAI semantic conventions.
+	AttrGenAIPrompt = "gen_ai.prompt"
+
+	// AttrGenAICompletion is the model's response text on success.
+	// Per the OTel GenAI semantic conventions.
+	AttrGenAICompletion = "gen_ai.completion"
+
+	// AttrForgeToolArgs is the raw arguments JSON the agent passed to
+	// a tool. Set on tool.<name> spans.
+	AttrForgeToolArgs = "forge.tool.args"
+
+	// AttrForgeToolResult is the raw output the tool returned. Set on
+	// tool.<name> spans.
+	AttrForgeToolResult = "forge.tool.result"
 )

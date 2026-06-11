@@ -56,6 +56,12 @@ type LLMExecutor struct {
 	filesDir           string        // directory for file_create output
 	sessionMaxAge      time.Duration // max age for session recovery (0 = no limit)
 	workflowPhases     []string      // workflow phases from skills (edit, finalize, query)
+	// tracingCfg governs Phase 3.5 span-attribute content capture
+	// (issue #130). Only CaptureContent + Redact are consumed here;
+	// the rest of the struct is honored by the cli runner's tracer
+	// setup. Zero value (CaptureContent=false) means metadata-only
+	// spans — the default posture.
+	tracingCfg observability.TracingConfig
 }
 
 // LLMExecutorConfig configures the LLM executor.
@@ -74,6 +80,12 @@ type LLMExecutorConfig struct {
 	FilesDir       string        // directory for file_create output (default: $TMPDIR/forge-files)
 	SessionMaxAge  time.Duration // max idle time before session recovery is skipped (0 = 30m default)
 	WorkflowPhases []string      // workflow phases from skills (edit, finalize, query)
+	// TracingConfig is the same observability.TracingConfig the cli
+	// runner resolves and passes to NewTracerProvider. The executor
+	// reads CaptureContent + Redact to decide whether to stamp
+	// prompt / completion / tool I/O content on Phase 3 spans
+	// (issue #130). Zero value disables content capture.
+	TracingConfig observability.TracingConfig
 }
 
 // NewLLMExecutor creates a new LLMExecutor with the given configuration.
@@ -131,6 +143,7 @@ func NewLLMExecutor(cfg LLMExecutorConfig) *LLMExecutor {
 		filesDir:           cfg.FilesDir,
 		sessionMaxAge:      sessionMaxAge,
 		workflowPhases:     cfg.WorkflowPhases,
+		tracingCfg:         cfg.TracingConfig,
 	}
 }
 
@@ -355,6 +368,19 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 			attribute.String(observability.AttrGenAISystem, e.provider),
 			attribute.String(observability.AttrGenAIRequestModel, e.modelName),
 		)
+		// Phase 3.5 (#130) — stamp the serialized request messages on
+		// the span when CaptureContent is enabled. Runs through the
+		// redact-then-truncate pipeline (PrepareSpanContent) so PII
+		// scrubbing is identical to what audit payload-capture will
+		// emit for the same event.
+		if e.tracingCfg.CaptureContent {
+			if prompt := serializeChatMessages(req.Messages); prompt != "" {
+				llmSpan.SetAttributes(attribute.String(
+					observability.AttrGenAIPrompt,
+					PrepareSpanContent(prompt, e.tracingCfg.Redact, DefaultSpanContentCapBytes),
+				))
+			}
+		}
 		resp, err := e.client.Chat(llmCtx, req)
 		llmDuration := time.Since(llmStart)
 		if err != nil {
@@ -393,6 +419,15 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 		)
 		if resp.FinishReason != "" {
 			llmSpan.SetAttributes(attribute.StringSlice(observability.AttrGenAIResponseFinishReasons, []string{resp.FinishReason}))
+		}
+		// Phase 3.5 (#130) — completion text stamped after success.
+		// Empty content (e.g. tool-call-only assistant turns) yields
+		// no attribute so an absent key remains the "no opt-in" signal.
+		if e.tracingCfg.CaptureContent && resp.Message.Content != "" {
+			llmSpan.SetAttributes(attribute.String(
+				observability.AttrGenAICompletion,
+				PrepareSpanContent(resp.Message.Content, e.tracingCfg.Redact, DefaultSpanContentCapBytes),
+			))
 		}
 		llmSpan.End()
 
@@ -622,12 +657,16 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 			toolStart := time.Now()
 			// Phase 3 (#104) — child span around the tool call. Span
 			// name is "tool.<tool_name>" so a flame graph groups tools
-			// by kind without a query. Tool args / results are NOT
-			// recorded as attributes here — Phase 3 is metadata-only;
-			// content capture lands when the FWS-8 redactor can be
-			// reused for spans.
+			// by kind without a query. Phase 3.5 (#130) added optional
+			// args/result content capture under CaptureContent + Redact.
 			toolCtx, toolSpan := Tracer().Start(ctx, "tool."+tc.Function.Name)
 			toolSpan.SetAttributes(attribute.String(observability.AttrForgeToolName, tc.Function.Name))
+			if e.tracingCfg.CaptureContent && tc.Function.Arguments != "" {
+				toolSpan.SetAttributes(attribute.String(
+					observability.AttrForgeToolArgs,
+					PrepareSpanContent(tc.Function.Arguments, e.tracingCfg.Redact, DefaultSpanContentCapBytes),
+				))
+			}
 			result, execErr := e.tools.Execute(toolCtx, tc.Function.Name, json.RawMessage(tc.Function.Arguments))
 			toolDuration := time.Since(toolStart)
 			if execErr != nil {
@@ -635,6 +674,17 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 				toolSpan.SetStatus(codes.Error, execErr.Error())
 				toolSpan.SetAttributes(attribute.String(observability.AttrForgeToolError, execErr.Error()))
 				result = fmt.Sprintf("Error executing tool %s: %s", tc.Function.Name, execErr.Error())
+			}
+			// Phase 3.5 (#130) — tool result content capture. The
+			// error-path `result` (set above) is the synthetic
+			// "Error executing tool" string the loop returns to the
+			// LLM; capturing it gives backends the same view the LLM
+			// will see on the next iteration.
+			if e.tracingCfg.CaptureContent && result != "" {
+				toolSpan.SetAttributes(attribute.String(
+					observability.AttrForgeToolResult,
+					PrepareSpanContent(result, e.tracingCfg.Redact, DefaultSpanContentCapBytes),
+				))
 			}
 			toolSpan.End()
 			iterResults = append(iterResults, toolIterResult{

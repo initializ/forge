@@ -4,7 +4,7 @@ description: "Configurable content filtering, PII detection, and jailbreak prote
 order: 7
 ---
 
-The guardrail engine validates inbound and outbound messages against configurable policy rules using the `github.com/initializ/guardrails` library.
+The guardrail engine validates inbound and outbound messages against configurable policy rules using the [`github.com/initializ/guardrails`](https://github.com/initializ/guardrails) library (pinned at `v0.12.0` in `forge-cli/go.mod`). Both the file-mode `guardrails.json` schema and the MongoDB-mode `AgentConfig` documents share the same shape — `models.StructuredGuardrails` from that library's [`models/config.go`](https://github.com/initializ/guardrails/blob/v0.12.0/models/config.go). The library's `models` package is the authoritative type definition; this page mirrors it for the fields most operators reach for, but field-level additions in newer library versions will surface there first.
 
 ## Architecture
 
@@ -158,6 +158,195 @@ Gates control which evaluation points are active:
 | `outputGate` | `true` | Validates agent responses before delivery |
 | `contextGate` | `false` | Validates context window content |
 | `streamGate` | `false` | Validates streaming chunks |
+
+### Full `guardrails.json` Schema
+
+The `StructuredGuardrails` document (`github.com/initializ/guardrails/models.StructuredGuardrails`) has the following top-level blocks. Every block is optional — omitted blocks disable the corresponding evaluator. Field names use camelCase to match the JSON / BSON tags on the library structs.
+
+| Top-level key | Library type | Purpose |
+|---|---|---|
+| `pii` | `*PIIConfig` | PII detection (email, phone, SSN, credit-card, …) |
+| `moderation` | `*ModerationConfig` | Content-moderation categories (hate, harassment, violence, sexual, …) |
+| `security` | `*SecurityConfig` | Jailbreak, prompt injection, SQL injection, command injection, custom security patterns |
+| `urlFilter` | `*URLFilterConfig` | Allowlist / denylist URLs in inbound and outbound text |
+| `customRules` | `*CustomRulesConfig` | User-defined regex / keyword / phrase rules with gate scoping |
+| `approvalGates` | `[]ApprovalCondition` | Per-condition human-approval gates with notification channels |
+| `nsfwText` | `*NSFWTextConfig` | NSFW-text confidence-threshold detection |
+| `hallucination` | `*HallucinationConfig` | Hallucination detection — `require_sources` or `review` mode |
+| `skillConstraints` | `*SkillConstraintsConfig` | Allowed / blocked skill names with per-decision action |
+| `gateConfig` | `*GateConfig` | Which gates (input / tool-call / output / context / stream) fire |
+
+#### `pii`
+
+```json
+{
+  "enabled": true,
+  "action": "mask",
+  "categories": {
+    "email": { "enabled": true, "action": "mask" },
+    "phoneNumber": { "enabled": true, "action": "mask" }
+  }
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `enabled` | `bool` | Master switch for PII detection |
+| `action` | `string` | Global default: `mask` / `block` / `warn` |
+| `categories` | `map<string, PIICategoryConfig>` | Per-category overrides; each entry has `enabled`, `action`, optional `id`, `label` |
+
+#### `moderation`
+
+```json
+{
+  "enabled": true,
+  "action": "warn",
+  "categories": {
+    "hate": { "enabled": true, "action": "block", "threshold": 0.8 }
+  }
+}
+```
+
+Same shape as `pii`, but each `ModerationCategoryConfig` also accepts a `threshold` float (0.0–1.0) and optional `description`.
+
+#### `security`
+
+```json
+{
+  "jailbreakDetection": { "enabled": true, "confidenceThreshold": 25, "action": "block" },
+  "promptInjection":    { "enabled": true, "confidenceThreshold": 30, "action": "block" },
+  "sqlInjection":       { "enabled": true, "confidenceThreshold": 40, "action": "block" },
+  "commandInjection":   { "enabled": true, "confidenceThreshold": 35, "action": "block" },
+  "customPatterns": [
+    { "name": "internal-token", "pattern": "INT-[A-Z0-9]{16}", "action": "block", "description": "Internal service tokens" }
+  ]
+}
+```
+
+| Sub-block | Type | Notes |
+|---|---|---|
+| `jailbreakDetection`, `promptInjection`, `sqlInjection`, `commandInjection` | `*ThresholdConfig` | Each has `enabled` (bool), `confidenceThreshold` (0–100 percent), `action` (string) |
+| `customPatterns` | `[]SecurityPattern` | Each has `name`, `pattern` (regex), `action`, optional `description` |
+
+#### `urlFilter`
+
+```json
+{
+  "enabled": true,
+  "mode": "denylist",
+  "denylist": ["evil.example.com"],
+  "allowlist": [],
+  "maskAction": "redact",
+  "replaceWith": "[URL REDACTED]",
+  "action": "mask"
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `mode` | `string` | `allowlist` / `denylist` / `both` |
+| `allowlist`, `denylist` | `[]string` | Host patterns |
+| `action` | `string` | `mask` / `block` / `warn` |
+| `maskAction`, `replaceWith` | `string` | Used when `action: mask` |
+
+#### `customRules`
+
+```json
+{
+  "hardConstraints": ["no-pii-leakage"],
+  "softConstraints": ["polite-tone"],
+  "rules": [
+    {
+      "id": "secret_openai",
+      "name": "OpenAI API Key",
+      "type": "regex",
+      "constraint": "hard",
+      "pattern": "sk-[A-Za-z0-9]{20,}",
+      "action": "mask",
+      "gates": ["output", "tool_call"]
+    }
+  ]
+}
+```
+
+| Rule field | Type | Notes |
+|---|---|---|
+| `id`, `name` | `string` | Identification |
+| `type` | `string` | `regex` / `keyword` / `phrase` |
+| `constraint` | `string` | `hard` (fail-fast) / `soft` (logged only) |
+| `pattern` | `string` | Required for `regex` type |
+| `keywords` | `[]string` | Required for `keyword` / `phrase` types |
+| `action` | `string` | `mask` / `block` / `warn` |
+| `gates` | `[]string` | Which gates to apply to — `input`, `output`, `tool_call`, `context`, `stream` |
+| `caseSensitive` | `bool` | Default false for keyword/phrase types |
+| `description` | `string` | Optional human-readable note |
+
+#### `approvalGates`
+
+```json
+[
+  {
+    "id": "high-risk-action",
+    "condition": "tool == 'kubectl' && contains(args, 'delete')",
+    "action": "require_human_approval",
+    "notifyChannels": ["slack:ops"]
+  }
+]
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `id`, `condition` | `string` | Required |
+| `action` | `string` | `block` / `require_human_approval` / `warn` |
+| `notifyChannels` | `[]string` | Channel adapters to notify on trigger |
+
+#### `nsfwText`
+
+```json
+{ "enabled": true, "confidenceThreshold": 0.85, "action": "block" }
+```
+
+`confidenceThreshold` is a 0.0–1.0 float (different from the 0–100 percentage used by `security.*`).
+
+#### `hallucination`
+
+```json
+{
+  "enabled": true,
+  "mode": "require_sources",
+  "minSourceCount": 1,
+  "action": "warn"
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `mode` | `string` | `require_sources` / `review` |
+| `minSourceCount` | `int` | Minimum source citations required when `mode: require_sources` |
+
+#### `skillConstraints`
+
+```json
+{
+  "enabled": true,
+  "allowedSkills": ["code_review_diff", "review_github_list_prs"],
+  "blockedSkills": [],
+  "action": "block"
+}
+```
+
+Allowed / blocked skill names checked against the agent's registered skill set.
+
+#### `gateConfig`
+
+See [Gate Configuration](#gate-configuration) above. Field types are all `bool` in the library struct.
+
+### Compatibility notes
+
+- The `forge init` template generates a `guardrails.json` containing only the `pii`, `security`, `customRules`, and `gateConfig` blocks. The other blocks (`moderation`, `urlFilter`, `approvalGates`, `nsfwText`, `hallucination`, `skillConstraints`) are not bootstrapped but are accepted at runtime — add them by hand if you need them.
+- All blocks are pointer-typed in the library struct. Omitting a key in JSON is equivalent to disabling that evaluator; setting an empty object `{}` with `enabled: false` is functionally the same but uses one extra parse cycle.
+- camelCase JSON keys are the contract — the BSON tags happen to be identical so a `StructuredGuardrails` document round-trips between MongoDB and `guardrails.json` without translation.
+- For evaluator semantics, regex flag handling, and the full action vocabulary, see the library's [`models/config.go`](https://github.com/initializ/guardrails/blob/v0.12.0/models/config.go).
 
 ## DB Mode (Platform Deployments)
 

@@ -159,7 +159,7 @@ Prompts, completions, tool args, and tool results are **off by default** — Pha
 | `forge.yaml` knob | Span | Attribute keys added when `capture_content: true` |
 |---|---|---|
 | (always) | `llm.completion` | `gen_ai.system`, `gen_ai.request.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.response.finish_reasons` |
-| `capture_content: true` | `llm.completion` | `gen_ai.prompt` (JSON-serialized inbound messages), `gen_ai.completion` (response text) |
+| `capture_content: true` | `llm.completion` | `gen_ai.input.messages` (JSON array of role+content pairs sent to the model), `gen_ai.output.messages` (JSON single-element array of role+content for the model's response) — current OTel GenAI semconv, supersedes the deprecated flat-string `gen_ai.prompt` / `gen_ai.completion` |
 | (always) | `tool.<name>` | `forge.tool.name`, `forge.tool.error` (on failure) |
 | `capture_content: true` | `tool.<name>` | `forge.tool.args` (raw arguments JSON), `forge.tool.result` (raw output) |
 
@@ -167,7 +167,9 @@ When `capture_content: true` and `redact: true` (the default when capture is on)
 
 Every captured value is byte-capped at **4 KiB** (below the 5 KiB attribute soft-cap most backends apply). When the input exceeds the cap, the value ends with a `…[truncated:N]` marker where `N` is the original byte length. The marker is **byte-identical** to what the audit payload-capture path emits for the same input, so an operator grepping `[truncated:` across span attributes and audit rows sees aligned output.
 
-**Default posture** (no opt-in): the `gen_ai.prompt`, `gen_ai.completion`, `forge.tool.args`, `forge.tool.result` keys are **absent** from spans — not set to empty string. Backends that gate dashboards on "is this key present?" can distinguish "metadata-only by default" from "operator opted in but the field happened to be empty."
+**Default posture** (no opt-in): the `gen_ai.input.messages`, `gen_ai.output.messages`, `forge.tool.args`, `forge.tool.result` keys are **absent** from spans — not set to empty string. Backends that gate dashboards on "is this key present?" can distinguish "metadata-only by default" from "operator opted in but the field happened to be empty."
+
+**OTel semconv versioning note**: the GenAI semantic conventions moved from flat-string (`gen_ai.prompt`, `gen_ai.completion`) to structured (`gen_ai.input.messages`, `gen_ai.output.messages`) attributes. Forge emits only the **current** structured keys. Backends that only recognize the deprecated flat-string attributes will not show prompt / completion text on Forge spans — upgrade the backend's semconv mapping or use a span processor to translate.
 
 ## End-to-end propagation (Phase 5)
 

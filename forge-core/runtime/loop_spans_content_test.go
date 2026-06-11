@@ -77,7 +77,7 @@ func runOnePromptOneCompletion(t *testing.T, tracingCfg observability.TracingCon
 // TestExecute_CaptureContentTrue_StampsRedactedPromptOnLLMSpan —
 // issue #130 acceptance case. Operator opts in (CaptureContent=true,
 // Redact=true), sends a prompt containing an AWS access key shape.
-// The gen_ai.prompt attribute must be present and the raw key must
+// The gen_ai.input.messages attribute must be present and the raw key must
 // NOT appear in its value.
 func TestExecute_CaptureContentTrue_StampsRedactedPromptOnLLMSpan(t *testing.T) {
 	cfg := observability.TracingConfig{CaptureContent: true, Redact: true}
@@ -86,15 +86,15 @@ func TestExecute_CaptureContentTrue_StampsRedactedPromptOnLLMSpan(t *testing.T) 
 		"ok",
 	)
 
-	got, ok := findAttr(span, observability.AttrGenAIPrompt)
+	got, ok := findAttr(span, observability.AttrGenAIInputMessages)
 	if !ok {
-		t.Fatal("gen_ai.prompt attribute missing — CaptureContent=true did not stamp")
+		t.Fatal("gen_ai.input.messages attribute missing — CaptureContent=true did not stamp")
 	}
 	if strings.Contains(got, awsKeyFixture) {
-		t.Errorf("raw AWS key survived redaction on gen_ai.prompt:\n%s", got)
+		t.Errorf("raw AWS key survived redaction on gen_ai.input.messages:\n%s", got)
 	}
 	if !strings.Contains(got, RedactionMarker) {
-		t.Errorf("expected redaction marker %q in gen_ai.prompt; got %q", RedactionMarker, got)
+		t.Errorf("expected redaction marker %q in gen_ai.input.messages; got %q", RedactionMarker, got)
 	}
 }
 
@@ -109,9 +109,9 @@ func TestExecute_CaptureContentTrue_RedactFalse_StampsRawPromptOnLLMSpan(t *test
 		"done",
 	)
 
-	got, ok := findAttr(span, observability.AttrGenAIPrompt)
+	got, ok := findAttr(span, observability.AttrGenAIInputMessages)
 	if !ok {
-		t.Fatal("gen_ai.prompt missing")
+		t.Fatal("gen_ai.input.messages missing")
 	}
 	if !strings.Contains(got, awsKeyFixture) {
 		t.Errorf("Redact=false must preserve raw content; expected raw key in span attribute, got %q", got)
@@ -122,7 +122,7 @@ func TestExecute_CaptureContentTrue_RedactFalse_StampsRawPromptOnLLMSpan(t *test
 }
 
 // TestExecute_CaptureContentFalse_NoContentAttribute pins the default
-// posture. With no opt-in, the gen_ai.prompt / gen_ai.completion
+// posture. With no opt-in, the gen_ai.input.messages / gen_ai.output.messages
 // attributes are absent — not set to empty string. Backends that
 // look for "is the key present?" must see "no" so the
 // metadata-only contract holds.
@@ -133,11 +133,11 @@ func TestExecute_CaptureContentFalse_NoContentAttribute(t *testing.T) {
 		"any completion",
 	)
 
-	if _, ok := findAttr(span, observability.AttrGenAIPrompt); ok {
-		t.Errorf("CaptureContent=false must not set gen_ai.prompt")
+	if _, ok := findAttr(span, observability.AttrGenAIInputMessages); ok {
+		t.Errorf("CaptureContent=false must not set gen_ai.input.messages")
 	}
-	if _, ok := findAttr(span, observability.AttrGenAICompletion); ok {
-		t.Errorf("CaptureContent=false must not set gen_ai.completion")
+	if _, ok := findAttr(span, observability.AttrGenAIOutputMessages); ok {
+		t.Errorf("CaptureContent=false must not set gen_ai.output.messages")
 	}
 }
 
@@ -152,9 +152,9 @@ func TestExecute_LargePrompt_TruncatesWithSameMarkerAsAudit(t *testing.T) {
 	cfg := observability.TracingConfig{CaptureContent: true, Redact: false}
 	span := runOnePromptOneCompletion(t, cfg, bigPrompt, "ok")
 
-	got, ok := findAttr(span, observability.AttrGenAIPrompt)
+	got, ok := findAttr(span, observability.AttrGenAIInputMessages)
 	if !ok {
-		t.Fatal("gen_ai.prompt missing")
+		t.Fatal("gen_ai.input.messages missing")
 	}
 
 	// The executor serializes the messages into a JSON array, so the
@@ -170,24 +170,37 @@ func TestExecute_LargePrompt_TruncatesWithSameMarkerAsAudit(t *testing.T) {
 			got, wantTruncated)
 	}
 	if !strings.Contains(got, "[truncated:") {
-		t.Errorf("expected truncation marker in gen_ai.prompt; got prefix %q…", got[:64])
+		t.Errorf("expected truncation marker in gen_ai.input.messages; got prefix %q…", got[:64])
 	}
 }
 
 // TestExecute_CaptureContentTrue_StampsCompletionOnLLMSpan covers the
 // happy completion path — when CaptureContent=true, the model's
 // response text appears on the llm.completion span (post-success,
-// before End).
+// before End) as a structured single-element messages array
+// matching the current OTel GenAI semconv.
 func TestExecute_CaptureContentTrue_StampsCompletionOnLLMSpan(t *testing.T) {
 	cfg := observability.TracingConfig{CaptureContent: true, Redact: false}
 	span := runOnePromptOneCompletion(t, cfg, "question", "the answer is 42")
 
-	got, ok := findAttr(span, observability.AttrGenAICompletion)
+	got, ok := findAttr(span, observability.AttrGenAIOutputMessages)
 	if !ok {
-		t.Fatal("gen_ai.completion missing")
+		t.Fatal("gen_ai.output.messages missing")
 	}
-	if got != "the answer is 42" {
-		t.Errorf("gen_ai.completion = %q; want %q", got, "the answer is 42")
+
+	// Must be JSON: a single-element [{role,content}] array.
+	var msgs []llm.ChatMessage
+	if err := json.Unmarshal([]byte(got), &msgs); err != nil {
+		t.Fatalf("gen_ai.output.messages is not a JSON message array: %v\nvalue: %s", err, got)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected exactly 1 output message, got %d: %v", len(msgs), msgs)
+	}
+	if msgs[0].Role != llm.RoleAssistant {
+		t.Errorf("output message role = %q; want %q", msgs[0].Role, llm.RoleAssistant)
+	}
+	if msgs[0].Content != "the answer is 42" {
+		t.Errorf("output message content = %q; want %q", msgs[0].Content, "the answer is 42")
 	}
 }
 
@@ -201,8 +214,8 @@ func TestExecute_CaptureContentTrue_EmptyCompletion_SkipsAttribute(t *testing.T)
 	cfg := observability.TracingConfig{CaptureContent: true, Redact: false}
 	span := runOnePromptOneCompletion(t, cfg, "question", "")
 
-	if _, ok := findAttr(span, observability.AttrGenAICompletion); ok {
-		t.Errorf("empty completion must not stamp gen_ai.completion attribute")
+	if _, ok := findAttr(span, observability.AttrGenAIOutputMessages); ok {
+		t.Errorf("empty completion must not stamp gen_ai.output.messages attribute")
 	}
 }
 

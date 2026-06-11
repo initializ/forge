@@ -57,7 +57,7 @@ func (s *DockerfileStage) Execute(ctx context.Context, bc *pipeline.BuildContext
 
 func (s *DockerfileStage) generateSmartDockerfile(bc *pipeline.BuildContext, manifest *packaging.BinManifest) error {
 	cfg := bc.Config.Package
-	binFragment, warnings, err := packaging.GenerateDockerfile(manifest, cfg, bc.PreferAlpine, bc.PreferSlim)
+	frags, warnings, err := packaging.GenerateDockerfile(manifest, cfg, bc.PreferAlpine, bc.PreferSlim)
 	if err != nil {
 		return fmt.Errorf("generating bin install Dockerfile: %w", err)
 	}
@@ -70,8 +70,12 @@ func (s *DockerfileStage) generateSmartDockerfile(bc *pipeline.BuildContext, man
 
 	fmt.Fprintf(os.Stderr, "  [bins] resolved %d binaries\n", len(manifest.Requirements))
 
-	// Now generate the main Dockerfile incorporating the bin fragment
-	// The bin fragment is a separate stage; we prepend it to the existing template output
+	// Render the application stage from the template, feeding the
+	// per-binary plumbing (BinCopies, RuntimeAptPackages, etc.) so the
+	// template can place each in the right slot. The blunt
+	// COPY --from=bins /usr/local/bin/ /usr/local/bin/ that used to
+	// hide apt-installed-binary losses is gone — every binary that
+	// reaches the app stage has an explicit COPY line (issue #149).
 	tmplData, err := templates.FS.ReadFile("Dockerfile.tmpl")
 	if err != nil {
 		return fmt.Errorf("reading Dockerfile template: %w", err)
@@ -83,18 +87,24 @@ func (s *DockerfileStage) generateSmartDockerfile(bc *pipeline.BuildContext, man
 	}
 
 	data := compiler.BuildTemplateDataFromContext(bc.Spec, bc)
-	data.HasBinStage = true
+	data.HasBinStage = frags.HasPreAppStages()
+	data.BinCopies = frags.BinCopies
+	data.RuntimeAptPackages = frags.RuntimeAptPackages
+	data.RuntimeApkPackages = frags.RuntimeApkPackages
+	data.PathExtensions = frags.PathExtensions
 
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {
 		return fmt.Errorf("rendering Dockerfile: %w", err)
 	}
 
-	// Combine: bin install stages + main Dockerfile
+	// Combine: pre-app stages + main Dockerfile.
 	var combined bytes.Buffer
-	combined.WriteString("# --- Binary installation stages (auto-generated) ---\n")
-	combined.WriteString(binFragment)
-	combined.WriteString("\n# --- Application stage ---\n")
+	if frags.HasPreAppStages() {
+		combined.WriteString("# --- Binary installation stages (auto-generated) ---\n")
+		combined.WriteString(frags.PreAppStages)
+		combined.WriteString("\n# --- Application stage ---\n")
+	}
 	combined.Write(buf.Bytes())
 
 	outPath := filepath.Join(bc.Opts.OutputDir, "Dockerfile")

@@ -35,6 +35,14 @@ type TemplateSpecData struct {
 
 	// Multi-stage build
 	HasBinStage bool // true when a bins stage exists with installed binaries
+
+	// Per-binary plumbing emitted in the application stage. See
+	// forge-core/packaging.DockerfileFragments for the full design
+	// (issue #149).
+	BinCopies          []string // "COPY --from=<stage> /path /path" lines, one per binary.
+	RuntimeAptPackages []string // runtime apt packages installed in the application stage (debian).
+	RuntimeApkPackages []string // runtime apk packages installed in the application stage (alpine).
+	PathExtensions     []string // PATH directories for non-standard binary locations.
 }
 
 // TemplateRuntimeData holds runtime-specific template data.

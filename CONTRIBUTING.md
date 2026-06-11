@@ -41,12 +41,15 @@ cd forge-skills && go test ./... && cd ..
 
 Forge is a multi-module Go workspace:
 
-| Module | Purpose |
-|--------|---------|
-| `forge-core/` | Core library — registry, tools, security, channels, LLM |
-| `forge-cli/` | CLI commands, TUI wizard, runtime |
-| `forge-plugins/` | Channel plugins (Telegram, Slack), markdown converter |
-| `forge-skills/` | Skill parser, compiler, analyzer, trust, embedded skills |
+| Module | Purpose | Published as library? |
+|--------|---------|-----------------------|
+| `forge-core/` | Core library — registry, tools, security, channels, LLM | yes — `github.com/initializ/forge/forge-core` |
+| `forge-cli/` | CLI commands, TUI wizard, runtime | no — CLI binary only |
+| `forge-plugins/` | Channel plugins (Telegram, Slack), markdown converter | yes — `github.com/initializ/forge/forge-plugins` |
+| `forge-skills/` | Skill parser, compiler, analyzer, trust, embedded skills | yes — `github.com/initializ/forge/forge-skills` |
+| `forge-ui/` | Web UI (Skill Builder, dashboard) | no — UI binary only |
+
+The three "yes" modules ship as path-prefixed Git tags (`forge-core/vX.Y.Z` etc.) on every Forge release so host platforms can embed the runtime as a library. See [Library Modules](docs/reference/library-modules.md) for the release pipeline, tag scheme, and how the workspace `replace` directives are stripped at tag time.
 
 Skills live in two locations:
 

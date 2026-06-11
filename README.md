@@ -113,6 +113,7 @@ You write a `SKILL.md`. Forge compiles it into a secure, runnable agent with egr
 | [Dashboard](docs/reference/web-dashboard.md) | Web UI features and architecture |
 | [Deployment](docs/deployment/kubernetes.md) | Container packaging, Kubernetes, air-gap |
 | [Hooks](docs/core-concepts/hooks.md) | Agent loop hook system |
+| [Library Modules](docs/reference/library-modules.md) | Import `forge-core`, `forge-skills`, `forge-plugins` as Go libraries — tag scheme, release pipeline, embedder API |
 | [Plugins](docs/reference/framework-plugins.md) | Framework plugin system |
 | [Command Integration](docs/reference/command-integration.md) | Initializ Command platform guide |
 

@@ -85,22 +85,21 @@ func TestIntegration_BuildWithSkillsAndEgress(t *testing.T) {
 		t.Fatalf("pipeline.Run: %v", err)
 	}
 
-	// Verify skills artifacts
+	// Issue #147: compiled/skills/skills.json and compiled/prompt.txt
+	// are no longer generated — the runtime never opened them and they
+	// bloated the container image. Assert they are NOT present so a
+	// future change reintroducing the dead writers is caught. The
+	// in-memory skill count is verified through bc.SkillsCount below.
 	skillsPath := filepath.Join(outDir, "compiled", "skills", "skills.json")
-	if _, err := os.Stat(skillsPath); os.IsNotExist(err) {
-		t.Error("expected skills.json not found")
-	} else {
-		data, err := os.ReadFile(skillsPath)
-		if err != nil {
-			t.Fatalf("ReadFile: %v", err)
-		}
-		var skills map[string]any
-		if err := json.Unmarshal(data, &skills); err != nil {
-			t.Fatalf("unmarshal skills.json: %v", err)
-		}
-		if skills["count"].(float64) != 1 {
-			t.Errorf("skills count = %v, want 1", skills["count"])
-		}
+	if _, err := os.Stat(skillsPath); err == nil {
+		t.Errorf("compiled/skills/skills.json should not be generated (issue #147)")
+	}
+	promptPath := filepath.Join(outDir, "compiled", "prompt.txt")
+	if _, err := os.Stat(promptPath); err == nil {
+		t.Errorf("compiled/prompt.txt should not be generated (issue #147)")
+	}
+	if bc.SkillsCount != 1 {
+		t.Errorf("bc.SkillsCount = %d, want 1", bc.SkillsCount)
 	}
 
 	// Verify egress allowlist

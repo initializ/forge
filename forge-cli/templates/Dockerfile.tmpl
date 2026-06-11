@@ -45,8 +45,8 @@ ENV {{$key}}="{{$val}}"
 ARG FORGE_DEV=false
 
 WORKDIR /app
-{{- if .HasBinStage}}
-COPY --from=bins /usr/local/bin/ /usr/local/bin/
+{{- range .BinCopies}}
+{{.}}
 {{- end}}
 
 {{- if .Runtime.DepsFile}}
@@ -54,7 +54,10 @@ COPY --from=deps /app/ .
 {{- end}}
 
 COPY . .
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates{{range .RuntimeAptPackages}} {{.}}{{end}} && rm -rf /var/lib/apt/lists/*
+{{- if .RuntimeApkPackages}}
+RUN apk add --no-cache{{range .RuntimeApkPackages}} {{.}}{{end}}
+{{- end}}
 {{- if .ForgeFramework}}
 {{- if eq .ForgeVersion "latest"}}
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
@@ -85,6 +88,9 @@ EXPOSE {{.Runtime.Port}}
 {{- if .Runtime.User}}
 RUN useradd -r -s /bin/false agent && chown -R agent:agent /app
 USER agent
+{{- end}}
+{{- range .PathExtensions}}
+ENV PATH="{{.}}:$PATH"
 {{- end}}
 
 ENTRYPOINT {{.Runtime.Entrypoint}}

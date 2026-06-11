@@ -117,6 +117,7 @@ func runBuild(cmd *cobra.Command, args []string) error {
 		&build.SecurityAnalysisStage{PolicyPathOverride: buildPolicyPath},
 		&build.RequirementsStage{},
 		&build.ChannelsStage{},
+		&build.ModelProviderStage{},
 		&build.PolicyStage{},
 		&build.EgressStage{},
 		&build.DockerfileStage{},

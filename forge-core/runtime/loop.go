@@ -368,15 +368,17 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 			attribute.String(observability.AttrGenAISystem, e.provider),
 			attribute.String(observability.AttrGenAIRequestModel, e.modelName),
 		)
-		// Phase 3.5 (#130) — stamp the serialized request messages on
-		// the span when CaptureContent is enabled. Runs through the
+		// Phase 3.5 (#130) — stamp the structured input messages on the
+		// span when CaptureContent is enabled. Runs through the
 		// redact-then-truncate pipeline (PrepareSpanContent) so PII
 		// scrubbing is identical to what audit payload-capture will
-		// emit for the same event.
+		// emit for the same event. The attribute key matches the
+		// current OTel GenAI semconv (gen_ai.input.messages) which
+		// supersedes the deprecated flat-string `gen_ai.prompt`.
 		if e.tracingCfg.CaptureContent {
 			if prompt := serializeChatMessages(req.Messages); prompt != "" {
 				llmSpan.SetAttributes(attribute.String(
-					observability.AttrGenAIPrompt,
+					observability.AttrGenAIInputMessages,
 					PrepareSpanContent(prompt, e.tracingCfg.Redact, DefaultSpanContentCapBytes),
 				))
 			}
@@ -420,14 +422,18 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 		if resp.FinishReason != "" {
 			llmSpan.SetAttributes(attribute.StringSlice(observability.AttrGenAIResponseFinishReasons, []string{resp.FinishReason}))
 		}
-		// Phase 3.5 (#130) — completion text stamped after success.
-		// Empty content (e.g. tool-call-only assistant turns) yields
-		// no attribute so an absent key remains the "no opt-in" signal.
+		// Phase 3.5 (#130) — completion stamped after success as a
+		// structured single-element messages array, matching the
+		// current OTel GenAI semconv (gen_ai.output.messages). Empty
+		// content (e.g. tool-call-only assistant turns) yields no
+		// attribute so an absent key remains the "no opt-in" signal.
 		if e.tracingCfg.CaptureContent && resp.Message.Content != "" {
-			llmSpan.SetAttributes(attribute.String(
-				observability.AttrGenAICompletion,
-				PrepareSpanContent(resp.Message.Content, e.tracingCfg.Redact, DefaultSpanContentCapBytes),
-			))
+			if out := serializeChatMessages([]llm.ChatMessage{resp.Message}); out != "" {
+				llmSpan.SetAttributes(attribute.String(
+					observability.AttrGenAIOutputMessages,
+					PrepareSpanContent(out, e.tracingCfg.Redact, DefaultSpanContentCapBytes),
+				))
+			}
 		}
 		llmSpan.End()
 

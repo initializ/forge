@@ -663,8 +663,11 @@ Forge-specific attributes use the `forge.*` namespace
 **Default posture is metadata-only.** Prompts, completions, tool
 args, and tool results are NOT stamped on spans unless
 `observability.tracing.capture_content: true` is set (Phase 3.5 /
-#130). When opted-in: `llm.completion` gains `gen_ai.prompt` (JSON-
-serialized inbound messages) + `gen_ai.completion` (response text);
+#130). When opted-in: `llm.completion` gains `gen_ai.input.messages`
+(JSON array of role+content sent to the model) +
+`gen_ai.output.messages` (JSON single-element array for the response,
+current OTel GenAI semconv; supersedes the deprecated flat-string
+`gen_ai.prompt` / `gen_ai.completion`);
 `tool.<name>` gains `forge.tool.args` + `forge.tool.result`.
 Captured values pass through a redactor (vendor secret-token shapes:
 Anthropic / OpenAI / GitHub / AWS / Slack / private keys / Telegram)

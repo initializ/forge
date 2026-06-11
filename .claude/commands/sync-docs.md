@@ -31,6 +31,8 @@ After feature work, update the affected documentation to reflect code changes.
    | `forge-plugins/` | `docs/core-concepts/channels.md`, `docs/reference/framework-plugins.md` |
    | `forge-ui/` | `docs/reference/web-dashboard.md` |
    | `forge-skills/` | `docs/skills/writing-custom-skills.md`, `docs/skills/contributing-a-skill.md` |
+   | `forge-skills/registry/image-registry.yaml`, `forge-core/packaging/` | `docs/core-concepts/binary-dependencies.md` — refresh the registry contents, install methods, or Dockerfile shape sections; keep the source-file list at the bottom in sync with the actual files touched |
+   | `forge-cli/templates/Dockerfile.tmpl`, `forge-cli/build/dockerfile_stage.go` | `docs/core-concepts/binary-dependencies.md` (image-shape section), `docs/deployment/docker.md` |
    | `forge-core/types/` / `forge.yaml` | `docs/reference/forge-yaml-schema.md` |
    | `CHANGELOG.md` | (rendered into release notes; no per-doc sync needed) |
    | Any of `forge-core/**`, `forge-cli/**`, `forge-ui/**`, `forge-plugins/**`, `forge-skills/**`, `docs/**`, `CHANGELOG.md`, `forge.yaml` schema | `.claude/skills/forge.md` — refresh the affected section(s) of the comprehensive knowledge skill. Sweep the specific section that maps to the changed area; don't rewrite the whole file. Keep the table-of-contents anchors in sync with the section headings. |

@@ -82,6 +82,7 @@ You write a `SKILL.md`. Forge compiles it into a secure, runnable agent with egr
 | Document | Description |
 |----------|-------------|
 | [Skills](docs/skills/writing-custom-skills.md) | Skill definitions, registry, and compilation |
+| [Binary Dependencies](docs/core-concepts/binary-dependencies.md) | How `forge build` resolves, installs, and places skill-declared binaries |
 | [Tools](docs/core-concepts/tools-and-builtins.md) | Built-in tools, adapters, and custom tools |
 | [Runtime](docs/core-concepts/runtime-engine.md) | LLM providers, fallback chains, running modes |
 | [Memory](docs/core-concepts/memory-system.md) | Session persistence and long-term memory |

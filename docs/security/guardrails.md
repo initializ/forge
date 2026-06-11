@@ -15,7 +15,25 @@ Guardrails are implemented as a `GuardrailChecker` interface in forge-core, with
 | **File mode** (default) | `guardrails.json` in project root | Local development, standalone deployments |
 | **DB mode** | MongoDB (`AgentConfig` collection) | Platform deployments with centralized config + audit |
 
-Priority: `FORGE_GUARDRAILS_DB` env → `guardrails.json` → built-in defaults.
+### Source precedence
+
+`BuildGuardrailChecker` (`forge-cli/runtime/guardrails_loader.go`) resolves the active config in this exact order at every `forge run`. The first row whose trigger matches is the one that loads — there is no merging across rows.
+
+| # | Trigger | Outcome | What happens to lower-priority sources |
+|---|---|---|---|
+| 1 | `FORGE_GUARDRAILS_DB` set **and** MongoDB connect + ping succeed | **DB mode** — config loaded per-request from the `AgentConfig` collection in the `Initializ` database, keyed by `(FORGE_AGENT_ID, FORGE_ORG_ID)`. Audit records written back to MongoDB (`EnableAudit: true`). | `guardrails.json` is ignored at runtime even if present in the image. |
+| 2 | `FORGE_GUARDRAILS_DB` set **but** connect or ping fails (10-second timeout) | Warns `failed to connect guardrails DB, falling back to file` and continues to row 3. | Falls through. |
+| 3 | `guardrails.json` exists at `<workDir>/<cfg.GuardrailsPath \|\| "guardrails.json">` and parses | **File mode** — config is the parsed `StructuredGuardrails`. | Built-in defaults discarded. |
+| 4 | File missing, unreadable, or invalid JSON | **Built-in defaults** — bundled PII (email/phone/SSN/credit-card) + jailbreak/prompt-injection/command-injection detection + 11 secret-pattern regexes (see [Default Secret Patterns](#default-secret-patterns)). | N/A — this is the floor. |
+| 5 | Engine construction itself errors (after picking 3 or 4) | Warns `failed to create file guardrail engine, using noop` and installs a `NoopGuardrailChecker`. | No checks run; messages pass through unmodified. |
+
+Notable consequences of the order:
+
+- **MongoDB mode bypasses `guardrails.json` entirely** — the file still gets baked into `/app/guardrails.json` by the build, but the runner never opens it when `FORGE_GUARDRAILS_DB` is set. You can flip an agent between modes at runtime by setting / unsetting the env var without rebuilding.
+- **DB failure is non-fatal.** A misconfigured URI or transient network issue drops to file mode with a warning, not a hard exit. If you need a hard requirement, monitor the warning in your log pipeline (`failed to connect guardrails DB, falling back to file`).
+- **DB mode requires `FORGE_ORG_ID`** to scope the `AgentConfig` lookup. Forgetting to set it usually surfaces as the library returning no config and decisions defaulting through; check that org ID is populated alongside the URI.
+- **`cfg.GuardrailsPath`** in `forge.yaml` overrides the default `"guardrails.json"` filename for file mode only — it has no effect in DB mode.
+- **Audit sinks differ.** DB mode writes via the library's `EnableAudit` path into MongoDB. File mode emits Forge's normal `guardrail_check` audit events through the configured audit sinks (see [Audit Events](#audit-events)).
 
 ## Built-in Evaluators
 

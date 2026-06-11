@@ -59,7 +59,7 @@ Top-level fields:
 
 The `metadata.forge.requires` block declares runtime dependencies:
 
-- **`bins`** — Binary dependencies that must be in `$PATH` at runtime
+- **`bins`** — Binary dependencies that must be in `$PATH` at runtime. Each entry is either a scalar name (matched against the embedded registry) or a mapping with its own install method (`url:`, `run:`, `apt:`, `apk:`). See [Binary Dependencies](binary-dependencies.md) for the resolution pipeline, install methods, and the four ways to add a binary.
 - **`env.required`** — Environment variables that must be set
 - **`env.one_of`** — At least one of these environment variables must be set
 - **`env.optional`** — Optional environment variables for extended functionality

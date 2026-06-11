@@ -63,7 +63,9 @@ server:                              # A2A server tuning (optional)
 package:
   alpine: false                     # Prefer Alpine base image
   slim: false                       # Minimize image size
-  bin_overrides:                    # Per-binary install overrides
+  bin_overrides:                    # Per-binary install overrides. See
+                                    # ../core-concepts/binary-dependencies.md
+                                    # for the resolution pipeline and source priority.
     forge:
       local: "/path/to/linux/forge" # Host path to local binary file
     jq:

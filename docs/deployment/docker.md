@@ -48,6 +48,8 @@ forge export --pretty --include-schemas
 
 `forge package` generates a Dockerfile, Kubernetes manifests, and NetworkPolicy. Use `--prod` to strip dev tools and enforce strict egress. Use `--verify` to smoke-test the built container.
 
+The Dockerfile's binary install pipeline — what gets pulled from where, how to add a new binary, and what ends up in the runtime image — is documented in [Binary Dependencies](../core-concepts/binary-dependencies.md).
+
 ## Docker Compose
 
 ```bash

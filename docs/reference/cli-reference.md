@@ -142,7 +142,7 @@ Uses global `--config` and `--output-dir` flags. Output is written to `.forge-ou
 | `--signing-key` | | Path to Ed25519 private key for signing build output |
 | `--slim` | `false` | Minimize image size (skip heavy/optional binaries) |
 | `--alpine` | `false` | Prefer Alpine base image |
-| `--local-bin` | | Local binary override as `name=/path/to/file` (repeatable) |
+| `--local-bin` | | Local binary override as `name=/path/to/file` (repeatable). See [Binary Dependencies § Use a local binary file](../core-concepts/binary-dependencies.md#4-use-a-local-binary-file-dev--testing--air-gap). |
 | `--policy` | | Path to a YAML `SecurityPolicy` file for the build's `security-analysis` stage (overrides `forge.yaml security.policy_path` and the builtin `DefaultPolicy`). Same schema as `forge skills audit --policy`. See [Skills CLI / Security Audit](../skills/skills-cli.md#security-audit). |
 
 ### Examples
@@ -372,7 +372,7 @@ forge package [flags]
 | `--with-channels` | `false` | Generate docker-compose.yaml with channel adapters |
 | `--slim` | `false` | Minimize image size (skip heavy/optional binaries) |
 | `--alpine` | `false` | Prefer Alpine base image |
-| `--local-bin` | | Local binary override as `name=/path/to/file` (repeatable) |
+| `--local-bin` | | Local binary override as `name=/path/to/file` (repeatable). See [Binary Dependencies § Use a local binary file](../core-concepts/binary-dependencies.md#4-use-a-local-binary-file-dev--testing--air-gap). |
 
 ### Examples
 

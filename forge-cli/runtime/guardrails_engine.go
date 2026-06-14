@@ -154,11 +154,19 @@ func (e *LibraryGuardrailEngine) CheckInbound(ctx context.Context, msg *a2a.Mess
 			e.logger.Info("inbound guardrail redaction applied", map[string]any{
 				"direction": "inbound",
 			})
-			e.emitGuardrailEvent(ctx, "inbound", "", text, guardrailResultMasked, result)
+			// Evidence carries the post-library-mask content for mask
+			// decisions — same payload the LLM actually saw downstream.
+			// Stamping the pre-mask original here would defeat the very
+			// mask the library produced.
+			e.emitGuardrailEvent(ctx, "inbound", "", result.MaskedContent, guardrailResultMasked, result)
 		}
 	case guardrails.DecisionBlock:
 		desc := violationSummary(result)
 		if e.enforce {
+			// Block decisions have no MaskedContent — the message was
+			// rejected outright. Evidence carries the original so the
+			// operator can see what they would have sent; redact pass
+			// still runs over it on the way out.
 			e.emitGuardrailEvent(ctx, "inbound", "", text, guardrailResultBlocked, result)
 			return fmt.Errorf("input blocked: %s", desc)
 		}
@@ -200,7 +208,9 @@ func (e *LibraryGuardrailEngine) CheckOutbound(ctx context.Context, msg *a2a.Mes
 				e.logger.Warn("outbound guardrail redaction applied", map[string]any{
 					"direction": "outbound",
 				})
-				e.emitGuardrailEvent(ctx, "outbound", "", original, guardrailResultMasked, result)
+				// Evidence = post-mask content (same payload the user
+				// actually received). See CheckInbound for rationale.
+				e.emitGuardrailEvent(ctx, "outbound", "", result.MaskedContent, guardrailResultMasked, result)
 			}
 		case guardrails.DecisionBlock:
 			desc := violationSummary(result)
@@ -250,7 +260,9 @@ func (e *LibraryGuardrailEngine) CheckToolOutput(ctx context.Context, toolName, 
 				"tool":      toolName,
 				"detail":    "content redacted",
 			})
-			e.emitGuardrailEvent(ctx, "tool_output", toolName, text, guardrailResultMasked, result)
+			// Evidence = post-mask content; matches what the loop sends
+			// to the LLM. See CheckInbound for rationale.
+			e.emitGuardrailEvent(ctx, "tool_output", toolName, result.MaskedContent, guardrailResultMasked, result)
 			return result.MaskedContent, nil
 		}
 	case guardrails.DecisionBlock:

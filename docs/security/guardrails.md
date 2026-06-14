@@ -503,12 +503,81 @@ The `cli_execute` tool blocks arguments containing `file://` URLs (case-insensit
 
 ## Audit Events
 
-Guardrail evaluations are logged as structured audit events:
+Every mask / block / warn decision emits a `guardrail_check` audit
+event through the configured Forge audit sink stack (stderr safety
+net + the optional Unix socket / HTTP sink wired via
+`FORGE_AUDIT_SOCKET` / `FORGE_AUDIT_HTTP_ENDPOINT`). The event
+carries the per-invocation `correlation_id`, `task_id`, sequence
+number, and workflow-correlation tags so consumers can join it to
+the `session_start` / `llm_call` / `invocation_complete` rows for
+the same request.
+
+Default shape (metadata-only):
 
 ```json
-{"ts":"2026-02-28T10:00:00Z","event":"guardrail_check","correlation_id":"a1b2c3d4","fields":{"guardrail":"pii","direction":"inbound","result":"masked"}}
+{
+  "ts": "2026-06-14T10:00:00Z",
+  "event": "guardrail_check",
+  "schema_version": "1.0",
+  "seq": 2,
+  "correlation_id": "a1b2c3d4",
+  "task_id": "slack-...",
+  "fields": {
+    "direction": "inbound",
+    "decision": "masked",
+    "guardrail": "pii",
+    "category": "ssn",
+    "violation_count": 1
+  }
+}
 ```
 
-In DB mode, the guardrails library writes audit records to MongoDB automatically when `EnableAudit` is set.
+Field reference:
 
-See [Security Overview](overview.md) for the full security architecture.
+| Field | Values | Meaning |
+|-------|--------|---------|
+| `direction` | `inbound` / `outbound` / `tool_output` | Which gate fired |
+| `decision` | `masked` / `warned` / `blocked` | Library decision after policy resolution |
+| `guardrail` | `pii` / `moderation` / `security` / `none` / … | First violation's `Type` (`none` when violations list is empty) |
+| `category` | `ssn` / `email` / `hate_speech` / … | First violation's `Category`; omitted when empty |
+| `violation_count` | integer ≥ 0 | Length of `result.Violations` |
+| `tool` | string | Tool name; present only when `direction=tool_output` |
+| `evidence` | string | Captured triggering text; present only when opt-in is on (see below) |
+
+### Evidence capture (opt-in)
+
+The default posture is **metadata-only**: the offending text never
+travels through the audit pipeline. Operators who need it (false-
+positive triage, compliance evidence, pattern tuning) opt in per-
+deployment via:
+
+| Env var | Default | Meaning |
+|---------|---------|---------|
+| `FORGE_GUARDRAIL_CAPTURE_EVIDENCE` | `false` | Include `fields.evidence` in the emitted event |
+| `FORGE_GUARDRAIL_REDACT` | `true` | Run a vendor-secret regex scrub over the captured evidence before emission |
+| `FORGE_GUARDRAIL_MAX_BYTES` | `4096` | Per-event soft cap; overage is truncated with a `…[truncated:N]` marker |
+
+`Redact` is on whenever `CaptureEvidence` is on unless you explicitly
+disable it. The scrub matches obvious vendor token shapes (Anthropic
+`sk-ant-…`, OpenAI `sk-…`, GitHub `ghp_/gho_/ghs_/github_pat_…`, AWS
+`AKIA…`, Slack `xox[bp]-…`, private-key PEM headers, Telegram bot
+tokens) and replaces each match with `[REDACTED]`. It is defense-
+in-depth — the guardrail library has usually already masked these,
+but an unmasked input that hit a different rule (e.g. moderation)
+would otherwise carry secrets through verbatim.
+
+The size envelope and `[REDACTED]` marker match the OTel span
+content-capture pipeline (issue #130) so the same string travels
+through both pipelines under one contract.
+
+### Mode-specific behavior
+
+- **File mode** — every event flows through the Forge audit pipeline.
+- **DB mode** — the guardrails library also writes audit records to
+  MongoDB when `EnableAudit` is set. Forge still emits the
+  `guardrail_check` event on its own audit sinks so SIEM consumers
+  reading the export socket see parity regardless of mode.
+
+See [Security Overview](overview.md) for the full security architecture
+and [Audit Logging](audit-logging.md) for the sink stack and schema
+contract.

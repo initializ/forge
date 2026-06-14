@@ -40,7 +40,19 @@ func DefaultPolicyScaffold() *agentspec.PolicyScaffold {
 
 // BuildGuardrailChecker creates the guardrail engine based on configuration.
 // Priority: FORGE_GUARDRAILS_DB env → guardrails.json file → defaults.
-func BuildGuardrailChecker(cfg *types.ForgeConfig, workDir string, enforce bool, logger coreruntime.Logger) coreruntime.GuardrailChecker {
+//
+// auditLogger and auditCfg are wired into the resulting engine so every
+// mask/block/warn decision emits a guardrail_check event through the
+// same sink stack the A2A handlers use. When auditLogger is nil the
+// engine is silent on the audit pipeline (used by tests).
+func BuildGuardrailChecker(cfg *types.ForgeConfig, workDir string, enforce bool, logger coreruntime.Logger, auditLogger *coreruntime.AuditLogger, auditCfg GuardrailAuditConfig) coreruntime.GuardrailChecker {
+	attach := func(e *LibraryGuardrailEngine) coreruntime.GuardrailChecker {
+		if auditLogger != nil {
+			e.WithAuditLogger(auditLogger, auditCfg)
+		}
+		return e
+	}
+
 	// DB mode: connect to MongoDB for config + audit
 	if mongoURI := os.Getenv("FORGE_GUARDRAILS_DB"); mongoURI != "" {
 		agentID := os.Getenv("FORGE_AGENT_ID")
@@ -53,7 +65,7 @@ func BuildGuardrailChecker(cfg *types.ForgeConfig, workDir string, enforce bool,
 			logger.Info("guardrails: using MongoDB-backed config", map[string]any{
 				"agent_id": agentID,
 			})
-			return engine
+			return attach(engine)
 		}
 		logger.Warn("failed to connect guardrails DB, falling back to file", map[string]any{
 			"error": err.Error(),
@@ -73,7 +85,7 @@ func BuildGuardrailChecker(cfg *types.ForgeConfig, workDir string, enforce bool,
 		})
 		return &coreruntime.NoopGuardrailChecker{}
 	}
-	return engine
+	return attach(engine)
 }
 
 // LoadGuardrailsJSON reads guardrails.json from the project directory.

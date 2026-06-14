@@ -127,23 +127,34 @@ func prepareEvidence(s string, cfg GuardrailAuditConfig) string {
 	return coreruntime.TruncateForAudit(s, cap)
 }
 
-// emitGuardrailEvent builds and emits a guardrail_check audit event for
-// one mask/block/warn decision. Routed through EmitFromContext so the
-// per-invocation correlation_id, task_id, sequence number, and workflow
-// tags auto-attach from the request context.
+// emitGuardrailEvent builds and emits a guardrail_check audit event
+// for one mask/block/warn decision. Routed through EmitFromContext so
+// the per-invocation correlation_id, task_id, sequence number,
+// tenancy, and workflow tags auto-attach from the request context.
+//
+// The fields.gate value comes directly from res.Gate — the library's
+// own classification (input / context / tool_call / output / stream).
+// This replaces the older direction field (issue #155 / #156) per
+// issue #159's unified-gate decision. Operators consuming audit
+// streams from agents pre-#159 should map the old `direction` field
+// to `gate` via the documented fallback table.
 //
 // Behavior matrix:
 //
-//   - audit logger nil → no-op (DB mode with platform-side audit only,
-//     or unit tests with no logger wired)
-//   - res nil          → no-op (defensive; emit only when we have a
-//     guardrail Result to summarize)
+//   - audit logger nil → no-op (DB mode with platform-side audit
+//     only, or unit tests with no logger wired)
+//   - res nil          → no-op (defensive)
 //   - CaptureEvidence on AND content non-empty → fields.evidence is
 //     set (redacted + truncated per cfg)
 //   - CaptureEvidence off → fields.evidence omitted entirely
+//
+// `tool` is set on the event when present (tool_call + tool_output
+// paths), so SIEM consumers can distinguish output-gate fires on a
+// tool result from output-gate fires on the model's response to the
+// user (same gate value, different `tool` cardinality).
 func (e *LibraryGuardrailEngine) emitGuardrailEvent(
 	ctx context.Context,
-	direction, tool, content string,
+	tool, content string,
 	decision string,
 	res *guardrails.Result,
 ) {
@@ -151,7 +162,7 @@ func (e *LibraryGuardrailEngine) emitGuardrailEvent(
 		return
 	}
 	fields := map[string]any{
-		"direction":       direction,
+		"gate":            string(res.Gate),
 		"decision":        decision,
 		"violation_count": len(res.Violations),
 	}

@@ -47,6 +47,17 @@ func TestNoopGuardrailChecker_ImplementsInterface(t *testing.T) {
 	if out != "some text" {
 		t.Errorf("NoopGuardrailChecker.CheckToolOutput() = %q, want %q", out, "some text")
 	}
+
+	// All five gates must pass-through for the noop checker.
+	if out, err := checker.CheckToolCall(ctx, "some_tool", `{"k":"v"}`); err != nil || out != `{"k":"v"}` {
+		t.Errorf("NoopGuardrailChecker.CheckToolCall() = (%q, %v), want passthrough", out, err)
+	}
+	if out, err := checker.CheckContext(ctx, "retrieved chunk"); err != nil || out != "retrieved chunk" {
+		t.Errorf("NoopGuardrailChecker.CheckContext() = (%q, %v), want passthrough", out, err)
+	}
+	if out, err := checker.CheckStream(ctx, "delta"); err != nil || out != "delta" {
+		t.Errorf("NoopGuardrailChecker.CheckStream() = (%q, %v), want passthrough", out, err)
+	}
 }
 
 // TestExtractText verifies the text extraction helper.

@@ -2059,9 +2059,60 @@ func (r *Runner) registerProgressHooks(hooks *coreruntime.HookRegistry) {
 	})
 }
 
-// registerGuardrailHooks registers an AfterToolExec hook that scans tool output
-// for secrets and PII, redacting or blocking based on guardrail mode.
+// registerGuardrailHooks registers all four runtime-side guardrail
+// gates as hooks on the agent loop:
+//
+//   - BeforeLLMCall  → ContextGate over each system-role message
+//     (closest thing Forge has to "retrieved context" today;
+//     future memory / RAG work can call CheckContext directly from
+//     the recall path for a finer-grained seam)
+//   - BeforeToolExec → ToolCallGate over the args the agent passes
+//     to the tool
+//   - AfterToolExec  → OutputGate over the tool's return text (with
+//     fields.tool set so the emitted guardrail_check distinguishes
+//     it from output-gate fires on the model's reply to the user)
+//
+// CheckInbound / CheckOutbound are called directly from the A2A
+// handlers in registerHandlers* — they sit outside the agent loop's
+// hook surface because the loop only sees ChatMessages, not the
+// outer A2A envelope.
+//
+// StreamGate has no auto-wire point — Forge's ExecuteStream is a
+// buffered wrapper around non-streaming Execute. The CheckStream
+// method is exposed for callers that consume llm.Client.ChatStream
+// directly. See issue #159.
 func (r *Runner) registerGuardrailHooks(hooks *coreruntime.HookRegistry, guardrails coreruntime.GuardrailChecker) {
+	// ContextGate over system-role messages. Re-scans on every
+	// iteration — acceptable because system messages are small and
+	// the library's evaluator chain is cheap when no rule matches.
+	hooks.Register(coreruntime.BeforeLLMCall, func(ctx context.Context, hctx *coreruntime.HookContext) error {
+		for i, m := range hctx.Messages {
+			if m.Role != "system" || m.Content == "" {
+				continue
+			}
+			masked, err := guardrails.CheckContext(ctx, m.Content)
+			if err != nil {
+				return err
+			}
+			if masked != m.Content {
+				hctx.Messages[i].Content = masked
+			}
+		}
+		return nil
+	})
+	// ToolCallGate over the args the agent is about to pass.
+	hooks.Register(coreruntime.BeforeToolExec, func(ctx context.Context, hctx *coreruntime.HookContext) error {
+		if hctx.ToolInput == "" {
+			return nil
+		}
+		masked, err := guardrails.CheckToolCall(ctx, hctx.ToolName, hctx.ToolInput)
+		if err != nil {
+			return err
+		}
+		hctx.ToolInput = masked
+		return nil
+	})
+	// OutputGate over the tool's return text (existing).
 	hooks.Register(coreruntime.AfterToolExec, func(ctx context.Context, hctx *coreruntime.HookContext) error {
 		if hctx.ToolOutput == "" {
 			return nil

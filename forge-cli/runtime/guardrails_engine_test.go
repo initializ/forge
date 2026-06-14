@@ -125,8 +125,10 @@ func TestBuildGuardrailChecker_FileMode(t *testing.T) {
 
 // TestLibraryGuardrailEngine_EmitsAuditOnInboundMask verifies the engine
 // emits a guardrail_check event on the configured audit logger when an
-// inbound message triggers a mask decision, and that capturing evidence
-// surfaces the offending text (redacted + truncated) in fields.evidence.
+// inbound message triggers a mask decision, and that fields.evidence
+// is populated with the POST-MASK content (never the raw original) —
+// the library already redacted the PII, so the audit stream sees the
+// same redacted payload the LLM saw downstream.
 func TestLibraryGuardrailEngine_EmitsAuditOnInboundMask(t *testing.T) {
 	sg := DefaultStructuredGuardrails()
 	engine, err := NewFileGuardrailEngine(sg, false, &grTestLogger{})
@@ -159,8 +161,14 @@ func TestLibraryGuardrailEngine_EmitsAuditOnInboundMask(t *testing.T) {
 	if !strings.Contains(out, `"evidence"`) {
 		t.Errorf("expected evidence field with CaptureEvidence=true, got: %s", out)
 	}
-	if !strings.Contains(out, "foo@example.com") {
-		t.Errorf("expected raw email in evidence, got: %s", out)
+	// PII never lands in evidence — the post-mask content is what we
+	// emit, so the raw email MUST be absent.
+	if strings.Contains(out, "foo@example.com") {
+		t.Errorf("raw email MUST NOT appear in evidence on a mask decision, got: %s", out)
+	}
+	// The in-place mask MUST also have rewritten the message Part.
+	if strings.Contains(msg.Parts[0].Text, "foo@example.com") {
+		t.Errorf("message part should have been masked in-place, got: %q", msg.Parts[0].Text)
 	}
 }
 

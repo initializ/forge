@@ -185,6 +185,29 @@ type AuditEvent struct {
 	// or upstream agent in an agent-to-agent flow).
 	InvocationCaller string `json:"invocation_caller,omitempty"`
 
+	// OrgID + WorkspaceID stamp the tenancy this agent run belongs
+	// to. Sourced from one of three layers (highest precedence first):
+	//
+	//   1. Explicit value set on the event before emit.
+	//   2. Per-request override headers parsed at the A2A boundary
+	//      (X-Forge-Org-ID / X-Forge-Workspace-ID) and stashed on the
+	//      context via WithTenancyContext.
+	//   3. Deployment-time stamp installed on the AuditLogger via
+	//      WithTenancy(orgID, workspaceID) — typically populated from
+	//      FORGE_ORG_ID / FORGE_WORKSPACE_ID at agent startup.
+	//
+	// Both keys use omitempty so deployments that don't set tenancy
+	// keep emitting the pre-tenancy JSON shape verbatim. The
+	// AuditSchemaVersion is NOT bumped — additive optional fields are
+	// schema-compatible per the documented policy. See issue #157.
+	//
+	// Distinct from the auth-derived `auth_verify.fields.org_id`,
+	// which continues to carry whatever the inbound token claimed.
+	// The top-level OrgID here is the operator's declared tenancy,
+	// trusted because the deployment / orchestrator set it.
+	OrgID       string `json:"org_id,omitempty"`
+	WorkspaceID string `json:"workspace_id,omitempty"`
+
 	// LLM call attribution (llm_call, llm_call_cancelled, invocation_complete).
 	Model    string `json:"model,omitempty"`
 	Provider string `json:"provider,omitempty"`
@@ -252,6 +275,46 @@ type AuditLogger struct {
 	sinks   []Sink
 	logOnce map[string]bool // sink_name → first-error-already-logged for that sink
 	opsLog  Logger          // optional structured logger for sink-error reporting; nil disables
+
+	// Static tenancy stamp, installed once at agent startup via
+	// WithTenancy(). Populated from FORGE_ORG_ID / FORGE_WORKSPACE_ID
+	// in the CLI runner. EmitFromContext falls back to these whenever
+	// the request context carries no TenancyContext override. See
+	// issue #157.
+	tenantOrgID       string
+	tenantWorkspaceID string
+}
+
+// WithTenancy installs the deployment-time tenancy stamp on the
+// AuditLogger. Both arguments are optional — passing "" disables
+// the stamp for that field. Called once at runner startup after
+// resolving FORGE_ORG_ID / FORGE_WORKSPACE_ID. Returns the receiver
+// for fluent construction.
+//
+// Precedence at emit time (highest first):
+//
+//  1. Explicit OrgID/WorkspaceID set on the AuditEvent.
+//  2. TenancyContext from the request context (per-request override
+//     header X-Forge-Org-ID / X-Forge-Workspace-ID).
+//  3. The static stamp installed here.
+//
+// Setting tenancy on an already-running AuditLogger is allowed but
+// not the common path; hot-reload is the typical caller.
+func (a *AuditLogger) WithTenancy(orgID, workspaceID string) *AuditLogger {
+	a.mu.Lock()
+	a.tenantOrgID = orgID
+	a.tenantWorkspaceID = workspaceID
+	a.mu.Unlock()
+	return a
+}
+
+// tenancyStamp returns the static tenancy under lock so concurrent
+// emit callers don't race against a hot-reload that re-runs
+// WithTenancy. Internal — emit paths use this.
+func (a *AuditLogger) tenancyStamp() (orgID, workspaceID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.tenantOrgID, a.tenantWorkspaceID
 }
 
 // NewAuditLogger creates a single-sink AuditLogger wrapping the given
@@ -345,6 +408,21 @@ func (a *AuditLogger) Emit(event AuditEvent) {
 	// upgrades without parsing field-by-field. See issue #91 / FWS-8.
 	if event.SchemaVersion == "" {
 		event.SchemaVersion = AuditSchemaVersion
+	}
+	// Deployment-time tenancy stamp (#157). Plain Emit has no request
+	// context, so the per-request header override path can't fire
+	// here — but startup banners (agent_card_published, policy_loaded,
+	// audit_export_status) are exactly the events that MUST carry the
+	// deployment tenancy so SIEM filters work on every row, not just
+	// per-invocation events.
+	if event.OrgID == "" || event.WorkspaceID == "" {
+		staticOrg, staticWS := a.tenancyStamp()
+		if event.OrgID == "" {
+			event.OrgID = staticOrg
+		}
+		if event.WorkspaceID == "" {
+			event.WorkspaceID = staticWS
+		}
 	}
 	data, err := json.Marshal(event)
 	if err != nil {
@@ -443,6 +521,31 @@ func (a *AuditLogger) EmitFromContext(ctx context.Context, event AuditEvent) {
 			}
 			if event.SpanID == "" {
 				event.SpanID = sc.SpanID().String()
+			}
+		}
+	}
+	// Tenancy stamp (#157) — per-request header override beats the
+	// deployment-time stamp, which beats the omitempty default. Same
+	// "context is fallback, not override" rule as the workflow keys
+	// above, but we ALSO consult the AuditLogger's static stamp when
+	// the ctx carries no override. Both fields are independent: the
+	// caller can override one (e.g. WorkspaceID via header) and let
+	// the other fall back to the env stamp.
+	if event.OrgID == "" || event.WorkspaceID == "" {
+		tc := TenancyContextFromContext(ctx)
+		staticOrg, staticWS := a.tenancyStamp()
+		if event.OrgID == "" {
+			if tc.OrgID != "" {
+				event.OrgID = tc.OrgID
+			} else {
+				event.OrgID = staticOrg
+			}
+		}
+		if event.WorkspaceID == "" {
+			if tc.WorkspaceID != "" {
+				event.WorkspaceID = tc.WorkspaceID
+			} else {
+				event.WorkspaceID = staticWS
 			}
 		}
 	}

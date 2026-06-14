@@ -308,6 +308,14 @@ func (r *Runner) Run(ctx context.Context) error {
 	// pre-FWS-7 compatible.
 	auditLogger := coreruntime.NewAuditLoggerFromConfig(r.cfg.AuditExport)
 	auditLogger.SetOpsLogger(r.logger)
+	// Deployment-time tenancy stamp (#157). FORGE_ORG_ID /
+	// FORGE_WORKSPACE_ID are read once here and stamped on every
+	// emitted event — startup banners (agent_card_published,
+	// policy_loaded) AND per-invocation events all get the stamp.
+	// Per-request X-Forge-Org-ID / X-Forge-Workspace-ID headers
+	// (picked up in the A2A handlers) override the static stamp.
+	// Empty env → empty stamp → fields omitted (backward compatible).
+	auditLogger.WithTenancy(os.Getenv("FORGE_ORG_ID"), os.Getenv("FORGE_WORKSPACE_ID"))
 
 	// 4a. Build guardrail checker (DB mode → file mode → defaults) and
 	// wire the audit logger so every mask/block/warn decision lands on
@@ -1579,6 +1587,9 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 		// WorkflowContext → fields omitted (backward compat).
 		ctx := coreruntime.WithWorkflowContext(req.Context(),
 			coreruntime.WorkflowContextFromHTTPHeaders(req.Header))
+		// Same for tenancy override headers (#157).
+		ctx = coreruntime.WithTenancyContext(ctx,
+			coreruntime.TenancyContextFromHTTPHeaders(req.Header))
 		task, snap, err := r.executeTask(ctx, params, store, executor, guardrails, egressClient, auditLogger)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -1640,6 +1651,9 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 		// tagging via EmitFromContext.
 		ctx = coreruntime.WithWorkflowContext(ctx,
 			coreruntime.WorkflowContextFromHTTPHeaders(req.Header))
+		// Same for tenancy override headers (#157).
+		ctx = coreruntime.WithTenancyContext(ctx,
+			coreruntime.TenancyContextFromHTTPHeaders(req.Header))
 		// Per-invocation usage accumulator + invocation_complete on exit.
 		// See issue #87 / FWS-3.
 		restSSEAcc := coreruntime.NewLLMUsageAccumulator()
@@ -2417,6 +2431,11 @@ func makeAuthAuditCallback(auditLogger *coreruntime.AuditLogger) func(*http.Requ
 		// workflow tags. Empty when the orchestrator didn't send them
 		// — fields then omit (backward compat).
 		wc := coreruntime.WorkflowContextFromHTTPHeaders(req.Header)
+		// Same for the per-request tenancy override (#157). When
+		// absent, the AuditLogger's static deployment-time stamp still
+		// kicks in via plain Emit so auth events match the rest of
+		// the stream's org_id / workspace_id columns.
+		tc := coreruntime.TenancyContextFromHTTPHeaders(req.Header)
 
 		if err == nil && id != nil {
 			// Success → auth_verify.
@@ -2437,6 +2456,8 @@ func makeAuthAuditCallback(auditLogger *coreruntime.AuditLogger) func(*http.Requ
 				StageID:          wc.StageID,
 				StepID:           wc.StepID,
 				InvocationCaller: wc.InvocationCaller,
+				OrgID:            tc.OrgID,
+				WorkspaceID:      tc.WorkspaceID,
 				Fields:           fields,
 			})
 			return
@@ -2450,6 +2471,8 @@ func makeAuthAuditCallback(auditLogger *coreruntime.AuditLogger) func(*http.Requ
 			StageID:          wc.StageID,
 			StepID:           wc.StepID,
 			InvocationCaller: wc.InvocationCaller,
+			OrgID:            tc.OrgID,
+			WorkspaceID:      tc.WorkspaceID,
 			Fields: map[string]any{
 				"reason":      authFailReason(err),
 				"token_kind":  tokenKind,

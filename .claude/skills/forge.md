@@ -924,7 +924,7 @@ when OTel tracing is enabled (OTel v1 / Phase 4 / #105). Both use
 | `AuditEgressBlocked` | `egress_blocked` | Outbound request blocked |
 | `AuditLLMCall` | `llm_call` | LLM provider call complete; `model`, `provider`, `input_tokens`, `output_tokens`, `duration_ms`, `request_id` |
 | `AuditLLMCallCancelled` | `llm_call_cancelled` | Streaming call aborted mid-flight; partial usage counts |
-| `AuditGuardrail` | `guardrail_check` | Guardrail evaluation result |
+| `AuditGuardrail` | `guardrail_check` | Mask / block / warn decision. Fields: `direction` (`inbound` / `outbound` / `tool_output`), `decision` (`masked` / `warned` / `blocked`), `guardrail`, `category`, `violation_count`. Opt-in `evidence` (redacted + truncated triggering text) via `FORGE_GUARDRAIL_CAPTURE_EVIDENCE=true` |
 | `AuditScheduleFire` | `schedule_fire` | Cron task triggered |
 | `AuditScheduleComplete` | `schedule_complete` | Cron task finished |
 | `AuditScheduleSkip` | `schedule_skip` | Cron task skipped (e.g. agent busy) |

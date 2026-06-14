@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"testing"
 
 	"github.com/initializ/forge/forge-core/a2a"
@@ -30,15 +31,16 @@ func TestNoopGuardrailChecker_ImplementsInterface(t *testing.T) {
 		},
 	}
 
-	if err := checker.CheckInbound(msg); err != nil {
+	ctx := context.Background()
+	if err := checker.CheckInbound(ctx, msg); err != nil {
 		t.Errorf("NoopGuardrailChecker.CheckInbound() unexpected error: %v", err)
 	}
 
-	if err := checker.CheckOutbound(msg); err != nil {
+	if err := checker.CheckOutbound(ctx, msg); err != nil {
 		t.Errorf("NoopGuardrailChecker.CheckOutbound() unexpected error: %v", err)
 	}
 
-	out, err := checker.CheckToolOutput("some_tool", "some text")
+	out, err := checker.CheckToolOutput(ctx, "some_tool", "some text")
 	if err != nil {
 		t.Errorf("NoopGuardrailChecker.CheckToolOutput() unexpected error: %v", err)
 	}

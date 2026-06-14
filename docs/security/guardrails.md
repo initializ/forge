@@ -523,7 +523,7 @@ Default shape (metadata-only):
   "correlation_id": "a1b2c3d4",
   "task_id": "slack-...",
   "fields": {
-    "direction": "inbound",
+    "gate": "input",
     "decision": "masked",
     "guardrail": "pii",
     "category": "ssn",
@@ -536,13 +536,30 @@ Field reference:
 
 | Field | Values | Meaning |
 |-------|--------|---------|
-| `direction` | `inbound` / `outbound` / `tool_output` | Which gate fired |
+| `gate` | `input` / `context` / `tool_call` / `output` / `stream` | Library gate type that fired. Single source of truth; pulled from `Result.Gate`. |
 | `decision` | `masked` / `warned` / `blocked` | Library decision after policy resolution |
 | `guardrail` | `pii` / `moderation` / `security` / `none` / … | First violation's `Type` (`none` when violations list is empty) |
 | `category` | `ssn` / `email` / `hate_speech` / … | First violation's `Category`; omitted when empty |
 | `violation_count` | integer ≥ 0 | Length of `result.Violations` |
-| `tool` | string | Tool name; present only when `direction=tool_output` |
+| `tool` | string | Tool name; present when `gate=tool_call`, or when `gate=output` and the OutputGate fire was on a tool's return text |
 | `evidence` | string | Captured triggering text; present only when opt-in is on (see below) |
+
+The five gate values and where Forge invokes each:
+
+| `gate` | Call site | Path |
+|--------|-----------|------|
+| `input` | A2A handler (`CheckInbound`) | User message arrives at `/` |
+| `context` | `BeforeLLMCall` hook | Each system-role message before the LLM sees it |
+| `tool_call` | `BeforeToolExec` hook | Args the agent is about to pass to a tool |
+| `output` | `CheckOutbound` (response to user) + `AfterToolExec` hook (tool return text) | Distinguished by presence of `fields.tool` |
+| `stream` | Not auto-wired | `CheckStream` is exposed but Forge's `ExecuteStream` is a buffered wrapper around non-streaming `Execute`. Real per-chunk streaming is a future runtime change. |
+
+> **Migration from pre-#159 agents** — Earlier agent versions emitted
+> a `direction` field instead of `gate` (values
+> `inbound` / `outbound` / `tool_output`). Consumers that need to
+> support both vintages should fall back: `event.fields.gate ?? deriveFromDirection(event.fields.direction)`,
+> with `inbound → input`, `outbound → output`, `tool_output → output`
+> (with `tool` set). New emissions only carry `gate`.
 
 ### Evidence capture (opt-in)
 

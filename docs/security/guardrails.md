@@ -570,6 +570,20 @@ The size envelope and `[REDACTED]` marker match the OTel span
 content-capture pipeline (issue #130) so the same string travels
 through both pipelines under one contract.
 
+#### What evidence actually contains
+
+| Decision | Evidence source |
+|----------|-----------------|
+| `masked` | The **post-mask** content (`Result.MaskedContent`) — the same payload the LLM saw downstream. PII the library already masked stays masked in the audit stream. |
+| `warned` | The original triggering content. No mask was produced (the library only generates a masked variant for `mask` decisions). The redact pass still runs. |
+| `blocked` | The original triggering content. Same rationale as `warned`. |
+
+This means a typical PII-mask event emits the redacted version of the
+prompt as evidence, not the raw text. Operators auditing for "did our
+agent ever see PII?" should treat a `decision=blocked` row as the
+only one that can carry plain-text PII through the stream, and gate
+their export pipeline accordingly.
+
 ### Mode-specific behavior
 
 - **File mode** — every event flows through the Forge audit pipeline.

@@ -309,6 +309,14 @@ func (s *Server) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
 	ctx = coreruntime.WithWorkflowContext(ctx,
 		coreruntime.WorkflowContextFromHTTPHeaders(r.Header))
 
+	// Extract per-request tenancy override headers (#157) at the same
+	// boundary so EmitFromContext can prefer them over the static
+	// deployment-time stamp installed via AuditLogger.WithTenancy.
+	// Absent headers produce an IsZero TenancyContext — the static
+	// stamp wins, or fields omit when no stamp is installed either.
+	ctx = coreruntime.WithTenancyContext(ctx,
+		coreruntime.TenancyContextFromHTTPHeaders(r.Header))
+
 	// Phase 3 (#104) — open the inbound dispatch span. Span name
 	// mirrors the JSON-RPC method ("a2a.tasks/send", "a2a.tasks/get",
 	// "a2a.tasks/cancel") so backend dashboards key by the same

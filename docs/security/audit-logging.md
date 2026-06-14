@@ -46,6 +46,40 @@ The `source` field distinguishes in-process enforcer events from subprocess prox
 
 When the inbound A2A request carries the orchestrator's correlation headers (`X-Workflow-ID`, `X-Workflow-Stage-ID`, `X-Workflow-Step-ID`, `X-Invocation-Caller`), every audit event emitted during that invocation is tagged with the matching `workflow_id` / `stage_id` / `step_id` / `invocation_caller` fields. Header names are vendor-neutral so any A2A-compatible orchestrator can populate them. Direct A2A invocations (no orchestrator) omit the fields entirely — emitted JSON is byte-identical to the pre-correlation shape. See [Workflow correlation IDs](workflow-correlation.md) for the full reference, including outbound propagation for agent-to-agent flows.
 
+### Tenancy stamping
+
+For deployments where one or more agents serve multiple orgs or workspaces, every audit event can be stamped with `org_id` and `workspace_id` top-level fields so downstream consumers can filter by tenancy without joining against `auth_verify`. Two layers, highest precedence first:
+
+| Layer | Source | When it wins |
+|-------|--------|--------------|
+| Per-request override | `X-Forge-Org-ID` / `X-Forge-Workspace-ID` request headers | Always — when present, override the static stamp |
+| Deployment-time stamp | `FORGE_ORG_ID` / `FORGE_WORKSPACE_ID` env vars | When the request carries no override headers |
+
+The deployment-time stamp is read once at agent startup and applied via `AuditLogger.WithTenancy(...)`. It covers every emitted event — startup banners (`agent_card_published`, `policy_loaded`, `audit_export_status`) AND per-invocation events (`session_start`, `llm_call`, `guardrail_check`, `invocation_complete`, etc.). The per-request override only kicks in inside the request scope; startup banners always reflect the env stamp.
+
+```yaml
+# Initializ platform deployment manifest — static-tenancy case
+env:
+  - name: FORGE_ORG_ID
+    value: "org_abc123"
+  - name: FORGE_WORKSPACE_ID
+    value: "ws_xyz789"
+```
+
+```sh
+# Multi-tenant routing case — the orchestrator picks per request
+curl -X POST https://agent.example.com/ \
+  -H 'X-Forge-Org-ID: org_def456' \
+  -H 'X-Forge-Workspace-ID: ws_pqr012' \
+  ...
+```
+
+Both fields use `omitempty`. Deployments that set neither env nor header keep emitting the pre-tenancy JSON shape verbatim — no schema version bump.
+
+The top-level `org_id` is distinct from `auth_verify.fields.org_id`, which carries whatever the inbound auth token claimed (provider-derived). The top-level value is the operator's declared tenancy, trusted because the deployment / orchestrator set it. Both can be present on the same `auth_verify` event when they're different identifiers (e.g., the token came from a federated identity but the agent is deployed into a specific workspace).
+
+See [Tenancy stamping reference](tenancy.md) for the precedence rules and the agent-to-agent propagation helper.
+
 ### Token usage and execution duration
 
 Every `llm_call` audit event carries the normalized token counts the provider returned in its response metadata, plus the wall-clock time spent in the provider call. Field naming aligns with [OTel GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/) (`gen_ai.usage.input_tokens` / `gen_ai.usage.output_tokens`) so audit consumers can correlate Forge audit events with OTel traces without a translation table.

@@ -15,10 +15,28 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
+// Result-string constants for the guardrail_check audit event. Operators
+// group by these values in their SIEM pipeline; keep the set small and
+// stable. Map onto library decisions:
+//
+//	DecisionMask  → "masked"
+//	DecisionBlock (warn mode)    → "warned"
+//	DecisionBlock (enforce mode) → "blocked"
+const (
+	guardrailResultMasked  = "masked"
+	guardrailResultWarned  = "warned"
+	guardrailResultBlocked = "blocked"
+)
+
 // LibraryGuardrailEngine implements coreruntime.GuardrailChecker using the
 // github.com/initializ/guardrails library. It supports two modes:
 //   - File mode: uses StructuredGuardrails loaded from guardrails.json
 //   - DB mode: loads config from MongoDB (set via FORGE_GUARDRAILS_DB env)
+//
+// On every mask/block decision the engine emits a guardrail_check audit
+// event through auditLogger (when wired). The auditCfg knob controls
+// whether the offending content is captured as evidence; default off.
+// See issue #155.
 type LibraryGuardrailEngine struct {
 	manager       *guardrails.GuardrailManager
 	structured    *models.StructuredGuardrails
@@ -28,6 +46,8 @@ type LibraryGuardrailEngine struct {
 	orgID         string
 	configVersion int64
 	logger        coreruntime.Logger
+	auditLogger   *coreruntime.AuditLogger
+	auditCfg      GuardrailAuditConfig
 }
 
 // NewFileGuardrailEngine creates a guardrail engine backed by a local
@@ -80,6 +100,19 @@ func NewDBGuardrailEngine(mongoURI, agentID, orgID string, enforce bool, logger 
 	}, nil
 }
 
+// WithAuditLogger wires an AuditLogger and capture config so the engine
+// can emit guardrail_check events on every mask/block/warn decision.
+// Returns the receiver for fluent construction. When auditLogger is nil
+// the engine is silent on the audit pipeline (legacy behavior — only
+// the ops logger sees the redaction line). Callers in the runner pass
+// the same AuditLogger they hand to the A2A handlers so events share
+// the configured sink stack.
+func (e *LibraryGuardrailEngine) WithAuditLogger(al *coreruntime.AuditLogger, cfg GuardrailAuditConfig) *LibraryGuardrailEngine {
+	e.auditLogger = al
+	e.auditCfg = cfg
+	return e
+}
+
 // structuredIfFileMode returns the StructuredGuardrails pointer only in file
 // mode. In DB mode the library loads config from MongoDB automatically.
 func (e *LibraryGuardrailEngine) structuredIfFileMode() *models.StructuredGuardrails {
@@ -90,13 +123,13 @@ func (e *LibraryGuardrailEngine) structuredIfFileMode() *models.StructuredGuardr
 }
 
 // CheckInbound validates an inbound (user) message via the library's InputGate.
-func (e *LibraryGuardrailEngine) CheckInbound(msg *a2a.Message) error {
+func (e *LibraryGuardrailEngine) CheckInbound(ctx context.Context, msg *a2a.Message) error {
 	text := coreruntime.ExtractText(msg)
 	if text == "" {
 		return nil
 	}
 
-	result, err := e.manager.InputGate(context.Background(), guardrails.InputRequest{
+	result, err := e.manager.InputGate(ctx, guardrails.InputRequest{
 		Content:              text,
 		EntityID:             e.agentID,
 		OrgID:                e.orgID,
@@ -121,29 +154,33 @@ func (e *LibraryGuardrailEngine) CheckInbound(msg *a2a.Message) error {
 			e.logger.Info("inbound guardrail redaction applied", map[string]any{
 				"direction": "inbound",
 			})
+			e.emitGuardrailEvent(ctx, "inbound", "", text, guardrailResultMasked, result)
 		}
 	case guardrails.DecisionBlock:
 		desc := violationSummary(result)
 		if e.enforce {
+			e.emitGuardrailEvent(ctx, "inbound", "", text, guardrailResultBlocked, result)
 			return fmt.Errorf("input blocked: %s", desc)
 		}
 		e.logger.Warn("guardrail input violation (warn mode)", map[string]any{
 			"direction": "inbound",
 			"detail":    desc,
 		})
+		e.emitGuardrailEvent(ctx, "inbound", "", text, guardrailResultWarned, result)
 	}
 	return nil
 }
 
 // CheckOutbound validates an outbound (agent) message via the library's OutputGate.
 // Masked content is applied in-place; blocked content returns an error only in enforce mode.
-func (e *LibraryGuardrailEngine) CheckOutbound(msg *a2a.Message) error {
+func (e *LibraryGuardrailEngine) CheckOutbound(ctx context.Context, msg *a2a.Message) error {
 	for i, p := range msg.Parts {
 		if p.Kind != a2a.PartKindText || p.Text == "" {
 			continue
 		}
 
-		result, err := e.manager.OutputGate(context.Background(), guardrails.OutputRequest{
+		original := p.Text
+		result, err := e.manager.OutputGate(ctx, guardrails.OutputRequest{
 			Content:              p.Text,
 			EntityID:             e.agentID,
 			OrgID:                e.orgID,
@@ -163,16 +200,19 @@ func (e *LibraryGuardrailEngine) CheckOutbound(msg *a2a.Message) error {
 				e.logger.Warn("outbound guardrail redaction applied", map[string]any{
 					"direction": "outbound",
 				})
+				e.emitGuardrailEvent(ctx, "outbound", "", original, guardrailResultMasked, result)
 			}
 		case guardrails.DecisionBlock:
 			desc := violationSummary(result)
 			if e.enforce {
+				e.emitGuardrailEvent(ctx, "outbound", "", original, guardrailResultBlocked, result)
 				return fmt.Errorf("output blocked: %s", desc)
 			}
 			e.logger.Warn("guardrail output violation (warn mode)", map[string]any{
 				"direction": "outbound",
 				"detail":    desc,
 			})
+			e.emitGuardrailEvent(ctx, "outbound", "", original, guardrailResultWarned, result)
 		}
 	}
 	return nil
@@ -180,12 +220,12 @@ func (e *LibraryGuardrailEngine) CheckOutbound(msg *a2a.Message) error {
 
 // CheckToolOutput scans tool output text via the library's OutputGate.
 // Returns the (possibly masked) text and any blocking error.
-func (e *LibraryGuardrailEngine) CheckToolOutput(toolName, text string) (string, error) {
+func (e *LibraryGuardrailEngine) CheckToolOutput(ctx context.Context, toolName, text string) (string, error) {
 	if text == "" {
 		return text, nil
 	}
 
-	result, err := e.manager.OutputGate(context.Background(), guardrails.OutputRequest{
+	result, err := e.manager.OutputGate(ctx, guardrails.OutputRequest{
 		Content:              text,
 		EntityID:             e.agentID,
 		OrgID:                e.orgID,
@@ -210,11 +250,13 @@ func (e *LibraryGuardrailEngine) CheckToolOutput(toolName, text string) (string,
 				"tool":      toolName,
 				"detail":    "content redacted",
 			})
+			e.emitGuardrailEvent(ctx, "tool_output", toolName, text, guardrailResultMasked, result)
 			return result.MaskedContent, nil
 		}
 	case guardrails.DecisionBlock:
 		desc := violationSummary(result)
 		if e.enforce {
+			e.emitGuardrailEvent(ctx, "tool_output", toolName, text, guardrailResultBlocked, result)
 			return "", fmt.Errorf("tool output blocked: %s", desc)
 		}
 		e.logger.Warn("guardrail tool output violation (warn mode)", map[string]any{
@@ -222,6 +264,7 @@ func (e *LibraryGuardrailEngine) CheckToolOutput(toolName, text string) (string,
 			"tool":      toolName,
 			"detail":    desc,
 		})
+		e.emitGuardrailEvent(ctx, "tool_output", toolName, text, guardrailResultWarned, result)
 	}
 
 	return text, nil

@@ -280,10 +280,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		return err
 	}
 
-	// 2. Build guardrail checker (DB mode → file mode → defaults)
-	guardrails := BuildGuardrailChecker(r.cfg.Config, r.cfg.WorkDir, r.cfg.EnforceGuardrails, r.logger)
-
-	// Still load scaffold for SkillGuardrails (separate concern)
+	// 2. Still load scaffold for SkillGuardrails (separate concern)
 	scaffold, err := LoadPolicyScaffold(r.cfg.WorkDir)
 	if err != nil {
 		r.logger.Warn("failed to load policy scaffold", map[string]any{"error": err.Error()})
@@ -311,6 +308,13 @@ func (r *Runner) Run(ctx context.Context) error {
 	// pre-FWS-7 compatible.
 	auditLogger := coreruntime.NewAuditLoggerFromConfig(r.cfg.AuditExport)
 	auditLogger.SetOpsLogger(r.logger)
+
+	// 4a. Build guardrail checker (DB mode → file mode → defaults) and
+	// wire the audit logger so every mask/block/warn decision lands on
+	// the configured audit sinks as a guardrail_check event. Capture-
+	// evidence posture comes from env (FORGE_GUARDRAIL_*), default
+	// metadata-only. See issue #155.
+	guardrails := BuildGuardrailChecker(r.cfg.Config, r.cfg.WorkDir, r.cfg.EnforceGuardrails, r.logger, auditLogger, GuardrailAuditConfigFromEnv())
 	// Periodic audit_export_status — one event every 60s with per-sink
 	// health counters. Operators tail the audit stream to answer
 	// "is my sidecar healthy?". The stop func blocks until the
@@ -1172,7 +1176,7 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 		server.WriteSSEEvent(w, flusher, "status", task) //nolint:errcheck
 
 		// Guardrail check inbound
-		if err := guardrails.CheckInbound(&params.Message); err != nil {
+		if err := guardrails.CheckInbound(ctx, &params.Message); err != nil {
 			task.Status = a2a.TaskStatus{
 				State: a2a.TaskStateFailed,
 				Message: &a2a.Message{
@@ -1242,7 +1246,7 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 		var finalState a2a.TaskState
 		for respMsg := range ch {
 			// Guardrail check outbound
-			if grErr := guardrails.CheckOutbound(respMsg); grErr != nil {
+			if grErr := guardrails.CheckOutbound(ctx, respMsg); grErr != nil {
 				task.Status = a2a.TaskStatus{
 					State: a2a.TaskStateFailed,
 					Message: &a2a.Message{
@@ -1409,7 +1413,7 @@ func (r *Runner) executeTask(
 		auditLogger.EmitInvocationComplete(ctx, snap.InvocationDuration, fields)
 	}
 
-	if err := guardrails.CheckInbound(&params.Message); err != nil {
+	if err := guardrails.CheckInbound(ctx, &params.Message); err != nil {
 		task.Status = a2a.TaskStatus{
 			State: a2a.TaskStateFailed,
 			Message: &a2a.Message{
@@ -1480,7 +1484,7 @@ func (r *Runner) executeTask(
 	}
 
 	if respMsg != nil {
-		if err := guardrails.CheckOutbound(respMsg); err != nil {
+		if err := guardrails.CheckOutbound(ctx, respMsg); err != nil {
 			task.Status = a2a.TaskStatus{
 				State: a2a.TaskStateFailed,
 				Message: &a2a.Message{
@@ -1671,7 +1675,7 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 		store.Put(task)
 		server.WriteSSEEvent(w, flusher, "status", task) //nolint:errcheck
 
-		if err := guardrails.CheckInbound(&params.Message); err != nil {
+		if err := guardrails.CheckInbound(ctx, &params.Message); err != nil {
 			task.Status = a2a.TaskStatus{
 				State: a2a.TaskStateFailed,
 				Message: &a2a.Message{
@@ -1735,7 +1739,7 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 
 		var finalState a2a.TaskState
 		for respMsg := range ch {
-			if grErr := guardrails.CheckOutbound(respMsg); grErr != nil {
+			if grErr := guardrails.CheckOutbound(ctx, respMsg); grErr != nil {
 				task.Status = a2a.TaskStatus{
 					State: a2a.TaskStateFailed,
 					Message: &a2a.Message{
@@ -2044,11 +2048,11 @@ func (r *Runner) registerProgressHooks(hooks *coreruntime.HookRegistry) {
 // registerGuardrailHooks registers an AfterToolExec hook that scans tool output
 // for secrets and PII, redacting or blocking based on guardrail mode.
 func (r *Runner) registerGuardrailHooks(hooks *coreruntime.HookRegistry, guardrails coreruntime.GuardrailChecker) {
-	hooks.Register(coreruntime.AfterToolExec, func(_ context.Context, hctx *coreruntime.HookContext) error {
+	hooks.Register(coreruntime.AfterToolExec, func(ctx context.Context, hctx *coreruntime.HookContext) error {
 		if hctx.ToolOutput == "" {
 			return nil
 		}
-		redacted, err := guardrails.CheckToolOutput(hctx.ToolName, hctx.ToolOutput)
+		redacted, err := guardrails.CheckToolOutput(ctx, hctx.ToolName, hctx.ToolOutput)
 		if err != nil {
 			return err
 		}

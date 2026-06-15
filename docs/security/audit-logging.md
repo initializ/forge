@@ -78,6 +78,37 @@ Both fields use `omitempty`. Deployments that set neither env nor header keep em
 
 The top-level `org_id` is distinct from `auth_verify.fields.org_id`, which carries whatever the inbound auth token claimed (provider-derived). The top-level value is the operator's declared tenancy, trusted because the deployment / orchestrator set it. Both can be present on the same `auth_verify` event when they're different identifiers (e.g., the token came from a federated identity but the agent is deployed into a specific workspace).
 
+### Entity stamping (`entity_id` / `entity_type`)
+
+Every audit event also carries the entity identifier the event came from:
+
+| Layer | Source |
+|-------|--------|
+| Per-event explicit | `AuditEvent.EntityID` / `AuditEvent.EntityType` |
+| Deployment-time stamp | `FORGE_AGENT_ID` env → forge.yaml `agent_id` → `entity_id`; `entity_type` hardcoded to `"agent"` |
+
+```yaml
+env:
+  - name: FORGE_AGENT_ID
+    value: "aibuilderdemo"        # or just set forge.yaml agent_id
+```
+
+Emits land as:
+
+```json
+{
+  "ts": "...",
+  "event": "session_start",
+  "entity_id": "aibuilderdemo",
+  "entity_type": "agent",
+  ...
+}
+```
+
+**1:1 join with the guardrails library's MongoDB audit.** When `FORGE_GUARDRAILS_DB` is set, the library writes its own audit records into a `GuardrailAuditEvent` collection in MongoDB carrying the same `entity_id` + `entity_type` columns. The values are sourced from the same env vars / forge.yaml so consumers reading both streams can join `forge.entity_id == library.entity_id AND forge.entity_type == library.entity_type` without translation. Forge only runs `entity_type: "agent"` today; the library supports `agent` / `workflow` / `assistant` as future-compatible values.
+
+Entity identity has no per-request override — agent identity is fixed at process startup. The tenancy layer above (`org_id` / `workspace_id`) covers the multi-tenant routing case.
+
 See [Tenancy stamping reference](tenancy.md) for the precedence rules and the agent-to-agent propagation helper.
 
 ### Token usage and execution duration

@@ -316,6 +316,19 @@ func (r *Runner) Run(ctx context.Context) error {
 	// (picked up in the A2A handlers) override the static stamp.
 	// Empty env → empty stamp → fields omitted (backward compatible).
 	auditLogger.WithTenancy(os.Getenv("FORGE_ORG_ID"), os.Getenv("FORGE_WORKSPACE_ID"))
+	// Deployment-time entity stamp (#164). Resolution mirrors
+	// BuildGuardrailChecker's existing agent-ID resolution
+	// (guardrails_loader.go) so the Forge NDJSON stream's entity_id
+	// matches the library's MongoDB GuardrailAuditEvent.entity_id
+	// column 1:1 — SIEM consumers can join on the same value.
+	// EntityType is hardcoded to "agent" because that's the only
+	// entity Forge runs today; future entity types would change
+	// the value, not the schema.
+	agentID := os.Getenv("FORGE_AGENT_ID")
+	if agentID == "" && r.cfg.Config != nil {
+		agentID = r.cfg.Config.AgentID
+	}
+	auditLogger.WithEntity("agent", agentID)
 
 	// 4a. Build guardrail checker (DB mode → file mode → defaults) and
 	// wire the audit logger so every mask/block/warn decision lands on

@@ -208,6 +208,33 @@ type AuditEvent struct {
 	OrgID       string `json:"org_id,omitempty"`
 	WorkspaceID string `json:"workspace_id,omitempty"`
 
+	// EntityID + EntityType identify which entity emitted this event.
+	// Sourced from two layers (highest precedence first):
+	//
+	//   1. Explicit value set on the event before emit.
+	//   2. Deployment-time stamp installed on the AuditLogger via
+	//      WithEntity(entityType, entityID) — typically populated from
+	//      FORGE_AGENT_ID / cfg.AgentID at agent startup, with
+	//      EntityType hardcoded to "agent" for now.
+	//
+	// No per-request ctx layer: entity identity is fixed at process
+	// startup. If an agent serves multiple tenancies per request, the
+	// OrgID / WorkspaceID layer above already covers that.
+	//
+	// Field names + values match the guardrails library's BasePayload
+	// vocabulary (EntityID, EntityType — "agent" / "workflow" /
+	// "assistant"), so the Forge NDJSON stream and the library's
+	// MongoDB GuardrailAuditEvent collection share columns 1:1 and
+	// can be joined without a translation table. EntityType is
+	// hardcoded to "agent" today since Forge only runs agents;
+	// future entity types are an additive value change, not a schema
+	// change.
+	//
+	// Both keys use omitempty so deployments that don't set agent_id
+	// keep emitting the pre-#164 JSON shape verbatim.
+	EntityID   string `json:"entity_id,omitempty"`
+	EntityType string `json:"entity_type,omitempty"`
+
 	// LLM call attribution (llm_call, llm_call_cancelled, invocation_complete).
 	Model    string `json:"model,omitempty"`
 	Provider string `json:"provider,omitempty"`
@@ -283,6 +310,16 @@ type AuditLogger struct {
 	// issue #157.
 	tenantOrgID       string
 	tenantWorkspaceID string
+
+	// Static entity stamp, installed once at agent startup via
+	// WithEntity(). Populated from FORGE_AGENT_ID / cfg.AgentID
+	// in the CLI runner with entityType hardcoded to "agent".
+	// Every emit stamps these so SIEM consumers can join the Forge
+	// NDJSON stream against the guardrails library's MongoDB
+	// GuardrailAuditEvent collection on (entity_id, entity_type)
+	// without translation. See issue #164.
+	tenantEntityID   string
+	tenantEntityType string
 }
 
 // WithTenancy installs the deployment-time tenancy stamp on the
@@ -315,6 +352,41 @@ func (a *AuditLogger) tenancyStamp() (orgID, workspaceID string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.tenantOrgID, a.tenantWorkspaceID
+}
+
+// WithEntity installs the deployment-time entity stamp on the
+// AuditLogger. entityType matches the guardrails library's
+// EntityType constants ("agent" / "workflow" / "assistant"); today
+// Forge only runs agents, so the runner hardcodes "agent". Empty
+// arguments disable the stamp for that field. Called once at runner
+// startup after resolving FORGE_AGENT_ID / cfg.AgentID. Returns the
+// receiver for fluent construction.
+//
+// Precedence at emit time (highest first):
+//
+//  1. Explicit EntityID/EntityType set on the AuditEvent.
+//  2. The static stamp installed here.
+//
+// No per-request context layer: entity identity is fixed at process
+// startup. If a deployment needs per-request entity routing, that's
+// the tenancy layer's job (OrgID/WorkspaceID) — agent identity is
+// the process, by definition.
+//
+// See issue #164.
+func (a *AuditLogger) WithEntity(entityType, entityID string) *AuditLogger {
+	a.mu.Lock()
+	a.tenantEntityID = entityID
+	a.tenantEntityType = entityType
+	a.mu.Unlock()
+	return a
+}
+
+// entityStamp returns the static entity under lock. Internal — emit
+// paths use this.
+func (a *AuditLogger) entityStamp() (entityID, entityType string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.tenantEntityID, a.tenantEntityType
 }
 
 // NewAuditLogger creates a single-sink AuditLogger wrapping the given
@@ -422,6 +494,17 @@ func (a *AuditLogger) Emit(event AuditEvent) {
 		}
 		if event.WorkspaceID == "" {
 			event.WorkspaceID = staticWS
+		}
+	}
+	// Deployment-time entity stamp (#164). Mirrors the tenancy stamp
+	// but with no ctx layer since entity identity is process-fixed.
+	if event.EntityID == "" || event.EntityType == "" {
+		staticEntityID, staticEntityType := a.entityStamp()
+		if event.EntityID == "" {
+			event.EntityID = staticEntityID
+		}
+		if event.EntityType == "" {
+			event.EntityType = staticEntityType
 		}
 	}
 	data, err := json.Marshal(event)

@@ -498,6 +498,35 @@ forge secret set API_KEY --local
 
 ---
 
+## `forge auth`
+
+Manage the runtime bearer token Forge mints at agent startup (issue #162 part 1, PR #168). The token is stored at `<agent-root>/.forge/runtime.token` (0600 permissions) and is the same token channel adapters use to call back into the A2A endpoint. Scheduled CronJobs deployed via `forge package` also consume this token through a Kubernetes Secret the operator populates out-of-band — `forge package` never bakes the token into the generated manifests.
+
+```bash
+# Print the stored token to stdout. Exits 1 with an actionable error
+# when the file is absent.
+forge auth show-token
+
+# Generate a fresh 256-bit token, store it (overwriting any existing
+# value), and print to stdout. Use for first-deploy bootstrap from a
+# clean checkout.
+forge auth mint-token
+
+# Print a ready-to-apply Kubernetes Secret YAML containing the token.
+# Default name and namespace match what `forge package` emits.
+forge auth secret-yaml
+forge auth secret-yaml --namespace prod
+forge auth secret-yaml --name custom-secret-name
+
+# Common one-liner: populate the Secret a `forge package` deploy
+# expects from the local runtime.token.
+forge auth secret-yaml | kubectl apply -f -
+```
+
+The `forge.agent.id` label on the generated Secret is always sourced from `forge.yaml`'s `agent_id` (or the `"forge-agent"` fallback), never from the `--name` override — so operators using `--name` to match an existing cluster convention still see telemetry and label-selectors keyed on the real agent ID.
+
+---
+
 ## `forge key`
 
 Manage Ed25519 signing keys.

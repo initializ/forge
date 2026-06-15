@@ -137,7 +137,7 @@ type Runner struct {
 	modelConfig      *coreruntime.ModelConfig          // resolved model config (for banner)
 	derivedCLIConfig *contract.DerivedCLIConfig        // auto-derived from skill requirements
 	skillGuardrails  *agentspec.SkillGuardrailRules    // runtime-parsed skill guardrails (fallback when no build artifact)
-	sched            *scheduler.Scheduler              // cron scheduler (nil until started)
+	schedBackend     scheduler.Backend                 // schedule backend (nil until started); FileBackend in non-cluster deploys, KubernetesBackend (#162 part 2b) when running in-cluster with scheduler.backend=auto|kubernetes
 	startTime        time.Time                         // server start time (for /health uptime)
 	scheduleNotifier ScheduleNotifier                  // optional: delivers cron results to channels
 	authToken        string                            // resolved auth token (empty if --no-auth)
@@ -968,10 +968,19 @@ func (r *Runner) Run(ctx context.Context) error {
 								})
 							}
 						}
-						r.sched = scheduler.New(schedStore, dispatch, r.logger, auditFn)
+						// FileBackend wraps the existing Scheduler ticker
+						// + ScheduleStore behind the unified Backend
+						// interface introduced in #162 part 2. Behavior is
+						// identical to pre-#162 (same ticker, same store,
+						// same overlap semantics) — the wrapper exists so
+						// part 2b can drop in a KubernetesBackend at the
+						// same construction point without rewriting the
+						// runner's call sites.
+						sched := scheduler.New(schedStore, dispatch, r.logger, auditFn)
+						r.schedBackend = scheduler.NewFileBackend(schedStore, sched)
 						r.syncYAMLSchedules(ctx, schedStore)
-						r.sched.Start(ctx)
-						defer r.sched.Stop()
+						r.schedBackend.Start(ctx)
+						defer r.schedBackend.Stop()
 					}
 
 					r.logger.Info("using LLM executor", map[string]any{
@@ -3624,8 +3633,8 @@ type lazyScheduleReloader struct {
 }
 
 func (l *lazyScheduleReloader) Reload(ctx context.Context) {
-	if l.runner.sched != nil {
-		l.runner.sched.Reload(ctx)
+	if l.runner.schedBackend != nil {
+		l.runner.schedBackend.Reload(ctx)
 	}
 }
 

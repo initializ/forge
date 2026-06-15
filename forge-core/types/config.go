@@ -26,6 +26,7 @@ type ForgeConfig struct {
 	Auth           AuthConfig          `yaml:"auth,omitempty"`
 	MCP            MCPConfig           `yaml:"mcp,omitempty"`
 	Schedules      []ScheduleConfig    `yaml:"schedules,omitempty"`
+	Scheduler      SchedulerConfig     `yaml:"scheduler,omitempty"`
 	CORSOrigins    []string            `yaml:"cors_origins,omitempty"`
 	Package        PackageConfig       `yaml:"package,omitempty"`
 	GuardrailsPath string              `yaml:"guardrails_path,omitempty"` // path to guardrails.json (default: "guardrails.json")
@@ -291,6 +292,57 @@ type ScheduleConfig struct {
 	Skill         string `yaml:"skill,omitempty"`
 	Channel       string `yaml:"channel,omitempty"`        // channel adapter name (e.g. "slack", "telegram")
 	ChannelTarget string `yaml:"channel_target,omitempty"` // destination ID (channel ID, chat ID)
+}
+
+// SchedulerConfig selects the scheduler backend and tunes its
+// behavior. Default zero value is "auto": file backend on the
+// laptop / CI, Kubernetes backend when running in-cluster (the
+// in-cluster signal is the projected ServiceAccount token at
+// /var/run/secrets/kubernetes.io/serviceaccount/token). See issue
+// #162.
+type SchedulerConfig struct {
+	// Backend is one of "auto" (default), "file", or "kubernetes".
+	// - "auto": file when not in-cluster, kubernetes when in-cluster.
+	// - "file": always the file-backed scheduler with the 30s ticker.
+	// - "kubernetes": always the K8s CronJob backend. Errors at startup
+	//   when not in-cluster and FORGE_IN_CLUSTER is not set true.
+	Backend string `yaml:"backend,omitempty"`
+
+	// Kubernetes carries backend-specific tuning that's only consulted
+	// when Backend resolves to "kubernetes".
+	Kubernetes K8sSchedulerConfig `yaml:"kubernetes,omitempty"`
+}
+
+// K8sSchedulerConfig is the kubernetes-backend tuning block. Wired
+// in #162 part 2b (runtime CronJob CRUD) and #162 part 3
+// (`forge package` manifest generation).
+type K8sSchedulerConfig struct {
+	// Namespace is the K8s namespace CronJobs land in. Empty defaults
+	// to the agent pod's own namespace at runtime; `forge package`
+	// emits "default" when this field is unset.
+	Namespace string `yaml:"namespace,omitempty"`
+
+	// ServiceURL is the in-cluster URL CronJob trigger pods POST to.
+	// Required when Backend resolves to "kubernetes". Typical value:
+	// http://<agent-svc>.<ns>.svc:<port>/
+	ServiceURL string `yaml:"service_url,omitempty"`
+
+	// AllowDynamic gates whether the LLM-driven `schedule_set` builtin
+	// tool can create new CronJobs at runtime. Default false — only
+	// declarative forge.yaml `schedules[]` entries materialize as
+	// CronJobs. Flipping to true requires granting the agent's
+	// ServiceAccount create/patch/delete RBAC on batch/cronjobs in its
+	// own namespace; see docs/deployment/scheduler-kubernetes.md.
+	AllowDynamic bool `yaml:"allow_dynamic,omitempty"`
+
+	// TriggerImage is the container image the CronJob runs to make the
+	// curl request. Empty defaults to DefaultTriggerImage.
+	TriggerImage string `yaml:"trigger_image,omitempty"`
+
+	// AuthSecretName overrides the K8s Secret name CronJobs mount for
+	// the internal bearer token. Empty defaults to
+	// "<agent_id>-internal-token" matching `forge auth secret-yaml`.
+	AuthSecretName string `yaml:"auth_secret_name,omitempty"`
 }
 
 // SecretsConfig configures secret management providers.

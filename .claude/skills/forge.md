@@ -351,7 +351,29 @@ audit trail (`schedule_fire`, `schedule_complete`, `schedule_skip`,
 also be created at runtime via the A2A API and managed with
 `forge schedule`.
 
-**Read**: `docs/core-concepts/scheduling.md`.
+**Hybrid backend (#162)**. Two implementations behind one
+`scheduler.Backend` interface, selected at startup:
+
+| `scheduler.backend` | Storage | Timing |
+|---------------------|---------|--------|
+| `file` | `<WorkDir>/.forge/memory/SCHEDULES.md` | 30s in-process goroutine ticker |
+| `kubernetes` | K8s `CronJob` resources (etcd) | Cluster's CronJob controller |
+| `auto` (default) | Resolves to `kubernetes` when in-cluster (`/var/run/secrets/kubernetes.io/serviceaccount/token` present), `file` otherwise | — |
+
+```yaml
+scheduler:
+  backend: auto
+  kubernetes:
+    namespace: ""             # defaults to pod's own namespace
+    service_url: ""           # in-cluster URL CronJob trigger pods POST to
+    allow_dynamic: false      # whether the LLM (schedule_set) can create CronJobs
+    trigger_image: ""         # default: curlimages/curl:8.10.1
+    auth_secret_name: ""      # default: <agent_id>-internal-token
+```
+
+`scheduler.InCluster()` is the detection helper. `FORGE_IN_CLUSTER=true|false` overrides for testing. `KubernetesBackend.Sync` reconciles CronJobs against the declared yaml entries — creates missing, updates on spec drift, prunes dropped yaml entries, **preserves LLM-sourced** (label `forge.schedule.source=llm`) entries unconditionally. `AllowDynamic: false` (default) keeps the LLM from creating CronJobs at runtime; `forge package` materializes yaml entries at build time instead (see § 11).
+
+**Read**: `docs/core-concepts/scheduling.md`, `docs/deployment/scheduler-kubernetes.md`.
 
 ---
 
@@ -397,6 +419,7 @@ forge secret delete OPENAI_API_KEY
 | 4 | **ToolsStage** | Enumerates registered tools (builtins + skill tools + MCP) |
 | 5 | **EgressStage** | Resolves capability bundles, validates against platform policy, writes `egress_allowlist.json` |
 | 6 | **PackageStage** | Generates `Dockerfile` + Kubernetes manifests (`deployment.yaml` with `FORGE_PLATFORM_POLICY` env + `optional: true` ConfigMap volume) |
+| 6a | **ScheduleManifestStage** | When `forge.yaml schedules[]` is non-empty AND `scheduler.backend ≠ file`, emits one `k8s/cronjob-<id>.yaml` per schedule, a credential-less `k8s/internal-token-secret.yaml` template, and a `k8s/scheduler-role.yaml` + `k8s/scheduler-rolebinding.yaml` pair scoped to the agent's namespace. RBAC verbs are gated by `scheduler.kubernetes.allow_dynamic`. Operator populates the Secret out-of-band via `forge auth secret-yaml` — see § 13 (#162 part 3) |
 | 7 | **SigningStage** (opt-in) | Ed25519 signature of every artifact; `checksums.json` with SHA-256s |
 
 Artifacts land in `.forge-output/`. `forge run` from a built directory
@@ -701,6 +724,7 @@ Full reference: `docs/reference/cli-reference.md`.
 | `forge tool list \| describe` | Enumerate registered tools, show schemas | |
 | `forge channel add \| list \| status \| serve \| disable \| enable` | Channel adapters; disable/enable edit the user policy layer by default; `--system` retargets `/etc/forge/policy.yaml` | `--with`, `--system` |
 | `forge secret set \| get \| list \| delete` | Encrypted secrets | |
+| `forge auth show-token \| mint-token \| secret-yaml` | Operator UX for the internal bearer token at `<root>/.forge/runtime.token` (same token channel adapters + K8s CronJob trigger pods use). `secret-yaml` prints a ready-to-apply K8s Secret manifest sourced from the local token; `mint-token` is for first-deploy bootstrap. `forge.agent.id` label always tracks `forge.yaml` `agent_id`, never the `--name` override. (#162 part 1, PR #168) | `--namespace`, `--name` |
 | `forge key generate \| sign \| verify` | Ed25519 build artifact signing | |
 | `forge skills add \| list \| validate \| audit` | Registry: install, search, validate binary/env deps, security audit `--embedded` | `--category`, `--tags`, `--embedded` |
 | `forge mcp list \| test \| login \| logout` | Manage MCP servers + OAuth tokens | `--call <tool>`, `--args '<json>'` |
@@ -783,6 +807,15 @@ schedules:
     task: "Generate yesterday's summary"
     channel: telegram
     channel_target: "-100123456"
+
+scheduler:                           # Backend selection (#162)
+  backend: auto                      # auto (default) | file | kubernetes
+  kubernetes:
+    namespace: ""                    # defaults to pod's own namespace
+    service_url: ""                  # in-cluster URL CronJob trigger pods POST to
+    allow_dynamic: false             # whether schedule_set can create CronJobs at runtime
+    trigger_image: ""                # default: curlimages/curl:8.10.1
+    auth_secret_name: ""             # default: <agent_id>-internal-token
 
 package:
   alpine: false
@@ -980,6 +1013,9 @@ Every event also carries `schema_version: "1.0"` (FWS-8) and `seq`
 | **FWS-9** | #100 | Ops logger output stream separation — stdout for `JSONLogger`, stderr stays for audit NDJSON | `docs/security/audit-logging.md` § Streams |
 | **FWS-10** | #110 | Rate-limit configurability + orchestration-friendly defaults + cancel exemption — `server.rate_limit:` yaml block + CLI flags + env; `tasks/cancel` exempt from the write bucket by default | `docs/reference/forge-yaml-schema.md` § `server.rate_limit` |
 | **OTel v1** | #108 | OpenTelemetry tracing — shipped across phases #101-#107 (PRs #122-#128). Tracer seam → OTLP provider → config resolver + CLI flags → span instrumentation across A2A/executor/LLM/tool → audit ↔ trace cross-link → end-to-end A2A propagation → build-time egress merge. Off by default; reuses the egress-enforced transport. | `docs/core-concepts/observability-tracing.md` |
+| **Guardrails audit** | #155, #159, #161 | `guardrail_check` audit emission at all 5 library gates (`input` / `context` / `tool_call` / `output` / `stream`), unified on the library `gate` vocabulary (PR #160 replaced the early `direction` field); opt-in `fields.evidence` via `FORGE_GUARDRAIL_CAPTURE_EVIDENCE`; OTel `guardrail.<gate>` spans symmetric to the audit event with `forge.guardrail.*` attributes and `Error` status on block decisions (PR #167) | `docs/security/guardrails.md`, `docs/core-concepts/observability-tracing.md` § Guardrail spans |
+| **Tenancy + entity stamping** | #157, #164 | Top-level `org_id` / `workspace_id` (env + per-request header layer) and `entity_id` / `entity_type=agent` (env / forge.yaml) stamped on every audit event so SIEM filters `(org_id, workspace_id, entity_id)` uniquely identify a deploy. Field names match the guardrails library's MongoDB columns 1:1. | `docs/security/tenancy.md`, `docs/security/audit-logging.md` § Entity stamping |
+| **K8s scheduler** | #162 | Hybrid scheduler backend: `scheduler.Backend` interface, `FileBackend` (existing behavior), `KubernetesBackend` (`k8s.io/client-go`, CronJob CRUD), `InCluster()` detection, `forge package` emits `cronjob-*.yaml` + credential-less Secret template + Role/RoleBinding. `forge auth` subcommand for operator token UX. | `docs/deployment/scheduler-kubernetes.md`, `docs/core-concepts/scheduling.md` |
 
 Side issues filed during this run: FWS-9 was filed as a companion to
 FWS-7's "stream separation would be cleaner" callout; FWS-10 was filed
@@ -1017,9 +1053,10 @@ docs/
 │   ├── egress-control.md
 │   ├── secret-management.md
 │   ├── build-signing.md
-│   ├── guardrails.md
+│   ├── guardrails.md             ← incl. guardrail_check audit + capture-evidence (#155/#159)
 │   ├── platform-policy.md        ← FWS-5 / FWS-6
-│   ├── audit-logging.md          ← FWS-3 / FWS-7 / FWS-8 / FWS-9
+│   ├── audit-logging.md          ← FWS-3 / FWS-7 / FWS-8 / FWS-9 + entity stamping (#164)
+│   ├── tenancy.md                ← org_id / workspace_id / entity_id stamping (#157 / #164)
 │   └── workflow-correlation.md   ← FWS-2
 ├── reference/
 │   ├── cli-reference.md          ← every subcommand
@@ -1038,6 +1075,7 @@ docs/
 ├── deployment/
 │   ├── docker.md
 │   ├── kubernetes.md
+│   ├── scheduler-kubernetes.md   ← hybrid scheduler backend (#162) — CronJobs, RBAC, token plumbing
 │   ├── monitoring.md
 │   └── production-checklist.md
 ├── mcp/

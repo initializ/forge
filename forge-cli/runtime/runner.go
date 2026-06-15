@@ -968,17 +968,24 @@ func (r *Runner) Run(ctx context.Context) error {
 								})
 							}
 						}
+						// Pick the schedule backend per scheduler.backend:
+						// "kubernetes" — always K8s (errors at startup when not in-cluster);
+						// "file"       — always the file backend;
+						// "auto" / ""  — kubernetes when in-cluster, file otherwise.
 						// FileBackend wraps the existing Scheduler ticker
 						// + ScheduleStore behind the unified Backend
-						// interface introduced in #162 part 2. Behavior is
-						// identical to pre-#162 (same ticker, same store,
-						// same overlap semantics) — the wrapper exists so
-						// part 2b can drop in a KubernetesBackend at the
-						// same construction point without rewriting the
-						// runner's call sites.
-						sched := scheduler.New(schedStore, dispatch, r.logger, auditFn)
-						r.schedBackend = scheduler.NewFileBackend(schedStore, sched)
-						r.syncYAMLSchedules(ctx, schedStore)
+						// interface introduced in #162 part 2; the
+						// KubernetesBackend (#162 part 2b) delegates timing
+						// to the cluster's CronJob controller and persists
+						// state as CronJob resources in etcd.
+						backend, berr := r.selectScheduleBackend(schedStore, dispatch, auditFn)
+						if berr != nil {
+							return berr
+						}
+						r.schedBackend = backend
+						if syncErr := r.schedBackend.Sync(ctx, r.declaredSchedules()); syncErr != nil {
+							r.logger.Warn("schedule backend sync failed", map[string]any{"error": syncErr.Error()})
+						}
 						r.schedBackend.Start(ctx)
 						defer r.schedBackend.Stop()
 					}
@@ -3710,62 +3717,87 @@ func (r *Runner) makeScheduleDispatcher(executor coreruntime.AgentExecutor, egre
 	}
 }
 
-// syncYAMLSchedules upserts schedules from forge.yaml into the store and
-// removes stale yaml-sourced schedules no longer in config.
-func (r *Runner) syncYAMLSchedules(ctx context.Context, store scheduler.ScheduleStore) {
-	yamlConfigs := r.cfg.Config.Schedules
-	if len(yamlConfigs) == 0 {
-		return
+// selectScheduleBackend picks the scheduler.Backend implementation
+// based on forge.yaml's `scheduler.backend` field. Resolution:
+//
+//   - "kubernetes" → always KubernetesBackend; returns a hard error
+//     when not in-cluster and FORGE_IN_CLUSTER is not set true.
+//   - "file"       → always FileBackend.
+//   - "auto" / ""  → KubernetesBackend when in-cluster, otherwise
+//     FileBackend.
+//
+// The FileBackend is constructed with the supplied store/dispatch/audit
+// from the existing wiring. The KubernetesBackend ignores those (the
+// cluster handles timing and audit linkage lands via the
+// X-Forge-Schedule-Id header at the A2A boundary in part 3).
+func (r *Runner) selectScheduleBackend(
+	store scheduler.ScheduleStore,
+	dispatch scheduler.TaskDispatcher,
+	auditFn scheduler.AuditFunc,
+) (scheduler.Backend, error) {
+	mode := r.cfg.Config.Scheduler.Backend
+	useK8s := false
+	switch mode {
+	case "", "auto":
+		useK8s = scheduler.InCluster()
+	case "kubernetes":
+		useK8s = true
+		if !scheduler.InCluster() {
+			return nil, fmt.Errorf("scheduler.backend=kubernetes requires running in a Kubernetes pod (set FORGE_IN_CLUSTER=true to override for tests)")
+		}
+	case "file":
+		useK8s = false
+	default:
+		return nil, fmt.Errorf("scheduler.backend = %q: must be one of auto / file / kubernetes", mode)
 	}
+	if !useK8s {
+		sched := scheduler.New(store, dispatch, r.logger, auditFn)
+		return scheduler.NewFileBackend(store, sched), nil
+	}
+	k8sCfg := r.cfg.Config.Scheduler.Kubernetes
+	backend, err := NewKubernetesBackend(
+		r.cfg.Config.AgentID,
+		k8sCfg.Namespace,
+		K8sBackendConfig{
+			ServiceURL:     k8sCfg.ServiceURL,
+			AuthSecretName: k8sCfg.AuthSecretName,
+			TriggerImage:   k8sCfg.TriggerImage,
+			AllowDynamic:   k8sCfg.AllowDynamic,
+		},
+		r.logger,
+	)
+	if err != nil {
+		return nil, err
+	}
+	r.logger.Info("scheduler: using kubernetes backend", map[string]any{
+		"namespace":     k8sCfg.Namespace,
+		"service_url":   k8sCfg.ServiceURL,
+		"allow_dynamic": k8sCfg.AllowDynamic,
+	})
+	return backend, nil
+}
 
-	// Build set of yaml schedule IDs from config.
-	configIDs := make(map[string]bool, len(yamlConfigs))
-	for _, sc := range yamlConfigs {
-		configIDs[sc.ID] = true
-
-		now := time.Now().UTC()
-		existing, _ := store.Get(ctx, sc.ID)
-
-		sched := scheduler.Schedule{
+// declaredSchedules translates the forge.yaml schedules[] block into
+// the scheduler.Schedule shape Backend.Sync consumes. Marks each as
+// SourceYAML so the backend's reconciliation distinguishes them from
+// LLM-set entries.
+func (r *Runner) declaredSchedules() []scheduler.Schedule {
+	out := make([]scheduler.Schedule, 0, len(r.cfg.Config.Schedules))
+	now := time.Now().UTC()
+	for _, sc := range r.cfg.Config.Schedules {
+		out = append(out, scheduler.Schedule{
 			ID:            sc.ID,
 			Cron:          sc.Cron,
 			Task:          sc.Task,
 			Skill:         sc.Skill,
 			Channel:       sc.Channel,
 			ChannelTarget: sc.ChannelTarget,
-			Source:        "yaml",
+			Source:        scheduler.SourceYAML,
 			Enabled:       true,
 			Created:       now,
-		}
-
-		// Preserve runtime state from existing schedule.
-		if existing != nil {
-			sched.Created = existing.Created
-			sched.LastRun = existing.LastRun
-			sched.LastStatus = existing.LastStatus
-			sched.RunCount = existing.RunCount
-		}
-
-		if err := store.Set(ctx, sched); err != nil {
-			r.logger.Warn("failed to sync yaml schedule", map[string]any{
-				"id": sc.ID, "error": err.Error(),
-			})
-		}
+		})
 	}
-
-	// Remove stale yaml-sourced schedules.
-	existing, _ := store.List(ctx)
-	for _, s := range existing {
-		if s.Source == "yaml" && !configIDs[s.ID] {
-			if err := store.Delete(ctx, s.ID); err != nil {
-				r.logger.Warn("failed to remove stale yaml schedule", map[string]any{
-					"id": s.ID, "error": err.Error(),
-				})
-			}
-		}
-	}
-
-	r.logger.Info("synced yaml schedules", map[string]any{"count": len(yamlConfigs)})
+	return out
 }
 
 // buildSchedulerPrompt generates the scheduler awareness section for the system prompt.

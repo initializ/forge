@@ -105,14 +105,43 @@ When the CronJob fires, the trigger container reads `FORGE_AUTH_TOKEN` from the 
 
 - **Same-namespace only.** CronJobs run in the agent pod's own namespace. Cross-namespace deploys are out of scope.
 
-## What's in this PR (#162 part 2)
+## RBAC
 
-- `scheduler.Backend` interface (one surface, two implementations)
-- `scheduler.FileBackend` — wraps the existing `Scheduler` ticker + `MemoryScheduleStore`. Zero behavior change vs pre-#162.
-- `scheduler.InCluster()` detection helper
-- `scheduler.CronJobYAML(...)` + `scheduler.CronJobName(...)` — pure-Go manifest builders, reusable by the runtime backend (part 2b) and `forge package` (part 3)
+The agent pod's ServiceAccount needs read access to its own CronJobs in any K8s-backend deploy. CRUD verbs are only required when `allow_dynamic: true`:
 
-The runtime `KubernetesBackend` with client-go for live CronJob CRUD lands in part 2b. Part 3 wires the manifest builder into `forge package` so `kubectl apply -k ./k8s` produces a fully scheduled deploy.
+```yaml
+- apiGroups: ["batch"]
+  resources: ["cronjobs"]
+  verbs:
+    - get      # always
+    - list     # always — powers schedule_list
+    - create   # only when allow_dynamic: true
+    - update   # only when allow_dynamic: true
+    - delete   # only when allow_dynamic: true OR a yaml schedule was removed
+```
+
+`forge package` (part 3) emits a Role + RoleBinding scoped to the agent's namespace with the minimum verbs based on `allow_dynamic`.
+
+## Annotations on Forge-owned CronJobs
+
+Beyond the labels above, the runtime KubernetesBackend stamps Forge-specific fields as annotations so they round-trip through `kubectl get cronjob -o yaml` and back into the `schedule_list` tool:
+
+| Annotation | Source |
+|------------|--------|
+| `forge.schedule.task` | natural-language task description |
+| `forge.schedule.skill` | optional skill name |
+| `forge.schedule.channel` | optional channel adapter |
+| `forge.schedule.channel_target` | optional channel destination ID |
+| `forge.schedule.run_count` | execution counter (LLM-set schedules only) |
+| `forge.schedule.last_status` | last execution outcome |
+
+`LastRun` is read from `CronJob.Status.LastScheduleTime` — operators don't need to write it.
+
+## What's NOT in the K8s backend
+
+- **`schedule_history`**: returns empty + logs once. The audit stream's `schedule_fire` / `schedule_complete` events are the canonical source of truth.
+- **Cross-namespace deploys**: first cut assumes CronJob and agent live in the same namespace.
+- **Token auto-rotation**: the internal token is long-lived. Operators rotate by re-deploying with a fresh token in the Secret + pod restart picking it up.
 
 ## Local fallback
 

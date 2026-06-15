@@ -330,12 +330,31 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 	auditLogger.WithEntity("agent", agentID)
 
+	// Resolve TracingConfig early so we can thread it into the
+	// guardrail engine before the tracer provider itself is installed
+	// further down. ResolveTracingConfig is a pure config-resolution
+	// function — no I/O, no provider construction — so this is safe
+	// to call ahead of NewTracerProvider. The provider install at
+	// line ~561 still owns lifecycle; the engine just needs the
+	// CaptureContent + Redact flags. See issue #161.
+	tracingCfgEarly := ResolveTracingConfig(
+		r.cfg.Config.Observability.Tracing,
+		r.cfg.TracingFlags,
+		r.cfg.Config.AgentID,
+		r.cfg.Config.Version,
+		r.cfg.RuntimeVersion,
+	)
+
 	// 4a. Build guardrail checker (DB mode → file mode → defaults) and
 	// wire the audit logger so every mask/block/warn decision lands on
 	// the configured audit sinks as a guardrail_check event. Capture-
 	// evidence posture comes from env (FORGE_GUARDRAIL_*), default
-	// metadata-only. See issue #155.
-	guardrails := BuildGuardrailChecker(r.cfg.Config, r.cfg.WorkDir, r.cfg.EnforceGuardrails, r.logger, auditLogger, GuardrailAuditConfigFromEnv())
+	// metadata-only. tracingCfgEarly carries the
+	// CaptureContent/Redact knobs the guardrail.<gate> spans use for
+	// evidence stamping (#161); the spans themselves are opened
+	// unconditionally — when tracing is disabled, the noop tracer
+	// short-circuits.
+	guardrails := BuildGuardrailChecker(r.cfg.Config, r.cfg.WorkDir, r.cfg.EnforceGuardrails, r.logger, auditLogger, GuardrailAuditConfigFromEnv(), tracingCfgEarly)
 	// Periodic audit_export_status — one event every 60s with per-sink
 	// health counters. Operators tail the audit stream to answer
 	// "is my sidecar healthy?". The stop func blocks until the
@@ -547,13 +566,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// tracing.go) and continue. Tracing is off-by-default per the
 	// initiative ruling — a misconfigured exporter must never crash
 	// the agent.
-	tracingCfg := ResolveTracingConfig(
-		r.cfg.Config.Observability.Tracing,
-		r.cfg.TracingFlags,
-		r.cfg.Config.AgentID,
-		r.cfg.Config.Version,
-		r.cfg.RuntimeVersion,
-	)
+	tracingCfg := tracingCfgEarly
 	var tracingTransport http.RoundTripper
 	if egressClient != nil {
 		tracingTransport = egressClient.Transport

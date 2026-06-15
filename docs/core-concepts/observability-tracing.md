@@ -171,6 +171,36 @@ Every captured value is byte-capped at **4 KiB** (below the 5 KiB attribute soft
 
 **OTel semconv versioning note**: the GenAI semantic conventions moved from flat-string (`gen_ai.prompt`, `gen_ai.completion`) to structured (`gen_ai.input.messages`, `gen_ai.output.messages`) attributes. Forge emits only the **current** structured keys. Backends that only recognize the deprecated flat-string attributes will not show prompt / completion text on Forge spans — upgrade the backend's semconv mapping or use a span processor to translate.
 
+### Guardrail spans (issue #161)
+
+The `LibraryGuardrailEngine` opens a child span around every gate evaluation, symmetric to the `guardrail_check` audit-event emission. Trace consumers see "PII was masked here" inline with the LLM and tool spans without having to pivot to the audit stream.
+
+| Gate | Span name | Where it nests |
+|------|-----------|----------------|
+| InputGate | `guardrail.input` | Child of the A2A handler span (CheckInbound runs at request entry) |
+| ContextGate | `guardrail.context` | Child of `agent.execute` (BeforeLLMCall hook; one span per system message scanned) |
+| ToolCallGate | `guardrail.tool_call` | Child of `agent.execute` (BeforeToolExec hook) |
+| OutputGate | `guardrail.output` | Child of `agent.execute` (CheckOutbound + AfterToolExec hook) |
+| StreamGate | `guardrail.stream` | Not auto-wired today; opened when `CheckStream` is called directly |
+
+Attribute reference:
+
+| Attribute | When set | Source |
+|-----------|----------|--------|
+| `forge.guardrail.gate` | Always | `Result.Gate` — single source of truth, matches `fields.gate` on the audit event |
+| `forge.guardrail.decision` | Always | `Result.Decision` — `allow` / `mask` / `block` / `warn` |
+| `forge.guardrail.violation_count` | Always | `len(Result.Violations)` |
+| `forge.guardrail.type` | When violations present | First violation's `Type` field (`pii`, `moderation`, `security`, …) |
+| `forge.guardrail.category` | When violations have category | First violation's `Category` (`ssn`, `email`, `hate_speech`, …) |
+| `forge.tool.name` | `tool_call` + tool-output `output` spans | The tool the gate fired on |
+| `forge.guardrail.evidence` | `capture_content: true` only | Redacted + truncated triggering content. For `mask` decisions: post-mask content. For `block` / `warn`: original content. Mirrors the audit-event evidence rule. |
+
+**Span status**: `block` decisions stamp OTel `Error` status with the violation summary as the status description — surfaces blocked invocations as red bars in the trace UI without custom attribute queries. `mask` / `warn` decisions leave the default OK status.
+
+**Default posture**: `forge.guardrail.evidence` is absent unless `capture_content: true`. The other five attributes are always present when a gate fires (cheap, no PII risk). When tracing is disabled, the noop tracer short-circuits and the spans are not produced at all.
+
+**Content-capture parity**: the evidence attribute uses the exact same `PrepareSpanContent(redact, maxBytes)` pipeline as `gen_ai.input.messages` and `forge.tool.args` — same vendor secret-token scrub, same 4 KiB byte cap, same `…[truncated:N]` marker. Operators get one mental model across all four content streams (LLM input / LLM output / tool args / tool result / guardrail evidence).
+
 ## End-to-end propagation (Phase 5)
 
 Forge installs the W3C `tracecontext + baggage` composite propagator on the OTel global at startup. The JSON-RPC dispatcher extracts inbound `traceparent` + `baggage` headers before opening its own span, so multi-hop A2A flows show as one connected trace:

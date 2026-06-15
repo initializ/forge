@@ -9,6 +9,7 @@ import (
 	"github.com/initializ/guardrails/models"
 
 	"github.com/initializ/forge/forge-core/agentspec"
+	"github.com/initializ/forge/forge-core/observability"
 	coreruntime "github.com/initializ/forge/forge-core/runtime"
 	"github.com/initializ/forge/forge-core/types"
 )
@@ -43,13 +44,26 @@ func DefaultPolicyScaffold() *agentspec.PolicyScaffold {
 //
 // auditLogger and auditCfg are wired into the resulting engine so every
 // mask/block/warn decision emits a guardrail_check event through the
-// same sink stack the A2A handlers use. When auditLogger is nil the
-// engine is silent on the audit pipeline (used by tests).
-func BuildGuardrailChecker(cfg *types.ForgeConfig, workDir string, enforce bool, logger coreruntime.Logger, auditLogger *coreruntime.AuditLogger, auditCfg GuardrailAuditConfig) coreruntime.GuardrailChecker {
+// same sink stack the A2A handlers use. tracingCfg controls the
+// guardrail.<gate> span instrumentation added in #161 — when
+// CaptureContent is on, evidence is stamped on the span via the same
+// redact-then-truncate pipeline the LLM-call content capture uses.
+// When auditLogger is nil the engine is silent on the audit pipeline
+// (used by tests).
+func BuildGuardrailChecker(
+	cfg *types.ForgeConfig,
+	workDir string,
+	enforce bool,
+	logger coreruntime.Logger,
+	auditLogger *coreruntime.AuditLogger,
+	auditCfg GuardrailAuditConfig,
+	tracingCfg observability.TracingConfig,
+) coreruntime.GuardrailChecker {
 	attach := func(e *LibraryGuardrailEngine) coreruntime.GuardrailChecker {
 		if auditLogger != nil {
 			e.WithAuditLogger(auditLogger, auditCfg)
 		}
+		e.WithTracing(tracingCfg)
 		return e
 	}
 

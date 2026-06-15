@@ -126,4 +126,56 @@ const (
 	// AttrForgeToolResult is the raw output the tool returned. Set on
 	// tool.<name> spans.
 	AttrForgeToolResult = "forge.tool.result"
+
+	// ─── Guardrail span attributes (issue #161) ──────────────────────
+	//
+	// Stamped on guardrail.<gate> spans the LibraryGuardrailEngine
+	// opens around every Check* call (CheckInbound, CheckContext,
+	// CheckToolCall, CheckToolOutput, CheckOutbound, CheckStream).
+	// Symmetric to the guardrail_check audit-event fields shipped in
+	// #156 / #160 — operators looking at a trace see the same gate /
+	// decision / violation metadata they see in the audit stream and
+	// can pivot between the two by correlation_id / trace_id without
+	// joining on raw guardrail content.
+	//
+	// AttrForgeGuardrailEvidence follows the issue #130
+	// CaptureContent + Redact + MaxBytes posture: default off, opt-in
+	// per deployment, redact-then-truncate when on. Same env knobs as
+	// the existing OTel content-capture pipeline.
+
+	// AttrForgeGuardrailGate is the library gate that fired — one of
+	// "input", "context", "tool_call", "output", "stream". Sourced
+	// directly from `Result.Gate` (single source of truth, matches
+	// fields.gate on the guardrail_check audit event).
+	AttrForgeGuardrailGate = "forge.guardrail.gate"
+
+	// AttrForgeGuardrailDecision is the library decision — one of
+	// "allow", "mask", "block", "warn". Sourced from `Result.Decision`.
+	AttrForgeGuardrailDecision = "forge.guardrail.decision"
+
+	// AttrForgeGuardrailType is the first violation's Type field — e.g.
+	// "pii", "moderation", "security". Omitted when violations list is
+	// empty (the "allow" path).
+	AttrForgeGuardrailType = "forge.guardrail.type"
+
+	// AttrForgeGuardrailCategory is the first violation's Category —
+	// e.g. "ssn", "email", "hate_speech". Omitted when the violation
+	// has no category.
+	AttrForgeGuardrailCategory = "forge.guardrail.category"
+
+	// AttrForgeGuardrailViolationCount is the length of
+	// `Result.Violations`. Useful for SIEM "show me high-violation
+	// invocations" queries without joining against the full evidence
+	// stream.
+	AttrForgeGuardrailViolationCount = "forge.guardrail.violation_count"
+
+	// AttrForgeGuardrailEvidence is the triggering content. Set only
+	// when TracingConfig.CaptureContent is true. Passes through
+	// PrepareSpanContent (redact-then-truncate) just like the other
+	// #130 content attributes. For mask decisions evidence carries the
+	// post-mask content (the same payload the LLM actually saw); for
+	// block / warn decisions it carries the original triggering text
+	// (the library never produces a masked variant in those paths).
+	// Matches the audit-event evidence rule from PR #156.
+	AttrForgeGuardrailEvidence = "forge.guardrail.evidence"
 )

@@ -10,6 +10,7 @@ import (
 	"github.com/initializ/guardrails/models"
 
 	"github.com/initializ/forge/forge-core/a2a"
+	"github.com/initializ/forge/forge-core/observability"
 	coreruntime "github.com/initializ/forge/forge-core/runtime"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -50,6 +51,12 @@ type LibraryGuardrailEngine struct {
 	logger        coreruntime.Logger
 	auditLogger   *coreruntime.AuditLogger
 	auditCfg      GuardrailAuditConfig
+	// tracingCfg controls the OTel guardrail.<gate> span instrumentation
+	// added in #161. CaptureContent + Redact + MaxBytes follow the
+	// same posture as the #130 LLM-call content capture. Default zero
+	// value disables evidence capture; the spans themselves are still
+	// opened (cheap when the noop tracer is installed).
+	tracingCfg observability.TracingConfig
 }
 
 // NewFileGuardrailEngine creates a guardrail engine backed by a local
@@ -115,6 +122,21 @@ func (e *LibraryGuardrailEngine) WithAuditLogger(al *coreruntime.AuditLogger, cf
 	return e
 }
 
+// WithTracing wires the runtime's TracingConfig so the engine can
+// stamp forge.guardrail.evidence with the redact-then-truncate
+// pipeline when CaptureContent is enabled. Same posture as the LLM
+// call content capture from issue #130 — default off, opt-in per
+// deployment, redact on by default when on. Returns the receiver for
+// fluent construction.
+//
+// The guardrail.<gate> spans are opened unconditionally (the noop
+// tracer's overhead is near-zero); CaptureContent only gates whether
+// the evidence attribute is set. See issue #161.
+func (e *LibraryGuardrailEngine) WithTracing(cfg observability.TracingConfig) *LibraryGuardrailEngine {
+	e.tracingCfg = cfg
+	return e
+}
+
 // structuredIfFileMode returns the StructuredGuardrails pointer only in file
 // mode. In DB mode the library loads config from MongoDB automatically.
 func (e *LibraryGuardrailEngine) structuredIfFileMode() *models.StructuredGuardrails {
@@ -131,6 +153,22 @@ func (e *LibraryGuardrailEngine) CheckInbound(ctx context.Context, msg *a2a.Mess
 		return nil
 	}
 
+	// Span lifecycle (issue #161): open before the library call so the
+	// call's wall-clock duration is captured, finish in a deferred call
+	// with the resolved decision + content. evidenceContent + decision
+	// are mutated inside the switch below and read by the deferred
+	// finish. result starts nil — finishGuardrailSpan handles that case
+	// (the library-error path below sets result to nil too).
+	ctx, span := startGuardrailSpan(ctx, "input", "")
+	var (
+		evidenceContent string
+		decisionString  string
+		result          *guardrails.Result
+	)
+	defer func() {
+		finishGuardrailSpan(span, result, decisionString, evidenceContent, e.tracingCfg)
+	}()
+
 	result, err := e.manager.InputGate(ctx, guardrails.InputRequest{
 		Content:              text,
 		EntityID:             e.agentID,
@@ -141,6 +179,7 @@ func (e *LibraryGuardrailEngine) CheckInbound(ctx context.Context, msg *a2a.Mess
 	})
 	if err != nil {
 		e.logger.Warn("guardrail input gate error", map[string]any{"error": err.Error()})
+		result = nil
 		return nil
 	}
 
@@ -154,22 +193,29 @@ func (e *LibraryGuardrailEngine) CheckInbound(ctx context.Context, msg *a2a.Mess
 			}
 			e.logger.Info("guardrail input redaction applied", nil)
 			e.emitGuardrailEvent(ctx, "", result.MaskedContent, guardrailResultMasked, result)
+			evidenceContent = result.MaskedContent
+			decisionString = guardrailResultMasked
 		}
 	case guardrails.DecisionBlock:
 		desc := violationSummary(result)
 		if e.enforce {
 			e.emitGuardrailEvent(ctx, "", text, guardrailResultBlocked, result)
+			evidenceContent = text
+			decisionString = guardrailResultBlocked
 			return fmt.Errorf("input blocked: %s", desc)
 		}
 		e.logger.Warn("guardrail input violation (warn mode)", map[string]any{"detail": desc})
 		e.emitGuardrailEvent(ctx, "", text, guardrailResultWarned, result)
+		evidenceContent = text
+		decisionString = guardrailResultWarned
 	}
 	return nil
 }
 
 // CheckOutbound validates an outbound (agent) message via OutputGate.
 // Masked content is applied in-place; blocked content returns an error
-// only in enforce mode.
+// only in enforce mode. One guardrail.output span per text part — the
+// trace tree mirrors the part-level iteration.
 func (e *LibraryGuardrailEngine) CheckOutbound(ctx context.Context, msg *a2a.Message) error {
 	for i, p := range msg.Parts {
 		if p.Kind != a2a.PartKindText || p.Text == "" {
@@ -177,35 +223,64 @@ func (e *LibraryGuardrailEngine) CheckOutbound(ctx context.Context, msg *a2a.Mes
 		}
 
 		original := p.Text
-		result, err := e.manager.OutputGate(ctx, guardrails.OutputRequest{
-			Content:              p.Text,
-			EntityID:             e.agentID,
-			OrgID:                e.orgID,
-			EntityType:           guardrails.EntityTypeAgent,
-			StructuredGuardrails: e.structuredIfFileMode(),
-			ConfigVersion:        e.configVersion,
-		})
-		if err != nil {
-			e.logger.Warn("guardrail output gate error", map[string]any{"error": err.Error()})
-			continue
+		blockErr := e.checkOneOutboundPart(ctx, msg, i, original)
+		if blockErr != nil {
+			return blockErr
 		}
+	}
+	return nil
+}
 
-		switch result.Decision {
-		case guardrails.DecisionMask:
-			if result.MaskedContent != "" {
-				msg.Parts[i].Text = result.MaskedContent
-				e.logger.Warn("guardrail output redaction applied", nil)
-				e.emitGuardrailEvent(ctx, "", result.MaskedContent, guardrailResultMasked, result)
-			}
-		case guardrails.DecisionBlock:
-			desc := violationSummary(result)
-			if e.enforce {
-				e.emitGuardrailEvent(ctx, "", original, guardrailResultBlocked, result)
-				return fmt.Errorf("output blocked: %s", desc)
-			}
-			e.logger.Warn("guardrail output violation (warn mode)", map[string]any{"detail": desc})
-			e.emitGuardrailEvent(ctx, "", original, guardrailResultWarned, result)
+// checkOneOutboundPart runs OutputGate over a single text part. Split
+// from CheckOutbound so the per-part span has a clean lifetime (open
+// at function entry, deferred close at exit) without juggling state
+// across iterations.
+func (e *LibraryGuardrailEngine) checkOneOutboundPart(ctx context.Context, msg *a2a.Message, i int, original string) error {
+	ctx, span := startGuardrailSpan(ctx, "output", "")
+	var (
+		evidenceContent string
+		decisionString  string
+		result          *guardrails.Result
+	)
+	defer func() {
+		finishGuardrailSpan(span, result, decisionString, evidenceContent, e.tracingCfg)
+	}()
+
+	result, err := e.manager.OutputGate(ctx, guardrails.OutputRequest{
+		Content:              original,
+		EntityID:             e.agentID,
+		OrgID:                e.orgID,
+		EntityType:           guardrails.EntityTypeAgent,
+		StructuredGuardrails: e.structuredIfFileMode(),
+		ConfigVersion:        e.configVersion,
+	})
+	if err != nil {
+		e.logger.Warn("guardrail output gate error", map[string]any{"error": err.Error()})
+		result = nil
+		return nil
+	}
+
+	switch result.Decision {
+	case guardrails.DecisionMask:
+		if result.MaskedContent != "" {
+			msg.Parts[i].Text = result.MaskedContent
+			e.logger.Warn("guardrail output redaction applied", nil)
+			e.emitGuardrailEvent(ctx, "", result.MaskedContent, guardrailResultMasked, result)
+			evidenceContent = result.MaskedContent
+			decisionString = guardrailResultMasked
 		}
+	case guardrails.DecisionBlock:
+		desc := violationSummary(result)
+		if e.enforce {
+			e.emitGuardrailEvent(ctx, "", original, guardrailResultBlocked, result)
+			evidenceContent = original
+			decisionString = guardrailResultBlocked
+			return fmt.Errorf("output blocked: %s", desc)
+		}
+		e.logger.Warn("guardrail output violation (warn mode)", map[string]any{"detail": desc})
+		e.emitGuardrailEvent(ctx, "", original, guardrailResultWarned, result)
+		evidenceContent = original
+		decisionString = guardrailResultWarned
 	}
 	return nil
 }
@@ -217,6 +292,16 @@ func (e *LibraryGuardrailEngine) CheckToolCall(ctx context.Context, toolName, ar
 	if args == "" {
 		return args, nil
 	}
+
+	ctx, span := startGuardrailSpan(ctx, "tool_call", toolName)
+	var (
+		evidenceContent string
+		decisionString  string
+		result          *guardrails.Result
+	)
+	defer func() {
+		finishGuardrailSpan(span, result, decisionString, evidenceContent, e.tracingCfg)
+	}()
 
 	result, err := e.manager.ToolCallGate(ctx, guardrails.ToolCallRequest{
 		ToolName:             toolName,
@@ -232,6 +317,7 @@ func (e *LibraryGuardrailEngine) CheckToolCall(ctx context.Context, toolName, ar
 			"tool":  toolName,
 			"error": err.Error(),
 		})
+		result = nil
 		return args, nil
 	}
 
@@ -240,12 +326,16 @@ func (e *LibraryGuardrailEngine) CheckToolCall(ctx context.Context, toolName, ar
 		if result.MaskedContent != "" {
 			e.logger.Warn("guardrail tool_call redaction", map[string]any{"tool": toolName})
 			e.emitGuardrailEvent(ctx, toolName, result.MaskedContent, guardrailResultMasked, result)
+			evidenceContent = result.MaskedContent
+			decisionString = guardrailResultMasked
 			return result.MaskedContent, nil
 		}
 	case guardrails.DecisionBlock:
 		desc := violationSummary(result)
 		if e.enforce {
 			e.emitGuardrailEvent(ctx, toolName, args, guardrailResultBlocked, result)
+			evidenceContent = args
+			decisionString = guardrailResultBlocked
 			return "", fmt.Errorf("tool_call blocked: %s", desc)
 		}
 		e.logger.Warn("guardrail tool_call violation (warn mode)", map[string]any{
@@ -253,6 +343,8 @@ func (e *LibraryGuardrailEngine) CheckToolCall(ctx context.Context, toolName, ar
 			"detail": desc,
 		})
 		e.emitGuardrailEvent(ctx, toolName, args, guardrailResultWarned, result)
+		evidenceContent = args
+		decisionString = guardrailResultWarned
 	}
 
 	return args, nil
@@ -268,6 +360,16 @@ func (e *LibraryGuardrailEngine) CheckToolOutput(ctx context.Context, toolName, 
 		return text, nil
 	}
 
+	ctx, span := startGuardrailSpan(ctx, "output", toolName)
+	var (
+		evidenceContent string
+		decisionString  string
+		result          *guardrails.Result
+	)
+	defer func() {
+		finishGuardrailSpan(span, result, decisionString, evidenceContent, e.tracingCfg)
+	}()
+
 	result, err := e.manager.OutputGate(ctx, guardrails.OutputRequest{
 		Content:              text,
 		EntityID:             e.agentID,
@@ -282,6 +384,7 @@ func (e *LibraryGuardrailEngine) CheckToolOutput(ctx context.Context, toolName, 
 			"tool":  toolName,
 			"error": err.Error(),
 		})
+		result = nil
 		return text, nil
 	}
 
@@ -290,12 +393,16 @@ func (e *LibraryGuardrailEngine) CheckToolOutput(ctx context.Context, toolName, 
 		if result.MaskedContent != "" {
 			e.logger.Warn("guardrail tool output redaction", map[string]any{"tool": toolName})
 			e.emitGuardrailEvent(ctx, toolName, result.MaskedContent, guardrailResultMasked, result)
+			evidenceContent = result.MaskedContent
+			decisionString = guardrailResultMasked
 			return result.MaskedContent, nil
 		}
 	case guardrails.DecisionBlock:
 		desc := violationSummary(result)
 		if e.enforce {
 			e.emitGuardrailEvent(ctx, toolName, text, guardrailResultBlocked, result)
+			evidenceContent = text
+			decisionString = guardrailResultBlocked
 			return "", fmt.Errorf("tool output blocked: %s", desc)
 		}
 		e.logger.Warn("guardrail tool output violation (warn mode)", map[string]any{
@@ -303,6 +410,8 @@ func (e *LibraryGuardrailEngine) CheckToolOutput(ctx context.Context, toolName, 
 			"detail": desc,
 		})
 		e.emitGuardrailEvent(ctx, toolName, text, guardrailResultWarned, result)
+		evidenceContent = text
+		decisionString = guardrailResultWarned
 	}
 
 	return text, nil
@@ -317,6 +426,16 @@ func (e *LibraryGuardrailEngine) CheckContext(ctx context.Context, content strin
 		return content, nil
 	}
 
+	ctx, span := startGuardrailSpan(ctx, "context", "")
+	var (
+		evidenceContent string
+		decisionString  string
+		result          *guardrails.Result
+	)
+	defer func() {
+		finishGuardrailSpan(span, result, decisionString, evidenceContent, e.tracingCfg)
+	}()
+
 	result, err := e.manager.ContextGate(ctx, guardrails.ContextRequest{
 		Content:              content,
 		EntityID:             e.agentID,
@@ -327,6 +446,7 @@ func (e *LibraryGuardrailEngine) CheckContext(ctx context.Context, content strin
 	})
 	if err != nil {
 		e.logger.Warn("guardrail context gate error", map[string]any{"error": err.Error()})
+		result = nil
 		return content, nil
 	}
 
@@ -335,16 +455,22 @@ func (e *LibraryGuardrailEngine) CheckContext(ctx context.Context, content strin
 		if result.MaskedContent != "" {
 			e.logger.Warn("guardrail context redaction", nil)
 			e.emitGuardrailEvent(ctx, "", result.MaskedContent, guardrailResultMasked, result)
+			evidenceContent = result.MaskedContent
+			decisionString = guardrailResultMasked
 			return result.MaskedContent, nil
 		}
 	case guardrails.DecisionBlock:
 		desc := violationSummary(result)
 		if e.enforce {
 			e.emitGuardrailEvent(ctx, "", content, guardrailResultBlocked, result)
+			evidenceContent = content
+			decisionString = guardrailResultBlocked
 			return "", fmt.Errorf("context blocked: %s", desc)
 		}
 		e.logger.Warn("guardrail context violation (warn mode)", map[string]any{"detail": desc})
 		e.emitGuardrailEvent(ctx, "", content, guardrailResultWarned, result)
+		evidenceContent = content
+		decisionString = guardrailResultWarned
 	}
 
 	return content, nil
@@ -361,6 +487,16 @@ func (e *LibraryGuardrailEngine) CheckStream(ctx context.Context, chunk string) 
 		return chunk, nil
 	}
 
+	ctx, span := startGuardrailSpan(ctx, "stream", "")
+	var (
+		evidenceContent string
+		decisionString  string
+		result          *guardrails.Result
+	)
+	defer func() {
+		finishGuardrailSpan(span, result, decisionString, evidenceContent, e.tracingCfg)
+	}()
+
 	result, err := e.manager.StreamGate(ctx, guardrails.StreamRequest{
 		ChunkContent:         chunk,
 		EntityID:             e.agentID,
@@ -371,6 +507,7 @@ func (e *LibraryGuardrailEngine) CheckStream(ctx context.Context, chunk string) 
 	})
 	if err != nil {
 		e.logger.Warn("guardrail stream gate error", map[string]any{"error": err.Error()})
+		result = nil
 		return chunk, nil
 	}
 
@@ -379,16 +516,22 @@ func (e *LibraryGuardrailEngine) CheckStream(ctx context.Context, chunk string) 
 		if result.MaskedContent != "" {
 			e.logger.Warn("guardrail stream redaction", nil)
 			e.emitGuardrailEvent(ctx, "", result.MaskedContent, guardrailResultMasked, result)
+			evidenceContent = result.MaskedContent
+			decisionString = guardrailResultMasked
 			return result.MaskedContent, nil
 		}
 	case guardrails.DecisionBlock:
 		desc := violationSummary(result)
 		if e.enforce {
 			e.emitGuardrailEvent(ctx, "", chunk, guardrailResultBlocked, result)
+			evidenceContent = chunk
+			decisionString = guardrailResultBlocked
 			return "", fmt.Errorf("stream blocked: %s", desc)
 		}
 		e.logger.Warn("guardrail stream violation (warn mode)", map[string]any{"detail": desc})
 		e.emitGuardrailEvent(ctx, "", chunk, guardrailResultWarned, result)
+		evidenceContent = chunk
+		decisionString = guardrailResultWarned
 	}
 
 	return chunk, nil

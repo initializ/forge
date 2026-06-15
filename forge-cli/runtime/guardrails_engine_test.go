@@ -12,6 +12,7 @@ import (
 	"github.com/initializ/guardrails/models"
 
 	"github.com/initializ/forge/forge-core/a2a"
+	"github.com/initializ/forge/forge-core/observability"
 	coreruntime "github.com/initializ/forge/forge-core/runtime"
 )
 
@@ -108,7 +109,7 @@ func TestFileGuardrailEngine_CheckToolOutput(t *testing.T) {
 // TestBuildGuardrailChecker_FileMode tests the builder with file-based config.
 func TestBuildGuardrailChecker_FileMode(t *testing.T) {
 	logger := &grTestLogger{}
-	checker := BuildGuardrailChecker(nil, "/nonexistent", false, logger, nil, GuardrailAuditConfig{})
+	checker := BuildGuardrailChecker(nil, "/nonexistent", false, logger, nil, GuardrailAuditConfig{}, observability.TracingConfig{})
 	if checker == nil {
 		t.Fatal("BuildGuardrailChecker should return a non-nil checker")
 	}

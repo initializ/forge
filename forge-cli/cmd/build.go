@@ -123,6 +123,7 @@ func runBuild(cmd *cobra.Command, args []string) error {
 		&build.DockerfileStage{},
 		&build.SecretSafetyStage{},
 		&build.K8sStage{},
+		&build.ScheduleManifestStage{},
 		&build.ValidateStage{},
 		&build.ManifestStage{},
 		&build.SigningStage{},

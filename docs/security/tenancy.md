@@ -14,6 +14,8 @@ The same agent process supports both the static-deployment case (one
 agent serves one workspace) and the multi-tenant routing case (one
 agent serves many workspaces, the orchestrator picks per request).
 
+### Tenancy fields (`org_id` / `workspace_id`)
+
 | Layer | Source | Wins when |
 |-------|--------|-----------|
 | 1 — Explicit on event | `AuditEvent.OrgID` / `AuditEvent.WorkspaceID` set before emit | Always — caller-owned event takes precedence over every fallback |
@@ -21,6 +23,17 @@ agent serves many workspaces, the orchestrator picks per request).
 | 3 — Deployment-time stamp | `FORGE_ORG_ID` / `FORGE_WORKSPACE_ID` env vars | Whenever the higher layers carry no value |
 
 Each field is resolved independently. A request that overrides only `X-Forge-Org-ID` still lets the env stamp fill in `workspace_id`.
+
+### Entity fields (`entity_id` / `entity_type`) — #164
+
+| Layer | Source | Wins when |
+|-------|--------|-----------|
+| 1 — Explicit on event | `AuditEvent.EntityID` / `AuditEvent.EntityType` set before emit | Always — caller-owned event takes precedence |
+| 2 — Deployment-time stamp | `FORGE_AGENT_ID` env / forge.yaml `agent_id` → `entity_id`; `entity_type` hardcoded to `"agent"` | Whenever the higher layer is empty |
+
+Entity identity has **no per-request header layer** — entity is fixed at process startup. If a deployment needs per-request entity routing, the tenancy layer above already covers that (an agent serving multiple workspaces). Agent identity is the process, by definition.
+
+`entity_type` and `entity_id` match the field names + values the guardrails library writes to its MongoDB `GuardrailAuditEvent` collection (see `EntityType` constants: `agent` / `workflow` / `assistant`). When `FORGE_GUARDRAILS_DB` is set, both streams carry the same `(entity_id, entity_type)` pair and consumers join them 1:1 without translation. Forge only runs agents today, so the value is always `"agent"`; future entity types are an additive value change, not a schema change.
 
 ## Static tenancy (one agent per workspace)
 

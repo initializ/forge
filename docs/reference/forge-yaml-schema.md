@@ -148,6 +148,15 @@ schedules:                          # Recurring scheduled tasks (optional)
     channel: "telegram"             # Optional channel for delivery
     channel_target: "-100123456"    # Destination chat/channel ID
 
+scheduler:                          # Scheduler backend selection (#162)
+  backend: "auto"                   # auto (default) | file | kubernetes
+  kubernetes:                       # Tuning for backend=kubernetes (or auto-resolved)
+    namespace: ""                   # Defaults to the agent pod's own namespace
+    service_url: ""                 # In-cluster URL CronJob trigger pods POST to
+    allow_dynamic: false            # Whether schedule_set can create CronJobs at runtime
+    trigger_image: ""               # Default: curlimages/curl:8.10.1
+    auth_secret_name: ""            # Default: <agent_id>-internal-token
+
 observability:                      # OpenTelemetry tracing (off by default)
   tracing:
     enabled: true                   # Phase 0-6 / OTel Tracing v1 (#108)

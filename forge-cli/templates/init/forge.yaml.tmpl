@@ -50,13 +50,14 @@ egress:
     - {{.}}
 {{- end}}
 {{- end}}
-{{- if .HasSecrets}}
 
 secrets:
   providers:
+{{- if .HasSecrets}}
     - encrypted-file
-    - env
 {{- end}}
+    - env
+
 {{- if .AuthBlock}}
 
 {{.AuthBlock}}

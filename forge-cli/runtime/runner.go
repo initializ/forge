@@ -3777,6 +3777,7 @@ func (r *Runner) selectScheduleBackend(
 		k8sCfg.Namespace,
 		K8sBackendConfig{
 			ServiceURL:     k8sCfg.ServiceURL,
+			Port:           r.cfg.Port,
 			AuthSecretName: k8sCfg.AuthSecretName,
 			TriggerImage:   k8sCfg.TriggerImage,
 			AllowDynamic:   k8sCfg.AllowDynamic,

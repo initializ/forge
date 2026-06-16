@@ -268,3 +268,44 @@ func TestKubernetesBackend_HistoryIsEmptyWithWarning(t *testing.T) {
 		t.Errorf("History should return empty list; got %d", len(hist))
 	}
 }
+
+// TestKubernetesBackend_ServiceURLDefaultDerivation is the #179 regression
+// pin: when scheduler.kubernetes.service_url is unset, the runtime must
+// fall back to the same in-cluster Service DNS the build-time
+// schedule-manifest stage stamps into generated CronJob YAML. Pre-fix
+// the constructor hard-errored when ServiceURL was empty; an operator
+// who deployed without an explicit service_url couldn't start the
+// agent in-cluster.
+func TestKubernetesBackend_ServiceURLDefaultDerivation(t *testing.T) {
+	cs := fake.NewSimpleClientset()
+	b := NewKubernetesBackendWithClient(cs, "my-agent", "ns-a", K8sBackendConfig{Port: 9090}, fakeBackendLogger{})
+	if got, want := b.cfg.ServiceURL, "http://my-agent.ns-a.svc:9090/"; got != want {
+		t.Errorf("derived ServiceURL = %q, want %q", got, want)
+	}
+}
+
+// TestKubernetesBackend_ServiceURLDefaultPortFallback covers the
+// port-unset branch: when K8sBackendConfig.Port is zero (e.g. the
+// caller didn't plumb r.cfg.Port through), the derivation falls back
+// to 8080 to match the runner's listen-port default.
+func TestKubernetesBackend_ServiceURLDefaultPortFallback(t *testing.T) {
+	cs := fake.NewSimpleClientset()
+	b := NewKubernetesBackendWithClient(cs, "my-agent", "ns-a", K8sBackendConfig{}, fakeBackendLogger{})
+	if got, want := b.cfg.ServiceURL, "http://my-agent.ns-a.svc:8080/"; got != want {
+		t.Errorf("derived ServiceURL with Port=0 = %q, want %q", got, want)
+	}
+}
+
+// TestKubernetesBackend_ServiceURLExplicitOverride confirms an
+// operator-supplied ServiceURL passes through untouched — the
+// derivation only applies when the field is empty. Pins the
+// non-regression case for operators behind an Ingress / Gateway.
+func TestKubernetesBackend_ServiceURLExplicitOverride(t *testing.T) {
+	cs := fake.NewSimpleClientset()
+	b := NewKubernetesBackendWithClient(cs, "my-agent", "ns-a",
+		K8sBackendConfig{ServiceURL: "https://gateway.example.com/agents/my-agent/", Port: 9090},
+		fakeBackendLogger{})
+	if got, want := b.cfg.ServiceURL, "https://gateway.example.com/agents/my-agent/"; got != want {
+		t.Errorf("explicit ServiceURL not preserved: got %q, want %q", got, want)
+	}
+}

@@ -24,7 +24,7 @@ scheduler:
   backend: auto              # auto (default) | file | kubernetes
   kubernetes:
     namespace: ""            # defaults to the agent pod's own namespace at runtime
-    service_url: ""          # in-cluster URL CronJob trigger pods POST to (required in k8s mode)
+    service_url: ""          # in-cluster URL CronJob trigger pods POST to; auto-derived to `http://<agent_id>.<namespace>.svc:<port>/` when empty (mirrors the build-time default, issue #179)
     allow_dynamic: false     # whether schedule_set (LLM-driven) can create CronJobs at runtime
     trigger_image: ""        # container image the trigger Job runs; default: curlimages/curl:8.10.1
     auth_secret_name: ""     # K8s Secret holding the internal token; default: <agent_id>-internal-token
@@ -37,6 +37,10 @@ Resolution at startup:
 3. `scheduler.backend: auto` (default) → kubernetes when the projected ServiceAccount token at `/var/run/secrets/kubernetes.io/serviceaccount/token` exists, file otherwise
 
 The escape hatch `FORGE_IN_CLUSTER=true|false` overrides the file-presence check — useful for forcing file behavior in a single-replica dev pod, or for running the K8s backend's unit tests on a developer laptop.
+
+### `service_url` defaulting
+
+When `scheduler.kubernetes.service_url` is empty, the runtime derives `http://<agent_id>.<namespace>.svc:<port>/` (matching the in-cluster Service DNS that `forge package` stamps into the generated CronJob YAML at build time — see `forge-cli/build/schedule_manifest_stage.go`). `<port>` is the agent's A2A listen port (`--port` or `forge.yaml` default 8080). Operators only need to set `service_url` explicitly when the agent sits behind an Ingress / Gateway or uses a non-standard hostname. Pinned by `TestKubernetesBackend_ServiceURLDefaultDerivation` (issue #179).
 
 ## CronJob manifest shape
 

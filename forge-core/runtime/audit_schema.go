@@ -71,3 +71,17 @@ func NextSequence(ctx context.Context) int64 {
 	}
 	return c.Add(1)
 }
+
+// EnsureSequenceCounter returns ctx unchanged when it already carries a
+// SequenceCounter; otherwise it returns a new ctx with a fresh counter
+// installed. Use at any invocation-entry point that may run downstream
+// of an upstream middleware which already installed a counter — e.g.,
+// the runner's per-A2A-request setup runs after the auth middleware
+// (which installs a counter so auth_verify lands seq=1) and must not
+// clobber it. See issue #174.
+func EnsureSequenceCounter(ctx context.Context) context.Context {
+	if SequenceCounterFromContext(ctx) != nil {
+		return ctx
+	}
+	return WithSequenceCounter(ctx, new(SequenceCounter))
+}

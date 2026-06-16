@@ -58,6 +58,13 @@ secrets:
 {{- end}}
     - env
 
+scheduler:
+  # Use the in-process file scheduler by default. The "auto" default would
+  # pick the Kubernetes CronJob backend when running in-cluster, which
+  # requires scheduler.kubernetes.service_url. Switch to backend: kubernetes
+  # (and set kubernetes.service_url) when you want durable CronJob scheduling.
+  backend: file
+
 {{- if .AuthBlock}}
 
 {{.AuthBlock}}

@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **K8s scheduler backend no longer hard-errors when `scheduler.kubernetes.service_url`
+  is unset (issue #179).** Pre-fix, an agent deployed in-cluster with a default
+  `scheduler.backend: auto` and no explicit `service_url` aborted startup with
+  `kubernetes scheduler backend: scheduler.kubernetes.service_url is required` —
+  even though the build-time `schedule_manifest_stage` already knew how to default
+  the same field to `http://<agent_id>.<namespace>.svc:<port>/`. Runtime now
+  mirrors the build-time default: when `ServiceURL` is empty, the constructor
+  derives the in-cluster Service DNS using `agent_id` + resolved namespace +
+  the runner's listen port (default 8080). Explicit `service_url` overrides
+  still pass through untouched, so operators behind an Ingress / Gateway are
+  unaffected. Pinned by `TestKubernetesBackend_ServiceURLDefaultDerivation`,
+  `TestKubernetesBackend_ServiceURLDefaultPortFallback`, and
+  `TestKubernetesBackend_ServiceURLExplicitOverride`.
+
 ## v0.14.2 — 2026-06-10
 
 ### Fixed

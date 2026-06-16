@@ -1051,7 +1051,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		Host:            r.cfg.Host,
 		ShutdownTimeout: r.cfg.ShutdownTimeout,
 		AgentCard:       card,
-		AuthMiddleware:  auth.Middleware(authCfg),
+		AuthMiddleware:  installSequenceCounterMiddleware(auth.Middleware(authCfg)),
 		AllowedOrigins:  corsOrigins,
 		RateLimit:       rateLimit,
 	})
@@ -1189,8 +1189,12 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 		// FWS-8: per-invocation sequence counter so every audit event
 		// emitted on behalf of this request carries a monotonically
 		// increasing `seq` field — consumers detect gaps + ordering
-		// at the export side.
-		ctx = coreruntime.WithSequenceCounter(ctx, new(coreruntime.SequenceCounter))
+		// at the export side. Reuse the counter
+		// installSequenceCounterMiddleware put on ctx before auth ran
+		// (so auth_verify=seq=1 and session_start=seq=2) — see #174.
+		// EnsureSequenceCounter installs a fresh one if missing
+		// (--no-auth path / direct test invocations).
+		ctx = coreruntime.EnsureSequenceCounter(ctx)
 		sseAcc := coreruntime.NewLLMUsageAccumulator()
 		ctx = coreruntime.WithLLMUsageAccumulator(ctx, sseAcc)
 		defer func() {
@@ -1403,7 +1407,11 @@ func (r *Runner) executeTask(
 	ctx = coreruntime.WithCorrelationID(ctx, correlationID)
 	ctx = coreruntime.WithTaskID(ctx, params.ID)
 	// FWS-8: per-invocation sequence counter (see issue #91 / FWS-8).
-	ctx = coreruntime.WithSequenceCounter(ctx, new(coreruntime.SequenceCounter))
+	// EnsureSequenceCounter reuses the counter the auth middleware
+	// wrapper installed pre-auth so auth_verify lands seq=1 and
+	// session_start lands seq=2 (#174); installs a fresh one when
+	// missing (--no-auth path / direct test invocations).
+	ctx = coreruntime.EnsureSequenceCounter(ctx)
 	// Per-invocation usage accumulator so AfterLLMCall hooks can fold
 	// each call's tokens/duration into running totals the response
 	// handler reads back for X-Forge-* headers + the
@@ -1686,8 +1694,10 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 		// FWS-8: per-invocation sequence counter so every audit event
 		// emitted on behalf of this request carries a monotonically
 		// increasing `seq` field — consumers detect gaps + ordering
-		// at the export side.
-		ctx = coreruntime.WithSequenceCounter(ctx, new(coreruntime.SequenceCounter))
+		// at the export side. Reuse the counter
+		// installSequenceCounterMiddleware put on ctx before auth ran
+		// (#174); install fresh on the --no-auth path.
+		ctx = coreruntime.EnsureSequenceCounter(ctx)
 		// Pull workflow correlation headers (issue #86 / FWS-2) before
 		// the accumulator setup so invocation_complete inherits workflow
 		// tagging via EmitFromContext.
@@ -2526,10 +2536,17 @@ func makeAuthAuditCallback(auditLogger *coreruntime.AuditLogger) func(*http.Requ
 		wc := coreruntime.WorkflowContextFromHTTPHeaders(req.Header)
 		// Same for the per-request tenancy override (#157). When
 		// absent, the AuditLogger's static deployment-time stamp still
-		// kicks in via plain Emit so auth events match the rest of
-		// the stream's org_id / workspace_id columns.
+		// kicks in so auth events match the rest of the stream's
+		// org_id / workspace_id columns.
 		tc := coreruntime.TenancyContextFromHTTPHeaders(req.Header)
 
+		// EmitFromContext stamps `seq` from the SequenceCounter the
+		// installSequenceCounterMiddleware wrapper installed on
+		// req.Context() before the auth chain ran (#174). The
+		// runner's per-A2A-request setup downstream calls
+		// EnsureSequenceCounter and reuses this counter, so
+		// session_start lands at seq=2 and the per-correlation_id
+		// sequence is gap-free for FWS-8 consumers.
 		if err == nil && id != nil {
 			// Success → auth_verify.
 			fields := map[string]any{
@@ -2542,7 +2559,7 @@ func makeAuthAuditCallback(auditLogger *coreruntime.AuditLogger) func(*http.Requ
 				"path":         req.URL.Path,
 				"remote_addr":  req.RemoteAddr,
 			}
-			auditLogger.Emit(coreruntime.AuditEvent{
+			auditLogger.EmitFromContext(req.Context(), coreruntime.AuditEvent{
 				Event:            coreruntime.EventAuthVerify,
 				CorrelationID:    correlationID,
 				WorkflowID:       wc.WorkflowID,
@@ -2557,7 +2574,7 @@ func makeAuthAuditCallback(auditLogger *coreruntime.AuditLogger) func(*http.Requ
 		}
 
 		// Failure → auth_fail with reason code.
-		auditLogger.Emit(coreruntime.AuditEvent{
+		auditLogger.EmitFromContext(req.Context(), coreruntime.AuditEvent{
 			Event:            coreruntime.EventAuthFail,
 			CorrelationID:    correlationID,
 			WorkflowID:       wc.WorkflowID,

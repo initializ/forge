@@ -124,11 +124,16 @@ The path of a single A2A invocation:
 ```
 1. Inbound HTTP request → POST / with JSON-RPC envelope
    forge-cli/server/a2a_server.go:handleJSONRPC
-2. Middleware chain:
-     auth (forge-core/auth/middleware.go)          — verifies bearer
-     rate-limit                                    — per-IP, FWS-10
+2. Middleware chain (outermost → innermost):
+     installSequenceCounterMiddleware                — installs the
+       per-request SequenceCounter on r.Context()
+       BEFORE the auth chain runs so auth_verify /
+       auth_fail land seq=1 (FWS-8, fix #174)
+     auth (forge-core/auth/middleware.go)            — verifies bearer;
+       OnAuth callback emits via EmitFromContext so
+       seq + trace_id + workflow tags are stamped
+     rate-limit                                      — per-IP, FWS-10
      CORS, security headers, request-size limits
-     audit middleware                              — auth_verify/auth_fail
 3. Dispatch to method handler:
      tasks/send   → runs the agent (long)
      tasks/cancel → signals an in-flight invocation (instant)
@@ -137,7 +142,8 @@ The path of a single A2A invocation:
 4. Request entry (forge-cli/runtime/runner.go):
      correlation_id generated
      task_id from params.ID
-     WithSequenceCounter installed (FWS-8)
+     EnsureSequenceCounter reuses the auth-installed counter
+       (or installs a fresh one on the --no-auth path)     — FWS-8
      LLMUsageAccumulator installed (FWS-3)
      CancellationRegistry registers a CancelCauseFunc (FWS-4)
 5. AgentExecutor loop:
@@ -551,6 +557,23 @@ fan-out across configured sinks.
   caps (default 16 KiB) + `…[truncated:N]` markers. Operators are
   responsible for routing captured payloads to a store appropriate to
   their sensitivity — Forge does not redact.
+
+**Emit invariant.** Every audit emission inside an A2A invocation
+scope MUST go through `AuditLogger.EmitFromContext(ctx, ...)` (or one
+of the typed helpers — `EmitLLMCall`, `EmitToolExec`, etc.). That's
+the path that picks the per-invocation `SequenceCounter` off ctx and
+stamps `seq` + `trace_id` + `span_id` + workflow tags. Plain `Emit`
+emits raw — no seq, no trace link, no workflow tags. Regression pins:
+`TestToolExecAudit_CarriesSequenceFromContext` (PR #173,
+`tool_exec` + `session_end`),
+`TestAuthAudit_SeqStampedWhenCounterInstalled` (PR #176, `auth_verify`
+once the counter is installed by the middleware wrapper). Sites that
+still call plain `Emit` are explicitly outside any invocation scope:
+the egress proxy's subprocess CONNECT (no Go ctx tying back),
+MCP-server startup (`mcp_server_started` / `_failed` / `_degraded`,
+pre-invocation), and the scheduler tick (`schedule_fire` /
+`schedule_complete`, runs on its own timer). Those events
+intentionally have no `seq`.
 
 **Sinks** (FWS-7):
 
@@ -1009,7 +1032,7 @@ Every event also carries `schema_version: "1.0"` (FWS-8) and `seq`
 | **FWS-5** | #89 | Platform policy enforcement at runtime — workspace-level deploy-time bounds (egress / tools / models / sizes); `forge package` policy-ready manifests | `docs/security/platform-policy.md` |
 | **FWS-6** | #90 | Three-layer platform policy + channel scope — system / user / workspace layers compose by union + most-restrictive; `denied_channels` first-class; `forge channel disable/enable` edits the user layer | `docs/security/platform-policy.md` |
 | **FWS-7** | #95 | Audit event export capability — Unix Domain Socket sink + HTTP localhost fallback; fire-and-forget; `audit_export_status` periodic per-sink health | `docs/security/audit-logging.md` § Audit Event Export |
-| **FWS-8** | #91 | Hardened audit emission — `schema_version` + monotonic `seq` per invocation; default metadata-only invariant pinned by regression test; opt-in `AuditPayloadCapture` with per-field byte caps | `docs/security/audit-logging.md` § Schema contract |
+| **FWS-8** | #91 | Hardened audit emission — `schema_version` + monotonic `seq` per invocation; default metadata-only invariant pinned by regression test; opt-in `AuditPayloadCapture` with per-field byte caps. Follow-ups: #173 (PR closed the seq gap on `tool_exec` / `session_end` — 3 sites switched from plain `Emit` to `EmitFromContext`) and #174 (PR moved the `SequenceCounter` installation upstream of the auth middleware via a wrapper + `EnsureSequenceCounter` so `auth_verify` / `auth_fail` land seq=1). #175 tracks a follow-up lint to catch future `Emit`-instead-of-`EmitFromContext` drift. | `docs/security/audit-logging.md` § Schema contract / § Sequence numbers |
 | **FWS-9** | #100 | Ops logger output stream separation — stdout for `JSONLogger`, stderr stays for audit NDJSON | `docs/security/audit-logging.md` § Streams |
 | **FWS-10** | #110 | Rate-limit configurability + orchestration-friendly defaults + cancel exemption — `server.rate_limit:` yaml block + CLI flags + env; `tasks/cancel` exempt from the write bucket by default | `docs/reference/forge-yaml-schema.md` § `server.rate_limit` |
 | **OTel v1** | #108 | OpenTelemetry tracing — shipped across phases #101-#107 (PRs #122-#128). Tracer seam → OTLP provider → config resolver + CLI flags → span instrumentation across A2A/executor/LLM/tool → audit ↔ trace cross-link → end-to-end A2A propagation → build-time egress merge. Off by default; reuses the egress-enforced transport. | `docs/core-concepts/observability-tracing.md` |

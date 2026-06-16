@@ -490,6 +490,49 @@ start their own counters. Events emitted outside any invocation scope
 (`policy_loaded`, `agent_card_published`, `audit_export_status`) omit
 `seq` entirely.
 
+#### Counter installation order
+
+The per-invocation `SequenceCounter` is installed on `r.Context()` by
+`installSequenceCounterMiddleware`, which wraps the auth middleware so
+the counter is already on context before the auth chain runs. This
+puts `auth_verify` / `auth_fail` first in the sequence (`seq=1`) and
+keeps the rest of the per-invocation events (`session_start`,
+`guardrail_check`, `llm_call`, `tool_exec`, `invocation_complete`,
+etc.) gap-free under the same `(correlation_id, task_id)` group. The
+runner's request entry calls `coreruntime.EnsureSequenceCounter` —
+which reuses the wrapper-installed counter when present and installs a
+fresh one on the `--no-auth` path, so no embedder configuration loses
+seq stamping. Pinned by `TestAuthAudit_SeqStampedWhenCounterInstalled`
+and `TestEnsureSequenceCounter_ReusesExisting` (issue #174).
+
+#### Emit invariant
+
+The seq counter is picked up by `AuditLogger.EmitFromContext(ctx, ...)`
+(and the typed helpers built on top of it — `EmitLLMCall`,
+`EmitToolExec`, `EmitInvocationComplete`, `EmitInvocationCancelled`,
+the egress and guardrail emit paths). Plain `AuditLogger.Emit` skips
+the counter and the trace cross-link — so every audit emission that
+happens inside an invocation scope MUST go through `EmitFromContext`.
+This was the regression behind issues #173 (three sites — the
+`BeforeToolExec` / `AfterToolExec` hook callbacks and the
+outbound-guardrail-failure `session_end` emit — had drifted to plain
+`Emit` and lost seq on `tool_exec` + that branch's `session_end`) and
+#174 (the auth callback couldn't use `EmitFromContext` until the
+counter was installed upstream of the auth middleware). Pinned by
+`TestToolExecAudit_CarriesSequenceFromContext`. Sites that still call
+plain `Emit` are explicitly outside any invocation scope and are
+documented inline:
+
+| Site | Why plain `Emit` |
+|---|---|
+| Egress proxy `OnAttempt` with `source=proxy` | Subprocess HTTP `CONNECT` has no Go ctx tying back to the A2A request |
+| MCP server startup events (`mcp_server_started` / `_failed` / `_degraded`) | Pre-invocation; no scope |
+| Scheduler tick (`schedule_fire` / `schedule_complete` / `schedule_skip` / `schedule_modify`) | Runs on its own timer outside any A2A request |
+| Startup banners (`policy_loaded`, `agent_card_published`, `audit_export_status`) | Pre-invocation; no scope |
+
+Issue #175 tracks a follow-up vet/lint pass to catch future
+`Emit`-instead-of-`EmitFromContext` drift on per-invocation events.
+
 ### Schema versioning policy
 
 | Change | Bumps version? |

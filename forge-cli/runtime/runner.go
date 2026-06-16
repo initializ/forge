@@ -1543,7 +1543,7 @@ func (r *Runner) executeTask(
 				},
 			}
 			store.Put(task)
-			auditLogger.Emit(coreruntime.AuditEvent{
+			auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
 				Event:         coreruntime.AuditSessionEnd,
 				CorrelationID: correlationID,
 				TaskID:        params.ID,
@@ -1974,7 +1974,7 @@ func (r *Runner) registerLoggingHooks(hooks *coreruntime.HookRegistry) {
 func (r *Runner) registerAuditHooks(hooks *coreruntime.HookRegistry, auditLogger *coreruntime.AuditLogger) {
 	capture := r.cfg.AuditPayloadCapture
 
-	hooks.Register(coreruntime.BeforeToolExec, func(_ context.Context, hctx *coreruntime.HookContext) error {
+	hooks.Register(coreruntime.BeforeToolExec, func(ctxStart context.Context, hctx *coreruntime.HookContext) error {
 		fields := map[string]any{"tool": hctx.ToolName, "phase": "start"}
 		// FWS-8: opt-in raw tool args. We only emit them here at the
 		// start hook (the end hook has them too — duplicating would
@@ -1987,7 +1987,7 @@ func (r *Runner) registerAuditHooks(hooks *coreruntime.HookRegistry, auditLogger
 					coreruntime.CapOrDefault(capture.CapToolArgsBytes))
 			}
 		}
-		auditLogger.Emit(coreruntime.AuditEvent{
+		auditLogger.EmitFromContext(ctxStart, coreruntime.AuditEvent{
 			Event:         coreruntime.AuditToolExec,
 			CorrelationID: hctx.CorrelationID,
 			TaskID:        hctx.TaskID,
@@ -1996,7 +1996,7 @@ func (r *Runner) registerAuditHooks(hooks *coreruntime.HookRegistry, auditLogger
 		return nil
 	})
 
-	hooks.Register(coreruntime.AfterToolExec, func(_ context.Context, hctx *coreruntime.HookContext) error {
+	hooks.Register(coreruntime.AfterToolExec, func(ctxEnd context.Context, hctx *coreruntime.HookContext) error {
 		fields := map[string]any{"tool": hctx.ToolName, "phase": "end"}
 		if hctx.Error != nil {
 			fields["error"] = hctx.Error.Error()
@@ -2013,7 +2013,7 @@ func (r *Runner) registerAuditHooks(hooks *coreruntime.HookRegistry, auditLogger
 			}
 		}
 		ms := hctx.ToolExecDuration.Milliseconds()
-		auditLogger.Emit(coreruntime.AuditEvent{
+		auditLogger.EmitFromContext(ctxEnd, coreruntime.AuditEvent{
 			Event:         coreruntime.AuditToolExec,
 			CorrelationID: hctx.CorrelationID,
 			TaskID:        hctx.TaskID,

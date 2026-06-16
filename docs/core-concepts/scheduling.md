@@ -62,7 +62,7 @@ scheduler:
   backend: auto              # auto (default) | file | kubernetes
   kubernetes:
     namespace: ""            # defaults to the agent pod's own namespace
-    service_url: ""          # in-cluster URL CronJob trigger pods POST to
+    service_url: ""          # in-cluster URL CronJob trigger pods POST to; auto-derived to http://<agent_id>.<namespace>.svc:<port>/ when empty (issue #179)
     allow_dynamic: false     # whether schedule_set can create CronJobs at runtime
     trigger_image: ""        # default: curlimages/curl:8.10.1
     auth_secret_name: ""     # default: <agent_id>-internal-token

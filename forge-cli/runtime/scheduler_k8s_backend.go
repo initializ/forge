@@ -61,8 +61,18 @@ type KubernetesBackend struct {
 // in-cluster service URL.
 type K8sBackendConfig struct {
 	// ServiceURL is the in-cluster URL CronJob trigger pods POST to.
-	// Required.
+	// When empty, the constructor derives the standard in-cluster
+	// Service DNS: http://<agent_id>.<namespace>.svc:<port>/ . This
+	// matches the value the build-time schedule-manifest stage stamps
+	// into generated CronJob YAML (see forge-cli/build/schedule_manifest_stage.go).
+	// Operators set this explicitly when the agent listens on a
+	// non-standard port or sits behind an Ingress / Gateway.
 	ServiceURL string
+	// Port is the port the agent's A2A server listens on; combined
+	// with agent_id and namespace to derive ServiceURL when unset.
+	// Defaults to 8080 when zero (matches the runner's listen-port
+	// default in forge-cli/runtime/runner.go).
+	Port int
 	// AuthSecretName is the K8s Secret containing the internal bearer
 	// token CronJobs mount. Defaults to "<agent_id>-internal-token"
 	// when empty (matches `forge auth secret-yaml`).
@@ -76,6 +86,20 @@ type K8sBackendConfig struct {
 	// clear error explaining the rationale. Sync (declarative) is
 	// always allowed regardless of this flag.
 	AllowDynamic bool
+}
+
+// defaultK8sServiceURL returns the in-cluster Service DNS URL the
+// runtime falls back to when ServiceURL is unset. Mirrors the
+// build-time default in forge-cli/build/schedule_manifest_stage.go so
+// a `forge run` inside a pod without an explicit service_url still
+// dispatches CronJob triggers at the same address `forge package`
+// would have stamped into the generated CronJob YAML. Port defaults
+// to 8080 when port <= 0.
+func defaultK8sServiceURL(agentID, namespace string, port int) string {
+	if port <= 0 {
+		port = 8080
+	}
+	return fmt.Sprintf("http://%s.%s.svc:%d/", agentID, namespace, port)
 }
 
 // NewKubernetesBackend builds a backend wired to an in-cluster
@@ -102,7 +126,7 @@ func NewKubernetesBackend(agentID, namespace string, cfg K8sBackendConfig, logge
 		namespace = "default"
 	}
 	if cfg.ServiceURL == "" {
-		return nil, fmt.Errorf("kubernetes scheduler backend: scheduler.kubernetes.service_url is required")
+		cfg.ServiceURL = defaultK8sServiceURL(agentID, namespace, cfg.Port)
 	}
 	if cfg.AuthSecretName == "" {
 		cfg.AuthSecretName = agentID + "-internal-token"
@@ -126,6 +150,9 @@ func NewKubernetesBackend(agentID, namespace string, cfg K8sBackendConfig, logge
 func NewKubernetesBackendWithClient(client kubernetes.Interface, agentID, namespace string, cfg K8sBackendConfig, logger coreruntime.Logger) *KubernetesBackend {
 	if namespace == "" {
 		namespace = "default"
+	}
+	if cfg.ServiceURL == "" {
+		cfg.ServiceURL = defaultK8sServiceURL(agentID, namespace, cfg.Port)
 	}
 	if cfg.AuthSecretName == "" {
 		cfg.AuthSecretName = agentID + "-internal-token"

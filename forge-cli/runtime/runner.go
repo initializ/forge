@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -2795,6 +2796,30 @@ func (r *Runner) discoverSkillFiles() []string {
 	return matches
 }
 
+// resolveBinarySkillPath looks up the executable for a `runtime: binary`
+// skill entry. The contract: the first entry of the skill's
+// `metadata.forge.requires.bins` is the binary name (e.g. "infil"); the
+// runtime resolves it via `exec.LookPath` against the agent process's
+// PATH. Issue #182.
+//
+// Returning a clear typed error here lets the caller log and skip a
+// single mis-declared skill instead of aborting startup — a missing
+// binary is an operator config issue, not a runtime invariant violation.
+func (r *Runner) resolveBinarySkillPath(entry contract.SkillEntry) (string, error) {
+	if entry.ForgeReqs == nil || len(entry.ForgeReqs.Bins) == 0 {
+		return "", fmt.Errorf("binary skill %q has no metadata.forge.requires.bins entries", entry.Name)
+	}
+	binName := entry.ForgeReqs.Bins[0].Name
+	if binName == "" {
+		return "", fmt.Errorf("binary skill %q: first requires.bins entry has empty name", entry.Name)
+	}
+	resolved, err := exec.LookPath(binName)
+	if err != nil {
+		return "", fmt.Errorf("binary %q not found on PATH: %w", binName, err)
+	}
+	return resolved, nil
+}
+
 // registerSkillTools scans skill files for skill entries that have associated
 // scripts. Each script-backed skill is registered as a first-class tool in the registry.
 func (r *Runner) registerSkillTools(reg *tools.Registry, proxyURL string) {
@@ -2813,29 +2838,22 @@ func (r *Runner) registerSkillTools(reg *tools.Registry, proxyURL string) {
 			skillDirName = filepath.Base(filepath.Dir(match))
 		}
 
+		// Inspect runtime mode from metadata.forge.runtime. Default
+		// "script" (or empty) goes through the materialized-bash-script
+		// path; "binary" execs the first declared `requires.bins` entry
+		// directly. See ForgeSkillMeta.Runtime doc + issue #182.
+		runtimeMode := contract.SkillRuntimeScript
+		if meta != nil && meta.Metadata != nil {
+			if forgeMap, ok := meta.Metadata["forge"]; ok {
+				if raw, ok := forgeMap["runtime"]; ok {
+					if s, ok := raw.(string); ok && s != "" {
+						runtimeMode = s
+					}
+				}
+			}
+		}
+
 		for _, entry := range entries {
-			// Map tool name (underscores) to script name (hyphens)
-			scriptName := strings.ReplaceAll(entry.Name, "_", "-")
-
-			// Look for scripts in subdirectory layout first: skills/{dir}/scripts/{name}.sh
-			// Then fall back to legacy flat layout: skills/scripts/{name}.sh
-			var scriptPath string
-			if skillDirName != "" {
-				candidate := filepath.Join("skills", skillDirName, "scripts", scriptName+".sh")
-				if _, err := os.Stat(filepath.Join(r.cfg.WorkDir, candidate)); err == nil {
-					scriptPath = candidate
-				}
-			}
-			if scriptPath == "" {
-				candidate := filepath.Join("skills", "scripts", scriptName+".sh")
-				if _, err := os.Stat(filepath.Join(r.cfg.WorkDir, candidate)); err == nil {
-					scriptPath = candidate
-				}
-			}
-			if scriptPath == "" {
-				continue // No script file, skip
-			}
-
 			// Extract timeout_hint from metadata
 			timeout := 120 * time.Second
 			if meta != nil && meta.Metadata != nil {
@@ -2871,7 +2889,39 @@ func (r *Runner) registerSkillTools(reg *tools.Registry, proxyURL string) {
 				Model:    modelName,
 			}
 
-			st := tools.NewSkillTool(entry.Name, entry.Description, entry.InputSpec, scriptPath, skillExec)
+			var st *tools.SkillTool
+			switch runtimeMode {
+			case contract.SkillRuntimeBinary:
+				binaryPath, err := r.resolveBinarySkillPath(entry)
+				if err != nil {
+					r.logger.Warn("skipping binary skill: cannot resolve executable", map[string]any{
+						"skill": entry.Name, "error": err.Error(),
+					})
+					continue
+				}
+				st = tools.NewBinarySkillTool(entry.Name, entry.Description, entry.InputSpec, binaryPath, skillExec)
+			default:
+				// "script" (or unrecognized — treat as script for back-compat).
+				scriptName := strings.ReplaceAll(entry.Name, "_", "-")
+				var scriptPath string
+				if skillDirName != "" {
+					candidate := filepath.Join("skills", skillDirName, "scripts", scriptName+".sh")
+					if _, err := os.Stat(filepath.Join(r.cfg.WorkDir, candidate)); err == nil {
+						scriptPath = candidate
+					}
+				}
+				if scriptPath == "" {
+					candidate := filepath.Join("skills", "scripts", scriptName+".sh")
+					if _, err := os.Stat(filepath.Join(r.cfg.WorkDir, candidate)); err == nil {
+						scriptPath = candidate
+					}
+				}
+				if scriptPath == "" {
+					continue // No script file, skip
+				}
+				st = tools.NewSkillTool(entry.Name, entry.Description, entry.InputSpec, scriptPath, skillExec)
+			}
+
 			if err := reg.Register(st); err != nil {
 				r.logger.Warn("failed to register skill tool", map[string]any{
 					"skill": entry.Name, "error": err.Error(),

@@ -49,12 +49,36 @@ type SkillMetadata struct {
 
 // ForgeSkillMeta holds Forge-specific metadata from the "forge" namespace.
 type ForgeSkillMeta struct {
+	// Runtime selects how the skill's tool is executed. Valid values:
+	//
+	//   - "" or "script" (default) — the skill body is materialized as a
+	//     bash script and invoked via `bash <scriptPath> <jsonArgs>`. The
+	//     skill's `## Tool: <name>` entries each look for a matching
+	//     `skills/<dir>/scripts/<name>.sh` or `skills/scripts/<name>.sh`.
+	//   - "binary" — the skill IS an external binary. The first entry of
+	//     `metadata.forge.requires.bins` is the executable name; the runner
+	//     resolves it via `exec.LookPath` and calls it with `<jsonArgs>` as
+	//     the positional argument (same input convention as scripts, so the
+	//     binary's stdin/stdout contract is identical). The skill body is
+	//     documentation only — no script file is materialized.
+	//
+	// Binary skills let an OTel-instrumented child process inherit the
+	// parent agent's `tool.<name>` span via TRACEPARENT env propagation
+	// (issue #182). Wrapping the binary in a bash skill works too, but
+	// adds a fork and a wrapper to maintain.
+	Runtime       string                `yaml:"runtime,omitempty" json:"runtime,omitempty"`
 	Requires      *SkillRequirements    `yaml:"requires,omitempty" json:"requires,omitempty"`
 	EgressDomains []string              `yaml:"egress_domains,omitempty" json:"egress_domains,omitempty"`
 	DeniedTools   []string              `yaml:"denied_tools,omitempty" json:"denied_tools,omitempty"`
 	WorkflowPhase string                `yaml:"workflow_phase,omitempty" json:"workflow_phase,omitempty"`
 	Guardrails    *SkillGuardrailConfig `yaml:"guardrails,omitempty" json:"guardrails,omitempty"`
 }
+
+// Valid Runtime values for ForgeSkillMeta.Runtime.
+const (
+	SkillRuntimeScript = "script" // bash-script execution (default)
+	SkillRuntimeBinary = "binary" // external binary on PATH
+)
 
 // SkillGuardrailConfig declares domain-specific guardrails for a skill.
 type SkillGuardrailConfig struct {

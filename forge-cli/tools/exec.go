@@ -8,8 +8,43 @@ import (
 	"os/exec"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+
 	"github.com/initializ/forge/forge-core/llm/oauth"
 )
+
+// otelEnvPassthroughPrefixes lists the OTel SDK env var prefixes / names
+// the skill subprocess inherits unchanged from the parent process. This is
+// the curated subset that affects exporter destination + sampling +
+// service identity — knobs the child needs to keep its spans landing in
+// the same backend the agent's spans land in.
+//
+// Deliberately excluded:
+//
+//   - OTEL_EXPORTER_OTLP_HEADERS / OTEL_EXPORTER_OTLP_TRACES_HEADERS —
+//     can carry collector auth tokens; treating them like API keys means
+//     they go through the same skill-declared env.optional path every
+//     other secret does. Operators who need a shared collector header on
+//     the child declare it explicitly.
+//   - Anything OTEL_LOG_* / OTEL_BSP_* / OTEL_BLRP_* — span-batch tuning
+//     that's process-local; no value crossing the fork.
+//
+// Issue #182.
+var otelEnvPassthroughPrefixes = []string{
+	"OTEL_EXPORTER_OTLP_ENDPOINT",
+	"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+	"OTEL_EXPORTER_OTLP_PROTOCOL",
+	"OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+	"OTEL_EXPORTER_OTLP_INSECURE",
+	"OTEL_EXPORTER_OTLP_TRACES_INSECURE",
+	"OTEL_SERVICE_NAME",
+	"OTEL_RESOURCE_ATTRIBUTES",
+	"OTEL_TRACES_SAMPLER",
+	"OTEL_TRACES_SAMPLER_ARG",
+	"OTEL_PROPAGATORS",
+	"OTEL_SDK_DISABLED",
+}
 
 // OSCommandExecutor implements tools.CommandExecutor using os/exec.
 type OSCommandExecutor struct{}
@@ -116,6 +151,36 @@ func (e *SkillCommandExecutor) Run(ctx context.Context, command string, args []s
 			"http_proxy="+e.ProxyURL,
 			"https_proxy="+e.ProxyURL,
 		)
+	}
+	// Issue #182 — propagate W3C trace context + curated OTel SDK env
+	// vars so the subprocess's spans nest under the parent agent's
+	// `tool.<name>` span. Without this the child starts a fresh root
+	// trace and disappears from the agent's call tree.
+	//
+	// The global propagator was installed at runtime startup
+	// (forge-core/runtime/tracing.go) with TraceContext + Baggage. When
+	// tracing is off the propagator is a no-op composite and Inject
+	// writes nothing — the child sees no TRACEPARENT env and behaves
+	// identically to pre-#182.
+	carrier := propagation.MapCarrier{}
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+	for _, k := range []struct{ header, envKey string }{
+		{"traceparent", "TRACEPARENT"},
+		{"tracestate", "TRACESTATE"},
+		{"baggage", "BAGGAGE"},
+	} {
+		if v := carrier.Get(k.header); v != "" {
+			env = append(env, k.envKey+"="+v)
+		}
+	}
+	// OTel SDK config — endpoint, protocol, samplers, service name —
+	// pass through unchanged so the child exports to the same backend
+	// with consistent sampling. See otelEnvPassthroughPrefixes for the
+	// curated allowlist and the deliberate exclusions.
+	for _, name := range otelEnvPassthroughPrefixes {
+		if v := os.Getenv(name); v != "" {
+			env = append(env, name+"="+v)
+		}
 	}
 	cmd.Env = env
 

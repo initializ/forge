@@ -3,8 +3,14 @@ package tools
 import (
 	"context"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func TestSkillCommandExecutor_OrgIDInjection(t *testing.T) {
@@ -112,6 +118,130 @@ func TestSkillCommandExecutor_ProviderBaseURLs_NotEmittedWhenUnset(t *testing.T)
 				t.Errorf("unset provider base URL %s leaked into subprocess env as %q",
 					forbidden, line)
 			}
+		}
+	}
+}
+
+// traceparentRE matches the W3C traceparent header format:
+// "<version>-<32hex traceid>-<16hex spanid>-<2hex flags>".
+var traceparentRE = regexp.MustCompile(`^TRACEPARENT=00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$`)
+
+// installTestPropagator wires the global propagator + a tracer provider
+// the test owns. Returns the tracer so callers can open a span on ctx.
+// Issue #182 — the production install lives in
+// forge-core/runtime/tracing.go but this package's tests can't take a
+// dep on that file (cycle); duplicating the propagator install here is
+// the minimum needed to exercise propagation.MapCarrier.Inject.
+func installTestPropagator(t *testing.T) {
+	t.Helper()
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	))
+}
+
+// TestSkillCommandExecutor_TraceparentInjectedWhenCtxHasSpan is the
+// issue #182 pin: when the parent agent has opened a `tool.<name>`
+// span and passes ctx into SkillCommandExecutor.Run, the subprocess
+// MUST receive a TRACEPARENT env var whose trace-id matches the
+// parent span's trace-id. Without this the child's spans start a
+// fresh root and disappear from the agent's call tree.
+func TestSkillCommandExecutor_TraceparentInjectedWhenCtxHasSpan(t *testing.T) {
+	installTestPropagator(t)
+	rec := tracetest.NewSpanRecorder()
+	tp := trace.NewTracerProvider(trace.WithSpanProcessor(rec))
+	tracer := tp.Tracer("test")
+	ctx, span := tracer.Start(context.Background(), "tool.test_skill")
+	defer span.End()
+
+	e := &SkillCommandExecutor{}
+	out, err := e.Run(ctx, "env", nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var found string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "TRACEPARENT=") {
+			found = line
+			break
+		}
+	}
+	if found == "" {
+		t.Fatalf("subprocess env missing TRACEPARENT line; got:\n%s", out)
+	}
+	if !traceparentRE.MatchString(found) {
+		t.Errorf("TRACEPARENT not W3C-shaped: %q", found)
+	}
+	// The injected trace-id MUST be the parent span's trace-id.
+	wantTrace := span.SpanContext().TraceID().String()
+	if !strings.Contains(found, wantTrace) {
+		t.Errorf("TRACEPARENT carries wrong trace-id: got %q, want trace-id %s",
+			found, wantTrace)
+	}
+}
+
+// TestSkillCommandExecutor_TraceparentAbsentWhenNoSpan confirms the
+// no-tracing case: when ctx carries no active span, the subprocess
+// env gains no TRACEPARENT line. Pre-#182 deployments that don't
+// enable tracing must see byte-identical pre-fix env.
+func TestSkillCommandExecutor_TraceparentAbsentWhenNoSpan(t *testing.T) {
+	installTestPropagator(t)
+	e := &SkillCommandExecutor{}
+	out, err := e.Run(context.Background(), "env", nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "TRACEPARENT=") {
+			t.Errorf("TRACEPARENT leaked into subprocess env when ctx had no span: %q", line)
+		}
+	}
+}
+
+// TestSkillCommandExecutor_OTelSubsetPassedThrough pins the curated
+// allowlist: standard OTel SDK config (endpoint, protocol, service
+// name, samplers, resource attrs, propagators) flows to the
+// subprocess so the child exports to the same collector with
+// matching sampling. Pinned alongside the explicit exclusion of
+// OTEL_EXPORTER_OTLP_HEADERS — collector auth headers must NOT leak
+// through the blanket allowlist; operators who need them on the
+// child declare them via env.optional like every other secret.
+func TestSkillCommandExecutor_OTelSubsetPassedThrough(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector.observability:4318")
+	t.Setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
+	t.Setenv("OTEL_SERVICE_NAME", "forge-agent")
+	t.Setenv("OTEL_TRACES_SAMPLER", "parentbased_traceidratio")
+	t.Setenv("OTEL_TRACES_SAMPLER_ARG", "0.1")
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "deployment.environment=prod")
+	t.Setenv("OTEL_PROPAGATORS", "tracecontext,baggage")
+	// Auth-bearing var that MUST NOT pass through.
+	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "authorization=Bearer secret-collector-token")
+
+	e := &SkillCommandExecutor{}
+	out, err := e.Run(context.Background(), "env", nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mustHave := []string{
+		"OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector.observability:4318",
+		"OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf",
+		"OTEL_SERVICE_NAME=forge-agent",
+		"OTEL_TRACES_SAMPLER=parentbased_traceidratio",
+		"OTEL_TRACES_SAMPLER_ARG=0.1",
+		"OTEL_RESOURCE_ATTRIBUTES=deployment.environment=prod",
+		"OTEL_PROPAGATORS=tracecontext,baggage",
+	}
+	for _, want := range mustHave {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected OTel passthrough %q in subprocess env; got:\n%s", want, out)
+		}
+	}
+	// Security pin: collector auth headers must NOT leak.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "OTEL_EXPORTER_OTLP_HEADERS=") {
+			t.Errorf("OTEL_EXPORTER_OTLP_HEADERS leaked into subprocess env (carries auth tokens): %q", line)
 		}
 	}
 }

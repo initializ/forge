@@ -7,25 +7,57 @@ import (
 	"strings"
 )
 
-// SkillTool wraps a parsed skill entry as a Tool.
-// It delegates execution to a CommandExecutor, running the skill's script
-// with JSON input as a positional argument.
+// SkillTool wraps a parsed skill entry as a Tool. Execution shape is
+// pinned at construction time via NewSkillTool (bash + script path) or
+// NewBinarySkillTool (external executable). Both pass the JSON input
+// as a single positional argument so script-side and binary-side share
+// the same `argv[1] == JSON` contract.
 type SkillTool struct {
 	name        string
 	description string
 	schema      json.RawMessage
-	scriptPath  string
-	executor    CommandExecutor
+	// command is the executable handed to CommandExecutor.Run — "bash"
+	// for script-backed skills, the resolved binary path for binary
+	// skills.
+	command string
+	// argsPrefix is everything before the JSON-args positional. For
+	// scripts: [scriptPath] (so the final argv is [bash, scriptPath, json]).
+	// For binaries: nil (so the final argv is [binary, json]).
+	argsPrefix []string
+	executor   CommandExecutor
 }
 
-// NewSkillTool creates a tool wrapper for a skill entry backed by a shell script.
+// NewSkillTool creates a tool wrapper for a skill backed by a shell
+// script. The compiled `command` is `bash`; argv is
+// `[bash <scriptPath> <jsonArgs>]`.
 func NewSkillTool(name, description, inputSpec, scriptPath string, executor CommandExecutor) *SkillTool {
-	schema := InputSpecToSchema(inputSpec)
 	return &SkillTool{
 		name:        name,
 		description: description,
-		schema:      schema,
-		scriptPath:  scriptPath,
+		schema:      InputSpecToSchema(inputSpec),
+		command:     "bash",
+		argsPrefix:  []string{scriptPath},
+		executor:    executor,
+	}
+}
+
+// NewBinarySkillTool creates a tool wrapper for a skill backed by an
+// external binary. The compiled `command` is the binary path (typically
+// resolved via `exec.LookPath` by the caller); argv is
+// `[<binary> <jsonArgs>]`. The CommandExecutor's trace-context env
+// injection (issue #182) lets the binary's own spans nest under the
+// parent agent's `tool.<name>` span via TRACEPARENT.
+//
+// Use this when the skill IS the binary — infil, an LLM CLI, a Python
+// or Go executable. Use NewSkillTool when the skill body is bash and
+// gets materialized into a script file at agent startup.
+func NewBinarySkillTool(name, description, inputSpec, binaryPath string, executor CommandExecutor) *SkillTool {
+	return &SkillTool{
+		name:        name,
+		description: description,
+		schema:      InputSpecToSchema(inputSpec),
+		command:     binaryPath,
+		argsPrefix:  nil,
 		executor:    executor,
 	}
 }
@@ -39,9 +71,14 @@ func (t *SkillTool) Execute(ctx context.Context, args json.RawMessage) (string, 
 	if t.executor == nil {
 		return "", fmt.Errorf("skill tool %q: no command executor configured", t.name)
 	}
-	// Pass JSON as a positional argument to the script (not stdin).
-	// Skill scripts read input via $1, e.g.: INPUT="${1:-}"
-	return t.executor.Run(ctx, "bash", []string{t.scriptPath, string(args)}, nil)
+	// argv = command + argsPrefix + [JSON]. The JSON is always the last
+	// positional so skill scripts read it via $1 (after the script path
+	// position) and binaries read it via $1 (no path prefix). Identical
+	// stdin/stdout contract either way.
+	finalArgs := make([]string, 0, len(t.argsPrefix)+1)
+	finalArgs = append(finalArgs, t.argsPrefix...)
+	finalArgs = append(finalArgs, string(args))
+	return t.executor.Run(ctx, t.command, finalArgs, nil)
 }
 
 // InputSpecToSchema converts a skill InputSpec string (e.g. "input (string), model (string)")

@@ -64,6 +64,28 @@ The `metadata.forge.requires` block declares runtime dependencies:
 - **`env.one_of`** — At least one of these environment variables must be set
 - **`env.optional`** — Optional environment variables for extended functionality
 
+The `metadata.forge.runtime` field selects how the skill's tool is executed (issue #182):
+
+| Value | Behavior |
+|---|---|
+| `script` (default; empty = `script`) | Skill body is materialized as a bash script at `skills/<dir>/scripts/<tool>.sh` and invoked as `bash <scriptPath> <jsonArgs>`. |
+| `binary` | The first `metadata.forge.requires.bins` entry IS the executable. The runtime resolves it via `exec.LookPath` and invokes `<binary> <jsonArgs>` directly — no bash fork, no script file required. Skill body is documentation only. |
+
+```yaml
+# Binary skill — wraps the `infil` binary directly. OTel-instrumented
+# binaries inherit the parent agent's `tool.<name>` span via TRACEPARENT
+# env (see observability-tracing.md § Subprocess propagation).
+metadata:
+  forge:
+    runtime: binary
+    requires:
+      bins:
+        - name: infil
+          version: ">=0.4.0"
+```
+
+Both runtimes receive the same env passthrough (skill-declared `env.optional`, provider base URLs, `TRACEPARENT` + curated `OTEL_*` for tracing) — the binary path just removes the wrapper hop.
+
 Frontmatter is parsed by `ParseWithMetadata()` in `forge-skills/parser/parser.go` and feeds into the compilation pipeline.
 
 ### Legacy List Format

@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Added
+
+- **Subprocess W3C trace-context propagation + binary-runtime skills (issue
+  #182).** Skill / tool subprocesses now receive `TRACEPARENT`,
+  `TRACESTATE`, and `BAGGAGE` env vars derived from the parent agent's
+  active span, plus a curated `OTEL_*` SDK config subset so the child
+  exports to the same collector with consistent sampling. OTel-instrumented
+  binaries (infil, an LLM CLI, a Python service) now nest their spans
+  under the agent's `tool.<name>` span instead of starting a fresh root.
+  `OTEL_EXPORTER_OTLP_HEADERS` is deliberately excluded from the
+  passthrough — collector auth tokens are treated as secrets and must be
+  declared via SKILL.md `env.optional` like every other credential.
+  - Adds `metadata.forge.runtime: binary` to the SKILL.md schema. Binary
+    skills exec the first `metadata.forge.requires.bins` entry directly
+    (resolved via `exec.LookPath`) — no bash fork, no script file
+    required. `runtime: script` (or empty) keeps the legacy
+    materialized-bash-script path. Pinned by
+    `TestSkillCommandExecutor_TraceparentInjectedWhenCtxHasSpan`,
+    `TestSkillCommandExecutor_TraceparentAbsentWhenNoSpan`,
+    `TestSkillCommandExecutor_OTelSubsetPassedThrough`,
+    `TestNewBinarySkillTool_RunsBinaryDirectly`.
+  - When tracing is off the global propagator is a no-op composite —
+    subprocess env is byte-identical to pre-#182 deploys.
+
 ### Fixed
 
 - **K8s scheduler backend no longer hard-errors when `scheduler.kubernetes.service_url`

@@ -12,7 +12,7 @@ require (
 	github.com/initializ/forge/forge-ui v0.0.0
 	github.com/initializ/guardrails v0.12.0
 	github.com/spf13/cobra v1.10.2
-	go.mongodb.org/mongo-driver v1.17.3
+	go.mongodb.org/mongo-driver v1.17.7
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/sdk v1.44.0
 	go.opentelemetry.io/otel/trace v1.44.0

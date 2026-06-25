@@ -172,6 +172,42 @@ See [Skill Builder LLM](../ui/skill-builder-llm.md) for the full configuration r
 6. **Save** — writes `skills/{name}/SKILL.md` and `skills/{name}/scripts/` to the agent directory, merges egress domains into `forge.yaml`, and writes env vars to `.env`
 7. **Configure** — if the skill requires env vars that aren't set, the UI shows input fields to provide them and re-save
 
+### Editing an Attached Skill
+
+The Skill Builder also supports iterating on an already-attached custom
+skill — created either by the builder or by hand. Real-world bugs in a
+skill (wrong input schema, missing egress, brittle error handling) only
+surface once the LLM actually calls the tool inside the agent loop, so
+the create → test → fix loop needs a first-class edit path.
+
+| Step | What happens |
+|------|--------------|
+| 1. Open the Skill Builder for an agent that already has custom skills | A **Skills attached to this agent** panel lists each `skills/<name>/SKILL.md` (subdir form) and `skills/<name>.md` (flat form) discovered on disk. |
+| 2. Click **Edit** on one of them | The skill's current SKILL.md and helper scripts load into the editor; the chat is seeded with a system message naming the skill; the header shows an **Editing** banner with the skill name. |
+| 3. Describe the change in chat | The chat call passes `mode: "edit"` and `editing_name`. The server reloads the on-disk SKILL.md itself (single source of truth) and primes the LLM with an `## Edit Mode` trailer that instructs it to preserve existing `## Tool: <name>` headings, default to minimal patches, and end with a `**Changed:**` summary. |
+| 4. Click **Preview changes** | A Monaco side-by-side diff modal shows the editor state vs the on-disk baseline. Tabs cover SKILL.md plus every script that appears in either side — scripts present only in the new state are tagged `new`, scripts present only in the old state are tagged `removed`. |
+| 5. Click **Confirm save** | The save call sets `overwrite: true` and `editing_name` matching `skill_name`. The validator suppresses the duplicate-name warning (the skill IS the one being edited). The forge-cli writer wipes `skills/<name>/scripts/` before re-writing the script set so any dropped scripts disappear from disk — they would otherwise linger and the runtime would keep discovering them. |
+| 6. Restart prompt | After a successful edit-mode save, a banner offers a **Restart agent** action. The running agent's tool registry is frozen at startup, so a restart is the safe way to pick up the edited SKILL.md and scripts. (The watcher reloads the agent card on file changes, but not the live tool registry — see the [hot-reload note](#hot-reload-note) below.) |
+| 7. Click **New skill** to reset | Clears editor state and the chat, drops back into create mode so the next message starts a fresh skill. |
+
+#### Renaming a skill
+
+The frontmatter `name:` field IS the on-disk identifier and the tool
+name the LLM dispatches against — renaming it is a breaking change for
+any agent already wired to the existing tool. The validator surfaces a
+warning when the editor `name:` differs from the skill being edited.
+Save in that case writes a NEW skill directory under the new name and
+leaves the old directory in place; nothing is renamed in-place. Manual
+cleanup of the old directory is required.
+
+#### Hot-reload note
+
+The dashboard's file watcher reloads the agent card on SKILL.md
+changes, but the agent runtime's tool registry is captured once at
+startup and not live-mutated. Restart the agent (the banner that
+appears after save does this for you) to make edited skills callable
+in the running session.
+
 ### Validation Rules
 
 The validator enforces the [SKILL.md format](../core-concepts/skill-md-format.md):
@@ -194,9 +230,11 @@ The validator enforces the [SKILL.md format](../core-concepts/skill-md-format.md
 | `GET` | `/api/skill-builder/provider` | Returns the resolved workspace-level LLM (provider, model, `source`, `has_key`, deprecation `warning`). Use this for first-run detection before any agent is picked. |
 | `GET` | `/api/agents/{id}/skill-builder/provider` | Same shape as above, but consults the agent-fallback tier when no workspace/user config exists. |
 | `GET` | `/api/agents/{id}/skill-builder/context` | Returns the system prompt used for skill generation |
-| `POST` | `/api/agents/{id}/skill-builder/chat` | Streams an LLM conversation via SSE (accepts `messages` array). Returns `400` when the workspace LLM is `unset` or has no resolvable API key. |
-| `POST` | `/api/agents/{id}/skill-builder/validate` | Validates a SKILL.md and optional scripts |
-| `POST` | `/api/agents/{id}/skill-builder/save` | Saves a validated skill to `skills/{name}/`, merges egress domains, writes env vars; returns `SkillSaveResult` with `path`, `egress_added`, `env_configured`, `env_missing` |
+| `POST` | `/api/agents/{id}/skill-builder/chat` | Streams an LLM conversation via SSE. Accepts `messages` array; in edit mode also pass `mode: "edit"` and `editing_name` so the server loads the on-disk skill and primes an `## Edit Mode` system-prompt trailer. Returns `400` when the workspace LLM is `unset` or has no resolvable API key. |
+| `POST` | `/api/agents/{id}/skill-builder/validate` | Validates a SKILL.md and optional scripts. In edit mode pass `mode: "edit"` and `editing_name` to suppress the duplicate-name warning for the skill being edited. |
+| `POST` | `/api/agents/{id}/skill-builder/save` | Saves a validated skill to `skills/{name}/`, merges egress domains, writes env vars; returns `SkillSaveResult` with `path`, `egress_added`, `env_configured`, `env_missing`. In edit mode pass `overwrite: true` and `editing_name` matching `skill_name` to rewrite the existing directory and clear stale scripts. |
+| `GET` | `/api/agents/{id}/skill-builder/skills` | Lists custom skills attached to the agent (project-local SKILL.md files under `skills/`). Distinct from `/api/skills` which returns registry/embedded skills. Returns `[]CustomSkillSummary` with `name`, `description`, `category`, `tags`, `path`, `has_scripts`, `tools`. |
+| `GET` | `/api/agents/{id}/skill-builder/skills/{name}` | Loads one custom skill's SKILL.md plus any helper scripts so the builder can populate the editor. Returns `CustomSkillContent` with `skill_md`, `scripts` (basename → content), `format` (`subdir`\|`flat`). Rejects invalid names (path traversal, non-kebab-case) with `400`; returns `404` when the skill doesn't exist. |
 | `GET` | `/api/settings/skill-builder` | Returns the workspace-level config + metadata for the Settings modal (`source`, `has_key`, `providers` list). The API key value is never echoed back. |
 | `PUT` | `/api/settings/skill-builder` | Persists `provider`, `model`, optional `base_url`, optional `api_key_env` to `<workspace>/.forge/ui.yaml`. When an optional `api_key` field is present in the body, writes it to `<workspace>/.forge/.env` (mode `0600`) under `api_key_env` (or the provider default). The key value never leaks to `ui.yaml`. Submit an empty / omitted `api_key` to leave the saved value untouched. |
 

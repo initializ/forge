@@ -18,7 +18,15 @@ var (
 )
 
 // validateSkillMD validates SKILL.md content and optional scripts.
-func validateSkillMD(content string, scripts map[string]string, agentDir string) SkillValidationResult {
+//
+// editingName, when non-empty, suppresses the "already exists" warning
+// for the skill being edited so the operator doesn't see a spurious
+// duplicate-name nag every time they Save in the Skill Builder edit
+// flow (issue #193). A rename (editor name ≠ editingName) still emits
+// the warning because the user IS introducing a new skill with the
+// existing one's name and that's the breaking-change case we want to
+// flag. Pass "" for the create flow.
+func validateSkillMD(content string, scripts map[string]string, agentDir, editingName string) SkillValidationResult {
 	var result SkillValidationResult
 	result.Valid = true
 
@@ -115,8 +123,10 @@ func validateSkillMD(content string, scripts map[string]string, agentDir string)
 		}
 	}
 
-	// Name uniqueness
-	if meta != nil && meta.Name != "" && agentDir != "" {
+	// Name uniqueness. Skipped when editingName matches the
+	// frontmatter name — that's the "saving over the skill currently
+	// being edited" case and the warning would be noise (issue #193).
+	if meta != nil && meta.Name != "" && agentDir != "" && meta.Name != editingName {
 		skillDir := filepath.Join(agentDir, "skills", meta.Name)
 		if _, err := os.Stat(skillDir); err == nil {
 			result.Warnings = append(result.Warnings, ValidationError{

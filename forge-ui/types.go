@@ -114,12 +114,22 @@ type LLMStreamOptions struct {
 type LLMStreamFunc func(ctx context.Context, opts LLMStreamOptions) error
 
 // SkillSaveOptions configures saving a skill to an agent's skills directory.
+//
+// Overwrite=true with EditingName matching SkillName is the edit-mode
+// path (issue #193). The forge-cli implementation MUST honor this: on
+// overwrite it should remove the existing scripts/ directory before
+// writing the new script set, so scripts dropped during the edit don't
+// linger. Overwrite without an EditingName match — i.e. trying to
+// overwrite a different skill — is rejected by the handler before the
+// SkillSaveFunc is called.
 type SkillSaveOptions struct {
-	AgentDir  string
-	SkillName string
-	SkillMD   string
-	Scripts   map[string]string
-	EnvVars   map[string]string // env vars to write to .env
+	AgentDir    string
+	SkillName   string
+	SkillMD     string
+	Scripts     map[string]string
+	EnvVars     map[string]string // env vars to write to .env
+	Overwrite   bool
+	EditingName string
 }
 
 // SkillSaveResult holds the result of saving a skill, including env/egress changes.
@@ -141,22 +151,75 @@ type SkillEnvEntry struct {
 type SkillSaveFunc func(opts SkillSaveOptions) (*SkillSaveResult, error)
 
 // SkillBuilderChatRequest is the POST body for the skill builder chat endpoint.
+//
+// Mode selects between "create" (default) and "edit". In edit mode the
+// handler loads the skill named by EditingName from disk and primes the
+// system prompt with its current SKILL.md + scripts so the LLM is grounded
+// on the existing state. See issue #193.
 type SkillBuilderChatRequest struct {
-	Messages []SkillBuilderMessage `json:"messages"`
+	Messages    []SkillBuilderMessage `json:"messages"`
+	Mode        string                `json:"mode,omitempty"`
+	EditingName string                `json:"editing_name,omitempty"`
 }
 
 // SkillBuilderValidateRequest is the POST body for skill validation.
+//
+// When Mode == "edit" and EditingName matches the skill name in the
+// frontmatter, the "already exists" warning is suppressed — the
+// skill IS the one being edited. A rename (EditingName != frontmatter
+// name) still surfaces the warning so the user sees the breaking-change
+// risk.
 type SkillBuilderValidateRequest struct {
-	SkillMD string            `json:"skill_md"`
-	Scripts map[string]string `json:"scripts,omitempty"`
+	SkillMD     string            `json:"skill_md"`
+	Scripts     map[string]string `json:"scripts,omitempty"`
+	Mode        string            `json:"mode,omitempty"`
+	EditingName string            `json:"editing_name,omitempty"`
 }
 
 // SkillBuilderSaveRequest is the POST body for saving a skill.
+//
+// Overwrite=true with EditingName matching SkillName allows rewriting the
+// existing skill directory in place (issue #193 — edit-mode iteration).
+// Stale scripts in the existing scripts/ dir are removed before the new
+// set is written so dropped scripts don't linger. Overwriting any OTHER
+// skill's directory is denied as defense in depth.
 type SkillBuilderSaveRequest struct {
-	SkillName string            `json:"skill_name"`
-	SkillMD   string            `json:"skill_md"`
-	Scripts   map[string]string `json:"scripts,omitempty"`
-	EnvVars   map[string]string `json:"env_vars,omitempty"`
+	SkillName   string            `json:"skill_name"`
+	SkillMD     string            `json:"skill_md"`
+	Scripts     map[string]string `json:"scripts,omitempty"`
+	EnvVars     map[string]string `json:"env_vars,omitempty"`
+	Overwrite   bool              `json:"overwrite,omitempty"`
+	EditingName string            `json:"editing_name,omitempty"`
+}
+
+// CustomSkillSummary describes one project-local skill discovered under
+// the agent's skills/ directory (issue #193). Distinct from
+// SkillBrowserEntry, which describes registry/embedded skills the user
+// can add to a new agent — this type only covers skills already attached
+// to the agent on disk.
+type CustomSkillSummary struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Category    string   `json:"category,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+	Path        string   `json:"path"`
+	HasScripts  bool     `json:"has_scripts"`
+	Tools       []string `json:"tools,omitempty"`
+}
+
+// CustomSkillContent is the full payload for one custom skill — its
+// SKILL.md body plus any helper scripts under skills/<name>/scripts/.
+// Used by the Skill Builder edit flow to populate the editor (issue #193).
+//
+// Format is "subdir" when the skill lives at skills/<name>/SKILL.md (the
+// common case, where helper scripts live next to it), or "flat" when it's
+// a single-file skills/<name>.md (no scripts directory).
+type CustomSkillContent struct {
+	Name    string            `json:"name"`
+	SkillMD string            `json:"skill_md"`
+	Scripts map[string]string `json:"scripts,omitempty"`
+	Path    string            `json:"path"`
+	Format  string            `json:"format"`
 }
 
 // SkillValidationResult holds the result of validating a SKILL.md.

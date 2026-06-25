@@ -1,6 +1,8 @@
 package forgeui
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -33,7 +35,7 @@ A test tool.
 **Output:** JSON results
 `
 
-	result := validateSkillMD(content, nil, "")
+	result := validateSkillMD(content, nil, "", "")
 	if !result.Valid {
 		t.Errorf("expected valid, got errors: %v", result.Errors)
 	}
@@ -47,7 +49,7 @@ func TestValidateSkillMDMissingFrontmatter(t *testing.T) {
 A test tool.
 `
 
-	result := validateSkillMD(content, nil, "")
+	result := validateSkillMD(content, nil, "", "")
 	if result.Valid {
 		t.Error("expected invalid for missing frontmatter")
 	}
@@ -71,7 +73,7 @@ description: A test skill
 # My Skill
 `
 
-	result := validateSkillMD(content, nil, "")
+	result := validateSkillMD(content, nil, "", "")
 	if result.Valid {
 		t.Error("expected invalid for missing name")
 	}
@@ -104,7 +106,7 @@ func TestValidateSkillMDInvalidNameFormat(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			content := "---\nname: " + tt.input + "\ndescription: test\n---\n# Test\n"
-			result := validateSkillMD(content, nil, "")
+			result := validateSkillMD(content, nil, "", "")
 			if tt.wantErr && result.Valid {
 				t.Errorf("expected invalid for name %q", tt.input)
 			}
@@ -123,7 +125,7 @@ name: my-skill
 # My Skill
 `
 
-	result := validateSkillMD(content, nil, "")
+	result := validateSkillMD(content, nil, "", "")
 	if result.Valid {
 		t.Error("expected invalid for missing description")
 	}
@@ -150,7 +152,7 @@ description: A test skill
 Just some text, no tools.
 `
 
-	result := validateSkillMD(content, nil, "")
+	result := validateSkillMD(content, nil, "", "")
 	if !result.Valid {
 		t.Errorf("should be valid (missing tools is warning, not error)")
 	}
@@ -269,7 +271,7 @@ A test tool.
 		"fetch.sh": `curl https://api.example.com/data`,
 	}
 
-	result := validateSkillMD(content, scripts, "")
+	result := validateSkillMD(content, scripts, "", "")
 	if !result.Valid {
 		t.Error("should be valid")
 	}
@@ -282,6 +284,66 @@ A test tool.
 	}
 	if !found {
 		t.Error("expected egress_domains warning for undeclared domain in scripts")
+	}
+}
+
+// TestValidateSkillMD_DuplicateNameSuppression pins the issue #193
+// behavior: in edit mode the duplicate-name warning is suppressed for
+// the skill being edited (every save would otherwise nag), but a
+// rename — frontmatter name ≠ editingName — still emits the warning
+// because the user IS introducing a new skill colliding with an
+// existing directory.
+func TestValidateSkillMD_DuplicateNameSuppression(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "skills", "existing-skill"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	content := `---
+name: existing-skill
+description: An existing skill being edited
+---
+
+# Existing
+
+## Tool: do_thing
+
+A tool.
+`
+
+	// editingName == frontmatter name → warning suppressed.
+	res := validateSkillMD(content, nil, root, "existing-skill")
+	if !res.Valid {
+		t.Fatalf("expected valid, got errors: %v", res.Errors)
+	}
+	for _, w := range res.Warnings {
+		if w.Field == "name" {
+			t.Errorf("expected no name warning in edit-self mode; got: %+v", w)
+		}
+	}
+
+	// editingName == "" (create mode) → warning fires.
+	res = validateSkillMD(content, nil, root, "")
+	foundCreate := false
+	for _, w := range res.Warnings {
+		if w.Field == "name" {
+			foundCreate = true
+		}
+	}
+	if !foundCreate {
+		t.Errorf("expected name warning in create mode for colliding skill name")
+	}
+
+	// editingName != frontmatter name (rename case) → warning fires.
+	res = validateSkillMD(content, nil, root, "different-skill")
+	foundRename := false
+	for _, w := range res.Warnings {
+		if w.Field == "name" {
+			foundRename = true
+		}
+	}
+	if !foundRename {
+		t.Errorf("expected name warning on rename — editing 'different-skill' but content says 'existing-skill'")
 	}
 }
 

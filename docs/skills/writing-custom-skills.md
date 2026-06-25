@@ -112,6 +112,38 @@ Additionally, skill `Description()` methods and system prompt catalog entries us
 
 For full details on guardrail types, pattern syntax, and runtime behavior, see [Content Guardrails — Skill Guardrails](../security/guardrails.md#skill-guardrails).
 
+## Iterating from the Skill Builder UI
+
+Custom skills can be authored AND iterated on from the dashboard's
+[Skill Builder](../reference/web-dashboard.md#skill-builder). After a
+skill is saved and attached, real-world bugs surface only when the LLM
+actually calls the tool inside the agent loop — wrong input schema,
+brittle error handling, undeclared egress. The builder's **edit mode**
+closes the loop:
+
+1. Open the Skill Builder for the agent.
+2. The **Skills attached to this agent** panel lists your custom skills.
+3. Click **Edit** on a skill — its current SKILL.md and helper scripts
+   load into the Monaco editor and the chat is primed with the existing
+   content so the LLM can patch it intelligently.
+4. Describe the change in chat. The LLM is instructed to preserve
+   existing `## Tool: <name>` headings (renaming breaks any agent already
+   wired to that tool) and emit a `**Changed:**` summary.
+5. Click **Preview changes** for a side-by-side diff before saving.
+6. **Confirm save** overwrites the existing skill directory in place.
+   Helper scripts dropped from the new SKILL.md are removed from disk so
+   the runtime stops discovering them.
+7. **Restart agent** when prompted so the running agent picks up the
+   changes — the live tool registry is captured at startup and the
+   watcher refreshes the agent card, not the registry.
+
+Hand-editing `skills/<name>/SKILL.md` on disk still works for power
+users and remains supported. The builder's edit mode is a strict
+addition — no migration required for existing skills.
+
+See [Web Dashboard › Editing an Attached Skill](../reference/web-dashboard.md#editing-an-attached-skill)
+for the full UX walkthrough and API endpoints.
+
 ## Skill Instructions in System Prompt
 
 Forge injects the **full body** of each skill's SKILL.md into the LLM system prompt. This means all detailed operational instructions — triage steps, detection heuristics, output structure, safety constraints — are directly available in the LLM's context without requiring an extra `read_skill` tool call.

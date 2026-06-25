@@ -167,6 +167,16 @@ func runRun(cmd *cobra.Command, args []string) error {
 		auditExport.WriteTimeout = runAuditWriteTimeout
 	}
 
+	// Resolve audit payload-capture config (issue #163). Start with
+	// env-derived defaults (FORGE_AUDIT_CAPTURE_*, Redact=true) and
+	// layer the forge.yaml `audit.capture` block on top — yaml wins
+	// over env, env wins over the safe default. Empty after the merge
+	// means metadata-only (the pre-#163 behavior).
+	auditCapture := runtime.ResolveAuditPayloadCapture(
+		coreruntime.AuditPayloadCaptureFromEnv(),
+		cfg.Audit.Capture,
+	)
+
 	// FWS-10 — assemble the CLI-side rate-limit override. Only
 	// explicitly-set flags propagate; everything else stays nil so
 	// the resolver falls through to env → yaml → defaults.
@@ -179,27 +189,28 @@ func runRun(cmd *cobra.Command, args []string) error {
 	tracingFlags := buildTracingFlags(cmd)
 
 	runner, err := runtime.NewRunner(runtime.RunnerConfig{
-		Config:            cfg,
-		WorkDir:           workDir,
-		Port:              runPort,
-		Host:              runHost,
-		ShutdownTimeout:   runShutdownTimeout,
-		MockTools:         runMockTools,
-		EnforceGuardrails: enforceGuardrails,
-		ModelOverride:     runModel,
-		ProviderOverride:  runProvider,
-		EnvFilePath:       resolveEnvPath(workDir, runEnvFile),
-		Verbose:           verbose,
-		Channels:          activeChannels,
-		NoAuth:            runNoAuth,
-		AuthToken:         runAuthToken,
-		AuthURL:           runAuthURL,
-		AuthOrgID:         runAuthOrgID,
-		CORSOrigins:       corsOrigins,
-		AuditExport:       auditExport,
-		RateLimitOverride: rateLimitOverride,
-		TracingFlags:      tracingFlags,
-		RuntimeVersion:    appVersion,
+		Config:              cfg,
+		WorkDir:             workDir,
+		Port:                runPort,
+		Host:                runHost,
+		ShutdownTimeout:     runShutdownTimeout,
+		MockTools:           runMockTools,
+		EnforceGuardrails:   enforceGuardrails,
+		ModelOverride:       runModel,
+		ProviderOverride:    runProvider,
+		EnvFilePath:         resolveEnvPath(workDir, runEnvFile),
+		Verbose:             verbose,
+		Channels:            activeChannels,
+		NoAuth:              runNoAuth,
+		AuthToken:           runAuthToken,
+		AuthURL:             runAuthURL,
+		AuthOrgID:           runAuthOrgID,
+		CORSOrigins:         corsOrigins,
+		AuditExport:         auditExport,
+		AuditPayloadCapture: auditCapture,
+		RateLimitOverride:   rateLimitOverride,
+		TracingFlags:        tracingFlags,
+		RuntimeVersion:      appVersion,
 	})
 	if err != nil {
 		return fmt.Errorf("creating runner: %w", err)

@@ -555,16 +555,59 @@ the baseline contract every operator can rely on regardless of
 configuration.
 
 Customers who need raw payloads in audit (debugging incidents,
-supervised-learning corpora, compliance replay) opt in field by field
-via `AuditPayloadCapture` on the runner config:
+supervised-learning corpora, compliance replay) opt in field by field.
+Operators configure capture via `forge.yaml`, env vars, or programmatic
+runner config; the three layers stack with the following precedence:
+
+| Layer | Knob | Wins over |
+|---|---|---|
+| `forge.yaml` `audit.capture` | per-field `*bool`, `max_bytes` | env + default |
+| `FORGE_AUDIT_CAPTURE_*` env | per-field bool, `MAX_BYTES` | default |
+| Built-in default | all flags off, `Redact=true` | — |
+
+### `forge.yaml` block
+
+```yaml
+audit:
+  capture:
+    tool_args: true         # capture raw tool input on tool_exec start
+    tool_result: true       # capture raw tool output on tool_exec end
+    llm_messages: false     # capture chat messages on llm_call
+    llm_response: false     # capture completion text on llm_call
+    redact: true            # scrub vendor-secret token shapes (ON by default)
+    max_bytes: 16384        # per-field byte cap (16 KiB default)
+```
+
+Every flag in the block is optional. An omitted field falls through to
+the env layer; an explicit `false` overrides env. The default-deploy
+case (no block at all) is metadata-only auditing — byte-for-byte
+identical to pre-#163 output.
+
+### Env vars
+
+| Env var | Type | Default | Meaning |
+|---|---|---|---|
+| `FORGE_AUDIT_CAPTURE_TOOL_ARGS` | bool | `false` | Capture raw tool input on `tool_exec phase=start` |
+| `FORGE_AUDIT_CAPTURE_TOOL_RESULT` | bool | `false` | Capture raw tool output on `tool_exec phase=end` |
+| `FORGE_AUDIT_CAPTURE_LLM_MESSAGES` | bool | `false` | Capture chat-messages array on `llm_call` |
+| `FORGE_AUDIT_CAPTURE_LLM_RESPONSE` | bool | `false` | Capture completion text on `llm_call` |
+| `FORGE_AUDIT_CAPTURE_REDACT` | bool | `true` | Vendor-secret regex scrub before emission |
+| `FORGE_AUDIT_CAPTURE_MAX_BYTES` | int | `16384` | Single-knob per-field byte cap |
+
+`MAX_BYTES` is a single knob: when set it applies uniformly across all
+four `CapXxxBytes` fields. Operators who need divergent per-field caps
+embed Forge as a library and set `AuditPayloadCapture` programmatically.
+
+### Programmatic (library) config
 
 ```go
 RunnerConfig{
   AuditPayloadCapture: coreruntime.AuditPayloadCapture{
-    LLMMessages: true,             // prompt messages in llm_call
-    LLMResponse: true,             // completion text in llm_call
-    ToolArgs:    true,             // raw tool input in tool_exec
-    ToolResult:  true,             // raw tool output in tool_exec
+    LLMMessages: true,
+    LLMResponse: true,
+    ToolArgs:    true,
+    ToolResult:  true,
+    Redact:      true,
     // Per-field byte caps; 0 = use DefaultPayloadCaptureCapBytes (16 KiB)
     CapLLMMessagesBytes: 32 << 10,
     CapToolResultBytes:  64 << 10,
@@ -572,17 +615,75 @@ RunnerConfig{
 }
 ```
 
-Captured strings are truncated to a per-field byte cap (default 16 KiB)
-with a `…[truncated:N]` marker so a runaway prompt or gigabyte tool
-output can't bloat one audit event. The cap is enforced by
-`coreruntime.TruncateForAudit`.
+### What gets scrubbed
 
-**Security note.** Once any capture flag is enabled, the audit
-transport (FWS-7 sink or stderr safety net) lands captured payloads
-verbatim — including any PII or secret that flowed through the prompt
-or completion. Operators are responsible for routing the audit stream
-to a store appropriate to the captured payloads' sensitivity. Forge
-does not redact captured content.
+When `redact: true` (the default), captured fields run through
+`coreruntime.PrepareCapturedContent` which scrubs known vendor token
+shapes before truncation. The same regex set protects OTel span
+content (#130) and guardrail evidence (#155 / #156) — fix once,
+flow everywhere. Current shapes:
+
+| Shape | Pattern (illustrative) | Replacement |
+|---|---|---|
+| Anthropic API key | `sk-ant-…` | `[REDACTED]` |
+| OpenAI API key | `sk-…` (20+ chars) | `[REDACTED]` |
+| GitHub PAT / OAuth / server / fine-grained | `ghp_…` `gho_…` `ghs_…` `github_pat_…` | `[REDACTED]` |
+| AWS access key | `AKIA…` | `[REDACTED]` |
+| Slack bot / user tokens | `xoxb-…` `xoxp-…` | `[REDACTED]` |
+| Private-key PEM block | `-----BEGIN … KEY-----…-----END … KEY-----` | `[REDACTED]` |
+| Telegram bot token | `<digits>:…` | `[REDACTED]` |
+
+Redact runs BEFORE truncation so the truncation cut cannot split a
+`[REDACTED]` marker mid-string.
+
+Disable redact (`redact: false` / `FORGE_AUDIT_CAPTURE_REDACT=false`)
+ONLY when a downstream sink runs its own scrubber — typically a
+platform-side SIEM normalizer or a sidecar that mutates events before
+storage.
+
+Captured strings are truncated to the configured per-field byte cap
+with a `…[truncated:N]` marker so a runaway prompt or gigabyte tool
+output can't bloat one audit event.
+
+### Verbosity guidance
+
+Capture is expensive. The same agent that emits ~1 MB / day of
+metadata-only audit can emit 25–80 MB / day with both `tool_args` and
+`tool_result` on — a 25–80× factor depending on payload size.
+
+| Posture | Per `tool_exec` event |
+|---|---|
+| Default (metadata only) | ~150–300 bytes |
+| `tool_args` + `tool_result` on | up to ~32 KiB (capped) |
+| Realistic average for a tool-heavy agent | 5–15 KiB |
+
+For a tool-heavy agent doing 1000 invocations/day with 5 tool calls each:
+
+- Metadata-only: ~1 MB/day
+- Both captures on: 25–80 MB/day
+
+Recommended usage patterns:
+
+- **Debug a misbehaving tool**: turn `tool_args + tool_result` on for
+  the affected session only, then turn off. Don't ship it as
+  always-on.
+- **Compliance evidence**: `tool_args` is usually enough (the inputs
+  the agent produced); `tool_result` is rarely needed and is the
+  largest of the four captures.
+- **Long-running production**: leave default off unless a specific
+  audit need surfaces. The size-only metadata (`args_size`,
+  `result_size`, `prompt_messages_count`) is still emitted, so
+  observability dashboards keep working without capture.
+
+### Security note
+
+Even with `redact: true`, a captured payload may carry PII, customer
+data, or secrets the regex set doesn't recognize. The transport (FWS-7
+sink or the stderr safety net) lands captured payloads verbatim.
+Operators are responsible for routing the audit stream to a store
+appropriate to the captured payloads' sensitivity. `redact: false`
+means the regex set is bypassed entirely; reach for it only when a
+downstream scrubber is known to run.
 
 ### What each flag turns on
 
@@ -604,6 +705,8 @@ configuration so consumers can size-check even without raw bodies.
   (complexity around key management, rotation, and customer-side
   verification). Sequence numbers cover gap detection in the
   meantime. Tracked as a follow-up.
-- **Per-agent capture flags in `forge.yaml`.** Capture is set via
+- ~~**Per-agent capture flags in `forge.yaml`.** Capture is set via
   `RunnerConfig` programmatically today. A YAML surface can be added
-  if customers ask; the runtime semantics are already in place.
+  if customers ask; the runtime semantics are already in place.~~
+  *Shipped in issue #163 — see [Payload capture](#payload-capture-fws-8)
+  above for the `forge.yaml` + env-var operator surface.*

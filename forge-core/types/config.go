@@ -33,6 +33,56 @@ type ForgeConfig struct {
 	Server         ServerConfig        `yaml:"server,omitempty"`
 	Observability  ObservabilityConfig `yaml:"observability,omitempty"`
 	Security       SecurityConfig      `yaml:"security,omitempty"`
+	Audit          AuditConfig         `yaml:"audit,omitempty"`
+}
+
+// AuditConfig groups audit-pipeline knobs that are operator-visible in
+// forge.yaml. Today it carries the FWS-8 payload-capture block (issue
+// #163); the export-sink knobs (#95 / FWS-7) are CLI flags and env
+// vars only because they correspond to deployment-platform choices,
+// not per-agent configuration.
+type AuditConfig struct {
+	Capture AuditCaptureConfig `yaml:"capture,omitempty"`
+}
+
+// AuditCaptureConfig is the forge.yaml-facing payload-capture
+// configuration. Each capture flag is a `*bool` so an operator can
+// distinguish "unset, fall through to env" from "explicitly false";
+// the env layer is the next layer below, and the `FORGE_AUDIT_CAPTURE_*`
+// defaults sit at the bottom.
+//
+// Precedence (high → low): forge.yaml `audit.capture` > env var > default.
+// Same pattern the export config and guardrail audit config use.
+//
+// Off by default per the FWS-8 commitment: an absent `audit.capture`
+// block leaves every flag false and emits metadata-only events.
+// Operators turn capture on for one of:
+//   - debugging a misbehaving tool (set `tool_args + tool_result` for
+//     the session, then turn off);
+//   - compliance evidence (typically just `tool_args` — the inputs
+//     the agent produced);
+//   - supervised-learning corpora collection (probably `llm_messages`
+//     and `tool_result` together).
+//
+// See docs/security/audit-logging.md `Raw payload capture` section
+// for the verbosity table and operator guidance.
+type AuditCaptureConfig struct {
+	// ToolArgs captures the raw input on `tool_exec phase=start`.
+	ToolArgs *bool `yaml:"tool_args,omitempty"`
+	// ToolResult captures the raw output on `tool_exec phase=end`.
+	ToolResult *bool `yaml:"tool_result,omitempty"`
+	// LLMMessages captures the chat-messages array on `llm_call`.
+	LLMMessages *bool `yaml:"llm_messages,omitempty"`
+	// LLMResponse captures the model completion text on `llm_call`.
+	LLMResponse *bool `yaml:"llm_response,omitempty"`
+	// Redact runs the vendor-secret regex scrub on captured fields
+	// before truncation. ON by default — only flip OFF if a
+	// downstream sink scrubs.
+	Redact *bool `yaml:"redact,omitempty"`
+	// MaxBytes is the single-knob per-field cap (16 KiB default).
+	// Zero leaves whichever value the env layer or per-field default
+	// resolved to.
+	MaxBytes int `yaml:"max_bytes,omitempty"`
 }
 
 // SecurityConfig groups build-time security knobs. Today it carries

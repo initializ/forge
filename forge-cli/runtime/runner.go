@@ -1994,8 +1994,13 @@ func (r *Runner) registerAuditHooks(hooks *coreruntime.HookRegistry, auditLogger
 		if hctx.ToolInput != "" {
 			fields["args_size"] = len(hctx.ToolInput)
 			if capture.ToolArgs {
-				fields["args"] = coreruntime.TruncateForAudit(hctx.ToolInput,
-					coreruntime.CapOrDefault(capture.CapToolArgsBytes))
+				// FWS-8 raw tool args, routed through the shared
+				// redact-then-truncate pipeline (issue #163) so an
+				// API key the LLM glued into a `cli_execute`
+				// command is scrubbed before it lands on the audit
+				// stream.
+				fields["args"] = coreruntime.PrepareCapturedContent(hctx.ToolInput,
+					capture.Redact, coreruntime.CapOrDefault(capture.CapToolArgsBytes))
 			}
 		}
 		auditLogger.EmitFromContext(ctxStart, coreruntime.AuditEvent{
@@ -2017,10 +2022,10 @@ func (r *Runner) registerAuditHooks(hooks *coreruntime.HookRegistry, auditLogger
 		}
 		if hctx.ToolOutput != "" {
 			fields["result_size"] = len(hctx.ToolOutput)
-			// FWS-8: opt-in raw tool result.
 			if capture.ToolResult {
-				fields["result"] = coreruntime.TruncateForAudit(hctx.ToolOutput,
-					coreruntime.CapOrDefault(capture.CapToolResultBytes))
+				// Same redact-then-truncate pipeline as tool args.
+				fields["result"] = coreruntime.PrepareCapturedContent(hctx.ToolOutput,
+					capture.Redact, coreruntime.CapOrDefault(capture.CapToolResultBytes))
 			}
 		}
 		ms := hctx.ToolExecDuration.Milliseconds()
@@ -2052,16 +2057,16 @@ func (r *Runner) registerAuditHooks(hooks *coreruntime.HookRegistry, auditLogger
 				fields = map[string]any{}
 			}
 			marshaled, _ := json.Marshal(hctx.Messages)
-			fields["prompt_messages"] = coreruntime.TruncateForAudit(string(marshaled),
-				coreruntime.CapOrDefault(capture.CapLLMMessagesBytes))
+			fields["prompt_messages"] = coreruntime.PrepareCapturedContent(string(marshaled),
+				capture.Redact, coreruntime.CapOrDefault(capture.CapLLMMessagesBytes))
 			fields["prompt_messages_count"] = len(hctx.Messages)
 		}
 		if capture.LLMResponse && hctx.Response != nil && hctx.Response.Message.Content != "" {
 			if fields == nil {
 				fields = map[string]any{}
 			}
-			fields["completion_text"] = coreruntime.TruncateForAudit(hctx.Response.Message.Content,
-				coreruntime.CapOrDefault(capture.CapLLMResponseBytes))
+			fields["completion_text"] = coreruntime.PrepareCapturedContent(hctx.Response.Message.Content,
+				capture.Redact, coreruntime.CapOrDefault(capture.CapLLMResponseBytes))
 		}
 		auditLogger.EmitLLMCall(ctx, coreruntime.LLMCallAuditArgs{
 			Model:     hctx.Model,

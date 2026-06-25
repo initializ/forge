@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"os"
-	"regexp"
 	"strconv"
 
 	"github.com/initializ/guardrails"
@@ -81,50 +80,24 @@ func GuardrailAuditConfigFromEnv() GuardrailAuditConfig {
 	return cfg
 }
 
-// secretRedactPatterns are the vendor token shapes scrubbed when
-// GuardrailAuditConfig.Redact is on. Same set as the OTel content
-// redaction pass (issue #130) so the audit and trace pipelines stay
-// consistent. Defence-in-depth only: the guardrail library may already
-// have masked these, but an unmasked input that hit a different rule
-// (e.g. moderation) would otherwise carry secrets through verbatim.
-var secretRedactPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`sk-ant-[A-Za-z0-9\-]{20,}`),
-	regexp.MustCompile(`sk-[A-Za-z0-9]{20,}`),
-	regexp.MustCompile(`ghp_[A-Za-z0-9]{36}`),
-	regexp.MustCompile(`gho_[A-Za-z0-9]{36}`),
-	regexp.MustCompile(`ghs_[A-Za-z0-9]{36}`),
-	regexp.MustCompile(`github_pat_[A-Za-z0-9_]{22,}`),
-	regexp.MustCompile(`AKIA[0-9A-Z]{16}`),
-	regexp.MustCompile(`xox[bp]-[0-9]{10,}-[A-Za-z0-9-]+`),
-	regexp.MustCompile(`-----BEGIN (RSA|EC|OPENSSH|PRIVATE) .*KEY-----`),
-	regexp.MustCompile(`[0-9]{8,10}:[A-Za-z0-9_-]{35,}`),
-}
-
-// redactSecrets replaces any known secret-token shape with [REDACTED].
-// Mirrors the marker used by the FWS-8 capture path so audit consumers
-// see one consistent token across both pipelines.
-func redactSecrets(s string) string {
-	for _, re := range secretRedactPatterns {
-		s = re.ReplaceAllString(s, "[REDACTED]")
-	}
-	return s
-}
-
 // prepareEvidence applies redact (if on) then byte-truncates to the
-// configured cap. Returns "" when input is "" so callers can drop the
-// field cleanly.
+// configured cap, delegating to the shared content-capture pipeline
+// (coreruntime.PrepareCapturedContent) so the vendor-secret regex set
+// and the truncation marker stay in lockstep with the FWS-8 payload-
+// capture path and the #130 OTel content path. Pre-#163 this function
+// carried its own copy of the redact regex set — see the issue for
+// the consolidation rationale.
+//
+// Returns "" when input is "" so callers can drop the field cleanly.
 func prepareEvidence(s string, cfg GuardrailAuditConfig) string {
 	if s == "" {
 		return ""
-	}
-	if cfg.Redact {
-		s = redactSecrets(s)
 	}
 	cap := cfg.MaxBytes
 	if cap <= 0 {
 		cap = DefaultGuardrailEvidenceCapBytes
 	}
-	return coreruntime.TruncateForAudit(s, cap)
+	return coreruntime.PrepareCapturedContent(s, cfg.Redact, cap)
 }
 
 // emitGuardrailEvent builds and emits a guardrail_check audit event

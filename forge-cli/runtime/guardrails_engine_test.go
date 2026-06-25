@@ -109,7 +109,10 @@ func TestFileGuardrailEngine_CheckToolOutput(t *testing.T) {
 // TestBuildGuardrailChecker_FileMode tests the builder with file-based config.
 func TestBuildGuardrailChecker_FileMode(t *testing.T) {
 	logger := &grTestLogger{}
-	checker := BuildGuardrailChecker(nil, "/nonexistent", false, logger, nil, GuardrailAuditConfig{}, observability.TracingConfig{})
+	checker, err := BuildGuardrailChecker(nil, "/nonexistent", false, logger, nil, GuardrailAuditConfig{}, observability.TracingConfig{})
+	if err != nil {
+		t.Fatalf("BuildGuardrailChecker default path should not error; got %v", err)
+	}
 	if checker == nil {
 		t.Fatal("BuildGuardrailChecker should return a non-nil checker")
 	}

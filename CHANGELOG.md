@@ -4,6 +4,50 @@
 
 ### Added
 
+- **Guardrails DB mode hardening: fail-loud + seed helpers + exclusivity
+  warning (issue #166).** Three quiet behaviors in the
+  `BuildGuardrailChecker` resolution ladder that mismatched what
+  operators expect from a "production-grade guardrails" deploy are now
+  addressable from the operator surface:
+  - New `FORGE_GUARDRAILS_DB_REQUIRED=true` env var: when DB mode is
+    selected (`FORGE_GUARDRAILS_DB` set) and the Mongo connect fails,
+    the runner logs an Error and returns a non-nil startup error
+    instead of silently downgrading to file mode or defaults. Off by
+    default for back-compat; recommended ON for platform deployments
+    where DB-mode guardrails are security-critical. `BuildGuardrailChecker`
+    now returns `(GuardrailChecker, error)` so the runner can propagate
+    the failure as a non-zero exit.
+  - New `forge guardrails seed-defaults` subcommand: prints
+    `DefaultStructuredGuardrails` as JSON suitable for piping into
+    MongoDB. Round-trips through `models.StructuredGuardrails` so the
+    output is library-consumable verbatim. Closes the
+    "DB mode bypasses built-in defaults" footgun — operators have a
+    one-line baseline seed.
+  - New `forge guardrails validate-db` subcommand: connects to
+    `FORGE_GUARDRAILS_DB`, fetches the agent's `AgentConfig` document,
+    and reports on baseline coverage (PII config, jailbreak / prompt-
+    injection / command-injection thresholds, secret-pattern rule count,
+    core gate enablement). Warns when fewer than 5 secret-pattern rules
+    are present or PII config is missing. Exits non-zero on missing
+    document so CI / deployment hooks can fail rollout.
+  - One-shot startup warning when both `FORGE_GUARDRAILS_DB` is set
+    AND a `guardrails.json` is present in the workdir. Repo readers
+    previously saw the file and assumed it was active; in DB-mode
+    deploys it was dead config that drifted. The warning fires through
+    the ops logger (not the audit stream) exactly once per process,
+    pointing at the specific path being ignored.
+  - DB connect timeout in `NewDBGuardrailEngine` trimmed from 10s to
+    3s — short enough that a misconfigured URI surfaces during startup,
+    long enough to absorb DNS jitter + TLS on a healthy cluster.
+  - Pinned by `TestBuildGuardrailChecker_{DBRequired_FailsLoudOnUnreachable,
+    DBUnreachable_FallsBackByDefault,DBRequiredAcceptsForgivingParse,
+    DBAndFile_WarnsOnce,DBOnly_NoFile_NoExclusivityWarn,
+    FileOnly_NoWarn,HonorsCustomGuardrailsPath}`,
+    `TestGuardrailsSeedDefaults_RoundTripsThroughLibraryModel`,
+    `TestScoreAgentConfig_{FullDefaultsHaveNoWarnings,SnakeCaseCompat,
+    EmptyDocFlagsEverything,FewerThan5SecretRulesWarns}`,
+    `TestExtractCustomRules_DefensiveOnShape`.
+
 - **Audit payload capture: operator surface + consolidated redact pass
   (issue #163).** FWS-8 raw-payload capture (`AuditPayloadCapture`) is
   now configurable from `forge.yaml` and `FORGE_AUDIT_CAPTURE_*` env

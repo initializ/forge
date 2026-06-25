@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"sync"
 
 	"github.com/initializ/guardrails/models"
 
@@ -13,6 +15,31 @@ import (
 	coreruntime "github.com/initializ/forge/forge-core/runtime"
 	"github.com/initializ/forge/forge-core/types"
 )
+
+// Environment variable names for guardrails resolution hardening
+// (issue #166). Mirrors the FORGE_* convention used elsewhere in the
+// security subsystem.
+const (
+	// EnvGuardrailsDB is the existing MongoDB URI selector that
+	// activates DB mode. Documented here for grep-ability — the
+	// loader still reads the raw string at the FORGE_GUARDRAILS_DB
+	// callsite below.
+	EnvGuardrailsDB = "FORGE_GUARDRAILS_DB"
+	// EnvGuardrailsDBRequired flips the silent-fallback to a
+	// startup-time abort when DB mode is selected but Mongo is
+	// unreachable. Off by default (back-compat); platform deploys
+	// that consider DB mode security-critical should set this to
+	// fail loud instead of quietly downgrading to file mode or
+	// defaults.
+	EnvGuardrailsDBRequired = "FORGE_GUARDRAILS_DB_REQUIRED"
+)
+
+// dbFileExclusivityOnce guards the one-shot startup warning emitted
+// when both FORGE_GUARDRAILS_DB and a guardrails.json are present.
+// Package-scoped so the warning fires exactly once per process even
+// if BuildGuardrailChecker is called multiple times (it isn't in
+// production, but tests do). Reset in tests via resetDBFileWarning.
+var dbFileExclusivityOnce sync.Once
 
 // LoadPolicyScaffold reads policy-scaffold.json from the output directory.
 // Returns nil (no error) if the file does not exist.
@@ -50,6 +77,20 @@ func DefaultPolicyScaffold() *agentspec.PolicyScaffold {
 // redact-then-truncate pipeline the LLM-call content capture uses.
 // When auditLogger is nil the engine is silent on the audit pipeline
 // (used by tests).
+//
+// Issue #166: the function now returns an error rather than always
+// falling back to a noop checker. The non-nil-error paths are:
+//
+//   - FORGE_GUARDRAILS_DB is set, FORGE_GUARDRAILS_DB_REQUIRED is
+//     truthy, AND the Mongo connect fails. Without REQUIRED the
+//     loader still warns and falls through to file mode for
+//     back-compat (the platform deploy should set REQUIRED so a
+//     misconfigured Mongo URI fails loud at startup instead of
+//     silently downgrading to a less-protective posture).
+//
+// Other failure paths (file-engine construction error, etc.) continue
+// to log and return a NoopGuardrailChecker — they're rare and the
+// recovery path is well-understood.
 func BuildGuardrailChecker(
 	cfg *types.ForgeConfig,
 	workDir string,
@@ -58,7 +99,7 @@ func BuildGuardrailChecker(
 	auditLogger *coreruntime.AuditLogger,
 	auditCfg GuardrailAuditConfig,
 	tracingCfg observability.TracingConfig,
-) coreruntime.GuardrailChecker {
+) (coreruntime.GuardrailChecker, error) {
 	attach := func(e *LibraryGuardrailEngine) coreruntime.GuardrailChecker {
 		if auditLogger != nil {
 			e.WithAuditLogger(auditLogger, auditCfg)
@@ -67,8 +108,26 @@ func BuildGuardrailChecker(
 		return e
 	}
 
+	// One-shot exclusivity warning: when DB mode is selected AND a
+	// guardrails.json sits in the workdir, the file is silently
+	// ignored. Repo readers see a file checked in and assume it's
+	// active; in DB-mode deploys it's dead config that drifts. Issue
+	// #166. Fires through the ops logger (not the audit stream — this
+	// is a config-shape warning, not an audited event), exactly once
+	// per process via dbFileExclusivityOnce.
+	mongoURI := os.Getenv(EnvGuardrailsDB)
+	if mongoURI != "" {
+		if filePath, ok := guardrailsFilePathIfPresent(cfg, workDir); ok {
+			dbFileExclusivityOnce.Do(func() {
+				logger.Warn("guardrails: DB mode active but guardrails.json also present — the file is IGNORED. DB and file are mutually exclusive. Remove the file or unset FORGE_GUARDRAILS_DB to avoid drift.", map[string]any{
+					"file": filePath,
+				})
+			})
+		}
+	}
+
 	// DB mode: connect to MongoDB for config + audit
-	if mongoURI := os.Getenv("FORGE_GUARDRAILS_DB"); mongoURI != "" {
+	if mongoURI != "" {
 		agentID := os.Getenv("FORGE_AGENT_ID")
 		if agentID == "" && cfg != nil {
 			agentID = cfg.AgentID
@@ -79,7 +138,19 @@ func BuildGuardrailChecker(
 			logger.Info("guardrails: using MongoDB-backed config", map[string]any{
 				"agent_id": agentID,
 			})
-			return attach(engine)
+			return attach(engine), nil
+		}
+		// FAIL-LOUD path. When REQUIRED is set, the agent refuses
+		// to serve rather than quietly downgrade. Platform deploys
+		// running guardrails under DB mode should set this in the
+		// deployment manifest so a misconfigured URI or a
+		// transient Mongo outage doesn't silently downgrade
+		// protection.
+		if dbModeRequired() {
+			logger.Error("guardrails: DB mode required (FORGE_GUARDRAILS_DB_REQUIRED=true) but DB unreachable; refusing to start", map[string]any{
+				"error": err.Error(),
+			})
+			return nil, fmt.Errorf("guardrails DB required but unreachable: %w", err)
 		}
 		logger.Warn("failed to connect guardrails DB, falling back to file", map[string]any{
 			"error": err.Error(),
@@ -97,9 +168,42 @@ func BuildGuardrailChecker(
 		logger.Warn("failed to create file guardrail engine, using noop", map[string]any{
 			"error": err.Error(),
 		})
-		return &coreruntime.NoopGuardrailChecker{}
+		return &coreruntime.NoopGuardrailChecker{}, nil
 	}
-	return attach(engine)
+	return attach(engine), nil
+}
+
+// dbModeRequired reads FORGE_GUARDRAILS_DB_REQUIRED and returns true
+// when the operator has opted into fail-loud behavior. Parse failure
+// or empty value yields false (back-compat) — same forgiving posture
+// as the other guardrails env vars.
+func dbModeRequired() bool {
+	v := os.Getenv(EnvGuardrailsDBRequired)
+	if v == "" {
+		return false
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false
+	}
+	return b
+}
+
+// guardrailsFilePathIfPresent returns the resolved guardrails.json
+// path (relative to workDir, honoring cfg.GuardrailsPath) and a bool
+// reporting whether the file actually exists on disk. Used by the
+// exclusivity warning to give the operator an actionable message
+// pointing at the specific file that's being ignored.
+func guardrailsFilePathIfPresent(cfg *types.ForgeConfig, workDir string) (string, bool) {
+	filename := "guardrails.json"
+	if cfg != nil && cfg.GuardrailsPath != "" {
+		filename = cfg.GuardrailsPath
+	}
+	path := filepath.Join(workDir, filename)
+	if _, err := os.Stat(path); err == nil {
+		return path, true
+	}
+	return path, false
 }
 
 // LoadGuardrailsJSON reads guardrails.json from the project directory.

@@ -108,6 +108,12 @@ func (s *UIServer) Start(ctx context.Context) error {
 	mux.HandleFunc("POST /api/agents/{id}/skill-builder/save", s.handleSkillBuilderSave)
 	mux.HandleFunc("GET /api/agents/{id}/skill-builder/context", s.handleSkillBuilderContext)
 	mux.HandleFunc("GET /api/agents/{id}/skill-builder/provider", s.handleSkillBuilderProvider)
+	// Custom-skill listing + loading for the Skill Builder edit flow
+	// (issue #193). Distinct from /api/skills which returns registry /
+	// embedded skills — these endpoints surface only project-local
+	// skills already attached to the agent on disk.
+	mux.HandleFunc("GET /api/agents/{id}/skill-builder/skills", s.handleSkillBuilderListCustomSkills)
+	mux.HandleFunc("GET /api/agents/{id}/skill-builder/skills/{name}", s.handleSkillBuilderGetCustomSkill)
 	// Workspace-level skill-builder settings (issue #92). The
 	// path-less /api/skill-builder/provider lets the UI query the
 	// resolved config before any agent is picked — needed for first-run

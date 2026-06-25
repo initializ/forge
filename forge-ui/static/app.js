@@ -140,11 +140,16 @@ async function fetchSkillBuilderProvider(agentId) {
   return res.json();
 }
 
-async function streamSkillBuilderChat(agentId, messages, { onChunk, onSkillDraft, onError, onDone, signal }) {
+async function streamSkillBuilderChat(agentId, messages, { onChunk, onSkillDraft, onError, onDone, signal, mode, editingName }) {
+  const body = { messages };
+  if (mode === 'edit' && editingName) {
+    body.mode = 'edit';
+    body.editing_name = editingName;
+  }
   const res = await fetch(`/api/agents/${agentId}/skill-builder/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messages }),
+    body: JSON.stringify(body),
     signal,
   });
 
@@ -185,19 +190,28 @@ async function streamSkillBuilderChat(agentId, messages, { onChunk, onSkillDraft
   }
 }
 
-async function validateSkillBuilderMD(agentId, skillMD, scripts) {
+async function validateSkillBuilderMD(agentId, skillMD, scripts, { mode, editingName } = {}) {
+  const body = { skill_md: skillMD, scripts };
+  if (mode === 'edit' && editingName) {
+    body.mode = 'edit';
+    body.editing_name = editingName;
+  }
   const res = await fetch(`/api/agents/${agentId}/skill-builder/validate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ skill_md: skillMD, scripts }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`Validation failed: ${res.status}`);
   return res.json();
 }
 
-async function saveSkillBuilder(agentId, skillName, skillMD, scripts, envVars) {
+async function saveSkillBuilder(agentId, skillName, skillMD, scripts, envVars, { overwrite, editingName } = {}) {
   const body = { skill_name: skillName, skill_md: skillMD, scripts };
   if (envVars && Object.keys(envVars).length > 0) body.env_vars = envVars;
+  if (overwrite) {
+    body.overwrite = true;
+    body.editing_name = editingName;
+  }
   const res = await fetch(`/api/agents/${agentId}/skill-builder/save`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -206,6 +220,26 @@ async function saveSkillBuilder(agentId, skillName, skillMD, scripts, envVars) {
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || `Save failed: ${res.status}`);
   return data;
+}
+
+// Lists custom skills attached to the agent on disk (skills/<name>/SKILL.md
+// or skills/<name>.md). Distinct from /api/skills which returns registry/
+// embedded skills available to ADD. Issue #193.
+async function fetchCustomSkills(agentId) {
+  const res = await fetch(`/api/agents/${agentId}/skill-builder/skills`);
+  if (!res.ok) throw new Error(`Failed to list custom skills: ${res.status}`);
+  return res.json();
+}
+
+// Loads a single custom skill's SKILL.md + helper scripts so the Skill
+// Builder can populate the editor for the edit flow. Issue #193.
+async function loadCustomSkill(agentId, name) {
+  const res = await fetch(`/api/agents/${agentId}/skill-builder/skills/${encodeURIComponent(name)}`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Failed to load skill: ${res.status}`);
+  }
+  return res.json();
 }
 
 // ── SSE Hook ─────────────────────────────────────────────────
@@ -2494,6 +2528,29 @@ function SkillBuilderPage({ agentId }) {
   const [envInputs, setEnvInputs] = useState({});
   const [error, setError] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
+  // Edit-mode state (issue #193).
+  //
+  //   mode             — 'create' or 'edit'. Switches the system prompt
+  //                      sent to the LLM and toggles the diff/save UX.
+  //   editingSkillName — the on-disk name of the skill being edited;
+  //                      preserved across save so the user can keep
+  //                      iterating on the same skill.
+  //   customSkills     — list shown in the skills panel for "Edit"
+  //                      buttons; refetched after every save.
+  //   originalSkillMD/originalScripts — baseline for the diff modal so
+  //                      the diff is always editor-state-vs-disk, not
+  //                      against the previous unsaved edit.
+  //   showDiff         — controls the Monaco diff preview modal.
+  //   restartPending   — controls the "restart to load changes" banner
+  //                      shown after a successful edit-mode save.
+  const [mode, setMode] = useState('create');
+  const [editingSkillName, setEditingSkillName] = useState(null);
+  const [customSkills, setCustomSkills] = useState([]);
+  const [originalSkillMD, setOriginalSkillMD] = useState('');
+  const [originalScripts, setOriginalScripts] = useState({});
+  const [showDiff, setShowDiff] = useState(false);
+  const [restartPending, setRestartPending] = useState(false);
+  const [restarting, setRestarting] = useState(false);
   const abortRef = useRef(null);
   const chatEndRef = useRef(null);
   const editorRef = useRef(null);
@@ -2504,6 +2561,16 @@ function SkillBuilderPage({ agentId }) {
       .then(setProvider)
       .catch(err => setError('Failed to load provider: ' + err.message));
   }, [agentId]);
+
+  // Fetch custom skills attached to the agent for the edit picker
+  // (issue #193). Refetched after every successful save so a newly
+  // created skill appears immediately in the list.
+  const refreshCustomSkills = useCallback(() => {
+    fetchCustomSkills(agentId)
+      .then(setCustomSkills)
+      .catch(() => { /* non-fatal — the picker just stays empty */ });
+  }, [agentId]);
+  useEffect(() => { refreshCustomSkills(); }, [refreshCustomSkills]);
 
   // Auto-scroll chat
   useEffect(() => {
@@ -2583,6 +2650,8 @@ function SkillBuilderPage({ agentId }) {
     try {
       await streamSkillBuilderChat(agentId, newMessages, {
         signal: abort.signal,
+        mode,
+        editingName: editingSkillName,
         onChunk(content) {
           assistantMsg.content += content;
           setMessages([...newMessages, { ...assistantMsg }]);
@@ -2608,16 +2677,19 @@ function SkillBuilderPage({ agentId }) {
       setStreaming(false);
       abortRef.current = null;
     }
-  }, [agentId, messages, input, streaming]);
+  }, [agentId, messages, input, streaming, mode, editingSkillName]);
 
   const handleValidate = useCallback(async () => {
     try {
-      const result = await validateSkillBuilderMD(agentId, skillMD, scripts);
+      const result = await validateSkillBuilderMD(agentId, skillMD, scripts, {
+        mode,
+        editingName: editingSkillName,
+      });
       setValidation(result);
     } catch (err) {
       setError('Validation failed: ' + err.message);
     }
-  }, [agentId, skillMD, scripts]);
+  }, [agentId, skillMD, scripts, mode, editingSkillName]);
 
   const handleSave = useCallback(async () => {
     // Extract name from SKILL.md frontmatter
@@ -2627,18 +2699,109 @@ function SkillBuilderPage({ agentId }) {
       setError('Cannot save: no "name" field found in SKILL.md frontmatter');
       return;
     }
+    // In edit mode the user can rename the skill (frontmatter
+    // name ≠ editing name) — that's a breaking change for any
+    // wired-up agent. We don't block it (the validator surfaces a
+    // warning), but we DON'T overwrite the existing directory under
+    // that case: overwrite is only valid when the names match.
+    const overwrite = mode === 'edit' && editingSkillName && skillName === editingSkillName;
 
     try {
-      // Pass any user-provided env vars
       const envVars = Object.keys(envInputs).length > 0 ? envInputs : undefined;
-      const result = await saveSkillBuilder(agentId, skillName, skillMD, scripts, envVars);
+      const result = await saveSkillBuilder(agentId, skillName, skillMD, scripts, envVars, {
+        overwrite,
+        editingName: editingSkillName,
+      });
       setSaveStatus(result);
       setEnvInputs({});
       setError(null);
+      // After a successful save, baseline = saved state so the
+      // diff resets, and surface the restart prompt for edit-mode
+      // changes (the running agent's tool registry is still
+      // pinned to its startup snapshot until restart).
+      setOriginalSkillMD(skillMD);
+      setOriginalScripts({ ...scripts });
+      if (mode === 'edit') {
+        setRestartPending(true);
+      } else {
+        // After a create, switch into edit mode for this skill so
+        // the next iteration uses the edit-mode prompt.
+        setMode('edit');
+        setEditingSkillName(skillName);
+      }
+      refreshCustomSkills();
     } catch (err) {
       setError('Save failed: ' + err.message);
     }
-  }, [agentId, skillMD, scripts, envInputs]);
+  }, [agentId, skillMD, scripts, envInputs, mode, editingSkillName, refreshCustomSkills]);
+
+  // handleEdit loads a custom skill from disk and primes the builder
+  // for iteration. Edit mode is what makes the LLM use the
+  // "## Edit Mode" prompt trailer and what flips the save path to
+  // overwrite-in-place. Issue #193.
+  const handleEdit = useCallback(async (name) => {
+    try {
+      const content = await loadCustomSkill(agentId, name);
+      setSkillMD(content.skill_md || '');
+      setScripts(content.scripts || {});
+      setOriginalSkillMD(content.skill_md || '');
+      setOriginalScripts(content.scripts || {});
+      setMode('edit');
+      setEditingSkillName(name);
+      setActiveTab('skill.md');
+      setValidation(null);
+      setSaveStatus(null);
+      setError(null);
+      setRestartPending(false);
+      setMessages([{
+        role: 'assistant',
+        content: `Loaded skill **${name}** for editing. The current SKILL.md and scripts are in the editor. Describe what you want to change.`,
+      }]);
+    } catch (err) {
+      setError('Failed to load skill: ' + err.message);
+    }
+  }, [agentId]);
+
+  // handleNewSkill resets state for a fresh create-mode session.
+  // Used by the "New skill" button alongside the custom-skills list.
+  const handleNewSkill = useCallback(() => {
+    setMode('create');
+    setEditingSkillName(null);
+    setSkillMD('');
+    setScripts({});
+    setOriginalSkillMD('');
+    setOriginalScripts({});
+    setMessages([]);
+    setValidation(null);
+    setSaveStatus(null);
+    setError(null);
+    setRestartPending(false);
+    setActiveTab('skill.md');
+  }, []);
+
+  // handleRestart triggers a stop + start on the agent process so
+  // the runtime re-runs registerSkillTools and picks up the edited
+  // SKILL.md / scripts. The dashboard already exposes these as
+  // separate endpoints — see server.go:78-79. We do NOT silently
+  // restart on save: the operator may be mid-task in a live chat
+  // and an unsolicited restart would lose context.
+  const handleRestart = useCallback(async () => {
+    setRestarting(true);
+    try {
+      await fetch(`/api/agents/${agentId}/stop`, { method: 'POST' });
+      // Small delay so the SSE state machine drains the stop event
+      // before we issue start — otherwise the dashboard's status
+      // chip flickers from running → stopped → starting → running
+      // in a way that looks broken.
+      await new Promise(r => setTimeout(r, 500));
+      await fetch(`/api/agents/${agentId}/start`, { method: 'POST' });
+      setRestartPending(false);
+    } catch (err) {
+      setError('Restart failed: ' + err.message);
+    } finally {
+      setRestarting(false);
+    }
+  }, [agentId]);
 
   const handleKeyDown = useCallback((e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -2668,10 +2831,48 @@ function SkillBuilderPage({ agentId }) {
             </div>
           `}
           ${showSettings && html`<${SkillBuilderSettingsModal} initial=${provider} onClose=${() => setShowSettings(false)} onSaved=${(updated) => { setProvider(updated); setShowSettings(false); }} />`}
+
+          ${mode === 'edit' && editingSkillName && html`
+            <div class="sb-mode-banner">
+              <span class="sb-mode-label">Editing</span>
+              <code>${editingSkillName}</code>
+              <button class="btn btn-link btn-sm" onClick=${handleNewSkill}>New skill</button>
+            </div>
+          `}
+
+          ${(customSkills.length > 0 || mode === 'edit') && html`
+            <details class="sb-custom-skills" open=${mode === 'create'}>
+              <summary>Skills attached to this agent (${customSkills.length})</summary>
+              ${customSkills.length === 0 && html`
+                <div class="sb-custom-skills-empty">No custom skills yet — create one below, or attach skills from the registry via the Skills tab.</div>
+              `}
+              ${customSkills.map(s => html`
+                <div key=${s.path} class="sb-custom-skill-row">
+                  <div class="sb-custom-skill-info">
+                    <div class="sb-custom-skill-name">
+                      <code>${s.name}</code>
+                      ${editingSkillName === s.name && html`<span class="sb-pill sb-pill-active">editing</span>`}
+                    </div>
+                    <div class="sb-custom-skill-desc">${s.description || 'No description'}</div>
+                  </div>
+                  <button class="btn btn-ghost btn-sm"
+                    onClick=${() => handleEdit(s.name)}
+                    disabled=${streaming || editingSkillName === s.name}>
+                    Edit
+                  </button>
+                </div>
+              `)}
+              ${mode === 'edit' && html`
+                <div class="sb-custom-skills-footer">
+                  <button class="btn btn-link btn-sm" onClick=${handleNewSkill}>+ New skill</button>
+                </div>
+              `}
+            </details>
+          `}
         </div>
 
         <div class="sb-messages">
-          ${messages.length === 0 && html`
+          ${messages.length === 0 && mode === 'create' && html`
             <div class="sb-empty">
               <div class="sb-empty-title">Design a new skill</div>
               <div class="sb-empty-text">Describe the skill you want to create. The AI will generate a valid SKILL.md file.</div>
@@ -2804,6 +3005,18 @@ function SkillBuilderPage({ agentId }) {
             </div>
           `}
 
+          ${restartPending && html`
+            <div class="sb-restart-banner">
+              <div>Skill saved. Restart the agent to load changes.</div>
+              <div class="sb-restart-actions">
+                <button class="btn btn-ghost btn-sm" onClick=${() => setRestartPending(false)} disabled=${restarting}>Later</button>
+                <button class="btn btn-primary btn-sm" onClick=${handleRestart} disabled=${restarting}>
+                  ${restarting ? 'Restarting…' : 'Restart agent'}
+                </button>
+              </div>
+            </div>
+          `}
+
           <div class="sb-action-buttons">
             <button class="btn btn-ghost btn-sm" onClick=${handleValidate} disabled=${!skillMD}>
               Revalidate
@@ -2811,13 +3024,128 @@ function SkillBuilderPage({ agentId }) {
             <button class="btn btn-ghost btn-sm" onClick=${() => { if (skillMD) { navigator.clipboard.writeText(skillMD); } }}>
               Copy
             </button>
+            ${mode === 'edit' && html`
+              <button class="btn btn-ghost btn-sm" onClick=${() => setShowDiff(true)} disabled=${!skillMD}>
+                Preview changes
+              </button>
+            `}
             <button class="btn btn-primary btn-sm" onClick=${handleSave} disabled=${!skillMD}>
-              Save & Attach
+              ${mode === 'edit' ? 'Save changes' : 'Save & Attach'}
             </button>
           </div>
         </div>
       </div>
+      ${showDiff && html`
+        <${SkillDiffModal}
+          originalSkillMD=${originalSkillMD}
+          newSkillMD=${skillMD}
+          originalScripts=${originalScripts}
+          newScripts=${scripts}
+          onClose=${() => setShowDiff(false)}
+          onConfirm=${() => { setShowDiff(false); handleSave(); }}
+        />
+      `}
     </main>
+  `;
+}
+
+// SkillDiffModal renders a Monaco side-by-side diff per artifact —
+// SKILL.md plus every script that appears in either the on-disk or
+// editor state. The diff is editor-state-vs-disk (issue #193): the
+// originalSkillMD baseline is what was loaded at handleEdit time and
+// is updated by each successful save so iteration always diffs from
+// the most recent persisted state, not from initial load.
+function SkillDiffModal({ originalSkillMD, newSkillMD, originalScripts, newScripts, onClose, onConfirm }) {
+  const orig = originalScripts || {};
+  const next = newScripts || {};
+  const scriptNames = Array.from(new Set([...Object.keys(orig), ...Object.keys(next)])).sort();
+  const tabs = ['skill.md', ...scriptNames];
+  const [activeTab, setActiveTab] = useState('skill.md');
+  const containerRef = useRef(null);
+  const editorRef = useRef(null);
+
+  // Mount + reuse a single Monaco diff editor across tabs; just swap
+  // the model on tab-change. Avoids the cost of recreating the diff
+  // engine per tab, which matters for skills with many scripts.
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const container = containerRef.current;
+    let cancelled = false;
+    const setup = async () => {
+      try {
+        const monaco = await import('/monaco/editor.js');
+        if (cancelled) return;
+        if (!editorRef.current) {
+          editorRef.current = monaco.editor.createDiffEditor(container, {
+            theme: 'vs-dark',
+            automaticLayout: true,
+            readOnly: true,
+            renderSideBySide: true,
+            minimap: { enabled: false },
+            fontSize: 13,
+          });
+        }
+        const language = activeTab === 'skill.md' ? 'markdown' : 'shell';
+        const baseline = activeTab === 'skill.md' ? (originalSkillMD || '') : (orig[activeTab] || '');
+        const draft = activeTab === 'skill.md' ? (newSkillMD || '') : (next[activeTab] || '');
+        editorRef.current.setModel({
+          original: monaco.editor.createModel(baseline, language),
+          modified: monaco.editor.createModel(draft, language),
+        });
+      } catch (err) {
+        console.error('Failed to mount Monaco diff editor:', err);
+      }
+    };
+    setup();
+    return () => {
+      cancelled = true;
+      if (editorRef.current) {
+        const model = editorRef.current.getModel();
+        if (model) {
+          model.original.dispose();
+          model.modified.dispose();
+        }
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, originalSkillMD, newSkillMD]);
+
+  // Tear down the diff editor on unmount so the next open is a
+  // fresh mount — the model swap above handles tab changes but
+  // leaving the editor instance behind across modal opens leaks
+  // Monaco textures.
+  useEffect(() => () => {
+    if (editorRef.current) {
+      editorRef.current.dispose();
+      editorRef.current = null;
+    }
+  }, []);
+
+  return html`
+    <div class="modal-backdrop sb-diff-backdrop" onClick=${onClose}>
+      <div class="modal sb-diff-modal" onClick=${(e) => e.stopPropagation()}>
+        <div class="modal-header">
+          <h3>Preview changes</h3>
+          <button class="modal-close" onClick=${onClose}>×</button>
+        </div>
+        <div class="sb-diff-tabs">
+          ${tabs.map(name => html`
+            <button key=${name}
+              class="sb-tab ${activeTab === name ? 'sb-tab-active' : ''}"
+              onClick=${() => setActiveTab(name)}>
+              ${name}
+              ${name !== 'skill.md' && !(name in orig) && html`<span class="sb-pill sb-pill-new">new</span>`}
+              ${name !== 'skill.md' && !(name in next) && html`<span class="sb-pill sb-pill-gone">removed</span>`}
+            </button>
+          `)}
+        </div>
+        <div class="sb-diff-body" ref=${containerRef} />
+        <div class="modal-footer">
+          <button class="btn btn-ghost" onClick=${onClose}>Cancel</button>
+          <button class="btn btn-primary" onClick=${onConfirm}>Confirm save</button>
+        </div>
+      </div>
+    </div>
   `;
 }
 

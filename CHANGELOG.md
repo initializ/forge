@@ -4,6 +4,46 @@
 
 ### Added
 
+- **Skill Builder edit mode (issue #193).** The dashboard's Skill Builder
+  can now iterate on an already-attached custom skill instead of only
+  creating new ones. A new **Skills attached to this agent** panel lists
+  each `skills/<name>/SKILL.md` discovered on disk; clicking **Edit**
+  loads its current SKILL.md and helper scripts into the editor, primes
+  the chat with the existing content, and switches the LLM call to an
+  edit-mode prompt that instructs it to preserve `## Tool: <name>`
+  headings, default to minimal patches, and emit a `**Changed:**`
+  summary. A **Preview changes** Monaco diff modal shows editor-state
+  vs disk side-by-side before save. **Confirm save** overwrites the
+  existing skill directory in place; helper scripts dropped during the
+  edit are removed from disk so the runtime stops discovering them. A
+  **Restart agent** banner appears after a successful edit-mode save
+  because the running agent's tool registry is captured at startup and
+  not live-mutated.
+  - New endpoints: `GET /api/agents/{id}/skill-builder/skills`
+    (`[]CustomSkillSummary`) and `GET /api/agents/{id}/skill-builder/skills/{name}`
+    (`CustomSkillContent`). Both reject path-traversal, slashes,
+    backslashes, and non-kebab-case names with `400`.
+  - `POST /api/agents/{id}/skill-builder/chat` accepts `mode: "edit"`
+    and `editing_name`. The server loads the on-disk SKILL.md itself
+    (single source of truth — never trusts UI-provided baseline) and
+    appends an `## Edit Mode` trailer to the system prompt.
+  - `POST /api/agents/{id}/skill-builder/save` accepts `overwrite: true`
+    with `editing_name` matching `skill_name`. Mismatched editing_name
+    is rejected at the handler boundary as defense in depth; the writer
+    additionally guards against wiping scripts when names don't match.
+  - The script loader rejects symlinks whose resolved target escapes
+    the skill's own directory so a malicious link to `/etc/passwd`
+    never reaches the editor or LLM context.
+  - Pinned by `TestListCustomSkills_ReturnsAllForms`,
+    `TestGetCustomSkill_{Subdir,Flat,Errors}`,
+    `TestReadCustomSkill_SymlinkEscapeRejected`,
+    `TestChat_EditMode_PrimesPromptWithExistingSkill`,
+    `TestChat_CreateMode_OmitsEditTrailer`,
+    `TestSave_OverwriteMismatchedEditingName_Rejected`,
+    `TestValidateSkillMD_DuplicateNameSuppression`,
+    `TestSaveSkillToDisk_Overwrite_DropsStaleScripts`,
+    `TestSaveSkillToDisk_Overwrite_NameMismatch_DoesNotWipeScripts`.
+
 - **Subprocess W3C trace-context propagation + binary-runtime skills (issue
   #182).** Skill / tool subprocesses now receive `TRACEPARENT`,
   `TRACESTATE`, and `BAGGAGE` env vars derived from the parent agent's

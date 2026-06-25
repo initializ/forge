@@ -1,7 +1,78 @@
 package forgeui
 
-// skillBuilderSystemPrompt is the system prompt for the Forge Skill Designer AI assistant.
-const skillBuilderSystemPrompt = `You are the Forge Skill Designer, an expert assistant that helps users create valid SKILL.md files for Forge agents.
+import (
+	"fmt"
+	"sort"
+	"strings"
+)
+
+// skillBuilderMode selects the prompt variant. Create mode is the
+// pre-issue-#193 behavior — author a brand new SKILL.md from scratch.
+// Edit mode primes the LLM with the existing skill's content and
+// guides it to emit minimal patches without renaming tools (issue #193).
+type skillBuilderMode int
+
+const (
+	modeCreate skillBuilderMode = iota
+	modeEdit
+)
+
+// existingSkillContext is the on-disk state of the skill currently
+// being edited. The chat handler loads this itself rather than
+// trusting UI-provided content so a stale or tampered editor state
+// can't feed the LLM the wrong baseline.
+type existingSkillContext struct {
+	Name    string
+	SkillMD string
+	Scripts map[string]string
+}
+
+// skillBuilderSystemPrompt builds the system prompt for the Forge
+// Skill Designer LLM. The base prose (skillBuilderPromptBase) is the
+// pre-issue-#193 contract — both create and edit mode reuse it
+// verbatim so the frontmatter rules, body sections, and example
+// shapes stay in lockstep. Edit mode appends an "## Edit Mode"
+// trailer carrying the existing skill's current SKILL.md + scripts
+// and the iteration rules (preserve tool names, minimal patches,
+// emit a **Changed:** summary).
+func skillBuilderSystemPrompt(mode skillBuilderMode, existing *existingSkillContext) string {
+	if mode != modeEdit || existing == nil {
+		return skillBuilderPromptBase
+	}
+	var b strings.Builder
+	b.WriteString(skillBuilderPromptBase)
+	b.WriteString("\n\n## Edit Mode\n\n")
+	fmt.Fprintf(&b,
+		"You are EDITING the existing skill `%s`. Its current `SKILL.md` and helper scripts are shown below — treat them as the baseline.\n\n",
+		existing.Name)
+	b.WriteString("Rules for edit mode:\n\n")
+	b.WriteString("1. Preserve every `## Tool: <name>` heading exactly as it is now. Renaming a tool is a breaking change for any agent already wired to that tool name — only rename if the user explicitly asks for it.\n")
+	b.WriteString("2. Default to minimal patches. Re-emit the FULL `skill.md` fence so the editor can swap atomically, but call out what changed.\n")
+	b.WriteString("3. After the closing fence, add a `**Changed:**` bullet list summarizing the diff (one line per change).\n")
+	b.WriteString("4. If a helper script needs to be dropped entirely, say so in the **Changed:** list — do NOT re-emit it.\n\n")
+	b.WriteString("Current state of the skill being edited:\n\n")
+	b.WriteString("````current-skill.md\n")
+	b.WriteString(strings.TrimRight(existing.SkillMD, "\n"))
+	b.WriteString("\n````\n")
+	if len(existing.Scripts) > 0 {
+		names := make([]string, 0, len(existing.Scripts))
+		for n := range existing.Scripts {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			fmt.Fprintf(&b, "\n````current-script:%s\n", n)
+			b.WriteString(strings.TrimRight(existing.Scripts[n], "\n"))
+			b.WriteString("\n````\n")
+		}
+	}
+	return b.String()
+}
+
+// skillBuilderPromptBase is the pre-issue-#193 system prompt for the
+// Forge Skill Designer AI assistant. Shared between create and edit
+// mode — the edit-mode delta is appended by skillBuilderSystemPrompt.
+const skillBuilderPromptBase = `You are the Forge Skill Designer, an expert assistant that helps users create valid SKILL.md files for Forge agents.
 
 ## Your Role
 

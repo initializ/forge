@@ -2573,15 +2573,16 @@ func makeAuthAuditCallback(auditLogger *coreruntime.AuditLogger) func(*http.Requ
 				"remote_addr":  req.RemoteAddr,
 			}
 			auditLogger.EmitFromContext(req.Context(), coreruntime.AuditEvent{
-				Event:            coreruntime.EventAuthVerify,
-				CorrelationID:    correlationID,
-				WorkflowID:       wc.WorkflowID,
-				StageID:          wc.StageID,
-				StepID:           wc.StepID,
-				InvocationCaller: wc.InvocationCaller,
-				OrgID:            tc.OrgID,
-				WorkspaceID:      tc.WorkspaceID,
-				Fields:           fields,
+				Event:               coreruntime.EventAuthVerify,
+				CorrelationID:       correlationID,
+				WorkflowID:          wc.WorkflowID,
+				WorkflowExecutionID: wc.WorkflowExecutionID,
+				StageID:             wc.StageID,
+				StepID:              wc.StepID,
+				InvocationCaller:    wc.InvocationCaller,
+				OrgID:               tc.OrgID,
+				WorkspaceID:         tc.WorkspaceID,
+				Fields:              fields,
 			})
 			return
 		}

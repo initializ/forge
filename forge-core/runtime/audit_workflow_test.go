@@ -18,10 +18,11 @@ func TestEmitFromContext_TagsWorkflowFieldsWhenContextHasThem(t *testing.T) {
 	audit := NewAuditLogger(&buf)
 
 	ctx := WithWorkflowContext(context.Background(), WorkflowContext{
-		WorkflowID:       "wf-100",
-		StageID:          "stage-A",
-		StepID:           "step-1",
-		InvocationCaller: "orchestrator",
+		WorkflowID:          "wf-100",
+		WorkflowExecutionID: "wfrun-100-abc",
+		StageID:             "stage-A",
+		StepID:              "step-1",
+		InvocationCaller:    "orchestrator",
 	})
 
 	audit.EmitFromContext(ctx, AuditEvent{Event: "tool_exec"})
@@ -30,8 +31,39 @@ func TestEmitFromContext_TagsWorkflowFieldsWhenContextHasThem(t *testing.T) {
 	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &got); err != nil {
 		t.Fatalf("decode: %v\n%s", err, buf.String())
 	}
-	if got.WorkflowID != "wf-100" || got.StageID != "stage-A" || got.StepID != "step-1" || got.InvocationCaller != "orchestrator" {
+	if got.WorkflowID != "wf-100" || got.WorkflowExecutionID != "wfrun-100-abc" ||
+		got.StageID != "stage-A" || got.StepID != "step-1" ||
+		got.InvocationCaller != "orchestrator" {
 		t.Errorf("workflow fields not tagged: %+v", got)
+	}
+}
+
+// TestEmitFromContext_TagsBothWorkflowDefinitionAndExecution is the
+// snapshot golden the issue calls out: an llm_call audit event
+// emitted under a workflow run carries BOTH workflow_id (definition)
+// and workflow_execution_id (per-run) at the top level so a SIEM can
+// build per-run timelines without joining on opaque ids. FORGE-2 /
+// issue #185.
+func TestEmitFromContext_TagsBothWorkflowDefinitionAndExecution(t *testing.T) {
+	var buf bytes.Buffer
+	audit := NewAuditLogger(&buf)
+
+	ctx := WithWorkflowContext(context.Background(), WorkflowContext{
+		WorkflowID:          "compliance-review",
+		WorkflowExecutionID: "exec-2026-06-25-001",
+	})
+
+	audit.EmitFromContext(ctx, AuditEvent{Event: "llm_call"})
+
+	js := buf.String()
+	for _, want := range []string{
+		`"event":"llm_call"`,
+		`"workflow_id":"compliance-review"`,
+		`"workflow_execution_id":"exec-2026-06-25-001"`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("emitted JSON missing %s; got:\n%s", want, js)
+		}
 	}
 }
 
@@ -45,7 +77,10 @@ func TestEmitFromContext_OmitsWorkflowFieldsWhenContextEmpty(t *testing.T) {
 	audit.EmitFromContext(context.Background(), AuditEvent{Event: "session_start"})
 
 	got := buf.String()
-	for _, forbidden := range []string{`"workflow_id"`, `"stage_id"`, `"step_id"`, `"invocation_caller"`} {
+	for _, forbidden := range []string{
+		`"workflow_id"`, `"workflow_execution_id"`,
+		`"stage_id"`, `"step_id"`, `"invocation_caller"`,
+	} {
 		if strings.Contains(got, forbidden) {
 			t.Errorf("empty ctx should omit %s from JSON, got:\n%s", forbidden, got)
 		}

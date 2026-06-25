@@ -200,7 +200,8 @@ FWS-1), `policy_loaded` per non-empty layer (FWS-5/6),
 **Workflow correlation headers** (FWS-2) — extracted on every request,
 threaded into context, stamped on every audit event:
 
-- `X-Workflow-ID` — orchestrator workflow run
+- `X-Workflow-ID` — workflow DEFINITION (stable across runs of the same workflow). Use for definition-level rollups ("top failing workflows").
+- `X-Workflow-Execution-ID` — per-run instance (unique per workflow execution). Use for per-run timelines ("show me every event in this specific run"). Split from the formerly-overloaded `X-Workflow-ID` in FORGE-2 / issue #185.
 - `X-Workflow-Stage-ID` — workflow stage
 - `X-Workflow-Step-ID` — workflow step
 - `X-Invocation-Caller` — upstream caller identifier
@@ -544,8 +545,10 @@ fan-out across configured sinks.
 - `ts` (RFC3339 UTC), `event` (constant string), `schema_version`
   (`"1.0"`) on every event
 - `correlation_id`, `task_id` on every request-scoped event
-- `workflow_id` / `stage_id` / `step_id` / `invocation_caller` when
-  the orchestrator sent the matching `X-Workflow-*` headers (FWS-2)
+- `workflow_id` (definition) / `workflow_execution_id` (per-run) /
+  `stage_id` / `step_id` / `invocation_caller` when the orchestrator
+  sent the matching `X-Workflow-*` headers (FWS-2; the
+  definition/execution split landed in FORGE-2 / #185)
 - `seq` (monotonic int64) on every event emitted inside an
   invocation; absent on startup events (`policy_loaded`,
   `agent_card_published`, `audit_export_status`)
@@ -1026,7 +1029,7 @@ Every event also carries `schema_version: "1.0"` (FWS-8) and `seq`
 | # | Issue | Title | Doc |
 |---|---|---|---|
 | **FWS-1** | #85 | A2A 0.3.0 Agent Card conformance — canonical `/.well-known/agent-card.json` path + required fields + auth-chain-derived `securitySchemes` + SKILL.md → `AgentSkill` bridge + `agent_card_published` audit | `docs/reference/a2a-agent-card.md` |
-| **FWS-2** | #86 | Workflow correlation ID threading — `X-Workflow-*` / `X-Invocation-Caller` headers stamped on every audit event | `docs/security/workflow-correlation.md` |
+| **FWS-2** | #86, FORGE-2 / #185 | Workflow correlation ID threading — `X-Workflow-ID` (definition) + `X-Workflow-Execution-ID` (per-run) + stage / step / caller headers stamped on every audit event | `docs/security/workflow-correlation.md` |
 | **FWS-3** | #87 | Token usage + execution duration emission — OTel-aligned field names, `X-Forge-*` response headers, `invocation_complete` event with totals | `docs/security/audit-logging.md` § Token usage |
 | **FWS-4** | #88 | Cancellation signal handling — `tasks/cancel` actually cancels via `context.CancelCauseFunc`; `invocation_cancelled` audit event with classified reason + partial token counts | `docs/security/audit-logging.md` § Cancellation |
 | **FWS-5** | #89 | Platform policy enforcement at runtime — workspace-level deploy-time bounds (egress / tools / models / sizes); `forge package` policy-ready manifests | `docs/security/platform-policy.md` |

@@ -44,7 +44,7 @@ The `source` field distinguishes in-process enforcer events from subprocess prox
 
 ### Workflow correlation
 
-When the inbound A2A request carries the orchestrator's correlation headers (`X-Workflow-ID`, `X-Workflow-Stage-ID`, `X-Workflow-Step-ID`, `X-Invocation-Caller`), every audit event emitted during that invocation is tagged with the matching `workflow_id` / `stage_id` / `step_id` / `invocation_caller` fields. Header names are vendor-neutral so any A2A-compatible orchestrator can populate them. Direct A2A invocations (no orchestrator) omit the fields entirely — emitted JSON is byte-identical to the pre-correlation shape. See [Workflow correlation IDs](workflow-correlation.md) for the full reference, including outbound propagation for agent-to-agent flows.
+When the inbound A2A request carries the orchestrator's correlation headers (`X-Workflow-ID`, `X-Workflow-Execution-ID`, `X-Workflow-Stage-ID`, `X-Workflow-Step-ID`, `X-Invocation-Caller`), every audit event emitted during that invocation is tagged with the matching `workflow_id` / `workflow_execution_id` / `stage_id` / `step_id` / `invocation_caller` fields. `workflow_id` is the workflow DEFINITION (stable across runs); `workflow_execution_id` is the per-run instance (split from the formerly-overloaded header in FORGE-2 / issue #185). Header names are vendor-neutral so any A2A-compatible orchestrator can populate them. Direct A2A invocations (no orchestrator) omit the fields entirely — emitted JSON is byte-identical to the pre-correlation shape. See [Workflow correlation IDs](workflow-correlation.md) for the full reference, including outbound propagation for agent-to-agent flows.
 
 ### Tenancy stamping
 
@@ -142,7 +142,7 @@ Every `llm_call` audit event carries the normalized token counts the provider re
 
 Each `tool_exec` event (phase=end) carries `duration_ms` for the tool execution plus structured arg-shape metadata (`args_size`, `result_size`) — raw arg values are deliberately not included (payload stripping is FWS-8's concern). One `invocation_complete` event closes each A2A invocation with the total wall-clock duration and aggregated token totals across all LLM calls in the invocation.
 
-Workflow correlation fields (`workflow_id` / `stage_id` / `step_id` / `invocation_caller` from FWS-2) also auto-tag every `llm_call` / `tool_exec` / `invocation_complete` event when the inbound request carried orchestrator headers — billing and audit consumers can attribute cost not just to a task but to a specific workflow run / stage / step.
+Workflow correlation fields (`workflow_id` / `workflow_execution_id` / `stage_id` / `step_id` / `invocation_caller` from FWS-2) also auto-tag every `llm_call` / `tool_exec` / `invocation_complete` event when the inbound request carried orchestrator headers — billing and audit consumers can attribute cost not just to a task but to a specific workflow run / stage / step. `workflow_id` rollups answer "cost per workflow definition over time"; `workflow_execution_id` joins answer "cost for this specific run."
 
 A2A response headers carry the same per-invocation totals inline so an orchestrator can ceiling-check cost during parallel workflow execution without subscribing to the audit stream:
 
@@ -469,7 +469,7 @@ Every emitted event carries:
 | `seq` | int64 | per-invocation only | Monotonic per-invocation counter. Absent on startup events (`policy_loaded`, `agent_card_published`, `audit_export_status`). |
 | `correlation_id` | string | request-scoped only | Per-invocation ID; groups all events for one A2A invocation |
 | `task_id` | string | request-scoped only | A2A task identifier (`params.id` on `tasks/send`) |
-| `workflow_id` / `stage_id` / `step_id` / `invocation_caller` | string | optional | Populated when the request carried `X-Workflow-*` headers (FWS-2) |
+| `workflow_id` / `workflow_execution_id` / `stage_id` / `step_id` / `invocation_caller` | string | optional | Populated when the request carried `X-Workflow-*` headers (FWS-2). `workflow_id` is the workflow definition (stable across runs); `workflow_execution_id` is the per-run instance (FORGE-2 / #185 split). |
 | `model` / `provider` | string | optional | LLM call attribution (FWS-3) |
 | `input_tokens` / `output_tokens` / `tokens_unavailable` | int / bool | optional | LLM call usage (FWS-3) |
 | `duration_ms` | int64 | optional | Wall-clock duration (FWS-3) |

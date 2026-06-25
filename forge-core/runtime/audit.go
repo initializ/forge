@@ -119,12 +119,18 @@ const (
 
 // AuditEvent is a single structured audit record emitted as NDJSON.
 //
-// Workflow correlation fields (WorkflowID, StageID, StepID,
-// InvocationCaller) are tagged onto every event emitted via
-// EmitFromContext when the request carries `X-Workflow-*` /
-// `X-Invocation-Caller` headers from any A2A-compatible orchestrator.
-// Direct A2A invocations omit them entirely so the JSON shape matches
-// the pre-FWS-2 audit consumers.
+// Workflow correlation fields (WorkflowID, WorkflowExecutionID,
+// StageID, StepID, InvocationCaller) are tagged onto every event
+// emitted via EmitFromContext when the request carries `X-Workflow-*`
+// / `X-Invocation-Caller` headers from any A2A-compatible
+// orchestrator. Direct A2A invocations omit them entirely so the JSON
+// shape matches the pre-FWS-2 audit consumers.
+//
+// WorkflowID / WorkflowExecutionID split (FORGE-2 / issue #185):
+// `workflow_id` carries the workflow DEFINITION id (stable across all
+// runs), `workflow_execution_id` carries the PER-RUN instance id.
+// Audit consumers join on `workflow_execution_id` for per-run
+// timelines and on `workflow_id` for definition-level rollups.
 //
 // Token usage, duration, model, and provider fields (issue #87 / FWS-3)
 // are populated by the LLM call site, tool execution path, and per-
@@ -170,10 +176,21 @@ type AuditEvent struct {
 	// TaskID is the A2A task identifier (params.id on tasks/send).
 	TaskID string `json:"task_id,omitempty"`
 
-	// WorkflowID identifies the orchestrator-level workflow run that
-	// invoked this agent. Sourced from X-Workflow-ID at request entry;
-	// absent for direct A2A invocations.
+	// WorkflowID identifies the workflow DEFINITION that invoked this
+	// agent. Stable across every run of the same workflow. Sourced
+	// from X-Workflow-ID at request entry; absent for direct A2A
+	// invocations. SIEM consumers join on this for definition-level
+	// rollups ("top failing workflows"). FORGE-2 / issue #185 split.
 	WorkflowID string `json:"workflow_id,omitempty"`
+
+	// WorkflowExecutionID identifies the per-run instance of the
+	// workflow that invoked this agent. Unique per workflow
+	// execution. Sourced from X-Workflow-Execution-ID at request
+	// entry; absent for direct A2A invocations. SIEM consumers join
+	// on this for per-run timelines ("every event in this specific
+	// run, across every agent the orchestrator dispatched to"). Added
+	// in FORGE-2 / issue #185.
+	WorkflowExecutionID string `json:"workflow_execution_id,omitempty"`
 
 	// StageID identifies the workflow stage that invoked this agent.
 	StageID string `json:"stage_id,omitempty"`
@@ -566,10 +583,13 @@ func (a *AuditLogger) EmitFromContext(ctx context.Context, event AuditEvent) {
 	if event.TaskID == "" {
 		event.TaskID = TaskIDFromContext(ctx)
 	}
-	if event.WorkflowID == "" || event.StageID == "" || event.StepID == "" || event.InvocationCaller == "" {
+	if event.WorkflowID == "" || event.WorkflowExecutionID == "" || event.StageID == "" || event.StepID == "" || event.InvocationCaller == "" {
 		wc := WorkflowContextFromContext(ctx)
 		if event.WorkflowID == "" {
 			event.WorkflowID = wc.WorkflowID
+		}
+		if event.WorkflowExecutionID == "" {
+			event.WorkflowExecutionID = wc.WorkflowExecutionID
 		}
 		if event.StageID == "" {
 			event.StageID = wc.StageID

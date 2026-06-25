@@ -338,12 +338,21 @@ func (s *Server) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
 	if wf := coreruntime.WorkflowContextFromContext(ctx); !wf.IsZero() {
 		// FWS-2 orchestrator correlation surfaces on the span so a
 		// trace browser can pivot from a workflow run to every Forge
-		// agent invocation that workflow triggered.
-		span.SetAttributes(
+		// agent invocation that workflow triggered. Both definition
+		// and execution ids land so observability backends can build
+		// "all spans for this run" and "all spans for this workflow
+		// over time" views without a join on opaque ids. FORGE-2 /
+		// issue #185.
+		attrs := []attribute.KeyValue{
 			attribute.String(observability.AttrForgeWorkflowID, wf.WorkflowID),
 			attribute.String(observability.AttrForgeWorkflowStageID, wf.StageID),
 			attribute.String(observability.AttrForgeWorkflowStepID, wf.StepID),
-		)
+		}
+		if wf.WorkflowExecutionID != "" {
+			attrs = append(attrs,
+				attribute.String(observability.AttrForgeWorkflowExecutionID, wf.WorkflowExecutionID))
+		}
+		span.SetAttributes(attrs...)
 	}
 
 	// Check SSE handlers first (for streaming methods)

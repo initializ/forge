@@ -4,6 +4,41 @@
 
 ### Added
 
+- **FORGE-2: split workflow definition from per-run execution (issue
+  #185).** The previously-overloaded `X-Workflow-ID` header now
+  carries the workflow DEFINITION id (stable across every run); a new
+  `X-Workflow-Execution-ID` header carries the per-run instance id.
+  Both surface as top-level fields on every audit event under a
+  workflow run (`workflow_id`, `workflow_execution_id`), so SIEM
+  consumers can answer "show me every event in this specific run"
+  (join on `workflow_execution_id`) AND "top failing workflows" /
+  "latency by workflow definition" (group by `workflow_id`) without
+  joining on opaque ids. Industry precedent for the split: GitHub
+  Actions (workflow + workflow_run_id), Tekton (Pipeline +
+  PipelineRun), Argo (Workflow + WorkflowRun).
+  - `WorkflowContext` gains `WorkflowExecutionID`;
+    `WorkflowContextFromHTTPHeaders` reads both headers,
+    `ApplyToHTTPHeaders` writes both for outbound A2A propagation.
+  - `AuditEvent` gains `WorkflowExecutionID` with
+    `json:"workflow_execution_id,omitempty"`. `EmitFromContext`
+    stamps both fields from the request context.
+  - New OTel span attribute `forge.workflow.execution.id` stamped on
+    `agent.execute` and dispatcher spans, alongside the existing
+    `forge.workflow.id`.
+  - Both fields use `omitempty` — direct A2A invocations without
+    orchestrator headers continue to emit byte-identical JSON to
+    pre-FWS-2 consumers. `schema_version` stays `1.0` (additive
+    schema-compatible change).
+  - Clean break — no backward-compatibility alias (per the issue;
+    the contract is pre-production). Orchestrators sending only the
+    old `X-Workflow-Id` continue to populate `workflow_id` with run
+    semantics; they should switch to the split contract before
+    cutting workflow timelines on the new field.
+  - Pinned by `TestWorkflowContextFromHTTPHeaders_{DefinitionAndExecutionAreIndependent,ExtractsAllFour}`,
+    `TestApplyToHTTPHeaders_PopulatesExecutionID`,
+    `TestRoundTripHTTPHeaders`,
+    `TestEmitFromContext_{TagsWorkflowFieldsWhenContextHasThem,TagsBothWorkflowDefinitionAndExecution,OmitsWorkflowFieldsWhenContextEmpty}`.
+
 - **Guardrails DB mode hardening: fail-loud + seed helpers + exclusivity
   warning (issue #166).** Three quiet behaviors in the
   `BuildGuardrailChecker` resolution ladder that mismatched what

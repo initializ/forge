@@ -12,27 +12,53 @@ import (
 // platforms) can drive Forge's correlation surface without adopting a
 // vendor prefix. Forge agents extract them at the request boundary,
 // stash them in context.Context, and tag every audit event with the
-// matching workflow / stage / step identifiers so audit consumers can
-// correlate events across multiple agents participating in the same
-// workflow.
+// matching workflow / execution / stage / step identifiers so audit
+// consumers can correlate events across multiple agents participating
+// in the same workflow.
+//
+// FORGE-2 / issue #185 split the previously-overloaded X-Workflow-ID
+// header into two distinct identifiers so operators can answer both
+// "show me this specific run" (per-execution) and "show me every run
+// of this workflow" / "top failing workflows" (per-definition) queries
+// without a join on opaque ids:
+//
+//   - HeaderWorkflowID:           workflow DEFINITION id, stable across all
+//     runs of the same workflow.
+//   - HeaderWorkflowExecutionID:  PER-RUN instance id, unique per
+//     workflow execution.
+//
+// Industry precedent for the split: GitHub Actions (workflow +
+// workflow_run_id), Tekton (Pipeline + PipelineRun), Argo (Workflow +
+// WorkflowRun).
 //
 // Absence of these headers is the normal case for direct A2A
 // invocations (e.g. local development, peer agents not orchestrated).
 // When absent, audit events emit without the workflow fields — full
 // backward compatibility with pre-FWS-2 audit consumers.
 const (
-	HeaderWorkflowID       = "X-Workflow-ID"
-	HeaderWorkflowStageID  = "X-Workflow-Stage-ID"
-	HeaderWorkflowStepID   = "X-Workflow-Step-ID"
-	HeaderInvocationCaller = "X-Invocation-Caller"
+	HeaderWorkflowID          = "X-Workflow-ID"
+	HeaderWorkflowExecutionID = "X-Workflow-Execution-ID"
+	HeaderWorkflowStageID     = "X-Workflow-Stage-ID"
+	HeaderWorkflowStepID      = "X-Workflow-Step-ID"
+	HeaderInvocationCaller    = "X-Invocation-Caller"
 )
 
 // WorkflowContext carries the orchestration identifiers a Forge agent
 // extracts from inbound A2A request headers. Zero value is meaningful
 // — it represents "no workflow context" (direct A2A invocation).
 type WorkflowContext struct {
-	// WorkflowID identifies the orchestrator-level workflow run.
+	// WorkflowID identifies the workflow DEFINITION — stable across
+	// all runs of the same workflow. Sourced from X-Workflow-ID.
+	// Audit consumers join on this for definition-level rollups:
+	// "top failing workflows," "latency by workflow definition."
 	WorkflowID string
+
+	// WorkflowExecutionID identifies the PER-RUN instance — unique
+	// per workflow execution. Sourced from X-Workflow-Execution-ID.
+	// Audit consumers join on this for per-run timelines: "show me
+	// every event in this specific run, across every agent the
+	// orchestrator dispatched to." Added in FORGE-2 / issue #185.
+	WorkflowExecutionID string
 
 	// StageID identifies a stage within the workflow (a group of
 	// steps that may run in parallel).
@@ -54,6 +80,7 @@ type WorkflowContext struct {
 // emitted JSON matches the pre-FWS-2 shape).
 func (w WorkflowContext) IsZero() bool {
 	return w.WorkflowID == "" &&
+		w.WorkflowExecutionID == "" &&
 		w.StageID == "" &&
 		w.StepID == "" &&
 		w.InvocationCaller == ""
@@ -64,10 +91,11 @@ func (w WorkflowContext) IsZero() bool {
 // fields; the returned WorkflowContext is `IsZero` when none are set.
 func WorkflowContextFromHTTPHeaders(h http.Header) WorkflowContext {
 	return WorkflowContext{
-		WorkflowID:       h.Get(HeaderWorkflowID),
-		StageID:          h.Get(HeaderWorkflowStageID),
-		StepID:           h.Get(HeaderWorkflowStepID),
-		InvocationCaller: h.Get(HeaderInvocationCaller),
+		WorkflowID:          h.Get(HeaderWorkflowID),
+		WorkflowExecutionID: h.Get(HeaderWorkflowExecutionID),
+		StageID:             h.Get(HeaderWorkflowStageID),
+		StepID:              h.Get(HeaderWorkflowStepID),
+		InvocationCaller:    h.Get(HeaderInvocationCaller),
 	}
 }
 
@@ -83,6 +111,9 @@ func WorkflowContextFromHTTPHeaders(h http.Header) WorkflowContext {
 func (w WorkflowContext) ApplyToHTTPHeaders(h http.Header) {
 	if w.WorkflowID != "" {
 		h.Set(HeaderWorkflowID, w.WorkflowID)
+	}
+	if w.WorkflowExecutionID != "" {
+		h.Set(HeaderWorkflowExecutionID, w.WorkflowExecutionID)
 	}
 	if w.StageID != "" {
 		h.Set(HeaderWorkflowStageID, w.StageID)

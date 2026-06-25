@@ -67,14 +67,20 @@ const (
 	// boundary so a span can be tied back to the inbound request.
 	AttrForgeCorrelationID = "forge.correlation_id"
 
-	// AttrForgeWorkflowID / Stage / Step are the FWS-2 orchestrator
-	// correlation ids extracted from inbound X-Workflow-* headers.
-	// Spans get these when the inbound request was issued by an
-	// orchestrator (otherwise the keys are absent — backends should
-	// treat missing keys as "ad-hoc invocation").
-	AttrForgeWorkflowID      = "forge.workflow.id"
-	AttrForgeWorkflowStageID = "forge.workflow.stage.id"
-	AttrForgeWorkflowStepID  = "forge.workflow.step.id"
+	// AttrForgeWorkflow* are the FWS-2 orchestrator correlation ids
+	// extracted from inbound X-Workflow-* headers. Spans get these
+	// when the inbound request was issued by an orchestrator
+	// (otherwise the keys are absent — backends should treat missing
+	// keys as "ad-hoc invocation").
+	//
+	// AttrForgeWorkflowID is the workflow DEFINITION id (stable
+	// across runs); AttrForgeWorkflowExecutionID is the per-run
+	// instance id. FORGE-2 / issue #185 split — see the
+	// HeaderWorkflow* docs in forge-core/runtime/workflow.go.
+	AttrForgeWorkflowID          = "forge.workflow.id"
+	AttrForgeWorkflowExecutionID = "forge.workflow.execution.id"
+	AttrForgeWorkflowStageID     = "forge.workflow.stage.id"
+	AttrForgeWorkflowStepID      = "forge.workflow.step.id"
 
 	// AttrForgeA2AMethod is the JSON-RPC method name on the inbound
 	// span — "tasks/send", "tasks/get", "tasks/cancel". Span name is

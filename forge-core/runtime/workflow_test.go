@@ -24,13 +24,54 @@ func TestWorkflowContext_IsZero(t *testing.T) {
 func TestWorkflowContextFromHTTPHeaders_ExtractsAllFour(t *testing.T) {
 	h := http.Header{}
 	h.Set(HeaderWorkflowID, "wf-42")
+	h.Set(HeaderWorkflowExecutionID, "wfrun-42-abc")
 	h.Set(HeaderWorkflowStageID, "stage-rollout")
 	h.Set(HeaderWorkflowStepID, "step-canary")
 	h.Set(HeaderInvocationCaller, "orchestrator")
 
 	wc := WorkflowContextFromHTTPHeaders(h)
-	if wc.WorkflowID != "wf-42" || wc.StageID != "stage-rollout" || wc.StepID != "step-canary" || wc.InvocationCaller != "orchestrator" {
-		t.Errorf("WorkflowContext = %+v, want all four fields populated", wc)
+	if wc.WorkflowID != "wf-42" || wc.WorkflowExecutionID != "wfrun-42-abc" ||
+		wc.StageID != "stage-rollout" || wc.StepID != "step-canary" ||
+		wc.InvocationCaller != "orchestrator" {
+		t.Errorf("WorkflowContext = %+v, want all five fields populated", wc)
+	}
+}
+
+// TestWorkflowContextFromHTTPHeaders_DefinitionAndExecutionAreIndependent
+// is the FORGE-2 / issue #185 split invariant: the two ids carry
+// distinct semantics (definition stable across runs; execution unique
+// per run) and a request can populate either or both. An operator
+// query "show me all events for this run" joins on
+// WorkflowExecutionID; "top failing workflows" joins on WorkflowID.
+// Both must propagate independently — populating one MUST NOT
+// auto-derive the other.
+func TestWorkflowContextFromHTTPHeaders_DefinitionAndExecutionAreIndependent(t *testing.T) {
+	// Definition only — common when a registry surface lists workflow
+	// metadata without a specific run.
+	h := http.Header{}
+	h.Set(HeaderWorkflowID, "def-only")
+	wc := WorkflowContextFromHTTPHeaders(h)
+	if wc.WorkflowID != "def-only" {
+		t.Errorf("WorkflowID = %q, want def-only", wc.WorkflowID)
+	}
+	if wc.WorkflowExecutionID != "" {
+		t.Errorf("WorkflowExecutionID auto-populated from WorkflowID; got %q", wc.WorkflowExecutionID)
+	}
+
+	// Execution only — unusual but valid (a dispatcher with an
+	// opaque per-run id and no definition handle).
+	h = http.Header{}
+	h.Set(HeaderWorkflowExecutionID, "exec-only-99")
+	wc = WorkflowContextFromHTTPHeaders(h)
+	if wc.WorkflowExecutionID != "exec-only-99" {
+		t.Errorf("WorkflowExecutionID = %q, want exec-only-99", wc.WorkflowExecutionID)
+	}
+	if wc.WorkflowID != "" {
+		t.Errorf("WorkflowID auto-populated from WorkflowExecutionID; got %q", wc.WorkflowID)
+	}
+	// Execution-only is still a non-zero context — IsZero must reflect that.
+	if wc.IsZero() {
+		t.Errorf("execution-only ctx reports IsZero=true; got %+v", wc)
 	}
 }
 
@@ -105,6 +146,22 @@ func TestApplyToHTTPHeaders_WritesNonEmptyFields(t *testing.T) {
 	}
 }
 
+// TestApplyToHTTPHeaders_PopulatesExecutionID pins the FORGE-2 /
+// issue #185 plumbing: when a workflow context carries an execution
+// id, ApplyToHTTPHeaders writes the X-Workflow-Execution-Id header on
+// outbound A2A calls so downstream agents see the same per-run id and
+// their audit events join on it.
+func TestApplyToHTTPHeaders_PopulatesExecutionID(t *testing.T) {
+	wc := WorkflowContext{WorkflowID: "wf-9", WorkflowExecutionID: "wfrun-9-zzz"}
+	h := http.Header{}
+	wc.ApplyToHTTPHeaders(h)
+
+	if h.Get(HeaderWorkflowExecutionID) != "wfrun-9-zzz" {
+		t.Errorf("WorkflowExecutionID header = %q, want wfrun-9-zzz",
+			h.Get(HeaderWorkflowExecutionID))
+	}
+}
+
 func TestApplyToHTTPHeaders_OmitsEmptyFields(t *testing.T) {
 	// Workflow without stage — outbound headers should mirror what's
 	// set, not stamp empty values that downstream agents might
@@ -129,6 +186,7 @@ func TestRoundTripHTTPHeaders(t *testing.T) {
 	// is the contract initializ's orchestrator + Forge runner depend on.
 	in := http.Header{}
 	in.Set(HeaderWorkflowID, "wf")
+	in.Set(HeaderWorkflowExecutionID, "wfrun")
 	in.Set(HeaderWorkflowStageID, "stg")
 	in.Set(HeaderWorkflowStepID, "stp")
 	in.Set(HeaderInvocationCaller, "ic")
@@ -140,6 +198,7 @@ func TestRoundTripHTTPHeaders(t *testing.T) {
 
 	for _, k := range []string{
 		HeaderWorkflowID,
+		HeaderWorkflowExecutionID,
 		HeaderWorkflowStageID,
 		HeaderWorkflowStepID,
 		HeaderInvocationCaller,

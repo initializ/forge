@@ -1799,6 +1799,7 @@ body {
   padding: 16px 20px;
   border-bottom: 1px solid var(--border-color);
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 16px;
 }
@@ -2136,4 +2137,142 @@ body {
     border-right: none;
     border-bottom: 1px solid var(--border-color);
   }
+}
+
+/* Skill Builder edit-mode UI (issue #193) */
+
+.sb-mode-banner {
+  flex-basis: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  padding: 6px 10px;
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  border-radius: var(--radius);
+}
+
+.sb-mode-label {
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 10px;
+}
+
+.sb-custom-skills {
+  flex-basis: 100%;
+  font-size: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+}
+
+.sb-custom-skills summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 4px 0;
+}
+
+.sb-custom-skills-empty {
+  color: var(--text-muted);
+  padding: 6px 0;
+}
+
+.sb-custom-skill-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border-color);
+}
+
+.sb-custom-skill-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.sb-custom-skill-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.sb-custom-skill-desc {
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sb-custom-skills-footer {
+  padding-top: 6px;
+  border-top: 1px solid var(--border-color);
+}
+
+.sb-pill {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.sb-pill-active {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--blue, #3b82f6);
+}
+
+.sb-pill-new {
+  background: rgba(34, 197, 94, 0.15);
+  color: var(--green);
+}
+
+.sb-pill-gone {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--red);
+}
+
+.sb-restart-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  padding: 8px 10px;
+  background: rgba(245, 158, 11, 0.10);
+  border: 1px solid rgba(245, 158, 11, 0.30);
+  border-radius: var(--radius);
+}
+
+.sb-restart-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.sb-diff-backdrop {
+  z-index: 100;
+}
+
+.sb-diff-modal {
+  width: min(90vw, 1400px);
+  height: min(85vh, 900px);
+  display: flex;
+  flex-direction: column;
+}
+
+.sb-diff-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.sb-diff-body {
+  flex: 1;
+  min-height: 0;
 }

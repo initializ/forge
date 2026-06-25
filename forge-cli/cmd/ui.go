@@ -207,57 +207,11 @@ func runUI(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Build the SkillSaveFunc for saving generated skills.
-	skillSaveFunc := func(opts forgeui.SkillSaveOptions) (*forgeui.SkillSaveResult, error) {
-		skillDir := filepath.Join(opts.AgentDir, "skills", opts.SkillName)
-		if err := os.MkdirAll(skillDir, 0o755); err != nil {
-			return nil, fmt.Errorf("creating skill directory: %w", err)
-		}
-
-		skillPath := filepath.Join(skillDir, "SKILL.md")
-		if err := os.WriteFile(skillPath, []byte(opts.SkillMD), 0o644); err != nil {
-			return nil, fmt.Errorf("writing SKILL.md: %w", err)
-		}
-
-		if len(opts.Scripts) > 0 {
-			scriptsDir := filepath.Join(skillDir, "scripts")
-			if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
-				return nil, fmt.Errorf("creating scripts directory: %w", err)
-			}
-			for filename, content := range opts.Scripts {
-				scriptPath := filepath.Join(scriptsDir, filename)
-				if err := os.WriteFile(scriptPath, []byte(content), 0o755); err != nil {
-					return nil, fmt.Errorf("writing script %s: %w", filename, err)
-				}
-			}
-		}
-
-		result := &forgeui.SkillSaveResult{
-			Path: "skills/" + opts.SkillName + "/SKILL.md",
-		}
-
-		// Parse skill requirements from SKILL.md
-		reqInfo := ParseSkillRequirements(opts.SkillMD)
-
-		// Write user-provided env vars to .env
-		if len(opts.EnvVars) > 0 {
-			written, _ := AppendEnvVars(opts.AgentDir, opts.EnvVars, opts.SkillName)
-			result.EnvConfigured = written
-		}
-
-		// Merge egress domains into forge.yaml
-		if len(reqInfo.EgressDomains) > 0 {
-			added, _ := MergeEgressDomains(opts.AgentDir, reqInfo.EgressDomains)
-			result.EgressAdded = added
-		}
-
-		// Check for missing env vars
-		if reqInfo.EnvReqs != nil {
-			result.EnvMissing = CheckMissingEnv(opts.AgentDir, reqInfo.EnvReqs)
-		}
-
-		return result, nil
-	}
+	// Build the SkillSaveFunc for saving generated skills. The
+	// actual disk-writing logic lives in SaveSkillToDisk so it's
+	// directly unit-testable — particularly the edit-mode
+	// scripts/-cleanup behavior (issue #193).
+	skillSaveFunc := SaveSkillToDisk
 
 	server := forgeui.NewUIServer(forgeui.UIServerConfig{
 		Port:          uiPort,

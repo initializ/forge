@@ -30,6 +30,7 @@ After feature work, update the affected documentation to reflect code changes.
    | `forge-cli/internal/tui/` | `docs/reference/cli-reference.md` (wizard flow) |
    | `forge-plugins/` | `docs/core-concepts/channels.md`, `docs/reference/framework-plugins.md` |
    | `forge-ui/` | `docs/reference/web-dashboard.md` |
+   | `forge-ui/handlers_skill_builder.go`, `forge-ui/skill_builder_context.go`, `forge-ui/skill_validator.go`, `forge-ui/static/app.js` (SkillBuilderPage), `forge-cli/cmd/ui_skill_save.go` | `docs/reference/web-dashboard.md` (§ Skill Builder + § Editing an Attached Skill), `docs/skills/writing-custom-skills.md` (§ Iterating from the Skill Builder UI) — keep edit-mode endpoints, prompt-trailer behavior, and overwrite-clears-scripts rule in sync |
    | `forge-skills/` | `docs/skills/writing-custom-skills.md`, `docs/skills/contributing-a-skill.md` |
    | `forge-skills/registry/image-registry.yaml`, `forge-core/packaging/` | `docs/core-concepts/binary-dependencies.md` — refresh the registry contents, install methods, or Dockerfile shape sections; keep the source-file list at the bottom in sync with the actual files touched |
    | `forge-cli/templates/Dockerfile.tmpl`, `forge-cli/build/dockerfile_stage.go` | `docs/core-concepts/binary-dependencies.md` (image-shape section), `docs/deployment/docker.md` |

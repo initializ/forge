@@ -4,6 +4,51 @@
 
 ### Added
 
+- **Audit payload capture: operator surface + consolidated redact pass
+  (issue #163).** FWS-8 raw-payload capture (`AuditPayloadCapture`) is
+  now configurable from `forge.yaml` and `FORGE_AUDIT_CAPTURE_*` env
+  vars in addition to the existing programmatic `RunnerConfig` path —
+  closing the gap that previously made the feature unusable from a
+  container deployment without a code change. Capture stays off by
+  default; flipping any flag on emits raw `args`, `result`,
+  `prompt_messages`, or `completion_text` fields on the corresponding
+  `tool_exec` / `llm_call` events.
+  - New env vars: `FORGE_AUDIT_CAPTURE_TOOL_ARGS`,
+    `FORGE_AUDIT_CAPTURE_TOOL_RESULT`,
+    `FORGE_AUDIT_CAPTURE_LLM_MESSAGES`,
+    `FORGE_AUDIT_CAPTURE_LLM_RESPONSE`,
+    `FORGE_AUDIT_CAPTURE_REDACT` (default `true`),
+    `FORGE_AUDIT_CAPTURE_MAX_BYTES` (single-knob 16 KiB default).
+  - New `forge.yaml` block under `audit.capture:` with per-field
+    `*bool` semantics (nil = fall through to env). Precedence:
+    `forge.yaml` > env > default.
+  - New `Redact` field on `coreruntime.AuditPayloadCapture`. ON by
+    default. When on, captured fields run through the shared
+    vendor-secret regex scrub (`PrepareCapturedContent`) BEFORE
+    truncation so a token an LLM glued into a `cli_execute` command
+    surfaces in audit as `[REDACTED]`, not verbatim. Set `false` only
+    when a downstream sink runs its own scrubber.
+  - New shared helper `coreruntime.PrepareCapturedContent(s, redact,
+    maxBytes)`. The FWS-8 capture hooks (`registerAuditHooks`),
+    guardrail evidence pipeline (`prepareEvidence`), and OTel span
+    content pipeline (`PrepareSpanContent`) now ALL delegate to this
+    one helper so a fix to the regex set propagates to every
+    content-capture path. Removes 3 independent copies of the
+    vendor-secret regex set.
+  - Pinned by `TestAuditPayloadCaptureFromEnv_{Defaults,FlagsParsed,
+    RedactEscapeHatch,MaxBytesIsSingleKnob,MaxBytesIgnoresInvalid,
+    RejectsZeroAndNegativeMaxBytes}`,
+    `TestPrepareCapturedContent_{RedactScrubsVendorTokens,
+    NoRedactKeepsSecretsVerbatim,TruncatesAtCap,RedactBeforeTruncate,
+    EmptyFastPath,DefaultCap}`,
+    `TestPrepareSpanContent_StillDelegatesAndUsesItsOwnDefault`,
+    `TestResolveAuditPayloadCapture_{EnvOnly,YAMLWinsOverEnv,
+    YAMLNilDoesNotClobberEnv,MaxBytesUniform,AllSurfacesOff}`,
+    `TestRegisterAuditHooks_{DefaultPostureOmitsCaptureFields,
+    CaptureToolArgs_OnlyStartEventCarries,CaptureRedactsVendorTokens,
+    CaptureRedactFalseLeavesSecretsVerbatim,
+    CaptureToolResult_Truncates}`.
+
 - **Skill Builder edit mode (issue #193).** The dashboard's Skill Builder
   can now iterate on an already-attached custom skill instead of only
   creating new ones. A new **Skills attached to this agent** panel lists

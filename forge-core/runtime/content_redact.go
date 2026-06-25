@@ -117,23 +117,31 @@ func serializeChatMessages(messages []llm.ChatMessage) string {
 	return string(b)
 }
 
-// PrepareSpanContent runs the redact (when redact=true) and
-// byte-cap-with-truncation-marker pipeline for content destined for
-// an OTel span attribute. The pipeline is:
+// PrepareCapturedContent is the shared redact-then-truncate pipeline
+// for any content the runtime captures into a long-lived artifact —
+// audit events (FWS-8 payload capture), OTel span attributes (#130
+// content capture), guardrail evidence (#155 / #156). All three call
+// sites previously open-coded a near-identical redact + truncate flow
+// with three independent copies of the vendor-secret regex set; this
+// helper consolidates them onto one implementation so a fix to the
+// regex set propagates to every capture path (issue #163).
 //
-//  1. Apply RedactSecrets when redact=true.
-//  2. TruncateForAudit (the same byte-cap helper the audit path uses)
-//     so a runaway prompt can't blow past the backend attribute limit
-//     and silently drop the marker.
+// Pipeline:
 //
-// maxBytes <= 0 falls back to DefaultSpanContentCapBytes. The
-// truncation marker is identical to what AuditPayloadCapture writes,
-// so an operator who sees a `…[truncated:N]` suffix on an audit
-// payload-captured field sees the same suffix on the linked span
-// attribute for the same logical event.
+//  1. Empty input is returned unchanged (fast path; callers can use
+//     the empty return as the signal to drop the field cleanly).
+//  2. If redact=true, RedactSecrets scrubs known vendor token shapes.
+//  3. maxBytes <= 0 falls back to DefaultPayloadCaptureCapBytes
+//     (16 KiB). Each call site that wants a different default (the
+//     span path uses DefaultSpanContentCapBytes=4 KiB; the guardrail
+//     evidence path uses DefaultGuardrailEvidenceCapBytes=4 KiB) MUST
+//     pass its own explicit cap.
+//  4. TruncateForAudit applies the byte cap and writes the
+//     `…[truncated:N]` marker the audit and OTel paths share.
 //
-// Returns the empty string when s is empty (skipping the pipeline).
-func PrepareSpanContent(s string, redact bool, maxBytes int) string {
+// Order matters: redact runs BEFORE truncate so the truncation
+// boundary can never split a `[REDACTED]` marker mid-string.
+func PrepareCapturedContent(s string, redact bool, maxBytes int) string {
 	if s == "" {
 		return s
 	}
@@ -141,7 +149,26 @@ func PrepareSpanContent(s string, redact bool, maxBytes int) string {
 		s = RedactSecrets(s)
 	}
 	if maxBytes <= 0 {
-		maxBytes = DefaultSpanContentCapBytes
+		maxBytes = DefaultPayloadCaptureCapBytes
 	}
 	return TruncateForAudit(s, maxBytes)
+}
+
+// PrepareSpanContent is the OTel-span-attribute-specific adapter over
+// PrepareCapturedContent. It applies the span-attribute default cap
+// (DefaultSpanContentCapBytes, 4 KiB — comfortably under common
+// observability backend per-attribute limits) when the caller passes
+// maxBytes <= 0. Behavior is otherwise identical to
+// PrepareCapturedContent and the truncation marker is shared so an
+// operator correlating an audit `…[truncated:N]` substring with the
+// linked span attribute sees the same suffix on both.
+//
+// Issue #130 shipped this helper; issue #163 collapses it onto
+// PrepareCapturedContent so all three content-capture paths share
+// one implementation.
+func PrepareSpanContent(s string, redact bool, maxBytes int) string {
+	if maxBytes <= 0 {
+		maxBytes = DefaultSpanContentCapBytes
+	}
+	return PrepareCapturedContent(s, redact, maxBytes)
 }

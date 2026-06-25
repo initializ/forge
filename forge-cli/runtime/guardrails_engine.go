@@ -76,8 +76,15 @@ func NewFileGuardrailEngine(sg *models.StructuredGuardrails, enforce bool, logge
 
 // NewDBGuardrailEngine creates a guardrail engine backed by MongoDB.
 // Config is loaded from the AgentConfig collection; audit logging is enabled.
+//
+// Connect timeout is 3s. Long enough to absorb DNS jitter and a slow
+// TLS handshake on a healthy cluster, short enough that a
+// misconfigured URI or a downed Mongo surfaces during startup rather
+// than holding up the agent process. Issue #166: shorter timeout
+// also makes the fail-loud REQUIRED-mode path surface in seconds,
+// not tens of seconds.
 func NewDBGuardrailEngine(mongoURI, agentID, orgID string, enforce bool, logger coreruntime.Logger) (*LibraryGuardrailEngine, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))

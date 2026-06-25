@@ -355,7 +355,14 @@ func (r *Runner) Run(ctx context.Context) error {
 	// evidence stamping (#161); the spans themselves are opened
 	// unconditionally — when tracing is disabled, the noop tracer
 	// short-circuits.
-	guardrails := BuildGuardrailChecker(r.cfg.Config, r.cfg.WorkDir, r.cfg.EnforceGuardrails, r.logger, auditLogger, GuardrailAuditConfigFromEnv(), tracingCfgEarly)
+	guardrails, err := BuildGuardrailChecker(r.cfg.Config, r.cfg.WorkDir, r.cfg.EnforceGuardrails, r.logger, auditLogger, GuardrailAuditConfigFromEnv(), tracingCfgEarly)
+	if err != nil {
+		// Only the fail-loud DB-required path produces a non-nil
+		// error here. The runner refuses to serve so the agent
+		// process exits non-zero and the platform deploy can
+		// surface the failure to operators. Issue #166.
+		return err
+	}
 	// Periodic audit_export_status — one event every 60s with per-sink
 	// health counters. Operators tail the audit stream to answer
 	// "is my sidecar healthy?". The stop func blocks until the

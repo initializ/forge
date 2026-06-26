@@ -411,11 +411,26 @@ audit events to map the actual call graph.
 
 ---
 
+## Tracing
+
+When tracing is enabled (`observability.tracing.enabled: true`), the auth middleware emits an `auth.verify` span around every `Provider.Chain.Verify` call. The span parents any outbound HTTP calls the provider issues (JWKS fetch, AWS STS verify, IAP token introspect, AAD Graph) so they nest under it instead of appearing as orphan root spans — making "why was this called" obvious in a trace browser.
+
+| Attribute | Source |
+|---|---|
+| `forge.auth.provider` | `Identity.Source` on success (`oidc`, `aws_sigv4`, `gcp_iap`, …) |
+| `forge.auth.token_kind` | `jwt` / `opaque` / `sigv4` / `iap_jwt` / `empty` — mirrors the audit field |
+| `forge.auth.decision` | `verify` (success) or `fail` (any rejection) |
+| `forge.auth.user_id` / `forge.auth.org_id` | from `Identity` on success |
+| `forge.auth.fail_reason` | `missing_token` / `rejected` / `invalid` / `not_for_me` / `provider_unavailable` / `infrastructure` — only on failure |
+
+Span Status is set to `Error` on the failure path so the error-rate dashboards count auth rejections consistently across the rest of the Forge span families. See [Observability — Tracing](../core-concepts/observability-tracing.md#authverify) for the full hierarchy.
+
 ## Related Documentation
 
 | Document | Description |
 |----------|-------------|
 | [Audit Logging](audit-logging.md) | `auth_verify` / `auth_fail` event shape, reason codes, `token_kind` values |
+| [Observability — Tracing](../core-concepts/observability-tracing.md) | `auth.verify` span attributes and parent semantics |
 | [Egress Security](egress-control.md) | Auth-host auto-allowlist and how it composes with operator-set domains |
 | [Trust Model](trust-model.md) | Caller → Forge trust boundary; what Forge does and doesn't trust |
 | [forge.yaml Schema](../reference/forge-yaml-schema.md) | Full YAML reference including `auth:` block |

@@ -5,6 +5,12 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+
+	"github.com/initializ/forge/forge-core/observability"
+	coreruntime "github.com/initializ/forge/forge-core/runtime"
 )
 
 // Logger is the minimal logging interface used by the scheduler.
@@ -178,6 +184,23 @@ func (s *Scheduler) tick(ctx context.Context) {
 func (s *Scheduler) fire(ctx context.Context, sched Schedule, fireTime time.Time) {
 	start := time.Now()
 
+	// Open schedule.fire around the dispatch so the runner's
+	// downstream agent.execute + llm.completion + tool.<name> spans
+	// nest under it, and the SIEM can answer "show me everything
+	// this scheduled job did" by joining on this span's trace_id.
+	// File-backend only — K8s-backend dispatch fires from a
+	// separate trigger Pod and would need traceparent injected into
+	// the rendered CronJob YAML at `forge package` time (deferred,
+	// see issue #187 out-of-scope). When tracing is off the global
+	// tracer is no-op and Start is zero-allocation.
+	ctx, span := coreruntime.Tracer().Start(ctx, "schedule.fire")
+	span.SetAttributes(
+		attribute.String(observability.AttrForgeScheduleID, sched.ID),
+		attribute.String(observability.AttrForgeScheduleCron, sched.Cron),
+		attribute.String(observability.AttrForgeScheduleSource, sched.Source),
+	)
+	defer span.End()
+
 	if s.audit != nil {
 		s.audit(AuditScheduleFire, sched.ID, map[string]any{"task": sched.Task})
 	}
@@ -189,6 +212,9 @@ func (s *Scheduler) fire(ctx context.Context, sched Schedule, fireTime time.Time
 
 	err := s.dispatch(ctx, sched)
 	duration := time.Since(start)
+	if err != nil {
+		span.SetStatus(codes.Error, err.Error())
+	}
 
 	status := "completed"
 	errStr := ""

@@ -619,12 +619,22 @@ func (p *Plugin) dispatch(ctx context.Context, msg *ChatMessage, chatTypeHint st
 	go func() {
 		taskCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
-		resp, herr := handler(taskCtx, event)
+
+		// Open channel.msteams.deliver around the dispatch so the
+		// internal A2A POST (carrying the traceparent injected by the
+		// router) nests under it. Issue #187.
+		spanCtx, _, finish := channels.StartDeliverSpan(taskCtx, "msteams", event)
+		var handlerErr error
+		defer finish(&handlerErr)
+
+		resp, herr := handler(spanCtx, event)
 		if herr != nil {
+			handlerErr = herr
 			log.Printf("[msteams] handler error: %v", herr)
 			return
 		}
 		if serr := p.SendResponse(event, resp); serr != nil {
+			handlerErr = serr
 			log.Printf("[msteams] send response error: %v", serr)
 		}
 	}()

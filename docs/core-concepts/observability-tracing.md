@@ -123,13 +123,64 @@ Name parsing is case-insensitive and whitespace-tolerant. Unknown names error lo
 ## Span hierarchy
 
 ```
+auth.verify                           [pre-request; parents provider HTTP calls]
+└── http.client (× JWKS/STS/IAP/Graph)
+
 a2a.<method>                          [SpanKindServer; dispatcher]
 └── agent.execute                     [outer loop; root for the task]
     ├── llm.completion (× N turns)    [per LLM provider call]
     │   └── http.client (× outbound)  [auto via otelhttp on egress transport]
     └── tool.<tool_name> (× M calls)  [per tool invocation]
         └── http.client (if HTTP)
+
+channel.<adapter>.deliver             [inbound Slack/Telegram/Teams]
+└── a2a.tasks/send (via internal POST + injected traceparent)
+    └── (full a2a.<method> subtree above)
+
+schedule.fire                         [file-backend tick; opens per fire]
+└── (a2a.<method> / agent.execute subtree, depending on dispatcher)
 ```
+
+`auth.verify`, `channel.<adapter>.deliver`, and `schedule.fire` were added in issue #187 to cover three latency / causality surfaces operators previously couldn't see in traces. Each one:
+
+- Is opened once per operation (auth: per inbound request; channel: per inbound message; schedule: per file-backend tick).
+- Uses the global `Tracer()` — no new tracer install — so the off-by-default tracing posture extends to them automatically (no-op when tracing is disabled, zero allocation).
+- Sets `codes.Error` Status on the failure path so the error-rate dashboards work uniformly across span types.
+
+### `auth.verify`
+
+Wraps the `Provider.Chain.Verify` call in `forge-core/auth/middleware.go`. Without this span the provider's outbound HTTP calls (JWKS fetch, AWS STS verify, IAP token introspect, AAD Graph) showed up as **orphan root spans** with no "why was this called" context, and total auth latency was invisible.
+
+| Attribute | Source |
+|---|---|
+| `forge.auth.provider` | `Identity.Source` (e.g. `oidc`, `gcp_iap`, `aws_sigv4`) — only on success |
+| `forge.auth.token_kind` | `jwt` / `opaque` / `sigv4` / `iap_jwt` / `empty` — mirrors the audit `token_kind` field |
+| `forge.auth.decision` | `verify` on success, `fail` on any rejection |
+| `forge.auth.user_id` / `org_id` | from `Identity` on success |
+| `forge.auth.fail_reason` | `missing_token` / `rejected` / `invalid` / `not_for_me` / `provider_unavailable` / `infrastructure` — only on failure; matches the `auth.FailReason` vocabulary used by the audit `auth_fail` event |
+
+Span closes BEFORE `installSequenceCounterMiddleware` runs, so it sits outside the per-invocation sequence counter scope — the right scope, since the question is "did the caller authenticate?", not "what did the agent do?"
+
+### `channel.<adapter>.deliver`
+
+Wraps the per-message handler in each channel adapter (Slack / Telegram / Teams) around the parse + thread-context fetch + internal A2A POST. The router's internal POST injects the W3C `traceparent` from the calling ctx, so the agent server's `a2a.tasks/send` span nests under `channel.<adapter>.deliver` and you can finally answer "how long does Slack→agent take?" from the flame graph alone.
+
+| Attribute | Source |
+|---|---|
+| `forge.channel.adapter` | `slack` / `telegram` / `msteams` |
+| `forge.channel.target` | conversational destination — Slack channel ID, Telegram chat ID, Teams chat ID |
+| `forge.channel.message_id` | upstream message identifier (pivot back to the source system) |
+| `forge.channel.user_id` | upstream sender identity |
+
+### `schedule.fire`
+
+Wraps `Scheduler.fire` in `forge-core/scheduler/scheduler.go`. Before this span the dispatched executor work looked unsourced — no current span at fire time, so any downstream `agent.execute` was an orphan root. **File-backend only for v1.** The K8s backend's trigger Pod is a separate curl-based Pod and would need `traceparent` injected into the rendered CronJob YAML at `forge package` time — tracked as a follow-up.
+
+| Attribute | Source |
+|---|---|
+| `forge.schedule.id` | `Schedule.ID` |
+| `forge.schedule.cron` | `Schedule.Cron` |
+| `forge.schedule.source` | `yaml` (from `forge.yaml schedules[]`) or `llm` (added at runtime via `schedule_create`) |
 
 ### Attribute conventions
 

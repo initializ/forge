@@ -5,6 +5,12 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+
+	"github.com/initializ/forge/forge-core/observability"
+	coreruntime "github.com/initializ/forge/forge-core/runtime"
 )
 
 // errorResponse is the JSON body returned for auth failures.
@@ -128,13 +134,45 @@ func Middleware(opts MiddlewareOptions) func(http.Handler) http.Handler {
 			hasNonBearerAuth := token == "" && iapHeader != ""
 
 			if token == "" && !hasNonBearerAuth {
+				// Open + immediately end an auth.verify span so the
+				// missing-token failure shows up in the flame graph
+				// (zero-duration span, Status=Error) instead of
+				// silently disappearing. Without the span the
+				// auth-fail audit event has no trace parent and
+				// SIEM trace ↔ audit pivots break for this path.
+				// Issue #187.
+				_, span := coreruntime.Tracer().Start(r.Context(), "auth.verify")
+				span.SetAttributes(
+					attribute.String(observability.AttrForgeAuthTokenKind, kind),
+					attribute.String(observability.AttrForgeAuthDecision, "fail"),
+					attribute.String(observability.AttrForgeAuthFailReason, "missing_token"),
+				)
+				span.SetStatus(codes.Error, "missing bearer token")
+				span.End()
 				notifyAuth(opts.OnAuth, r, nil, ErrMissingBearer, kind)
 				writeAuthError(w, "valid bearer token required")
 				return
 			}
 
-			identity, err := opts.Chain.Verify(r.Context(), token, HeadersFromRequest(r))
+			// Open auth.verify around the Provider.Verify call so any
+			// outbound http.client spans the provider opens (JWKS
+			// fetch, AWS STS verify, IAP token introspect, AAD Graph)
+			// nest under it instead of appearing as orphan roots.
+			// Total auth latency = span duration. The span ends before
+			// the per-invocation sequence counter is installed, which
+			// is the right scope: this span describes "did the caller
+			// authenticate?", not "what did the agent do during the
+			// invocation?". Issue #187.
+			verifyCtx, span := coreruntime.Tracer().Start(r.Context(), "auth.verify")
+			identity, err := opts.Chain.Verify(verifyCtx, token, HeadersFromRequest(r))
 			if err != nil || identity == nil {
+				span.SetAttributes(
+					attribute.String(observability.AttrForgeAuthTokenKind, kind),
+					attribute.String(observability.AttrForgeAuthDecision, "fail"),
+					attribute.String(observability.AttrForgeAuthFailReason, authFailReason(err)),
+				)
+				span.SetStatus(codes.Error, classifyAuthFailure(err))
+				span.End()
 				notifyAuth(opts.OnAuth, r, nil, err, kind)
 				writeAuthError(w, classifyAuthFailure(err))
 				return
@@ -149,6 +187,19 @@ func Middleware(opts MiddlewareOptions) func(http.Handler) http.Handler {
 			// was the verifier — that mis-attributes IAP-fronted traffic
 			// in audit dashboards.
 			kind = refineTokenKind(kind, identity.Source)
+
+			span.SetAttributes(
+				attribute.String(observability.AttrForgeAuthProvider, identity.Source),
+				attribute.String(observability.AttrForgeAuthTokenKind, kind),
+				attribute.String(observability.AttrForgeAuthDecision, "verify"),
+			)
+			if identity.UserID != "" {
+				span.SetAttributes(attribute.String(observability.AttrForgeAuthUserID, identity.UserID))
+			}
+			if identity.OrgID != "" {
+				span.SetAttributes(attribute.String(observability.AttrForgeAuthOrgID, identity.OrgID))
+			}
+			span.End()
 
 			notifyAuth(opts.OnAuth, r, identity, nil, kind)
 
@@ -188,6 +239,56 @@ func notifyAuth(cb func(*http.Request, *Identity, error, string), r *http.Reques
 	}
 	cb(r, id, err, kind)
 }
+
+// FailReason maps a chain error to a stable, low-cardinality reason
+// code suitable for span attributes, audit fields, dashboards, and
+// alerting. Reason strings are part of the audit-event contract and
+// the auth.verify span-attribute contract — changing them is a
+// breaking change for downstream consumers.
+//
+// Reason codes:
+//
+//	missing_token        - no Authorization header (or the auth header
+//	                       the chain expected)
+//	rejected             - provider recognized + denied (revoked,
+//	                       expired, 401, 4xx)
+//	invalid              - token malformed or cryptographically invalid
+//	not_for_me           - chain exhausted, no provider claimed the
+//	                       token
+//	provider_unavailable - verifier/IdP unreachable (5xx, network,
+//	                       undecodable)
+//	infrastructure       - other unexpected error
+//
+// provider_unavailable lets operators distinguish "the token is bad"
+// alerts from "the IdP is down" alerts in their dashboards — the
+// response and the runbook are different.
+//
+// Lives in forge-core/auth so both the middleware's auth.verify span
+// (issue #187) AND the audit-emit site in forge-cli/runtime use the
+// same vocabulary. Single source of truth.
+func FailReason(err error) string {
+	switch {
+	case err == nil:
+		return "unknown"
+	case errors.Is(err, ErrMissingBearer):
+		return "missing_token"
+	case errors.Is(err, ErrTokenRejected):
+		return "rejected"
+	case errors.Is(err, ErrInvalidToken):
+		return "invalid"
+	case errors.Is(err, ErrProviderUnavailable):
+		return "provider_unavailable"
+	case errors.Is(err, ErrTokenNotForMe):
+		return "not_for_me"
+	default:
+		return "infrastructure"
+	}
+}
+
+// authFailReason is a package-internal alias for FailReason. Kept so
+// existing call sites within forge-core/auth/middleware.go read
+// naturally; external callers use the exported FailReason.
+func authFailReason(err error) string { return FailReason(err) }
 
 // classifyAuthFailure maps a chain error into a user-visible message.
 // Keep messages generic to avoid leaking information about which provider

@@ -175,6 +175,94 @@ const (
 	// stream.
 	AttrForgeGuardrailViolationCount = "forge.guardrail.violation_count"
 
+	// ─── Auth verification span attributes (issue #187) ──────────────
+	//
+	// Stamped on auth.verify spans the auth middleware opens around
+	// every Provider.Verify call. Symmetric to the auth_verify /
+	// auth_fail audit-event fields so a SIEM looking at a trace sees
+	// the same provider / token_kind / decision metadata it sees in
+	// the audit stream — pivot between the two by trace_id without a
+	// translation table.
+
+	// AttrForgeAuthProvider names the chain entry that verified the
+	// token — "oidc", "http_verifier", "gcp_iap", "aws_sigv4",
+	// "static_token". Sourced from Identity.Source on success; empty
+	// on the failure path (no provider claimed the token).
+	AttrForgeAuthProvider = "forge.auth.provider"
+
+	// AttrForgeAuthTokenKind is the post-verify structural classification
+	// of the credential — "jwt", "opaque", "sigv4", "iap_jwt", "empty".
+	// Matches the audit token_kind field exactly.
+	AttrForgeAuthTokenKind = "forge.auth.token_kind"
+
+	// AttrForgeAuthDecision is "verify" on success or "fail" on any
+	// rejection path. The span Status carries the codes.Error marker on
+	// fail; this attribute exists separately so SIEM consumers can
+	// group on decision without parsing span status strings.
+	AttrForgeAuthDecision = "forge.auth.decision"
+
+	// AttrForgeAuthUserID / OrgID stamp the verified identity. Omitted
+	// on the failure path. Useful for "auth latency per org" queries.
+	AttrForgeAuthUserID = "forge.auth.user_id"
+	AttrForgeAuthOrgID  = "forge.auth.org_id"
+
+	// AttrForgeAuthFailReason is the classified failure reason for the
+	// fail path — same vocabulary as the audit auth_fail.reason field
+	// (e.g. "missing_token", "token_not_for_me", "token_rejected").
+	// Omitted on the success path.
+	AttrForgeAuthFailReason = "forge.auth.fail_reason"
+
+	// ─── Channel adapter delivery span attributes (issue #187) ────────
+	//
+	// Stamped on channel.<adapter>.deliver spans the per-message handler
+	// opens around the inbound-channel → internal-A2A-POST hop. Pairs
+	// with traceparent injection on the internal POST so downstream
+	// a2a.tasks/send spans nest under channel.<adapter>.deliver in the
+	// flame graph.
+
+	// AttrForgeChannelAdapter names the channel plugin that received
+	// the message — "slack", "telegram", "msteams".
+	AttrForgeChannelAdapter = "forge.channel.adapter"
+
+	// AttrForgeChannelTarget identifies the conversational destination
+	// — Slack channel ID / thread TS, Telegram chat ID, Teams chat
+	// ID. Format is adapter-specific; a consumer pivots back to the
+	// upstream system by joining on (channel.adapter, channel.target).
+	AttrForgeChannelTarget = "forge.channel.target"
+
+	// AttrForgeChannelMessageID is the upstream message identifier the
+	// adapter received. Useful for the "find the trace for THIS Slack
+	// message" pivot from a customer support ticket.
+	AttrForgeChannelMessageID = "forge.channel.message_id"
+
+	// AttrForgeChannelUserID is the upstream sender identity — Slack
+	// U…, Telegram numeric ID, Teams AAD object ID. Useful for "auth
+	// latency by user" queries.
+	AttrForgeChannelUserID = "forge.channel.user_id"
+
+	// ─── Scheduler fire span attributes (issue #187) ──────────────────
+	//
+	// Stamped on schedule.fire spans the file-backend scheduler opens
+	// around every dispatch. Spans pair with the schedule_fire /
+	// schedule_complete audit events so a SIEM joins them by trace_id.
+	// K8s-backend dispatch is out of scope for v1 — the trigger Pod is
+	// a separate curl-based Pod and needs traceparent injected into the
+	// rendered CronJob YAML at `forge package` time.
+
+	// AttrForgeScheduleID is the schedule identifier — Schedule.ID from
+	// the registered Schedule struct.
+	AttrForgeScheduleID = "forge.schedule.id"
+
+	// AttrForgeScheduleCron is the cron expression that fired. Matches
+	// the schedule_fire audit event's identifier and lets operators
+	// build "fires per cron expression" rollups.
+	AttrForgeScheduleCron = "forge.schedule.cron"
+
+	// AttrForgeScheduleSource is either "yaml" (schedule from forge.yaml
+	// at startup) or "llm" (schedule added at runtime by the agent's
+	// LLM through the schedule_create tool). Sourced from Schedule.Source.
+	AttrForgeScheduleSource = "forge.schedule.source"
+
 	// AttrForgeGuardrailEvidence is the triggering content. Set only
 	// when TracingConfig.CaptureContent is true. Passes through
 	// PrepareSpanContent (redact-then-truncate) just like the other

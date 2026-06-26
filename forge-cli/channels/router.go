@@ -9,6 +9,9 @@ import (
 	"net/http"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+
 	"github.com/initializ/forge/forge-core/a2a"
 	"github.com/initializ/forge/forge-core/channels"
 )
@@ -87,6 +90,13 @@ func (r *Router) forwardToA2A(ctx context.Context, event *channels.ChannelEvent)
 	if r.bearerToken != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+r.bearerToken)
 	}
+	// Inject the W3C traceparent + baggage from the calling context onto
+	// the outbound HTTP request so the A2A server's a2a.tasks/send span
+	// nests under the calling channel.<adapter>.deliver span instead of
+	// starting as an orphan root. The composite propagator is installed
+	// globally in forge-core/runtime/tracing.go; when tracing is off
+	// it's a no-op and writes no headers. Issue #187.
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(httpReq.Header))
 
 	resp, err := r.client.Do(httpReq)
 	if err != nil {

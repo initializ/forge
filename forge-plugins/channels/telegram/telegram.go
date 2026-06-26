@@ -224,7 +224,14 @@ func (p *Plugin) handleEvent(event *channels.ChannelEvent, handler channels.Even
 		taskCtx, taskCancel := context.WithTimeout(context.Background(), handlerTimeout)
 		defer taskCancel()
 
-		stopTyping := p.startTypingIndicator(taskCtx, event.WorkspaceID)
+		// Open channel.telegram.deliver around the full per-message
+		// pipeline so the internal A2A POST (which carries the
+		// traceparent injected by the router) nests under it. Issue #187.
+		spanCtx, _, finish := channels.StartDeliverSpan(taskCtx, "telegram", event)
+		var handlerErr error
+		defer finish(&handlerErr)
+
+		stopTyping := p.startTypingIndicator(spanCtx, event.WorkspaceID)
 
 		// Send an interim message if the task takes longer than the threshold.
 		done := make(chan struct{})
@@ -240,16 +247,18 @@ func (p *Plugin) handleEvent(event *channels.ChannelEvent, handler channels.Even
 			}
 		}()
 
-		resp, err := handler(taskCtx, event)
+		resp, err := handler(spanCtx, event)
 		close(done)
 		stopTyping()
 
 		if err != nil {
+			handlerErr = err
 			fmt.Printf("telegram: handler error: %v\n", err)
 			return
 		}
-		if err := p.SendResponse(event, resp); err != nil {
-			fmt.Printf("telegram: send response error: %v\n", err)
+		if sendErr := p.SendResponse(event, resp); sendErr != nil {
+			handlerErr = sendErr
+			fmt.Printf("telegram: send response error: %v\n", sendErr)
 		}
 	}()
 }

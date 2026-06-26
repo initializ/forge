@@ -421,6 +421,16 @@ func (p *Plugin) readLoop(ctx context.Context, conn *websocket.Conn, handler cha
 		}
 
 		go func() {
+			// Open channel.slack.deliver around the full per-message
+			// pipeline (parse + thread context fetch + internal A2A
+			// POST) so operators can see "how long did Slack→agent
+			// take?" from the flame graph. The router injects the
+			// traceparent on the internal POST so the agent's
+			// a2a.tasks/send span nests under this one. Issue #187.
+			spanCtx, _, finish := channels.StartDeliverSpan(ctx, "slack", event)
+			var handlerErr error
+			defer finish(&handlerErr)
+
 			// Add :eyes: reaction to indicate we received the message.
 			_ = p.addReaction(event.WorkspaceID, event.MessageID, "eyes")
 
@@ -446,18 +456,20 @@ func (p *Plugin) readLoop(ctx context.Context, conn *websocket.Conn, handler cha
 				}
 			}()
 
-			resp, err := handler(ctx, event)
+			resp, err := handler(spanCtx, event)
 			close(done)
 
 			// Remove the :eyes: reaction.
 			_ = p.removeReaction(event.WorkspaceID, event.MessageID, "eyes")
 
 			if err != nil {
+				handlerErr = err
 				fmt.Printf("slack: handler error: %v\n", err)
 				return
 			}
-			if err := p.SendResponse(event, resp); err != nil {
-				fmt.Printf("slack: send response error: %v\n", err)
+			if sendErr := p.SendResponse(event, resp); sendErr != nil {
+				handlerErr = sendErr
+				fmt.Printf("slack: send response error: %v\n", sendErr)
 			}
 		}()
 	}

@@ -4,6 +4,50 @@
 
 ### Added
 
+- **Three runtime spans for previously-invisible latency / causality
+  surfaces: `auth.verify`, `channel.<adapter>.deliver`, `schedule.fire`
+  (issue #187).** All three use the existing global `Tracer()` (no new
+  install) and respect the off-by-default tracing posture — when
+  tracing is disabled the no-op tracer makes them zero-allocation.
+  Status=Error on the failure path keeps error-rate dashboards
+  consistent across span types.
+  - **`auth.verify`** wraps the `Provider.Chain.Verify` call in
+    `forge-core/auth/middleware.go`. Provider outbound HTTP calls
+    (JWKS / STS / IAP / Graph) now nest under it instead of appearing
+    as orphan roots. Attributes: `forge.auth.provider`,
+    `forge.auth.token_kind`, `forge.auth.decision`,
+    `forge.auth.user_id` / `org_id` (success), `forge.auth.fail_reason`
+    (failure). The `auth.FailReason(err) string` helper is exported
+    from `forge-core/auth` so the span and the audit `auth_fail` event
+    share one reason vocabulary; the forge-cli runtime's local
+    `authFailReason` now delegates to it.
+  - **`channel.<adapter>.deliver`** wraps the per-message handler in
+    every channel adapter (Slack / Telegram / Teams) via a new
+    `channels.StartDeliverSpan` helper. The internal A2A POST in
+    `forge-cli/channels/router.go` now injects the W3C `traceparent`
+    via the global propagator, so the downstream `a2a.tasks/send`
+    span nests under the deliver span. Attributes:
+    `forge.channel.adapter`, `forge.channel.target`,
+    `forge.channel.message_id`, `forge.channel.user_id`. Highest
+    user-visible payoff of the three — operators can now answer
+    "Slack→agent latency" from the flame graph alone.
+  - **`schedule.fire`** wraps `Scheduler.fire` in
+    `forge-core/scheduler/scheduler.go` (file backend only).
+    Attributes: `forge.schedule.id`, `forge.schedule.cron`,
+    `forge.schedule.source` (`yaml` / `llm`). K8s-backend dispatch is
+    out of scope for v1 — the trigger Pod is a separate curl-based
+    Pod and needs `traceparent` injected into the rendered CronJob
+    YAML at `forge package` time (follow-up).
+  - Pinned by `TestAuthVerifySpan_{SuccessRecordsProviderTokenKindDecision,
+    FailureSetsErrorStatusAndFailReason,
+    MissingBearerOpensZeroDurationSpan,
+    ParentsProviderHTTPClientSpans}`,
+    `TestStartDeliverSpan_{StampsAdapterAndEventAttributes,
+    ErrorSetsStatus,AdapterNameDrivesSpanName,
+    ChildContextCarriesActiveSpan,NilEventDoesNotCrash}`,
+    `TestScheduleFireSpan_{StampsAttributesAndParentsDispatch,
+    ErrorSetsStatusError,SourceSurfacesLLMOriginatedSchedules}`.
+
 - **FORGE-1: opt-in auto-propagation of workflow correlation headers
   on outbound HTTP tool calls (issue #186).** Adds a
   `workflow_propagation.allowed_hosts` block to `forge.yaml`. Hosts

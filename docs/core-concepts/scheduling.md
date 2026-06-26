@@ -80,3 +80,17 @@ When `forge package` runs with `schedules[]` populated, it emits one `cronjob-<i
 - **Persistence (Kubernetes mode)**: CronJob resources in etcd — durable across pod restarts without a PVC.
 - **History**: File backend keeps the last 50 executions per schedule. Kubernetes backend defers to the audit stream's `schedule_complete` events.
 - **Audit events**: `schedule_fire`, `schedule_complete`, `schedule_skip`, `schedule_modify`.
+
+## Tracing
+
+When tracing is enabled, the **file backend** opens a `schedule.fire` span around each dispatch. The dispatcher's downstream `agent.execute` (and the LLM / tool subtree below it) nest under this span, so an operator filtering on `forge.schedule.id` in their trace browser sees every span the scheduled job produced as one tree instead of an orphaned `agent.execute` root.
+
+| Attribute | Source |
+|---|---|
+| `forge.schedule.id` | `Schedule.ID` |
+| `forge.schedule.cron` | `Schedule.Cron` — e.g. `@hourly`, `*/5 * * * *` |
+| `forge.schedule.source` | `yaml` (from `forge.yaml schedules[]`) or `llm` (added at runtime via `schedule_create`) |
+
+Span Status is set to `Error` when the dispatch callback returns an error so error-rate dashboards work uniformly across the Forge span families. See [Observability — Tracing › `schedule.fire`](../core-concepts/observability-tracing.md#schedulefire) for the full hierarchy.
+
+**Kubernetes backend** is **out of scope for v1** — the trigger Pod is a separate curl-based Pod, so plumbing `traceparent` into the dispatch requires injecting it into the rendered CronJob YAML at `forge package` time. Tracked as a follow-up.

@@ -2638,22 +2638,11 @@ func makeAuthAuditCallback(auditLogger *coreruntime.AuditLogger) func(*http.Requ
 // distinguish "the token is bad" alerts from "the IdP is down" alerts
 // in their dashboards — the response and the runbook are different.
 func authFailReason(err error) string {
-	switch {
-	case err == nil:
-		return "unknown"
-	case errors.Is(err, auth.ErrMissingBearer):
-		return "missing_token"
-	case errors.Is(err, auth.ErrTokenRejected):
-		return "rejected"
-	case errors.Is(err, auth.ErrInvalidToken):
-		return "invalid"
-	case errors.Is(err, auth.ErrProviderUnavailable):
-		return "provider_unavailable"
-	case errors.Is(err, auth.ErrTokenNotForMe):
-		return "not_for_me"
-	default:
-		return "infrastructure"
-	}
+	// Delegate to forge-core/auth so the audit-event vocabulary and the
+	// auth.verify span-attribute vocabulary stay byte-identical (issue
+	// #187 — same reason codes appear in audit fail events and span
+	// forge.auth.fail_reason attributes; one source of truth).
+	return auth.FailReason(err)
 }
 
 // buildUserAuthChain returns the user-facing portion of the auth chain

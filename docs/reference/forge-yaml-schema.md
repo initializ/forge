@@ -52,6 +52,11 @@ egress:
 cors_origins:                       # CORS allowed origins for A2A server
   - "https://app.example.com"      # (default: localhost variants)
 
+workflow_propagation:                # Auto-propagate X-Workflow-* / X-Invocation-Caller
+  allowed_hosts:                     # headers on outbound HTTP tool calls to these hosts
+    - "orchestrator.svc"             # (FORGE-1 / issue #186; opt-in only by default).
+    - "*.agents.internal"
+
 server:                              # A2A server tuning (optional)
   rate_limit:                        # per-IP rate limits (issue #110 / FWS-10)
     read_rps: 1.0                    # GET/HEAD/OPTIONS req/sec (default 1.0 = 60/min)
@@ -263,6 +268,21 @@ absence-of-value is "no override," not "unset."
 auto-add it to `egress_allowlist.json`. No second egress edit needed.
 Disabled tracing produces no entry — turning tracing off in yaml does
 NOT leave a stale entry in the generated NetworkPolicy.
+
+## `workflow_propagation` — auto-propagate workflow correlation headers (FORGE-1)
+
+```yaml
+workflow_propagation:
+  allowed_hosts:
+    - "orchestrator.svc"
+    - "*.agents.internal"
+```
+
+| Field | Default | Notes |
+|---|---|---|
+| `allowed_hosts` | `[]` (opt-in only) | Hostnames whose outbound HTTP tool calls auto-receive the `X-Workflow-Id` / `X-Workflow-Execution-Id` / `X-Workflow-Stage-Id` / `X-Workflow-Step-Id` / `X-Invocation-Caller` headers from the current request context. Exact entries match a single host (port stripped before comparison); entries beginning with `*.` match any strictly-deeper subdomain. Empty list keeps the pre-#186 opt-in behavior — tools must call `WorkflowContext.ApplyToHTTPHeaders(req.Header)` explicitly. See [Workflow correlation IDs › Outbound propagation](../security/workflow-correlation.md#outbound-propagation-agent-to-agent). Issue #186 / FORGE-1. |
+
+The matcher is consulted by a `RoundTripper` wrapper around the egress transport at runner startup, so every built-in HTTP tool (`http_request`, `webhook_call`, `web_search_*`) inherits the auto-apply without per-tool changes. Empty config = zero-overhead pass-through.
 
 ## `security` — build-time security knobs
 

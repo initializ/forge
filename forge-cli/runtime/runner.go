@@ -527,6 +527,18 @@ func (r *Runner) Run(ctx context.Context) error {
 		// observability.tracing.enabled.
 		egressClient = &http.Client{Transport: observability.WrapHTTPTransport(enforcer)}
 
+		// FORGE-1 (#186) — wrap the egress transport with the
+		// workflow-propagation auto-apply so HTTP tools targeting
+		// `workflow_propagation.allowed_hosts` automatically receive
+		// the X-Workflow-* / X-Invocation-Caller headers from the
+		// request's ctx. Empty config = zero-overhead pass-through
+		// (the wrapper short-circuits the wrap), so the default
+		// deploy keeps the opt-in posture.
+		propagationMatcher := coreruntime.NewWorkflowPropagationMatcher(
+			r.cfg.Config.WorkflowPropagation.AllowedHosts)
+		egressClient.Transport = coreruntime.WrapTransportForWorkflowPropagation(
+			egressClient.Transport, propagationMatcher)
+
 		// Start local proxy for subprocess egress enforcement
 		if !security.InContainer() && egressCfg.Mode != security.ModeDevOpen {
 			matcher := security.NewDomainMatcher(egressCfg.Mode, egressCfg.AllDomains)

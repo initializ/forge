@@ -34,6 +34,39 @@ type ForgeConfig struct {
 	Observability  ObservabilityConfig `yaml:"observability,omitempty"`
 	Security       SecurityConfig      `yaml:"security,omitempty"`
 	Audit          AuditConfig         `yaml:"audit,omitempty"`
+	// WorkflowPropagation gates which downstream hosts auto-receive
+	// the X-Workflow-* / X-Invocation-Caller headers when this agent
+	// calls them as a tool. See issue #186 / FORGE-1 — auto-propagation
+	// is off by default to stop workflow identity from leaking to
+	// third-party APIs.
+	WorkflowPropagation WorkflowPropagationConfig `yaml:"workflow_propagation,omitempty"`
+}
+
+// WorkflowPropagationConfig opts-in specific downstream hosts to
+// receive workflow correlation headers automatically when this agent
+// invokes them from any built-in HTTP tool. Without an entry on the
+// allow-list, the headers stay opt-in and tools must call
+// `WorkflowContextFromContext(ctx).ApplyToHTTPHeaders(req.Header)`
+// explicitly to propagate them (the pre-#186 behavior).
+//
+// Allowed entries follow the same exact + wildcard shape as the
+// egress allow-list (`security.DomainMatcher`):
+//
+//   - Exact: "orchestrator.svc"
+//   - Wildcard suffix: "*.agents.internal"
+//
+// The matcher strips ports before comparing, so an entry like
+// "peer.local" also covers "peer.local:8443".
+//
+// The auto-apply hook lives in forge-core/runtime; the runner installs
+// a transport wrapper around the egress client's transport that
+// consults this matcher per outbound request. See issue #186.
+type WorkflowPropagationConfig struct {
+	// AllowedHosts is the list of exact + wildcard hostname patterns
+	// that should auto-receive the X-Workflow-* / X-Invocation-Caller
+	// headers when the current request carries a non-zero
+	// WorkflowContext. Empty list = opt-in only (default).
+	AllowedHosts []string `yaml:"allowed_hosts,omitempty"`
 }
 
 // AuditConfig groups audit-pipeline knobs that are operator-visible in

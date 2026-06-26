@@ -269,3 +269,10 @@ type ChannelPlugin interface {
 2. Implement `ChannelPlugin`.
 3. Register the plugin in the channel registry.
 4. Add config generation in `generateChannelConfig()` and env vars in `generateEnvVars()`.
+5. Wrap your per-message handler with `channels.StartDeliverSpan(ctx, "<adapter>", event)` so the dispatch lands in traces as `channel.<adapter>.deliver` and the downstream A2A POST nests under it via the W3C `traceparent` injected by the router. See [Observability — Tracing › `channel.<adapter>.deliver`](../core-concepts/observability-tracing.md#channeladapterdeliver).
+
+## Tracing
+
+When tracing is enabled, each inbound message produces a `channel.<adapter>.deliver` span that wraps the adapter's per-message handler. The internal A2A POST in `forge-cli/channels/router.go` injects the W3C `traceparent` from that span's context, so the agent server's `a2a.tasks/send` span nests under the deliver span. Operators can finally answer "how long does Slack→agent take?" from the flame graph alone, without correlating two unconnected trace roots.
+
+Attributes (Slack / Telegram / Teams alike): `forge.channel.adapter`, `forge.channel.target` (Slack channel ID / Telegram chat ID / Teams chat ID), `forge.channel.message_id` (pivot back to the upstream system), `forge.channel.user_id`. Span Status is set to `Error` on handler / send failure. See [Observability — Tracing](../core-concepts/observability-tracing.md#channeladapterdeliver) for the full attribute reference.

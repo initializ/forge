@@ -82,7 +82,11 @@ Workflow fields are absent (`omitempty`) — byte-identical to pre-correlation a
 
 ## Outbound propagation (agent-to-agent)
 
-When a Forge agent calls another agent (or any peer), the workflow context is available via `runtime.WorkflowContextFromContext(ctx)`. To propagate, copy the headers onto the outbound request:
+When a Forge agent calls another agent (or any peer), the workflow context is available via `runtime.WorkflowContextFromContext(ctx)`. Forge supports two complementary propagation paths:
+
+### Explicit propagation (always available)
+
+A tool that knows its target is a workflow peer can stamp the headers itself:
 
 ```go
 wc := runtime.WorkflowContextFromContext(ctx)
@@ -91,7 +95,27 @@ wc.ApplyToHTTPHeaders(req.Header)
 client.Do(req)
 ```
 
-**Auto-propagation is deliberately off by default.** The `X-Workflow-*` / `X-Invocation-Caller` headers identify the workflow, so blanket-stamping them on every outbound HTTP request would leak workflow identity to third-party APIs (the egress proxy can't tell a peer agent from a vendor endpoint). Tools that know their target is a workflow peer call `ApplyToHTTPHeaders` explicitly.
+This is the path used by hand-written A2A tools and any code that wants per-request control.
+
+### Auto-propagation via `forge.yaml` allow-list (issue #186 / FORGE-1)
+
+Adding a `workflow_propagation` block to `forge.yaml` opts specific downstream hosts in to auto-receive the workflow headers without each tool having to call `ApplyToHTTPHeaders`. Every built-in HTTP tool (`http_request`, `webhook_call`, `web_search_*`, future tools) routes outbound requests through the egress transport, and the runner wraps that transport with a small RoundTripper that consults the allow-list per request.
+
+```yaml
+workflow_propagation:
+  allowed_hosts:
+    - "orchestrator.svc"           # exact match
+    - "*.agents.internal"          # wildcard subdomain
+```
+
+| Pattern | Matches |
+|---|---|
+| `orchestrator.svc` | exactly `orchestrator.svc` (any port) |
+| `*.agents.internal` | any strictly-deeper subdomain like `payments.agents.internal` or `worker.zone-a.agents.internal` |
+
+Match semantics mirror the egress allow-list (`security.DomainMatcher`): lowercase + port-stripped comparison, wildcards match strictly-deeper subdomains (the `*.agents.internal` entry does NOT match the bare `agents.internal` apex), and the matcher safely returns false on a nil receiver / empty list.
+
+**Auto-propagation is deliberately off by default.** The `X-Workflow-*` / `X-Invocation-Caller` headers identify the workflow, so blanket-stamping them on every outbound HTTP request would leak workflow identity to third-party APIs (the egress proxy can't tell a peer agent from a vendor endpoint). The allow-list keeps the safe default while removing the manual per-tool friction inside the trust boundary. A request to a host that isn't on the list still requires an explicit `ApplyToHTTPHeaders` call from the tool — the pre-#186 behavior.
 
 ## Backward compatibility
 
@@ -104,6 +128,9 @@ client.Do(req)
 | File | Role |
 |---|---|
 | `forge-core/runtime/workflow.go` | `WorkflowContext` type, `WithWorkflowContext` / `WorkflowContextFromContext` ctx helpers, `WorkflowContextFromHTTPHeaders` + `ApplyToHTTPHeaders` header marshalers |
+| `forge-core/runtime/workflow_propagation.go` | `WorkflowPropagationMatcher` (exact + wildcard host matching) and `WrapTransportForWorkflowPropagation` (RoundTripper wrapper that auto-applies headers on allow-listed hosts). FORGE-1 / issue #186. |
+| `forge-core/types/config.go` | `WorkflowPropagationConfig` (`forge.yaml` `workflow_propagation` block) |
+| `forge-cli/runtime/runner.go` | Builds the matcher from `cfg.WorkflowPropagation.AllowedHosts` and wraps the egress client's transport once at startup; every HTTP tool inherits the auto-apply via `security.EgressTransportFromContext` |
 | `forge-core/runtime/audit.go` | `AuditEvent` extended with `workflow_id` / `workflow_execution_id` / `stage_id` / `step_id` / `invocation_caller` fields; `AuditLogger.EmitFromContext` auto-tags from ctx |
 | `forge-cli/server/a2a_server.go` | JSON-RPC dispatcher extracts headers at boundary and injects WorkflowContext into ctx |
 | `forge-cli/runtime/runner.go` | REST `POST /tasks/send` + `POST /tasks/sendSubscribe` handlers extract headers; in-request audit emit sites migrated to `EmitFromContext` |

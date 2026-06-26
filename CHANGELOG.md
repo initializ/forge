@@ -4,6 +4,42 @@
 
 ### Added
 
+- **FORGE-1: opt-in auto-propagation of workflow correlation headers
+  on outbound HTTP tool calls (issue #186).** Adds a
+  `workflow_propagation.allowed_hosts` block to `forge.yaml`. Hosts
+  matching the allow-list automatically receive the `X-Workflow-Id` /
+  `X-Workflow-Execution-Id` / `X-Workflow-Stage-Id` /
+  `X-Workflow-Step-Id` / `X-Invocation-Caller` headers from the
+  current request context when invoked from any built-in HTTP tool —
+  no per-tool code change needed. Hosts not on the list keep the
+  pre-#186 opt-in behavior; the headers stay off so workflow identity
+  never leaks to third-party APIs.
+  - New `WorkflowPropagationMatcher` mirrors the egress allow-list
+    wildcard semantics (exact + `*.suffix.com`, port-stripped,
+    lowercase-normalized). Wildcards match strictly-deeper
+    subdomains and refuse the apex — `*.agents.internal` does NOT
+    match the bare `agents.internal`.
+  - New `WrapTransportForWorkflowPropagation` wraps the egress
+    `http.Transport` once at runner startup so every HTTP tool
+    (`http_request`, `webhook_call`, `web_search_*`, future tools)
+    inherits the auto-apply via `security.EgressTransportFromContext`.
+    Empty config = the wrapper short-circuits and returns the
+    underlying transport identity-equal, zero overhead per request
+    on the default-deploy path.
+  - The wrapper clones the request before mutating headers (the
+    `http.RoundTripper` contract), so a caller's `req.Header` is
+    never modified across retries.
+  - Builds on FORGE-2 (#185) — the allow-listed propagation set
+    includes the new `X-Workflow-Execution-Id` header so downstream
+    agents' audit events join 1:1 on per-run timelines.
+  - Pinned by `TestWorkflowPropagationMatcher_{Matches,IsEmptyAndNilGuard}`,
+    `TestWorkflowPropagationTransport_{AppliesHeadersOnAllowlistedHost,
+    OmitsHeadersOnUnlistedHost,NoOpWhenContextIsZero,
+    DoesNotMutateOriginalRequest,EndToEnd,
+    PropagatesUnderlyingError}`,
+    `TestWrapTransportForWorkflowPropagation_EmptyMatcherShortCircuits`,
+    `TestNewWorkflowPropagationMatcher_RejectsBadInputCleanly`.
+
 - **FORGE-2: split workflow definition from per-run execution (issue
   #185).** The previously-overloaded `X-Workflow-ID` header now
   carries the workflow DEFINITION id (stable across every run); a new

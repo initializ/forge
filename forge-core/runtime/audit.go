@@ -109,6 +109,32 @@ const (
 	// calls completed before the cancel signal. See issue #88 / FWS-4.
 	AuditInvocationCancelled = "invocation_cancelled"
 
+	// AuditTaskAdmissionDenied is emitted when the admission middleware
+	// rejects an inbound A2A invocation based on a platform-side quota
+	// / cost-limit decision (issue #201). Carries the platform's
+	// classification in Fields:
+	//
+	//   - reason  : platform-defined failure code
+	//                ("cost_limit_exceeded", "billing_overdue", …)
+	//   - scope   : which level in the platform's hierarchy tripped
+	//                ("agent" / "workspace" / "org")
+	//   - window  : which quota window tripped
+	//                ("hourly" / "daily" / "monthly" / "billing_cycle")
+	//   - reset_at: RFC 3339 timestamp when the deny clears, also used
+	//                to derive the caller's Retry-After header
+	//   - cached  : true when the decision came from Forge's per-agent
+	//                TTL cache; false on a fresh platform call. Lets
+	//                operators distinguish "platform actively denied"
+	//                from "serving a few-second-old cached deny" when
+	//                debugging propagation lag.
+	//
+	// Caller observes HTTP 402 Payment Required with the same shape as
+	// the audit fields surfaced in the response body. Distinct from
+	// auth_fail (which signals authentication failure, HTTP 401) and
+	// from rate limit drops (which signal request-rate ceilings, HTTP
+	// 429). See docs/security/admission.md.
+	AuditTaskAdmissionDenied = "task_admission_denied"
+
 	// Deprecated: use EventAuthVerify. Kept as a string alias so any
 	// audit-log consumer that grep'd for "auth_success" can be migrated.
 	// Scheduled for removal in v0.11.0.

@@ -4,6 +4,62 @@
 
 ### Added
 
+- **Platform admission hook for per-agent quota / cost-limit gating
+  (issue #201).** A new pre-dispatch middleware lets the platform tell
+  an agent process to stop accepting new `tasks/send` invocations when
+  an agent / workspace / org is over budget — distinct from auth
+  (HTTP 401 on bad credentials) and from the per-IP rate limiter
+  (HTTP 429 on burst).
+  - **Two env vars to engage**: `FORGE_ADMISSION_URL` (the platform's
+    admission endpoint) and `FORGE_PLATFORM_TOKEN` (bearer token).
+    Both must be set; partial config logs one warn at startup and
+    runs without admission. Existing `FORGE_ORG_ID` /
+    `FORGE_WORKSPACE_ID` env vars from #157 forward as outbound
+    `Org-Id` / `Workspace-Id` headers when set (empty value → header
+    omitted entirely).
+  - **Baked defaults**: 2s HTTP timeout, 5s decision cache TTL,
+    `GET` method. Not env-overridable — keeps the operator surface
+    flat.
+  - **Wire shape**:
+    `GET /v1/admission?agent_id=<id>` with bearer + tenancy headers
+    returns `{decision, reason, scope, window, reset_at}`. `decision`
+    is `admit` or `deny`; everything else is platform-defined.
+  - **Fail-open everywhere**: any failure (timeout, 4xx, 5xx, parse
+    error, unknown decision value) produces a logged warn line and
+    a cached fail-open admit for the TTL. No `REQUIRED` knob — the
+    cascade of "platform degraded → all agents stop serving" is a
+    worse production failure than a 5-second quota leak.
+  - **Caller-facing on deny**: HTTP 402 Payment Required with
+    `Retry-After` (derived from `reset_at`, clamped non-negative)
+    and a structured body carrying reason / scope / window.
+  - **Pipeline placement**: middleware fires after `auth_middleware`,
+    before the dispatcher. Auth runs first so the platform call
+    never burns on unauthenticated traffic; admission runs before
+    the executor so a denied invocation never reaches the LLM /
+    tool stack.
+  - **New audit event** `task_admission_denied` carrying
+    `fields.reason` / `scope` / `window` / `reset_at` / `cached`.
+    `cached` distinguishes "platform actively denied" from "serving
+    a few-second-old cached deny" when debugging propagation lag.
+  - **New OTel span** `admission.check`, sibling of `auth.verify`
+    (issue #187). Attributes:
+    `forge.admission.decision` / `.reason` / `.scope` / `.window` /
+    `.cached` / `.fallback`. Status=Error on deny. The HTTP call
+    nests under it as `http.client` so total + platform latency
+    surface cleanly.
+  - Pinned by `TestPlatformAdmissionChecker_{AdmitFromPlatform,
+    DenyFromPlatform,TenancyHeadersSentAndOmitted,CachesWithinTTL,
+    CacheExpires,FailsOpenOnNetworkError,FailsOpenOnPlatform5xx,
+    FailsOpenOnAuth4xx,FailsOpenOnMalformedJSON,
+    FailsOpenOnUnknownDecision,AppendsAgentIDToExistingQuery,
+    TimeoutHonored}`,
+    `TestBuildAdmissionChecker_{BothEnvSetReturnsPlatformChecker,
+    NeitherEnvSetSilentNoop,PartialConfigWarnsButReturnsNoop}`,
+    `TestAdmissionMiddleware_{AdmitPassesThrough,
+    DenyReturns402WithStructuredBody,
+    DenyClampsNegativeRetryAfter,EmitsAuditEventOnDeny,
+    NoopShortCircuits,NilCheckerPasses}`.
+
 - **Three runtime spans for previously-invisible latency / causality
   surfaces: `auth.verify`, `channel.<adapter>.deliver`, `schedule.fire`
   (issue #187).** All three use the existing global `Tracer()` (no new

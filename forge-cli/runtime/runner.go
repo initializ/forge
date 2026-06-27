@@ -1065,13 +1065,33 @@ func (r *Runner) Run(ctx context.Context) error {
 	// return means "no overrides anywhere" — let the server install
 	// its own defaults.
 	rateLimit := ResolveRateLimit(r.cfg.Config, r.cfg.RateLimitOverride)
+
+	// Issue #201 — platform admission gating. Engaged only when
+	// both FORGE_ADMISSION_URL and FORGE_PLATFORM_TOKEN are set;
+	// otherwise BuildAdmissionChecker returns a Noop and the
+	// middleware short-circuits to a pass-through.
+	//
+	// The pipeline shape is:
+	//
+	//   seq counter → auth → admission → handlers
+	//
+	// auth runs first so the platform call never burns on
+	// unauthenticated traffic; admission runs before the dispatcher
+	// so denied invocations don't reach the executor / LLM / tool
+	// stack (no expensive work on the deny path).
+	admissionChecker := BuildAdmissionChecker(r.cfg.Config.AgentID, r.logger)
+	admissionMW := server.AdmissionMiddleware(admissionChecker, auditLogger)
+	authThenAdmission := func(next http.Handler) http.Handler {
+		return auth.Middleware(authCfg)(admissionMW(next))
+	}
+
 	r.startTime = time.Now()
 	srv := server.NewServer(server.ServerConfig{
 		Port:            r.cfg.Port,
 		Host:            r.cfg.Host,
 		ShutdownTimeout: r.cfg.ShutdownTimeout,
 		AgentCard:       card,
-		AuthMiddleware:  installSequenceCounterMiddleware(auth.Middleware(authCfg)),
+		AuthMiddleware:  installSequenceCounterMiddleware(authThenAdmission),
 		AllowedOrigins:  corsOrigins,
 		RateLimit:       rateLimit,
 	})

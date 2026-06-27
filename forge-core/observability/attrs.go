@@ -263,6 +263,54 @@ const (
 	// LLM through the schedule_create tool). Sourced from Schedule.Source.
 	AttrForgeScheduleSource = "forge.schedule.source"
 
+	// ─── Admission span attributes (issue #201) ───────────────────────
+	//
+	// Stamped on admission.check spans the admission middleware opens
+	// around the per-request platform admission call. Mirror the
+	// task_admission_denied audit-event fields so a SIEM joins the
+	// trace and the audit row by trace_id without translating
+	// attribute names. The check runs once per inbound A2A request
+	// (cached for 5s at steady state) so span volume is proportional
+	// to inbound RPS, not cardinality of any quota-state dimension.
+
+	// AttrForgeAdmissionDecision is "admit" or "deny" — the only two
+	// values Forge consumes from the platform response. Anything else
+	// → log warn + fail-open admit + admission.fallback=true.
+	AttrForgeAdmissionDecision = "forge.admission.decision"
+
+	// AttrForgeAdmissionReason is the platform-defined failure code
+	// on deny — "cost_limit_exceeded", "billing_overdue",
+	// "rate_limit_exhausted", … Empty on admit. Forge never enums
+	// this; the vocabulary is the platform's.
+	AttrForgeAdmissionReason = "forge.admission.reason"
+
+	// AttrForgeAdmissionScope names which level in the platform's
+	// billing hierarchy tripped — "agent" / "workspace" / "org" /
+	// "". Purely informational for SRE runbook routing.
+	AttrForgeAdmissionScope = "forge.admission.scope"
+
+	// AttrForgeAdmissionWindow names the quota window that tripped —
+	// "hourly", "daily", "monthly", "billing_cycle", … Platform-
+	// defined. Lets dashboards build "denials by window type" rollups
+	// without joining against platform state.
+	AttrForgeAdmissionWindow = "forge.admission.window"
+
+	// AttrForgeAdmissionCached is true when the decision came from
+	// Forge's per-agent TTL cache, false on a fresh platform call.
+	// Helps debug propagation lag — operators looking at why a
+	// recently-recharged agent is still being denied check the
+	// cached attribute first.
+	AttrForgeAdmissionCached = "forge.admission.cached"
+
+	// AttrForgeAdmissionFallback is true when an "admit" decision
+	// was forced by a platform-call failure (timeout, 5xx, parse
+	// error) rather than a real platform admit. Default is false.
+	// Alerts on forge.admission.fallback=true surface platform
+	// outage rate even though no caller observed it as a deny —
+	// Forge fails open, so the platform's degraded state is
+	// invisible at the caller boundary.
+	AttrForgeAdmissionFallback = "forge.admission.fallback"
+
 	// AttrForgeGuardrailEvidence is the triggering content. Set only
 	// when TracingConfig.CaptureContent is true. Passes through
 	// PrepareSpanContent (redact-then-truncate) just like the other

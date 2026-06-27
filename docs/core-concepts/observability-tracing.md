@@ -126,6 +126,9 @@ Name parsing is case-insensitive and whitespace-tolerant. Unknown names error lo
 auth.verify                           [pre-request; parents provider HTTP calls]
 └── http.client (× JWKS/STS/IAP/Graph)
 
+admission.check                       [pre-dispatch; opt-in via FORGE_ADMISSION_URL]
+└── http.client (to platform admission endpoint)
+
 a2a.<method>                          [SpanKindServer; dispatcher]
 └── agent.execute                     [outer loop; root for the task]
     ├── llm.completion (× N turns)    [per LLM provider call]
@@ -181,6 +184,21 @@ Wraps `Scheduler.fire` in `forge-core/scheduler/scheduler.go`. Before this span 
 | `forge.schedule.id` | `Schedule.ID` |
 | `forge.schedule.cron` | `Schedule.Cron` |
 | `forge.schedule.source` | `yaml` (from `forge.yaml schedules[]`) or `llm` (added at runtime via `schedule_create`) |
+
+### `admission.check`
+
+Wraps the platform admission call in `forge-cli/server/admission_middleware.go`. Sibling of `auth.verify` — fires after auth, before the dispatcher. Off by default; opt-in via the `FORGE_ADMISSION_URL` + `FORGE_PLATFORM_TOKEN` env-var pair. See [Platform Admission Hook](../security/admission.md) for the wire contract.
+
+| Attribute | Source |
+|---|---|
+| `forge.admission.decision` | `admit` / `deny` — only two values Forge consumes; anything else → fail-open admit with `fallback=true` |
+| `forge.admission.reason` | platform-defined failure code (`cost_limit_exceeded`, `billing_overdue`, …) — empty on admit |
+| `forge.admission.scope` | which level tripped — `agent` / `workspace` / `org` / `""` |
+| `forge.admission.window` | which quota window tripped — `hourly` / `daily` / `monthly` / `billing_cycle` — platform-defined |
+| `forge.admission.cached` | `true` when served from the 5s per-agent cache; helps debug propagation lag |
+| `forge.admission.fallback` | `true` when an `admit` was forced by a platform-call failure (timeout, 4xx, 5xx, parse error). Alerts on this attribute surface platform outage rate even though no caller observes a deny — Forge fails open. |
+
+Status = `Error` on deny. The HTTP call to the platform nests under the span as `http.client` so total admission latency = span duration, platform-side latency = HTTP child duration.
 
 ### Attribute conventions
 

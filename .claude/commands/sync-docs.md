@@ -25,6 +25,7 @@ After feature work, update the affected documentation to reflect code changes.
    | `forge-cli/cmd/` | `docs/reference/cli-reference.md` |
    | `forge-cli/runtime/` | `docs/core-concepts/runtime-engine.md` |
    | `forge-cli/server/` | `docs/core-concepts/how-forge-works.md` |
+   | `forge-cli/runtime/admission_engine.go`, `forge-cli/runtime/admission_loader.go`, `forge-cli/server/admission_middleware.go`, `forge-core/runtime/admission.go` | `docs/security/admission.md` (full operator + platform-integrator reference), `docs/security/audit-logging.md` (`task_admission_denied` event row), `docs/core-concepts/observability-tracing.md` (`admission.check` span attribute table) — keep wire shape, env var names, fail-open semantic, and HTTP 402 response body all in sync |
    | `forge-cli/channels/` | `docs/core-concepts/channels.md` |
    | `forge-cli/tools/` | `docs/core-concepts/tools-and-builtins.md` |
    | `forge-cli/internal/tui/` | `docs/reference/cli-reference.md` (wizard flow) |

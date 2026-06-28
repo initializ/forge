@@ -48,7 +48,7 @@ var providers = []Provider{
 	{
 		ID:          "custom",
 		Label:       "Custom URL",
-		Description: "Any OpenAI-compatible endpoint",
+		Description: "OpenAI-compatible or Anthropic-compatible endpoint",
 		Icon:        "⚙️",
 		IsCustom:    true,
 	},

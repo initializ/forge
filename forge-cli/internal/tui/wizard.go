@@ -29,7 +29,16 @@ type WizardContext struct {
 	CustomBaseURL  string
 	CustomModel    string
 	CustomAPIKey   string
-	EnvVars        map[string]string
+	// CustomShape selects which wire format the custom-URL endpoint
+	// speaks — "openai" (default; OpenAI Chat Completions, used by
+	// litellm / vLLM / OpenRouter / self-hosted Llama proxies) or
+	// "anthropic" (Anthropic Messages format, used by Bedrock's
+	// Anthropic passthrough and by Anthropic-compatible proxies).
+	// Drives whether normalizeCustomProvider sets ModelProvider to
+	// "openai" or "anthropic" and which BASE_URL / API_KEY env names
+	// are emitted to .env. See issue #202 Phase 1.
+	CustomShape string
+	EnvVars     map[string]string
 
 	// AuthMode is the user's selection from the auth step:
 	//   ""             — wizard step did not run

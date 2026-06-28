@@ -87,6 +87,24 @@ func ResolveModelConfig(cfg *types.ForgeConfig, envVars map[string]string, provi
 		mc.Client.BaseURL = u
 	}
 
+	// Issue #202 Phase 2 — forge.yaml auth_scheme + aws_region carry
+	// onto the client config when the operator points at AWS Bedrock
+	// (or any other SigV4-fronted gateway). Empty AuthScheme leaves
+	// the pre-#202 provider-default behavior intact.
+	if cfg.Model.AuthScheme != "" {
+		mc.Client.AuthScheme = cfg.Model.AuthScheme
+	}
+	if cfg.Model.AWSRegion != "" {
+		mc.Client.AWSRegion = cfg.Model.AWSRegion
+	}
+	// AWS_REGION env safety-net for the SigV4 path. Mirrors the
+	// OPENAI_BASE_URL / ANTHROPIC_BASE_URL env pattern above — lets
+	// an operator override the region per-deploy without touching
+	// forge.yaml.
+	if r := envVars["AWS_REGION"]; r != "" && mc.Client.AWSRegion == "" {
+		mc.Client.AWSRegion = r
+	}
+
 	// Return nil if no provider could be resolved
 	if mc.Provider == "" {
 		return nil

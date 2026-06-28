@@ -4,6 +4,74 @@
 
 ### Added
 
+- **Anthropic-format custom URLs + AWS Bedrock SigV4 outbound auth
+  (issue #202).** Two-phase rollout:
+  - **Phase 1**: `forge init`'s "Custom" provider option now asks
+    whether the endpoint speaks OpenAI Chat Completions or Anthropic
+    Messages wire format and writes the matching provider into the
+    generated `forge.yaml` (`openai` or `anthropic`). Both flows
+    accept the same Base URL + API key inputs; the shape picker is
+    the only branch. Underlying plumbing already supported
+    `provider: anthropic + ANTHROPIC_BASE_URL` symmetric with the
+    OpenAI path (#137 / #139); this exposes it through the wizard.
+  - **Phase 2**: new `model.auth_scheme: aws_sigv4` + `model.aws_region`
+    fields on `ModelRef` (with matching `ClientConfig.AuthScheme` /
+    `AWSRegion`) wrap the LLM client's `http.Transport` with an
+    AWS SigV4 signer. Credentials resolve via the standard env vars
+    (`AWS_ACCESS_KEY_ID` / `_SECRET_ACCESS_KEY` / `_SESSION_TOKEN`).
+    Works symmetrically across the openai and anthropic providers
+    so an operator can point either at AWS Bedrock or any other
+    SigV4-fronted gateway:
+    - `provider: anthropic` + `auth_scheme: aws_sigv4` → calls
+      Anthropic-shaped endpoints with SigV4 signing instead of
+      `x-api-key`; the `anthropic-version` header still rides.
+    - `provider: openai` + `auth_scheme: aws_sigv4` → calls
+      OpenAI-shaped endpoints with SigV4 signing instead of
+      `Authorization: Bearer`; the `OpenAI-Organization` header
+      still rides.
+  - SigV4 signer is **hand-rolled** (~250 LOC, stdlib only) matching
+    the existing `forge-core/auth/providers/aws_sigv4` inbound-auth
+    posture — keeps the binary footprint flat (no aws-sdk-go-v2 +
+    ~5 MB).
+  - `AWS_REGION` env safety-net for the SigV4 path symmetric with
+    `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` env safety-nets — set
+    once at the platform layer instead of in every `forge.yaml`.
+  - Bedrock hostnames (`bedrock-runtime.<region>.amazonaws.com`)
+    auto-extend the egress allowlist via the existing
+    `LLMProviderDomains` parsing — no separate `egress.allowed_domains`
+    entry required when `model.base_url` points there.
+  - The empty `AuthScheme` default preserves the pre-#202 contract
+    byte-for-byte. Existing Anthropic and OpenAI deployments see
+    zero behavior change.
+  - Web identity tokens / IRSA / EC2 instance metadata resolution is
+    NOT yet supported — the credential getter reads env only. Most
+    Bedrock deployments today set the AWS env vars at the platform
+    layer (via IRSA's env injection, sidecar credential fetcher, or
+    `AWS_PROFILE` resolution). STS-based credential refresh is
+    tracked as a follow-up.
+  - **Out of scope for this PR**: Bedrock-specific URL / body
+    rewriting (`/model/<id>/invoke` path + `anthropic_version` body
+    field). Operators today either point Forge at a Bedrock-compat
+    proxy that handles the translation (litellm, OpenRouter) or wait
+    for a Phase 2.5 PR that adds native Bedrock InvokeModel
+    passthrough.
+  - Pinned by `TestSigV4Transport_{StampsAuthorizationAndAmzDate,
+    StampsSecurityTokenWhenTemporary,
+    PreservesBodyAndContentLength, DoesNotMutateCallerRequest,
+    PropagatesUnderlyingError, MissingCredentialsErrors,
+    RequiresRegionAndService, CanonicalQueryOrdering,
+    EndToEndAgainstHTTPTestServer}`,
+    `TestSigV4CredentialsFromEnv_ParsesStandardVars`,
+    `TestAnthropicClient_{DefaultAuthSchemeKeepsXAPIKey,
+    SigV4AuthSchemeOmitsXAPIKey, SigV4WrapsTransport,
+    DefaultTransportNotWrapped}`,
+    `TestOpenAIClient_{DefaultAuthSchemeKeepsBearer,
+    SigV4AuthSchemeOmitsBearer, SigV4WrapsTransport,
+    OrgIDStillSetUnderSigV4}`,
+    `TestLLMProviderDomains_BedrockHostExtracted`,
+    `TestNormalizeCustomProvider_{AnthropicShapeRewritesToAnthropic,
+    DefaultShapeStaysOpenAI}`.
+
 - **Platform admission hook for per-agent quota / cost-limit gating
   (issue #201).** A new pre-dispatch middleware lets the platform tell
   an agent process to stop accepting new `tasks/send` invocations when

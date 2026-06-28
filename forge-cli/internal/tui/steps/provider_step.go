@@ -23,6 +23,12 @@ const (
 	providerModelPhase
 	providerOrgIDPhase
 	providerCustomURLPhase
+	// providerCustomShapePhase asks whether the custom endpoint
+	// speaks OpenAI Chat Completions or Anthropic Messages wire
+	// format. Default is OpenAI for back-compat; Anthropic-shape
+	// unlocks Bedrock's Anthropic passthrough and any
+	// Anthropic-compatible proxy. See issue #202 Phase 1.
+	providerCustomShapePhase
 	providerCustomModelPhase
 	providerCustomAuthPhase
 	providerDonePhase
@@ -87,11 +93,19 @@ type ProviderStep struct {
 	customURL          string
 	customModel        string
 	customAuth         string
-	validateFn         ValidateKeyFunc
-	oauthFn            OAuthFlowFunc
-	validating         bool
-	valErr             error
-	oauthRunning       bool
+	// customShape is the wire format the custom endpoint speaks —
+	// "openai" (default) or "anthropic". Selected via the
+	// providerCustomShapePhase selector. Flows out via WizardContext
+	// and into normalizeCustomProvider, which writes either
+	// `provider: openai + OPENAI_BASE_URL` or
+	// `provider: anthropic + ANTHROPIC_BASE_URL`. Issue #202 Phase 1.
+	customShape       string
+	customShapeSelect components.SingleSelect
+	validateFn        ValidateKeyFunc
+	oauthFn           OAuthFlowFunc
+	validating        bool
+	valErr            error
+	oauthRunning      bool
 }
 
 // NewProviderStep creates a new provider selection step.
@@ -172,6 +186,8 @@ func (s *ProviderStep) Update(msg tea.Msg) (tui.Step, tea.Cmd) {
 		return s.updateOrgIDPhase(msg)
 	case providerCustomURLPhase:
 		return s.updateCustomURLPhase(msg)
+	case providerCustomShapePhase:
+		return s.updateCustomShapePhase(msg)
 	case providerCustomModelPhase:
 		return s.updateCustomModelPhase(msg)
 	case providerCustomAuthPhase:
@@ -504,6 +520,54 @@ func (s *ProviderStep) updateCustomURLPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
 
 	if s.textInput.Done() {
 		s.customURL = s.textInput.Value()
+		// Phase 1 of issue #202: ask which wire format the endpoint
+		// speaks. Default to OpenAI because the wizard's existing
+		// example URLs all point at OpenAI-shaped services
+		// (litellm, Ollama, vLLM).
+		s.phase = providerCustomShapePhase
+		items := []components.SingleSelectItem{
+			{
+				Label:       "OpenAI Chat Completions",
+				Value:       "openai",
+				Description: "OpenRouter, litellm, vLLM, Together.ai, Ollama, Bedrock OpenAI compatibility",
+				Icon:        "🧩",
+			},
+			{
+				Label:       "Anthropic Messages",
+				Value:       "anthropic",
+				Description: "Anthropic-compatible proxies; AWS Bedrock Anthropic passthrough (Phase 2: aws_sigv4 auth)",
+				Icon:        "🅰️",
+			},
+		}
+		s.customShapeSelect = components.NewSingleSelect(
+			items,
+			s.styles.Theme.Accent,
+			s.styles.Theme.Primary,
+			s.styles.Theme.Secondary,
+			s.styles.Theme.Dim,
+			s.styles.Theme.Border,
+			s.styles.Theme.ActiveBorder,
+			s.styles.Theme.ActiveBg,
+			s.styles.KbdKey,
+			s.styles.KbdDesc,
+		)
+		return s, nil
+	}
+
+	return s, cmd
+}
+
+// updateCustomShapePhase collects the operator's choice between
+// OpenAI Chat Completions wire format and Anthropic Messages wire
+// format, then transitions to the model-name prompt. Issue #202
+// Phase 1.
+func (s *ProviderStep) updateCustomShapePhase(msg tea.Msg) (tui.Step, tea.Cmd) {
+	updated, cmd := s.customShapeSelect.Update(msg)
+	s.customShapeSelect = updated
+
+	if s.customShapeSelect.Done() {
+		_, val := s.customShapeSelect.Selected()
+		s.customShape = val
 		s.phase = providerCustomModelPhase
 		s.textInput = components.NewTextInput(
 			"Model name",
@@ -519,7 +583,6 @@ func (s *ProviderStep) updateCustomURLPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
 		)
 		return s, s.textInput.Init()
 	}
-
 	return s, cmd
 }
 
@@ -601,6 +664,8 @@ func (s *ProviderStep) View(width int) string {
 		return s.textInput.View(width)
 	case providerCustomURLPhase, providerCustomModelPhase:
 		return s.textInput.View(width)
+	case providerCustomShapePhase:
+		return s.customShapeSelect.View(width)
 	case providerCustomAuthPhase:
 		return s.keyInput.View(width)
 	}
@@ -643,6 +708,7 @@ func (s *ProviderStep) Apply(ctx *tui.WizardContext) {
 	ctx.CustomBaseURL = s.customURL
 	ctx.CustomModel = s.customModel
 	ctx.CustomAPIKey = s.customAuth
+	ctx.CustomShape = s.customShape
 
 	// Store the provider API key in EnvVars so later steps (e.g. skills)
 	// can detect it's already collected and skip re-prompting.

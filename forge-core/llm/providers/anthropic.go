@@ -16,13 +16,27 @@ import (
 
 // AnthropicClient implements llm.Client for the Anthropic Messages API.
 type AnthropicClient struct {
-	apiKey  string
-	baseURL string
-	model   string
-	client  *http.Client
+	apiKey     string
+	baseURL    string
+	model      string
+	authScheme string
+	client     *http.Client
 }
 
 // NewAnthropicClient creates a new Anthropic client.
+//
+// When cfg.AuthScheme == "aws_sigv4", the client's http.Transport is
+// wrapped with the SigV4 signer (issue #202 Phase 2) and the
+// per-request x-api-key header is skipped. This routes outbound
+// requests at any AWS SigV4-fronted gateway that speaks the
+// Anthropic Messages wire format (custom proxies, Bedrock-compat
+// proxies). Operators provide AWS credentials via the standard
+// environment variables (AWS_ACCESS_KEY_ID / _SECRET_ / _SESSION_TOKEN)
+// and the region via cfg.AWSRegion. APIKey is ignored on this path.
+//
+// All other AuthScheme values (including the empty default) preserve
+// the pre-#202 contract: x-api-key + anthropic-version headers, no
+// transport wrapping.
 func NewAnthropicClient(cfg llm.ClientConfig) *AnthropicClient {
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
@@ -32,11 +46,35 @@ func NewAnthropicClient(cfg llm.ClientConfig) *AnthropicClient {
 	if timeout == 0 {
 		timeout = 120 * time.Second
 	}
+	httpClient := &http.Client{Timeout: timeout}
+	if cfg.AuthScheme == "aws_sigv4" {
+		httpClient.Transport = newBedrockSigningTransport(cfg.AWSRegion, http.DefaultTransport)
+	}
 	return &AnthropicClient{
-		apiKey:  cfg.APIKey,
-		baseURL: strings.TrimRight(baseURL, "/"),
-		model:   cfg.Model,
-		client:  &http.Client{Timeout: timeout},
+		apiKey:     cfg.APIKey,
+		baseURL:    strings.TrimRight(baseURL, "/"),
+		model:      cfg.Model,
+		authScheme: cfg.AuthScheme,
+		client:     httpClient,
+	}
+}
+
+// newBedrockSigningTransport wraps an underlying transport with a
+// SigV4 signer pinned to the `bedrock` service in the configured
+// region, reading credentials from env each call so a credential
+// rotation propagates without restarting the agent. Issue #202 Phase 2.
+func newBedrockSigningTransport(region string, underlying http.RoundTripper) http.RoundTripper {
+	return &SigV4Transport{
+		Underlying: underlying,
+		Region:     region,
+		Service:    "bedrock",
+		Credentials: func() (SigV4Credentials, error) {
+			c, ok := SigV4CredentialsFromEnv()
+			if !ok {
+				return c, fmt.Errorf("aws_sigv4: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY env vars required")
+			}
+			return c, nil
+		},
 	}
 }
 
@@ -107,8 +145,16 @@ func (c *AnthropicClient) ChatStream(ctx context.Context, req *llm.ChatRequest) 
 
 func (c *AnthropicClient) setHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", c.apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
+	// When the SigV4 transport is wrapped on the client, the
+	// Authorization header is what authenticates the request — the
+	// x-api-key header MUST NOT be sent, both because it isn't
+	// validated upstream and because it would be included in the
+	// SigV4 signed-headers set and complicate proxy debugging.
+	// Issue #202 Phase 2.
+	if c.authScheme != "aws_sigv4" {
+		req.Header.Set("x-api-key", c.apiKey)
+	}
 }
 
 // Anthropic-specific request types.

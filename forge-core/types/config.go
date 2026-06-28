@@ -483,6 +483,36 @@ type ModelRef struct {
 	// generated NetworkPolicy. See issue #139.
 	BaseURL string `yaml:"base_url,omitempty"`
 
+	// AuthScheme selects the outbound authentication scheme used to
+	// reach the configured BaseURL. Issue #202 Phase 2 — symmetric
+	// across the openai and anthropic providers so an operator can
+	// point either at AWS Bedrock (Anthropic passthrough or the
+	// OpenAI compatibility endpoint) using AWS SigV4 credentials in
+	// place of the provider's native API-key header.
+	//
+	// Valid values:
+	//
+	//	""           — provider default
+	//	                 (anthropic: x-api-key header from APIKey;
+	//	                  openai:    Authorization: Bearer header from APIKey)
+	//	"x_api_key"  — explicit anthropic native (same as "")
+	//	"bearer"     — explicit openai native (same as "")
+	//	"aws_sigv4"  — AWS Signature V4 signing on every request,
+	//	                using credentials resolved from the standard
+	//	                environment (AWS_ACCESS_KEY_ID / _SECRET_ /
+	//	                _SESSION_TOKEN) plus the AWSRegion field
+	//	                below. APIKey is ignored on this path.
+	//
+	// Unset for the vast majority of deployments — the default
+	// behavior matches the pre-#202 contract byte-for-byte.
+	AuthScheme string `yaml:"auth_scheme,omitempty"`
+
+	// AWSRegion is the AWS region used for SigV4 signing when
+	// AuthScheme == "aws_sigv4". Required on that path. Forge does
+	// not parse the region out of the BaseURL because Bedrock URLs
+	// often go through customer-side proxies that re-write the host.
+	AWSRegion string `yaml:"aws_region,omitempty"`
+
 	Version        string          `yaml:"version,omitempty"`
 	OrganizationID string          `yaml:"organization_id,omitempty"`
 	Fallbacks      []ModelFallback `yaml:"fallbacks,omitempty"`

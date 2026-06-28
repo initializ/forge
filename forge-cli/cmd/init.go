@@ -397,6 +397,13 @@ func collectInteractive(opts *initOptions) error {
 	if ctx.CustomAPIKey != "" {
 		opts.EnvVars["MODEL_API_KEY"] = ctx.CustomAPIKey
 	}
+	// Carry the wizard's wire-format choice through to
+	// normalizeCustomProvider via a synthetic env key. Stripped by
+	// the normalizer before .env is written so it never reaches the
+	// agent process. Issue #202 Phase 1.
+	if ctx.CustomShape != "" {
+		opts.EnvVars["__custom_shape"] = ctx.CustomShape
+	}
 
 	// Store egress domains, merging in any auth-provider hosts so the
 	// agent can reach its IdP / verifier at runtime.
@@ -536,26 +543,57 @@ func normalizeCustomProvider(opts *initOptions) {
 	if opts.ModelProvider != "custom" {
 		return
 	}
-	opts.ModelProvider = "openai"
-	// Migrate legacy MODEL_BASE_URL / MODEL_API_KEY (TUI wizard,
-	// older Web UI revs) to the OPENAI_* names the runtime reads.
-	if v := opts.EnvVars["MODEL_BASE_URL"]; v != "" {
-		opts.EnvVars["OPENAI_BASE_URL"] = v
-		delete(opts.EnvVars, "MODEL_BASE_URL")
+	// Issue #202 Phase 1: the wizard now asks whether the custom URL
+	// speaks OpenAI Chat Completions or Anthropic Messages wire
+	// format. The Web UI Custom flow doesn't ask yet — it falls
+	// through to the legacy openai default for back-compat. Honoring
+	// this here means both surfaces can converge on the same
+	// scaffold once the Web UI gains the picker.
+	shape := opts.EnvVars["__custom_shape"]
+	delete(opts.EnvVars, "__custom_shape")
+	if shape == "" {
+		shape = "openai"
 	}
-	if v := opts.EnvVars["MODEL_API_KEY"]; v != "" {
-		opts.EnvVars["OPENAI_API_KEY"] = v
-		delete(opts.EnvVars, "MODEL_API_KEY")
-		if opts.APIKey == "" {
-			opts.APIKey = v
+
+	switch shape {
+	case "anthropic":
+		opts.ModelProvider = "anthropic"
+		if v := opts.EnvVars["MODEL_BASE_URL"]; v != "" {
+			opts.EnvVars["ANTHROPIC_BASE_URL"] = v
+			delete(opts.EnvVars, "MODEL_BASE_URL")
 		}
-	}
-	// storeProviderEnvVar runs before scaffold and short-circuits when
-	// provider="custom"; fold in any opts.APIKey set by flag or POST
-	// so the .env emits OPENAI_API_KEY consistently with the path
-	// taken by every other openai-shaped configuration.
-	if opts.APIKey != "" && opts.EnvVars["OPENAI_API_KEY"] == "" {
-		opts.EnvVars["OPENAI_API_KEY"] = opts.APIKey
+		if v := opts.EnvVars["MODEL_API_KEY"]; v != "" {
+			opts.EnvVars["ANTHROPIC_API_KEY"] = v
+			delete(opts.EnvVars, "MODEL_API_KEY")
+			if opts.APIKey == "" {
+				opts.APIKey = v
+			}
+		}
+		if opts.APIKey != "" && opts.EnvVars["ANTHROPIC_API_KEY"] == "" {
+			opts.EnvVars["ANTHROPIC_API_KEY"] = opts.APIKey
+		}
+	default:
+		opts.ModelProvider = "openai"
+		// Migrate legacy MODEL_BASE_URL / MODEL_API_KEY (TUI wizard,
+		// older Web UI revs) to the OPENAI_* names the runtime reads.
+		if v := opts.EnvVars["MODEL_BASE_URL"]; v != "" {
+			opts.EnvVars["OPENAI_BASE_URL"] = v
+			delete(opts.EnvVars, "MODEL_BASE_URL")
+		}
+		if v := opts.EnvVars["MODEL_API_KEY"]; v != "" {
+			opts.EnvVars["OPENAI_API_KEY"] = v
+			delete(opts.EnvVars, "MODEL_API_KEY")
+			if opts.APIKey == "" {
+				opts.APIKey = v
+			}
+		}
+		// storeProviderEnvVar runs before scaffold and short-circuits when
+		// provider="custom"; fold in any opts.APIKey set by flag or POST
+		// so the .env emits OPENAI_API_KEY consistently with the path
+		// taken by every other openai-shaped configuration.
+		if opts.APIKey != "" && opts.EnvVars["OPENAI_API_KEY"] == "" {
+			opts.EnvVars["OPENAI_API_KEY"] = opts.APIKey
+		}
 	}
 }
 

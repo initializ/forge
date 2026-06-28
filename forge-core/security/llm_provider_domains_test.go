@@ -182,3 +182,28 @@ func TestLLMProviderEnvDomains_MalformedURL_NoEntry(t *testing.T) {
 		t.Errorf("malformed env URL must produce no entry; got %v", got)
 	}
 }
+
+// TestLLMProviderDomains_BedrockHostExtracted pins the issue #202
+// Phase 2 invariant: when an operator points the Anthropic or OpenAI
+// provider at AWS Bedrock (via `model.base_url`), the Bedrock
+// hostname auto-extends the egress allowlist — they don't need to
+// also remember to write `bedrock-runtime.<region>.amazonaws.com`
+// under `egress.allowed_domains`. Existing hostFromURL is generic; this
+// test is a regression pin so a future Bedrock URL-shape change
+// (regional differences, e.g. govcloud) still flows through cleanly.
+func TestLLMProviderDomains_BedrockHostExtracted(t *testing.T) {
+	cfg := &types.ForgeConfig{
+		Model: types.ModelRef{
+			Provider:   "anthropic",
+			Name:       "anthropic.claude-sonnet-4-20250514-v1:0",
+			BaseURL:    "https://bedrock-runtime.us-east-1.amazonaws.com",
+			AuthScheme: "aws_sigv4",
+			AWSRegion:  "us-east-1",
+		},
+	}
+	got := security.LLMProviderDomains(cfg)
+	want := []string{"bedrock-runtime.us-east-1.amazonaws.com"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Bedrock hostname not in allowlist; got %v want %v", got, want)
+	}
+}

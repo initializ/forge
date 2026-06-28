@@ -18,15 +18,28 @@ entrypoint: "agent.py"              # Required for crewai/langchain, omit for fo
 model:
   provider: "openai"                # openai, anthropic, gemini, ollama
   name: "gpt-4o"                    # Model name
+  base_url: ""                      # Override the provider's default API host (issue #139)
   organization_id: "org-xxx"        # OpenAI Organization ID (enterprise, optional)
+  auth_scheme: ""                   # "" (default) / "x_api_key" / "bearer" / "aws_sigv4" — issue #202
+  aws_region: ""                    # Required when auth_scheme: aws_sigv4 — issue #202
   fallbacks:                        # Fallback providers (optional)
     - provider: "anthropic"
       name: "claude-sonnet-4-20250514"
       organization_id: ""           # Per-fallback org ID override (optional)
-# For OpenAI-compatible endpoints (OpenRouter, vLLM, litellm, self-hosted
-# Kimi/Llama): use provider: "openai" + set OPENAI_BASE_URL in .env.
-# The forge init wizard's "Custom" option normalizes to this shape — the
-# generated forge.yaml never carries provider: "custom".
+
+# Custom URL endpoints (OpenRouter, vLLM, litellm, self-hosted Kimi/Llama,
+# Together.ai, Anyscale, Bedrock OpenAI compat, …):
+#   provider: "openai" + OPENAI_BASE_URL env  → OpenAI Chat Completions wire format
+#   provider: "anthropic" + ANTHROPIC_BASE_URL env → Anthropic Messages wire format
+# The forge init wizard's "Custom" option asks which wire format the URL
+# speaks and writes the matching provider; generated forge.yaml never
+# carries provider: "custom". Issue #202 Phase 1.
+
+# AWS Bedrock with native API key auth is not supported (Bedrock uses
+# SigV4 signing). Set auth_scheme: aws_sigv4 + aws_region to use AWS
+# credentials (AWS_ACCESS_KEY_ID / _SECRET_ACCESS_KEY / _SESSION_TOKEN
+# env) for outbound LLM calls — works against any SigV4-fronted endpoint
+# that speaks OpenAI or Anthropic wire format. Issue #202 Phase 2.
 
 tools:
   - name: "web_search"

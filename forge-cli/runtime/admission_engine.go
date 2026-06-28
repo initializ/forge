@@ -310,4 +310,3 @@ func stampDecisionOnSpan(span trace.Span, d coreruntime.Decision, cached bool) {
 		span.SetStatus(codes.Error, reason)
 	}
 }
-

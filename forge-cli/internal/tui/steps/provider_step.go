@@ -535,7 +535,7 @@ func (s *ProviderStep) updateCustomURLPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
 			{
 				Label:       "Anthropic Messages",
 				Value:       "anthropic",
-				Description: "Anthropic-compatible proxies; AWS Bedrock Anthropic passthrough (Phase 2: aws_sigv4 auth)",
+				Description: "Anthropic-compatible proxies; AWS Bedrock Anthropic passthrough",
 				Icon:        "🅰️",
 			},
 		}

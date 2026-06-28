@@ -20,4 +20,18 @@ type ClientConfig struct {
 	OrgID       string
 	MaxRetries  int
 	TimeoutSecs int
+
+	// AuthScheme + AWSRegion control outbound authentication when
+	// the operator points the client at AWS Bedrock (Anthropic
+	// passthrough or OpenAI compatibility endpoint) or any other
+	// SigV4-fronted gateway. Issue #202 Phase 2. Mirrors the
+	// matching forge.yaml ModelRef fields.
+	//
+	// AuthScheme == "" preserves the pre-#202 behavior — the
+	// Anthropic client sets `x-api-key: <APIKey>`, the OpenAI
+	// client sets `Authorization: Bearer <APIKey>`. AuthScheme ==
+	// "aws_sigv4" wraps the client's transport with the SigV4
+	// signer and skips the native header logic; APIKey is ignored.
+	AuthScheme string
+	AWSRegion  string
 }

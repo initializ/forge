@@ -226,3 +226,58 @@ func TestScaffold_CustomProviderWebUIShape(t *testing.T) {
 		t.Errorf(".env missing OPENAI_API_KEY=sk-from-webui:\n%s", envStr)
 	}
 }
+
+// TestNormalizeCustomProvider_AnthropicShapeRewritesToAnthropic is
+// the issue #202 Phase 1 pin: when the wizard's shape picker chose
+// "anthropic", the normalizer rewrites MODEL_* env vars onto the
+// ANTHROPIC_* names AND flips the provider from "custom" to
+// "anthropic". Generated forge.yaml then carries
+// `provider: anthropic` and the runtime's ResolveModelConfig wires
+// ANTHROPIC_BASE_URL onto the client.
+func TestNormalizeCustomProvider_AnthropicShapeRewritesToAnthropic(t *testing.T) {
+	opts := &initOptions{
+		ModelProvider: "custom",
+		EnvVars: map[string]string{
+			"__custom_shape": "anthropic",
+			"MODEL_BASE_URL": "https://bedrock-runtime.us-east-1.amazonaws.com",
+			"MODEL_API_KEY":  "ignored-on-sigv4",
+		},
+	}
+	normalizeCustomProvider(opts)
+
+	if opts.ModelProvider != "anthropic" {
+		t.Errorf("ModelProvider = %q, want anthropic", opts.ModelProvider)
+	}
+	if got := opts.EnvVars["ANTHROPIC_BASE_URL"]; got != "https://bedrock-runtime.us-east-1.amazonaws.com" {
+		t.Errorf("ANTHROPIC_BASE_URL = %q, want bedrock URL", got)
+	}
+	if got := opts.EnvVars["ANTHROPIC_API_KEY"]; got != "ignored-on-sigv4" {
+		t.Errorf("ANTHROPIC_API_KEY = %q, want carried-over key", got)
+	}
+	if _, present := opts.EnvVars["MODEL_BASE_URL"]; present {
+		t.Errorf("MODEL_BASE_URL should be deleted")
+	}
+	if _, present := opts.EnvVars["__custom_shape"]; present {
+		t.Errorf("__custom_shape synthetic env key must be stripped before write")
+	}
+}
+
+// TestNormalizeCustomProvider_DefaultShapeStaysOpenAI confirms back-
+// compat: no __custom_shape in env (e.g. Web UI Custom flow that
+// hasn't gained the picker yet) keeps the legacy default of OpenAI.
+func TestNormalizeCustomProvider_DefaultShapeStaysOpenAI(t *testing.T) {
+	opts := &initOptions{
+		ModelProvider: "custom",
+		EnvVars: map[string]string{
+			"MODEL_BASE_URL": "https://openrouter.example/v1",
+			"MODEL_API_KEY":  "sk-router",
+		},
+	}
+	normalizeCustomProvider(opts)
+	if opts.ModelProvider != "openai" {
+		t.Errorf("default-shape should map to openai; got %q", opts.ModelProvider)
+	}
+	if got := opts.EnvVars["OPENAI_BASE_URL"]; got == "" {
+		t.Errorf("OPENAI_BASE_URL should be set on default path")
+	}
+}

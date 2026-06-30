@@ -41,7 +41,7 @@ Forge supports multiple LLM providers with automatic fallback:
 | `anthropic` | `claude-sonnet-4-20250514` | API key |
 | `gemini` | `gemini-2.5-flash` | API key |
 | `ollama` | `llama3` | None (local) |
-| Custom | Configurable | API key |
+| Custom URL | Configurable | API key (OpenAI or Anthropic shape); or AWS SigV4 via `auth_scheme: aws_sigv4` for Bedrock |
 
 ### Configuration
 
@@ -112,6 +112,34 @@ export OPENAI_ORG_ID=org-xxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
 The `OpenAI-Organization` header is sent on all OpenAI API requests (chat, embeddings, responses). Fallback providers inherit the primary org ID unless overridden per-fallback. The org ID is also injected into skill subprocess environments as `OPENAI_ORG_ID`.
+
+### Custom URL Endpoints
+
+Custom URL endpoints (OpenRouter, vLLM, litellm, Together.ai, Anyscale, self-hosted Llama / Kimi proxies, Bedrock OpenAI compat front-ends, …) reuse the OpenAI or Anthropic provider with a base-URL override. The forge init wizard's "Custom URL" option asks which wire format the endpoint speaks and writes the matching provider into `forge.yaml` — the generated config never carries `provider: custom`.
+
+| Wire format | Scaffolded as | Env vars emitted |
+|---|---|---|
+| OpenAI Chat Completions | `provider: openai` | `OPENAI_BASE_URL`, `OPENAI_API_KEY` |
+| Anthropic Messages | `provider: anthropic` | `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` |
+
+Both shapes flow through the same client construction path; only the wire format and env var names differ. Issue #202 Phase 1.
+
+### AWS Bedrock (SigV4 Outbound)
+
+Bedrock uses AWS SigV4 signing instead of a static API key, so `model.auth_scheme: aws_sigv4` swaps the default `Authorization: Bearer …` / `x-api-key: …` header for a hand-rolled SigV4 signature over the outbound HTTP request (forge-core/llm/providers/sigv4_transport.go). The signer is symmetric across the `openai` and `anthropic` providers — pick whichever wire format the Bedrock endpoint speaks.
+
+```yaml
+model:
+  provider: anthropic                            # or openai, for Bedrock's OpenAI compat
+  name: anthropic.claude-sonnet-4-20250514-v1:0
+  base_url: https://bedrock-runtime.us-east-1.amazonaws.com
+  auth_scheme: aws_sigv4
+  aws_region: us-east-1
+```
+
+Credentials come from the standard AWS env chain: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, optional `AWS_SESSION_TOKEN`. The signer matches the inbound-auth posture (forge-core/auth/providers/aws_sigv4) — same stdlib-only crypto, no aws-sdk-go-v2 dependency. Issue #202 Phase 2.
+
+Today this is a passthrough — Forge speaks the wire format the endpoint exposes and signs the request. Native Bedrock URL/body rewriting (`POST /model/<id>/invoke` with the event-stream framing) is tracked separately under issue #205; today operators front Bedrock with a compat proxy (e.g. litellm) when calling models that don't expose the OpenAI or Anthropic shape.
 
 ### Fallback Chains
 

@@ -227,10 +227,12 @@ Common `llm.Client` interface (`forge-core/llm/`). Providers:
 
 | Provider | Notes |
 |---|---|
-| `anthropic` | Claude family. Native messages API. |
-| `openai` | GPT family. Also covers OpenAI-compatible endpoints (OpenRouter, vLLM, litellm, self-hosted Kimi/Llama) — set `provider: openai` + `OPENAI_BASE_URL`. Wizard's "Custom" option normalizes to this shape; `forge.yaml` never carries `provider: "custom"`. |
+| `anthropic` | Claude family. Native messages API. Also covers Anthropic-compatible endpoints (Bedrock Anthropic passthrough, Anthropic-compatible proxies) — set `provider: anthropic` + `ANTHROPIC_BASE_URL`. |
+| `openai` | GPT family. Also covers OpenAI-compatible endpoints (OpenRouter, vLLM, litellm, Together.ai, Anyscale, self-hosted Kimi/Llama) — set `provider: openai` + `OPENAI_BASE_URL`. |
 | `ollama` | Local OSS models via the Ollama daemon. |
 | `gemini` | Google. |
+
+The wizard's "Custom URL" option asks which wire format the endpoint speaks (OpenAI Chat Completions or Anthropic Messages) and scaffolds the matching provider + base-URL env. `forge.yaml` never carries `provider: "custom"`. Issue #202 Phase 1.
 
 Configured in `forge.yaml`:
 
@@ -246,6 +248,21 @@ model:
 
 Fallbacks fire in order on provider error. CLI flags
 (`--model`, `--provider`) override the yaml at `forge run` time.
+
+### `auth_scheme` (AWS Bedrock SigV4 outbound)
+
+`model.auth_scheme: aws_sigv4` + `model.aws_region: <region>` swaps the default `Authorization: Bearer …` / `x-api-key: …` header for a hand-rolled AWS SigV4 signature on every outbound LLM request (`forge-core/llm/providers/sigv4_transport.go`, ~250 LOC stdlib only — no aws-sdk-go-v2). Symmetric across the `openai` and `anthropic` providers; pick whichever wire format the Bedrock endpoint speaks:
+
+```yaml
+model:
+  provider: anthropic                            # or openai
+  name: anthropic.claude-sonnet-4-20250514-v1:0
+  base_url: https://bedrock-runtime.us-east-1.amazonaws.com
+  auth_scheme: aws_sigv4
+  aws_region: us-east-1
+```
+
+Credentials read from `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`. Matches the inbound-auth posture (`forge-core/auth/providers/aws_sigv4`). Today this is passthrough only — native Bedrock URL/body rewriting (`POST /model/<id>/invoke` + event-stream framing) is tracked under issue #205; today operators front Bedrock with a compat proxy (e.g. litellm) when the model doesn't expose the OpenAI or Anthropic wire shape. Issue #202 Phase 2.
 
 Token usage and request IDs are captured per provider at the call site
 and folded into the `llm_call` audit event (FWS-3) and into the
@@ -731,6 +748,18 @@ enterprise raw-capture path.
 `docs/security/audit-logging.md` § Trace cross-link,
 `docs/security/egress-control.md` § OTel collector auto-extension.
 
+### 12.10 Platform admission hook (#201)
+
+Off by default. Engaged when **both** `FORGE_ADMISSION_URL` and `FORGE_PLATFORM_TOKEN` are set. Sits between auth and the dispatcher; one `GET <FORGE_ADMISSION_URL>?agent_id=<id>` per inbound request that misses the **5 s per-agent cache**, with `Org-Id` / `Workspace-Id` headers sourced from `FORGE_ORG_ID` / `FORGE_WORKSPACE_ID`.
+
+Deny → HTTP **402 Payment Required** with `Retry-After` derived from `reset_at`, plus structured body (`reason`, `scope`, `window`, `reset_at`). Distinct from 401 (auth failed) and 429 (rate limiter).
+
+**Fail-open everywhere.** Network errors, 4xx, 5xx, body parse failure, unknown `decision` value → log one warn line + admit + cache the admit for the 5 s TTL (so a platform outage produces one call per agent per 5 s, not a flood). No env knob to flip to fail-closed.
+
+**Audit + tracing.** Emits `task_admission_denied` (FWS audit) and opens an `admission.check` span as a sibling of `auth.verify`. `forge.admission.fallback=true` attribute marks admits forced by a call failure — alerts on that surface platform outage rate even though no caller observes a deny.
+
+**Read**: `docs/security/admission.md`.
+
 ---
 
 ## 13. CLI surface
@@ -772,7 +801,10 @@ entrypoint: agent.py                 # required for crewai/langchain
 model:
   provider: openai                   # openai | anthropic | gemini | ollama
   name: gpt-4o
+  base_url: ""                       # override the provider's default API host (#139)
   organization_id: org-xxx           # OpenAI enterprise org
+  auth_scheme: ""                    # "" (default) | x_api_key | bearer | aws_sigv4 (#202)
+  aws_region: ""                     # required when auth_scheme: aws_sigv4
   fallbacks:
     - provider: anthropic
       name: claude-sonnet-4-20250514
@@ -1012,6 +1044,7 @@ when OTel tracing is enabled (OTel v1 / Phase 4 / #105). Both use
 | `EventAgentCardPublished` | `agent_card_published` | Agent Card finalized at startup / hot-reload; `name`, `version`, `protocol_version`, `url`, `skill_count`, `capabilities`, `security_schemes`, `card_size_bytes`, `card_sha256` (FWS-1) |
 | `AuditInvocationComplete` | `invocation_complete` | A2A invocation closed; `duration_ms`, `input_tokens_total`, `output_tokens_total`, `llm_call_count`, `model`, `provider` (FWS-3) |
 | `AuditInvocationCancelled` | `invocation_cancelled` | A2A invocation cancelled via `tasks/cancel`; classified `reason` + partial token totals (FWS-4) |
+| `AuditTaskAdmissionDenied` | `task_admission_denied` | Inbound `tasks/send` denied by the platform admission middleware (#201; opt-in via `FORGE_ADMISSION_URL` + `FORGE_PLATFORM_TOKEN`); `reason`, `scope`, `window`, `reset_at`, `cached`. Caller sees HTTP 402 Payment Required. |
 | `AuditPolicyLoaded` | `policy_loaded` | One per non-empty policy layer at startup; `layer`, `source`, per-list size counters (FWS-5/6) |
 | `AuditPolicyViolationAtBuildTime` | `policy_violation_at_build_time` | `violation_kind`, `offending_value`, `forge_yaml_field`, `layer`, `source` (FWS-5/6) |
 | `AuditChannelDeniedByPolicy` | `channel_denied_by_policy` | `channel`, `layer`, `source` (FWS-6) |
@@ -1081,6 +1114,7 @@ docs/
 │   ├── build-signing.md
 │   ├── guardrails.md             ← incl. guardrail_check audit + capture-evidence (#155/#159)
 │   ├── platform-policy.md        ← FWS-5 / FWS-6
+│   ├── admission.md              ← platform admission hook (#201) — opt-in pre-dispatch quota gate
 │   ├── audit-logging.md          ← FWS-3 / FWS-7 / FWS-8 / FWS-9 + entity stamping (#164)
 │   ├── tenancy.md                ← org_id / workspace_id / entity_id stamping (#157 / #164)
 │   └── workflow-correlation.md   ← FWS-2

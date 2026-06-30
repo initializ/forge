@@ -31,7 +31,7 @@ forge init [name] [flags]
 | `--name` | `-n` | | Agent name |
 | `--framework` | `-f` | | Framework: `crewai`, `langchain`, or `custom` |
 | `--language` | `-l` | | Language: `python`, `typescript`, or `go` |
-| `--model-provider` | `-m` | | Model provider: `openai`, `anthropic`, `gemini`, `ollama`, or `custom` (alias for an OpenAI-compatible endpoint — scaffolds `provider: openai` + `OPENAI_BASE_URL` / `OPENAI_API_KEY`) |
+| `--model-provider` | `-m` | | Model provider: `openai`, `anthropic`, `gemini`, `ollama`, or `custom`. The `custom` value scaffolds an OpenAI-compatible endpoint by default (`provider: openai` + `OPENAI_BASE_URL` / `OPENAI_API_KEY`); the interactive wizard additionally offers an Anthropic Messages shape for Custom URLs which scaffolds `provider: anthropic` + `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY` (issue #202 Phase 1). |
 | `--channels` | | | Channel adapters (e.g., `slack,telegram`) |
 | `--tools` | | | Builtin tools to enable (e.g., `web_search,http_request`) |
 | `--skills` | | | Registry skills to include (e.g., `github,weather`) |

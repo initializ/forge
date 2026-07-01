@@ -56,6 +56,67 @@ Skill scripts run in a restricted environment via `SkillCommandExecutor`:
 - **No shell execution**: Scripts run via `bash <script> <json-input>`, not through a shell interpreter
 - **Egress proxy enforcement**: When egress mode is `allowlist` or `deny-all`, a local HTTP/HTTPS proxy is started and `HTTP_PROXY`/`HTTPS_PROXY` env vars are injected into subprocess environments, ensuring `curl`, `wget`, Python `requests`, and other HTTP clients route through the same domain allowlist used by in-process tools (see [Egress Security](../security/egress-control.md))
 
+### Worked Example: X/Twitter Evidence Source
+
+External data skills should declare the exact network and secret boundary they
+need. For example, a team using TweetClaw as a public X/Twitter evidence source
+can keep the skill read-only, require a locally configured API key, and allow
+egress only to the Xquik API host:
+
+```yaml
+---
+name: tweetclaw-x-evidence
+category: research
+tags:
+  - twitter
+  - x
+  - source-evidence
+  - social-media
+description: Collect reviewed public X/Twitter evidence for drafts and analysis
+metadata:
+  forge:
+    requires:
+      bins:
+        - openclaw
+      env:
+        required:
+          - XQUIK_API_KEY
+        one_of: []
+        optional: []
+    egress_domains:
+      - xquik.com
+    denied_tools:
+      - web_search
+---
+
+# TweetClaw X Evidence
+
+Use TweetClaw only to collect public X/Twitter source material for an already
+approved analysis or drafting workflow. Keep posting, replies, follows, direct
+messages, monitor creation, and webhooks outside this skill unless a separate
+approval-gated skill documents those actions.
+
+## Authentication
+
+Store `XQUIK_API_KEY` with `forge secrets set` or the agent environment. Never
+paste API keys, account cookies, signing keys, or payment material into prompts,
+skill files, logs, or tickets.
+
+## Tool: collect_x_evidence
+
+Collect public posts, replies, authors, timestamps, URLs, and engagement counts
+for a reviewed query.
+
+**Input:** JSON with `query`, optional `since`, optional `until`, and optional
+`max_results`.
+
+**Output:** JSON containing `query`, `sources`, `notes`, and `limitations`.
+```
+
+This pattern keeps source collection separate from publishing. It also gives
+Forge enough metadata to merge `xquik.com` into the egress allowlist and to
+fail fast when `XQUIK_API_KEY` is missing.
+
 ### Symlink Escape Detection
 
 The skill scanner validates symlinks when a filesystem root path is available. Symlinks that resolve outside the root directory are skipped with a warning log. This prevents malicious symlinks in skill directories from escaping the project boundary. The scanner exposes `ScanWithRoot(fsys, rootPath)` for callers that need symlink validation, while the original `Scan(fsys)` remains backward-compatible.

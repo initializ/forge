@@ -32,11 +32,11 @@ func TestNoopGuardrailChecker_ImplementsInterface(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := checker.CheckInbound(ctx, msg); err != nil {
+	if _, err := checker.CheckInbound(ctx, msg); err != nil {
 		t.Errorf("NoopGuardrailChecker.CheckInbound() unexpected error: %v", err)
 	}
 
-	if err := checker.CheckOutbound(ctx, msg); err != nil {
+	if _, err := checker.CheckOutbound(ctx, msg); err != nil {
 		t.Errorf("NoopGuardrailChecker.CheckOutbound() unexpected error: %v", err)
 	}
 

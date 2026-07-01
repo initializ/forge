@@ -67,7 +67,7 @@ func TestCheckInbound_OpensInputSpanWithGateAttributes(t *testing.T) {
 		Role:  "user",
 		Parts: []a2a.Part{{Kind: a2a.PartKindText, Text: "my email is foo@example.com"}},
 	}
-	if err := engine.CheckInbound(context.Background(), msg); err != nil {
+	if _, err := engine.CheckInbound(context.Background(), msg); err != nil {
 		t.Fatalf("CheckInbound: %v", err)
 	}
 
@@ -102,7 +102,7 @@ func TestCheckInbound_CaptureContent_StampsRedactedEvidence(t *testing.T) {
 		Role:  "user",
 		Parts: []a2a.Part{{Kind: a2a.PartKindText, Text: "my email is foo@example.com"}},
 	}
-	if err := engine.CheckInbound(context.Background(), msg); err != nil {
+	if _, err := engine.CheckInbound(context.Background(), msg); err != nil {
 		t.Fatalf("CheckInbound: %v", err)
 	}
 
@@ -152,7 +152,7 @@ func TestCheckOutbound_OpensOutputSpan_NoToolAttribute(t *testing.T) {
 		Role:  "agent",
 		Parts: []a2a.Part{{Kind: a2a.PartKindText, Text: "Here is your answer."}},
 	}
-	if err := engine.CheckOutbound(context.Background(), msg); err != nil {
+	if _, err := engine.CheckOutbound(context.Background(), msg); err != nil {
 		t.Fatalf("CheckOutbound: %v", err)
 	}
 
@@ -212,7 +212,7 @@ func TestCheckInbound_NoTracing_NoSpansRecorded(t *testing.T) {
 		Role:  "user",
 		Parts: []a2a.Part{{Kind: a2a.PartKindText, Text: "hello"}},
 	}
-	if err := engine.CheckInbound(context.Background(), msg); err != nil {
+	if _, err := engine.CheckInbound(context.Background(), msg); err != nil {
 		t.Fatalf("CheckInbound: %v", err)
 	}
 

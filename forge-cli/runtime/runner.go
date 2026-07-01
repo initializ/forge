@@ -143,6 +143,7 @@ type Runner struct {
 	scheduleNotifier ScheduleNotifier                  // optional: delivers cron results to channels
 	authToken        string                            // resolved auth token (empty if --no-auth)
 	cancelRegistry   *coreruntime.CancellationRegistry // per-Runner in-flight cancellation registry (issue #88 / FWS-4)
+	auditSigningKey  *coreruntime.LoadedKey            // loaded once at startup; nil when signing is off (#213). Served on JWKS endpoint.
 }
 
 // NewRunner creates a Runner from the given config.
@@ -330,6 +331,26 @@ func (r *Runner) Run(ctx context.Context) error {
 		agentID = r.cfg.Config.AgentID
 	}
 	auditLogger.WithEntity("agent", agentID)
+
+	// Ed25519 event signing (#213). Signing is opt-in via env:
+	// FORGE_AUDIT_SIGNING_KEY_B64 (PKCS#8 DER base64, or PEM inline)
+	// plus optional FORGE_AUDIT_SIGNING_KID. When unset, the loader
+	// returns (nil, nil) and signing stays off — wire shape is
+	// byte-identical to pre-#213. When set, every event carries `kid`
+	// and `sig` fields the SIEM can verify against the JWKS served
+	// at /.well-known/forge-audit-keys.
+	auditSigningKey, err := coreruntime.LoadEd25519KeyFromEnv(
+		"FORGE_AUDIT_SIGNING_KEY_B64", "FORGE_AUDIT_SIGNING_KID")
+	if err != nil {
+		return fmt.Errorf("audit signing key: %w", err)
+	}
+	if auditSigningKey != nil {
+		auditLogger.SetSigner(coreruntime.NewAuditSigner(*auditSigningKey))
+		r.logger.Info("audit signing enabled", map[string]any{
+			"kid": auditSigningKey.Kid,
+		})
+	}
+	r.auditSigningKey = auditSigningKey
 
 	// Resolve TracingConfig early so we can thread it into the
 	// guardrail engine before the tracer provider itself is installed
@@ -1936,6 +1957,30 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 
 		writeJSON(w, http.StatusOK, info)
 	})
+
+	// GET /.well-known/forge-audit-keys — JWKS advertising the Ed25519
+	// public keys used to sign audit events (#213). Empty `keys` array
+	// when signing is off — the endpoint is always registered so
+	// consumers can probe for capability without a version check.
+	srv.RegisterHTTPHandler("GET /.well-known/forge-audit-keys", r.serveJWKS)
+}
+
+// serveJWKS is the handler for /.well-known/forge-audit-keys. Split
+// out for testability — the endpoint is thin enough that spinning up
+// a whole Runner just to call it would be waste.
+func (r *Runner) serveJWKS(w http.ResponseWriter, _ *http.Request) {
+	var jwks coreruntime.JWKS
+	if r.auditSigningKey != nil {
+		jwks = coreruntime.PublicJWKS(*r.auditSigningKey)
+	} else {
+		jwks = coreruntime.JWKS{Keys: []coreruntime.JWK{}}
+	}
+	// Set Content-Type BEFORE WriteHeader — writeJSON's default
+	// would clobber our jwk-set+json media type.
+	w.Header().Set("Content-Type", "application/jwk-set+json")
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(jwks)
 }
 
 func (r *Runner) loadToolSpecs() []agentspec.ToolSpec {

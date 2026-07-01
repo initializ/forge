@@ -7,6 +7,83 @@ import (
 	"github.com/initializ/forge/forge-core/a2a"
 )
 
+// PolicyDecision is the taxonomy of decisions a Forge policy engine
+// (guardrails, admission, skill rules) can produce for one evaluated
+// piece of content. Governance R4 requires the engine to be capable
+// of expressing each of these — even if a particular gate only
+// exercises a subset today. See docs/security/policy-decisions.md.
+type PolicyDecision int
+
+const (
+	// DecisionAllow — content passes through unmodified. Zero value.
+	DecisionAllow PolicyDecision = iota
+
+	// DecisionDeny — content is rejected. Caller MUST propagate the
+	// error and MUST NOT let the content proceed.
+	DecisionDeny
+
+	// DecisionModify — content is admissible but must be rewritten
+	// (redacted, truncated, tagged) before it moves forward.
+	// PolicyResult.Modified carries the replacement.
+	DecisionModify
+
+	// DecisionStepUp — content is conditionally admissible pending an
+	// additional user/operator interaction (re-auth, approval,
+	// verification). Reserved for R4b (#210).
+	DecisionStepUp
+
+	// DecisionDefer — decision requires an out-of-band lookup
+	// (platform API, human queue) before the caller can proceed.
+	// Reserved for R4c (#211).
+	DecisionDefer
+)
+
+// String returns the audit-safe decision token. Matches the strings
+// emitted on guardrail_check events so a SIEM index built from those
+// events can be queried by PolicyDecision value.
+func (d PolicyDecision) String() string {
+	switch d {
+	case DecisionAllow:
+		return "allow"
+	case DecisionDeny:
+		return "deny"
+	case DecisionModify:
+		return "modify"
+	case DecisionStepUp:
+		return "step_up"
+	case DecisionDefer:
+		return "defer"
+	default:
+		return "unknown"
+	}
+}
+
+// PolicyResult carries the outcome of one policy evaluation.
+//
+// For DecisionAllow / DecisionDeny / DecisionStepUp / DecisionDefer,
+// Modified is empty. For DecisionModify, Modified holds the
+// rewritten content; callers substitute it into the value stream.
+// Reason is a short human-readable string surfaced on audit events
+// and (for Deny) returned to the caller as an error message.
+type PolicyResult struct {
+	Decision PolicyDecision
+	Modified string
+	Reason   string
+}
+
+// Allow constructs a passthrough result.
+func Allow() PolicyResult { return PolicyResult{Decision: DecisionAllow} }
+
+// Deny constructs a rejection result carrying `reason`.
+func Deny(reason string) PolicyResult {
+	return PolicyResult{Decision: DecisionDeny, Reason: reason}
+}
+
+// Modify constructs a redact-and-continue result.
+func Modify(newContent, reason string) PolicyResult {
+	return PolicyResult{Decision: DecisionModify, Modified: newContent, Reason: reason}
+}
+
 // GuardrailChecker validates messages, tool calls, retrieved context,
 // and tool / LLM output against guardrail policies. Implementations
 // may use file-based config, database-backed config, or no-op
@@ -22,12 +99,17 @@ import (
 // tags from the request scope.
 type GuardrailChecker interface {
 	// CheckInbound validates an inbound (user) message — InputGate.
-	CheckInbound(ctx context.Context, msg *a2a.Message) error
+	// Returns a PolicyResult carrying the engine's decision. On
+	// DecisionModify the implementation SHOULD have already mutated
+	// msg in place so the caller's downstream reads see the redacted
+	// content; PolicyResult.Modified is provided for audit-trail use.
+	// On DecisionDeny the caller MUST NOT admit the message.
+	CheckInbound(ctx context.Context, msg *a2a.Message) (PolicyResult, error)
 
 	// CheckOutbound validates an outbound (agent) message —
-	// OutputGate. Implementations should prefer redacting sensitive
-	// content over blocking.
-	CheckOutbound(ctx context.Context, msg *a2a.Message) error
+	// OutputGate. Same semantics as CheckInbound: MODIFY mutates
+	// msg in place, DENY blocks.
+	CheckOutbound(ctx context.Context, msg *a2a.Message) (PolicyResult, error)
 
 	// CheckToolCall validates the arguments the agent is about to
 	// pass to a tool — ToolCallGate. Called from the BeforeToolExec
@@ -66,8 +148,12 @@ type GuardrailChecker interface {
 // Used as a fallback when no guardrail configuration is available.
 type NoopGuardrailChecker struct{}
 
-func (n *NoopGuardrailChecker) CheckInbound(_ context.Context, _ *a2a.Message) error  { return nil }
-func (n *NoopGuardrailChecker) CheckOutbound(_ context.Context, _ *a2a.Message) error { return nil }
+func (n *NoopGuardrailChecker) CheckInbound(_ context.Context, _ *a2a.Message) (PolicyResult, error) {
+	return Allow(), nil
+}
+func (n *NoopGuardrailChecker) CheckOutbound(_ context.Context, _ *a2a.Message) (PolicyResult, error) {
+	return Allow(), nil
+}
 func (n *NoopGuardrailChecker) CheckToolCall(_ context.Context, _, args string) (string, error) {
 	return args, nil
 }

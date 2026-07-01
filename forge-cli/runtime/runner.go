@@ -1270,7 +1270,7 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 		server.WriteSSEEvent(w, flusher, "status", task) //nolint:errcheck
 
 		// Guardrail check inbound
-		if err := guardrails.CheckInbound(ctx, &params.Message); err != nil {
+		if _, err := guardrails.CheckInbound(ctx, &params.Message); err != nil {
 			task.Status = a2a.TaskStatus{
 				State: a2a.TaskStateFailed,
 				Message: &a2a.Message{
@@ -1340,7 +1340,7 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 		var finalState a2a.TaskState
 		for respMsg := range ch {
 			// Guardrail check outbound
-			if grErr := guardrails.CheckOutbound(ctx, respMsg); grErr != nil {
+			if _, grErr := guardrails.CheckOutbound(ctx, respMsg); grErr != nil {
 				task.Status = a2a.TaskStatus{
 					State: a2a.TaskStateFailed,
 					Message: &a2a.Message{
@@ -1511,7 +1511,7 @@ func (r *Runner) executeTask(
 		auditLogger.EmitInvocationComplete(ctx, snap.InvocationDuration, fields)
 	}
 
-	if err := guardrails.CheckInbound(ctx, &params.Message); err != nil {
+	if _, err := guardrails.CheckInbound(ctx, &params.Message); err != nil {
 		task.Status = a2a.TaskStatus{
 			State: a2a.TaskStateFailed,
 			Message: &a2a.Message{
@@ -1582,7 +1582,7 @@ func (r *Runner) executeTask(
 	}
 
 	if respMsg != nil {
-		if err := guardrails.CheckOutbound(ctx, respMsg); err != nil {
+		if _, err := guardrails.CheckOutbound(ctx, respMsg); err != nil {
 			task.Status = a2a.TaskStatus{
 				State: a2a.TaskStateFailed,
 				Message: &a2a.Message{
@@ -1781,7 +1781,7 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 		store.Put(task)
 		server.WriteSSEEvent(w, flusher, "status", task) //nolint:errcheck
 
-		if err := guardrails.CheckInbound(ctx, &params.Message); err != nil {
+		if _, err := guardrails.CheckInbound(ctx, &params.Message); err != nil {
 			task.Status = a2a.TaskStatus{
 				State: a2a.TaskStateFailed,
 				Message: &a2a.Message{
@@ -1845,7 +1845,7 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 
 		var finalState a2a.TaskState
 		for respMsg := range ch {
-			if grErr := guardrails.CheckOutbound(ctx, respMsg); grErr != nil {
+			if _, grErr := guardrails.CheckOutbound(ctx, respMsg); grErr != nil {
 				task.Status = a2a.TaskStatus{
 					State: a2a.TaskStateFailed,
 					Message: &a2a.Message{

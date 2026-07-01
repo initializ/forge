@@ -1,0 +1,52 @@
+# Policy decisions
+
+Forge's guardrail engine can emit one of five decisions for any
+evaluated piece of content:
+
+| Decision  | Meaning                                                    | Where it fires today                                      |
+|-----------|------------------------------------------------------------|-----------------------------------------------------------|
+| `allow`   | Content passes through unmodified                          | Every gate, default                                       |
+| `deny`    | Content is rejected — the caller must not admit it         | InputGate, OutputGate, ToolCallGate, ToolOutputGate       |
+| `modify`  | Content is admissible but must be rewritten first          | InputGate (masking), OutputGate (masking), ToolOutputGate (redact) |
+| `step_up` | Reserved for R4b (#210) — additional user interaction     | not yet emitted                                           |
+| `defer`   | Reserved for R4c (#211) — out-of-band lookup required      | not yet emitted                                           |
+
+The `PolicyDecision` type and `PolicyResult` struct live in
+`forge-core/runtime/guardrails.go`. See the interface docstrings on
+`GuardrailChecker` for the exact contract.
+
+## MODIFY, generalized (#209)
+
+Before #209, `modify` was implemented for exactly one path —
+`cli_execute` output redaction. Skill-authored `deny_output` /
+`deny_commands` patterns silently no-op'd for every other tool. #209
+removes the `cli_execute` short-circuit so:
+
+- **User prompts** — the LibraryGuardrailEngine's InputGate mask
+  decision returns `DecisionModify` from `CheckInbound`.
+- **LLM responses** — same via OutputGate on `CheckOutbound`.
+- **Any tool output** — `SkillGuardrailEngine.CheckCommandOutput`
+  now applies the redact/block loop to output of ANY tool, not just
+  cli_execute. The loop is hoisted into a package-level
+  `applyOutputPolicy` so future call sites (MCP tool result hook,
+  RAG context ingestion) can reuse the same MODIFY semantics.
+
+## Audit event mapping
+
+Every `guardrail_check` event carries a `fields.decision` string:
+
+- `allowed` — Allow
+- `masked` — Modify
+- `blocked` — Deny (enforce mode)
+- `warned` — Deny (warn mode)
+
+These strings predate the `PolicyDecision` enum by several sprints —
+they stay for SIEM stability. Consumers building on the enum should
+map `allowed ↔ allow`, `masked ↔ modify`, `blocked ↔ deny`.
+
+## Test surface
+
+- `forge-core/runtime/policy_decision_test.go` — enum semantics +
+  `applyOutputPolicy` behavior across tools.
+- `forge-core/runtime/skill_guardrails_test.go` — `deny_commands`
+  and `deny_output` MODIFY paths fire for non-cli_execute tools.

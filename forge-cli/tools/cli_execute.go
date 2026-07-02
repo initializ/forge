@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/initializ/forge/forge-core/credentials"
 	coretools "github.com/initializ/forge/forge-core/tools"
 )
 
@@ -35,6 +36,11 @@ type CLIExecuteTool struct {
 	proxyURL    string // egress proxy URL (e.g., "http://127.0.0.1:54321")
 	workDir     string // resolved absolute workDir for path confinement
 	homeDir     string // resolved $HOME for path confinement
+
+	// credInjector, when non-nil, mints JIT credentials per Execute
+	// call and merges them into the subprocess env. Governance R9.
+	// Nil injector → no-op, preserving pre-R9 behavior.
+	credInjector *credentials.Injector
 }
 
 // cliExecuteArgs is the JSON input schema for Execute.
@@ -101,6 +107,14 @@ func NewCLIExecuteTool(config CLIExecuteConfig) *CLIExecuteTool {
 		}
 	}
 
+	return t
+}
+
+// WithCredentialInjector attaches an R9 JIT-credential injector.
+// Called by the runner at startup after resolving AgentSpec.Credentials.
+// nil-safe: passing nil is equivalent to not calling this.
+func (t *CLIExecuteTool) WithCredentialInjector(inj *credentials.Injector) *CLIExecuteTool {
+	t.credInjector = inj
 	return t
 }
 
@@ -210,6 +224,24 @@ func (t *CLIExecuteTool) Execute(ctx context.Context, args json.RawMessage) (str
 
 	// Security check 6: Env isolation
 	cmd.Env = t.buildEnv(input.Binary)
+
+	// R9 JIT credentials: if the runner wired a credentials.Injector,
+	// mint fresh scoped-down creds now, merge them into the subprocess
+	// env, and defer revocation. Nil injector → no-op. Non-cli_execute
+	// spec matches are simply skipped by Injector.Materialize.
+	if t.credInjector != nil {
+		rawArgs, _ := json.Marshal(input)
+		handle, err := t.credInjector.Materialize(ctx, "cli_execute", input.Binary, rawArgs)
+		if err != nil {
+			return "", fmt.Errorf("cli_execute: minting JIT credentials: %w", err)
+		}
+		if handle != nil {
+			defer func() { _ = handle.Close(ctx) }()
+			for k, v := range handle.Env() {
+				cmd.Env = append(cmd.Env, k+"="+v)
+			}
+		}
+	}
 
 	// Stdin
 	if input.Stdin != "" {

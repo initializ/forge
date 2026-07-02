@@ -1,0 +1,49 @@
+name: OWASP ASI Conformance
+
+# Runs the instrumented conformance tier when enforcement-relevant code changes.
+# Policy: fail ONLY on a regression of a shipped Enforced control (a test that
+# turns red). xfail gaps are tracked as GitHub issues, never build breakers.
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "forge-core/security/**"
+      - "forge-core/runtime/**"
+      - "forge-cli/build/**"
+      - "forge-cli/tools/**"
+      - "tests/owasp-asi/**"
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "forge-core/security/**"
+      - "forge-core/runtime/**"
+      - "forge-cli/build/**"
+      - "forge-cli/tools/**"
+      - "tests/owasp-asi/**"
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    name: Instrumented conformance tier
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Run OWASP ASI conformance suite + report
+        run: make owasp-asi
+
+      - name: Upload conformance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: owasp-asi-conformance
+          path: |
+            tests/owasp-asi/report/conformance.md
+            tests/owasp-asi/report/conformance.json

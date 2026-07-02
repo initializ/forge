@@ -5,7 +5,7 @@ LDFLAGS   := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)
 COVERFILE := coverage.out
 MODULES   := forge-core forge-cli forge-plugins forge-ui
 
-.PHONY: build test test-integration vet fmt lint cover cover-html install clean release fetch-monaco help
+.PHONY: build test test-integration vet fmt lint cover cover-html install clean release fetch-monaco owasp-asi help
 
 ## build: Compile the forge binary
 build:
@@ -55,6 +55,13 @@ release:
 ## fetch-monaco: Build tree-shaken YAML-only Monaco editor (~615KB)
 fetch-monaco:
 	@bash forge-ui/static/dist/monaco/build.sh forge-ui/static/dist/monaco
+
+## owasp-asi: Run the OWASP ASI conformance suite (instrumented tier) and write the report
+owasp-asi:
+	cd tests/owasp-asi && go test -json ./... > report/gotest.json; \
+		status=$$?; \
+		go run ./cmd/reportgen report/gotest.json report; \
+		exit $$status
 
 ## help: Show this help message
 help:

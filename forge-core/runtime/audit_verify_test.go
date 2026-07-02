@@ -67,13 +67,16 @@ func TestVerifyAuditLog_UnsignedStreamOK(t *testing.T) {
 
 func TestVerifyAuditLog_TamperedContentFails(t *testing.T) {
 	data, pub := signedStreamFixture(t, "kid-1", 3)
-	// Flip a character in the middle of the stream — the signed
-	// canonical bytes no longer match.
+	// Flip a character in the middle of the stream. Chain check
+	// runs first in the integrated verifier — any byte change to
+	// line N breaks line (N+1)'s prev_hash. So a length-preserved
+	// tamper on line 2 is flagged at line 3 as a chain break, not
+	// at line 2 as a signature failure. Both would fail if we
+	// reached the sig check; either is sufficient tamper-evidence.
 	lines := bytes.Split(bytes.TrimRight(data, "\n"), []byte("\n"))
 	if len(lines) < 2 {
 		t.Fatalf("expected multiple lines, got %d", len(lines))
 	}
-	// Replace 'tool_exec' with 'tool_exeC' in line 2 — length preserved.
 	lines[1] = bytes.Replace(lines[1], []byte(`"tool_exec"`), []byte(`"tool_exeC"`), 1)
 	tampered := bytes.Join(lines, []byte("\n"))
 
@@ -85,8 +88,65 @@ func TestVerifyAuditLog_TamperedContentFails(t *testing.T) {
 	if res.OK() {
 		t.Fatal("expected verify to fail on tampered content")
 	}
+	// Chain check on line 2 passes (its prev_hash still references
+	// the un-tampered line 1). Then signature verification on line 2
+	// fails because its Sig was computed over the un-tampered bytes.
+	// If we skipped sig verification, the successor line 3 would
+	// still catch the break via chain — proven in
+	// TestVerifyAuditLog_TamperedContent_ChainCatchesWithoutSig below.
 	if res.FirstBadLine != 2 {
 		t.Errorf("FirstBadLine: got %d want 2", res.FirstBadLine)
+	}
+	if !strings.Contains(res.Reason, "signature verify") {
+		t.Errorf("reason should mention signature: %q", res.Reason)
+	}
+}
+
+// TestVerifyAuditLog_TamperedContent_ChainCatchesWithoutSig covers
+// the chain-only path: without --pubkey (no sig check), a tampered
+// middle line is caught by the successor's prev_hash mismatch.
+func TestVerifyAuditLog_TamperedContent_ChainCatchesWithoutSig(t *testing.T) {
+	data, _ := signedStreamFixture(t, "kid-1", 3)
+	lines := bytes.Split(bytes.TrimRight(data, "\n"), []byte("\n"))
+	lines[1] = bytes.Replace(lines[1], []byte(`"tool_exec"`), []byte(`"tool_exeC"`), 1)
+	tampered := bytes.Join(lines, []byte("\n"))
+
+	// No Pubkeys → sig check skipped → chain check catches it.
+	res, err := VerifyAuditLog(bytes.NewReader(tampered), VerifyOptions{})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if res.OK() {
+		t.Fatal("expected chain break to be flagged")
+	}
+	if res.FirstBadLine != 3 {
+		t.Errorf("FirstBadLine: got %d want 3", res.FirstBadLine)
+	}
+	if !strings.Contains(res.Reason, "prev_hash mismatch") {
+		t.Errorf("reason should mention chain: %q", res.Reason)
+	}
+}
+
+// TestVerifyAuditLog_SigTamperDetectedWithSkipChain isolates the
+// signature-check path from chain-check by tampering with the LAST
+// line (no successor to fail chain on) and running with SkipChain.
+func TestVerifyAuditLog_SigTamperDetectedWithSkipChain(t *testing.T) {
+	data, pub := signedStreamFixture(t, "kid-1", 3)
+	lines := bytes.Split(bytes.TrimRight(data, "\n"), []byte("\n"))
+	// Length-preserved edit on last line — no successor.
+	lines[len(lines)-1] = bytes.Replace(lines[len(lines)-1], []byte(`"tool_exec"`), []byte(`"tool_exeC"`), 1)
+	tampered := bytes.Join(lines, []byte("\n"))
+
+	opts := VerifyOptions{
+		Pubkeys:   map[string]ed25519.PublicKey{"kid-1": pub},
+		SkipChain: true,
+	}
+	res, err := VerifyAuditLog(bytes.NewReader(tampered), opts)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if res.OK() {
+		t.Fatal("expected verify to fail on sig tamper")
 	}
 	if !strings.Contains(res.Reason, "signature verify") {
 		t.Errorf("reason should mention signature: %q", res.Reason)
@@ -126,7 +186,12 @@ func TestVerifyAuditLog_SignedStreamWithoutKeysWarnsButPasses(t *testing.T) {
 }
 
 func TestVerifyAuditLog_MalformedJSONFlagged(t *testing.T) {
-	broken := []byte("{\"event\":\"ok\"}\n{not valid json}\n")
+	// Emit one real event, then append garbage. Line 1 chain-checks;
+	// line 2 fails at JSON parse.
+	var buf bytes.Buffer
+	logger := NewAuditLogger(&buf)
+	logger.Emit(AuditEvent{Event: "session_start"})
+	broken := append(buf.Bytes(), []byte("{not valid json}\n")...)
 	res, err := VerifyAuditLog(bytes.NewReader(broken), VerifyOptions{})
 	if err != nil {
 		t.Fatalf("verify: %v", err)

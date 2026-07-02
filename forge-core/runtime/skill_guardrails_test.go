@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/initializ/forge/forge-core/agentspec"
@@ -46,10 +47,15 @@ func TestCheckCommandInput_DenyPatterns(t *testing.T) {
 			wantErr:   true,
 		},
 		{
-			name:      "non cli_execute passes through",
+			// Post-#209: deny_commands matches on the raw JSON of
+			// non-cli_execute tools too. A pattern matching "get
+			// secrets" now catches a web_search query for the same
+			// term. Pre-#209 this asserted wantErr:false — that
+			// behavior was the R4a gap.
+			name:      "non cli_execute matched on raw JSON",
 			toolName:  "web_search",
 			toolInput: `{"query":"kubectl get secrets"}`,
-			wantErr:   false,
+			wantErr:   true,
 		},
 	}
 	for _, tt := range tests {
@@ -161,38 +167,64 @@ func TestNewSkillGuardrailEngine_InvalidRegex(t *testing.T) {
 	}
 }
 
-func TestCheckCommandInput_NonCLIExecute(t *testing.T) {
+// TestCheckCommandInput_AppliesToAllTools verifies R4a (#209): deny
+// patterns match on non-cli_execute tools' raw JSON payloads. Prior
+// to #209 this same test asserted the OPPOSITE (that deny was
+// silently skipped for non-cli tools) — a bug.
+func TestCheckCommandInput_AppliesToAllTools(t *testing.T) {
 	rules := &agentspec.SkillGuardrailRules{
 		DenyCommands: []agentspec.CommandFilter{
-			{Pattern: `.*`, Message: "blocks everything"},
+			{Pattern: `"query":"test"`, Message: "blocks test queries"},
 		},
 	}
 	sg := NewSkillGuardrailEngine(rules, true, &testLogger{})
 
-	// Non-cli_execute tools should pass through
 	for _, tool := range []string{"web_search", "http_request", "memory_search", "file_read"} {
 		err := sg.CheckCommandInput(tool, `{"query":"test"}`)
-		if err != nil {
-			t.Errorf("tool %q should not be blocked: %v", tool, err)
+		if err == nil {
+			t.Errorf("tool %q with matching payload should be blocked", tool)
 		}
 	}
 }
 
-func TestCheckCommandOutput_NonCLIExecute(t *testing.T) {
+// TestCheckCommandOutput_AppliesToAllTools verifies MODIFY (#209
+// R4a) fires for outputs of ANY tool, not just cli_execute.
+func TestCheckCommandOutput_AppliesToAllTools(t *testing.T) {
 	rules := &agentspec.SkillGuardrailRules{
 		DenyOutput: []agentspec.OutputFilter{
-			{Pattern: `.*`, Action: "block"},
+			{Pattern: `kind: Secret`, Action: "block"},
 		},
 	}
 	sg := NewSkillGuardrailEngine(rules, true, &testLogger{})
 
-	// Non-cli_execute tools should pass through
-	out, err := sg.CheckCommandOutput("web_search", "kind: Secret")
-	if err != nil {
-		t.Errorf("non-cli_execute should not be blocked: %v", err)
+	// A block pattern on a non-cli_execute tool's output must fire.
+	_, err := sg.CheckCommandOutput("web_search", "kind: Secret\ndata: ...")
+	if err == nil {
+		t.Fatal("expected block on matching output for non-cli_execute tool")
 	}
-	if out != "kind: Secret" {
-		t.Errorf("output should pass through unchanged for non-cli_execute")
+}
+
+// TestCheckCommandOutput_RedactAppliesToAllTools covers the MODIFY
+// leg of R4a: redact patterns rewrite output for ANY tool.
+func TestCheckCommandOutput_RedactAppliesToAllTools(t *testing.T) {
+	rules := &agentspec.SkillGuardrailRules{
+		DenyOutput: []agentspec.OutputFilter{
+			{Pattern: `sk-[A-Za-z0-9]{20,}`, Action: "redact"},
+		},
+	}
+	sg := NewSkillGuardrailEngine(rules, true, &testLogger{})
+
+	for _, tool := range []string{"http_request", "web_search", "mcp:acme.fetch"} {
+		out, err := sg.CheckCommandOutput(tool, "leaked key: sk-abcdefghij0123456789xyz end")
+		if err != nil {
+			t.Fatalf("tool %q: unexpected error: %v", tool, err)
+		}
+		if !strings.Contains(out, "[BLOCKED BY POLICY]") {
+			t.Errorf("tool %q: expected redaction, got %q", tool, out)
+		}
+		if strings.Contains(out, "sk-abcdefghij") {
+			t.Errorf("tool %q: raw secret leaked through: %q", tool, out)
+		}
 	}
 }
 

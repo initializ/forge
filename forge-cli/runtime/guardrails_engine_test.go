@@ -49,13 +49,13 @@ func TestFileGuardrailEngine_CheckInbound(t *testing.T) {
 		Parts: []a2a.Part{{Kind: a2a.PartKindText, Text: "Hello, how are you?"}},
 	}
 	ctx := context.Background()
-	if err := engine.CheckInbound(ctx, msg); err != nil {
+	if _, err := engine.CheckInbound(ctx, msg); err != nil {
 		t.Errorf("normal message should pass inbound check: %v", err)
 	}
 
 	// Empty message should pass
 	emptyMsg := &a2a.Message{Role: "user"}
-	if err := engine.CheckInbound(ctx, emptyMsg); err != nil {
+	if _, err := engine.CheckInbound(ctx, emptyMsg); err != nil {
 		t.Errorf("empty message should pass inbound check: %v", err)
 	}
 }
@@ -73,7 +73,7 @@ func TestFileGuardrailEngine_CheckOutbound(t *testing.T) {
 		Role:  "agent",
 		Parts: []a2a.Part{{Kind: a2a.PartKindText, Text: "Here is the result."}},
 	}
-	if err := engine.CheckOutbound(context.Background(), msg); err != nil {
+	if _, err := engine.CheckOutbound(context.Background(), msg); err != nil {
 		t.Errorf("normal message should pass outbound check: %v", err)
 	}
 }
@@ -122,7 +122,7 @@ func TestBuildGuardrailChecker_FileMode(t *testing.T) {
 		Role:  "user",
 		Parts: []a2a.Part{{Kind: a2a.PartKindText, Text: "hello"}},
 	}
-	if err := checker.CheckInbound(context.Background(), msg); err != nil {
+	if _, err := checker.CheckInbound(context.Background(), msg); err != nil {
 		t.Errorf("default checker should pass normal message: %v", err)
 	}
 }
@@ -148,7 +148,7 @@ func TestLibraryGuardrailEngine_EmitsAuditOnInboundMask(t *testing.T) {
 		Role:  "user",
 		Parts: []a2a.Part{{Kind: a2a.PartKindText, Text: "my email is foo@example.com please verify"}},
 	}
-	if err := engine.CheckInbound(context.Background(), msg); err != nil {
+	if _, err := engine.CheckInbound(context.Background(), msg); err != nil {
 		t.Fatalf("CheckInbound: %v", err)
 	}
 
@@ -264,7 +264,7 @@ func TestLibraryGuardrailEngine_OmitsEvidenceByDefault(t *testing.T) {
 		Role:  "user",
 		Parts: []a2a.Part{{Kind: a2a.PartKindText, Text: "my email is foo@example.com"}},
 	}
-	if err := engine.CheckInbound(context.Background(), msg); err != nil {
+	if _, err := engine.CheckInbound(context.Background(), msg); err != nil {
 		t.Fatalf("CheckInbound: %v", err)
 	}
 

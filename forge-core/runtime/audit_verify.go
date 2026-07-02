@@ -151,6 +151,17 @@ func VerifyAuditLog(r io.Reader, opts VerifyOptions) (VerifyResult, error) {
 		if evt.Sig != "" {
 			signedSeen = true
 			if len(opts.Pubkeys) > 0 {
+				// Reject unknown canonicalization schemes explicitly.
+				// A tamperer who rewrites Sigp to a value we don't
+				// recognize would otherwise get "signature verify
+				// failed" — the specific "unsupported sigp" message
+				// is more actionable for operators.
+				if evt.Sigp != "" && evt.Sigp != SigCanonicalizationJCS1 {
+					res.FirstBadLine = lineNum
+					res.BadEvent = evt
+					res.Reason = fmt.Sprintf("unsupported sigp scheme %q", evt.Sigp)
+					return res, nil
+				}
 				pub, ok := opts.Pubkeys[evt.Kid]
 				if !ok {
 					res.FirstBadLine = lineNum

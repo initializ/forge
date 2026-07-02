@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/gowebpki/jcs"
 )
 
 // AuditSigner mints Ed25519 signatures over the canonical JSON of an
@@ -204,15 +206,55 @@ func VerifySignature(pub ed25519.PublicKey, canonical []byte, sigB64 string) err
 	return nil
 }
 
-// canonicalBytesForSigning returns the JSON bytes over which the
-// signature is computed. Rule: marshal the event with its Sig field
-// EMPTY so the signature covers every other field on the event.
-// Since Sig is `omitempty`, an empty value
-// produces the same bytes as if the field weren't there — the
-// verifier can round-trip through the same transformation.
+// SigCanonicalizationJCS1 is the value stamped on AuditEvent.Sigp
+// when the signature preimage is RFC 8785 JCS canonical form. See
+// canonicalBytesForSigning.
+const SigCanonicalizationJCS1 = "jcs-1"
+
+// canonicalBytesForSigning returns the bytes over which the Ed25519
+// signature is computed. The scheme is identified by the Sigp field
+// stamped on the event: currently "jcs-1" = RFC 8785 JCS applied to
+// the event with its Sig field emptied (Sig has `omitempty` so an
+// empty value produces the same wire shape as absence).
+//
+// Why JCS instead of Go's encoding/json output:
+//
+//  1. Portability. Any RFC 8785 implementation in any language
+//     converges on the same canonical bytes given the same parsed
+//     JSON value. Non-Go verifiers no longer need to replicate Go's
+//     struct field order, alphabetical map-key sort, or HTML-safe
+//     escaping quirks.
+//  2. Latent precision fix. Verifiers re-marshal parsed events; Go
+//     json.Marshal(json.Unmarshal(x)) is NOT a fixed point when
+//     Fields carries integers > 2^53 (they decode to float64). JCS
+//     normalizes both sides through the same ES6-double rule.
+//
+// Numbers-as-strings caveat: JCS's number rule is IEEE-754 double
+// (ES6 6.1.6). Any field value that MUST be preserved bit-exact past
+// 53 bits (nanosecond epoch, 64-bit ID) MUST be carried as a JSON
+// string in Fields, or the signature will commit to the rounded
+// value and re-derivation on the verifier will agree — but on the
+// wrong number. Producer code that populates such fields should
+// stringify at the point of insertion. Not enforced at library level.
 func canonicalBytesForSigning(evt AuditEvent) ([]byte, error) {
-	// Clone-and-blank the Sig field without touching the input.
+	// Clone and blank Sig so the signature doesn't cover itself.
+	// Sigp is intentionally NOT blanked — the signature covers the
+	// canonicalization scheme so a tamperer can't rewrite Sigp to
+	// force a different (weaker) verification path.
 	toSign := evt
 	toSign.Sig = ""
-	return json.Marshal(toSign)
+
+	// First pass through Go's json.Marshal produces a JSON document
+	// (any legal JSON is fine — JCS canonicalizes the parsed value,
+	// not our byte output). Second pass through jcs.Transform
+	// produces the canonical form.
+	raw, err := json.Marshal(toSign)
+	if err != nil {
+		return nil, fmt.Errorf("canonicalize: initial marshal: %w", err)
+	}
+	canonical, err := jcs.Transform(raw)
+	if err != nil {
+		return nil, fmt.Errorf("canonicalize: jcs: %w", err)
+	}
+	return canonical, nil
 }

@@ -230,6 +230,22 @@ type AuditEvent struct {
 	// #213 (R6) / docs/security/audit-tamper-evidence.md.
 	PrevHash string `json:"prev_hash"`
 
+	// Sigp identifies the canonicalization scheme used to produce the
+	// bytes over which Sig is computed. Present iff Sig is present.
+	// Currently one value:
+	//
+	//   "jcs-1" — RFC 8785 (JCS) applied to the event with `sig`
+	//             removed. Numbers are ES6-formatted; object keys are
+	//             UTF-16-lexicographic-sorted; strings use minimal
+	//             RFC 8259 escaping; no whitespace.
+	//
+	// Marked on the wire so verifiers know exactly which
+	// canonicalization to apply, and so future schemes can be added
+	// without confusion. The signature covers Sigp itself
+	// (canonicalize is called after Sigp is stamped, with only Sig
+	// blanked), so a tamperer can't downgrade the scheme.
+	Sigp string `json:"sigp,omitempty"`
+
 	// Kid identifies the audit signing key used to produce Sig.
 	// Consumers cross-reference it against the JWKS served at
 	// /.well-known/forge-audit-keys (or an out-of-band published
@@ -239,11 +255,18 @@ type AuditEvent struct {
 	Kid string `json:"kid,omitempty"`
 
 	// Sig is the base64-encoded Ed25519 signature over the canonical
-	// JSON of this event with Sig itself empty (so the field's
-	// presence doesn't need to be reasoned about at verify time).
-	// The signature covers every other field including PrevHash from
-	// #212, so tampering with any content or the hash chain is
-	// detected during signature verification.
+	// preimage of this event with Sig itself empty. The preimage
+	// canonicalization is identified by Sigp (currently "jcs-1" — RFC
+	// 8785 JCS). Using JCS lets non-Go verifiers compute the preimage
+	// with any spec-compliant library, avoiding the "reproduce Go's
+	// encoding/json quirks" burden. It also sidesteps the large-int
+	// precision hole where json.Marshal(json.Unmarshal(x)) isn't a
+	// fixed point (JSON numbers decode to float64; JCS carries all
+	// numbers through the same ES6-double rule on both sides).
+	//
+	// The signature covers every other field including Sigp, Kid, and
+	// PrevHash — tampering with any of them (including the chain
+	// link or the canonicalization scheme) is detected at verify time.
 	//
 	// Present iff Kid is set. Absent (and never emitted) when
 	// audit signing is off. See #213 / governance R6.
@@ -672,6 +695,7 @@ func (a *AuditLogger) Emit(event AuditEvent) {
 	// verification. See docs/security/audit-tamper-evidence.md.
 	if a.signer != nil {
 		event.Kid = a.signer.Kid()
+		event.Sigp = SigCanonicalizationJCS1
 		canonical, err := canonicalBytesForSigning(event)
 		if err != nil {
 			// Drop-and-log rather than silent drop or emit-unsigned:

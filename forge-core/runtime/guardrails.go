@@ -12,15 +12,22 @@ import (
 // piece of content. Governance R4 requires the engine to be capable
 // of expressing each of these — even if a particular gate only
 // exercises a subset today. See docs/security/policy-decisions.md.
+//
+// Constants are ordered by RESTRICTIVENESS — the ordinal value maps
+// to severity so `partA.Decision > partB.Decision` selects the more
+// restrictive decision when aggregating across multiple parts:
+//
+//	Allow < Modify < StepUp < Defer < Deny
+//
+// Callers comparing severity SHOULD use the ordinal directly. Do NOT
+// reorder without updating every aggregate site (see
+// LibraryGuardrailEngine.CheckOutbound and its per-part escalation).
 type PolicyDecision int
 
 const (
 	// DecisionAllow — content passes through unmodified. Zero value.
+	// Least restrictive.
 	DecisionAllow PolicyDecision = iota
-
-	// DecisionDeny — content is rejected. Caller MUST propagate the
-	// error and MUST NOT let the content proceed.
-	DecisionDeny
 
 	// DecisionModify — content is admissible but must be rewritten
 	// (redacted, truncated, tagged) before it moves forward.
@@ -36,6 +43,10 @@ const (
 	// (platform API, human queue) before the caller can proceed.
 	// Reserved for R4c (#211).
 	DecisionDefer
+
+	// DecisionDeny — content is rejected. Caller MUST propagate the
+	// error and MUST NOT let the content proceed. Most restrictive.
+	DecisionDeny
 )
 
 // String returns the audit-safe decision token. Matches the strings

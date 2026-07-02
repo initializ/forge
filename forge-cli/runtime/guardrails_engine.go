@@ -189,7 +189,6 @@ func (e *LibraryGuardrailEngine) CheckInbound(ctx context.Context, msg *a2a.Mess
 	})
 	if err != nil {
 		e.logger.Warn("guardrail input gate error", map[string]any{"error": err.Error()})
-		result = nil
 		return coreruntime.Allow(), nil
 	}
 
@@ -228,9 +227,14 @@ func (e *LibraryGuardrailEngine) CheckInbound(ctx context.Context, msg *a2a.Mess
 // only in enforce mode. One guardrail.output span per text part — the
 // trace tree mirrors the part-level iteration.
 //
-// The aggregated PolicyResult follows the most-severe part's outcome:
-// any Deny → Deny; else any Modify → Modify (Modified reflects the
-// last modified part's content); else Allow.
+// The aggregated PolicyResult follows the MOST-RESTRICTIVE part's
+// outcome per the PolicyDecision ordering (Allow < Modify < StepUp <
+// Defer < Deny). The strict `>` comparison keeps the FIRST part at
+// each severity level — subsequent equal-severity parts do not
+// overwrite Modified. In practice callers today only inspect the
+// mutated msg.Parts (each part carries its own redaction) — the
+// aggregate.Modified string is scaffolding for future R4b/R4c
+// callers that need a single-string projection.
 func (e *LibraryGuardrailEngine) CheckOutbound(ctx context.Context, msg *a2a.Message) (coreruntime.PolicyResult, error) {
 	aggregate := coreruntime.Allow()
 	for i, p := range msg.Parts {
@@ -243,8 +247,11 @@ func (e *LibraryGuardrailEngine) CheckOutbound(ctx context.Context, msg *a2a.Mes
 		if blockErr != nil {
 			return partResult, blockErr
 		}
-		// Escalate aggregate if this part is more severe than what
-		// we've seen so far. Allow < Modify < Deny.
+		// Escalate aggregate when this part is more restrictive. Uses
+		// the PolicyDecision ordinal-as-severity contract established
+		// in forge-core/runtime/guardrails.go: constants are ordered
+		// Allow < Modify < StepUp < Defer < Deny, so a numeric > is
+		// safe here even when StepUp/Defer flow through in future.
 		if partResult.Decision > aggregate.Decision {
 			aggregate = partResult
 		}
@@ -277,7 +284,6 @@ func (e *LibraryGuardrailEngine) checkOneOutboundPart(ctx context.Context, msg *
 	})
 	if err != nil {
 		e.logger.Warn("guardrail output gate error", map[string]any{"error": err.Error()})
-		result = nil
 		return coreruntime.Allow(), nil
 	}
 
@@ -339,7 +345,6 @@ func (e *LibraryGuardrailEngine) CheckToolCall(ctx context.Context, toolName, ar
 			"tool":  toolName,
 			"error": err.Error(),
 		})
-		result = nil
 		return args, nil
 	}
 
@@ -406,7 +411,6 @@ func (e *LibraryGuardrailEngine) CheckToolOutput(ctx context.Context, toolName, 
 			"tool":  toolName,
 			"error": err.Error(),
 		})
-		result = nil
 		return text, nil
 	}
 
@@ -468,7 +472,6 @@ func (e *LibraryGuardrailEngine) CheckContext(ctx context.Context, content strin
 	})
 	if err != nil {
 		e.logger.Warn("guardrail context gate error", map[string]any{"error": err.Error()})
-		result = nil
 		return content, nil
 	}
 
@@ -529,7 +532,6 @@ func (e *LibraryGuardrailEngine) CheckStream(ctx context.Context, chunk string) 
 	})
 	if err != nil {
 		e.logger.Warn("guardrail stream gate error", map[string]any{"error": err.Error()})
-		result = nil
 		return chunk, nil
 	}
 

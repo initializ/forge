@@ -173,35 +173,40 @@ func (s *SkillGuardrailEngine) CheckCommandOutput(toolName, toolOutput string) (
 // scanning, RAG-context scanning, MCP tool-result scanning) can share
 // the same MODIFY semantics.
 //
-// Precedence: any "block" match short-circuits the loop and returns
-// DecisionDeny. Otherwise, every "redact" match is applied
-// cumulatively and the aggregated redacted string is returned as
-// DecisionModify (if any pattern matched) or DecisionAllow (no matches).
+// Two-pass evaluation (fixes the redact-hides-block downgrade
+// reviewer initializ-mk flagged): pass 1 checks every "block" pattern
+// against the ORIGINAL content and short-circuits to Deny on any
+// match. Only after all blocks pass does pass 2 apply "redact"
+// substitutions cumulatively. This guarantees a block-worthy string
+// isn't silently downgraded to Modify by an earlier redact that
+// rewrote the substring the block pattern would have caught.
 //
 // `logger` and `tool` are for the redaction log line — pass "" for
 // tool when the caller isn't tool-scoped.
 func applyOutputPolicy(content string, filters []compiledOutputFilter, logger Logger, tool string) PolicyResult {
+	// Pass 1: block checks against ORIGINAL content.
+	for _, f := range filters {
+		if f.action == "block" && f.re.MatchString(content) {
+			return Deny("output matched deny_output block pattern")
+		}
+	}
+	// Pass 2: cumulative redacts.
 	modified := content
 	changed := false
 	for _, f := range filters {
-		if !f.re.MatchString(modified) {
+		if f.action != "redact" || !f.re.MatchString(modified) {
 			continue
 		}
-		switch f.action {
-		case "block":
-			return Deny("output matched deny_output block pattern")
-		case "redact":
-			modified = f.re.ReplaceAllString(modified, "[BLOCKED BY POLICY]")
-			changed = true
-			fields := map[string]any{
-				"pattern": f.re.String(),
-				"action":  "redact",
-			}
-			if tool != "" {
-				fields["tool"] = tool
-			}
-			logger.Warn("skill guardrail output redaction", fields)
+		modified = f.re.ReplaceAllString(modified, "[BLOCKED BY POLICY]")
+		changed = true
+		fields := map[string]any{
+			"pattern": f.re.String(),
+			"action":  "redact",
 		}
+		if tool != "" {
+			fields["tool"] = tool
+		}
+		logger.Warn("skill guardrail output redaction", fields)
 	}
 	if changed {
 		return Modify(modified, "output matched deny_output redact pattern")

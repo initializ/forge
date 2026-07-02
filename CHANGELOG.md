@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### Changed (potentially breaking)
+
+- **Guardrail MODIFY / DENY now apply to every tool, not just
+  `cli_execute` (#209 / governance R4a).** Pre-#209 the
+  `SkillGuardrailEngine` short-circuited on any tool whose name
+  wasn't `cli_execute`, so `deny_commands` / `deny_output` patterns
+  silently no-op'd for `web_search`, `http_request`, MCP calls, and
+  every custom tool. The short-circuit is removed.
+  - **Match-target asymmetry to be aware of**: for `cli_execute`
+    the match target is still the reconstructed shell command line
+    (`binary arg1 arg2 …`) so existing shell-style patterns keep
+    working. For every other tool the match target is the raw
+    tool-input JSON as the LLM produced it. See
+    `docs/security/policy-decisions.md` for migration guidance.
+  - **`GuardrailChecker.CheckInbound` / `CheckOutbound` signatures
+    change** to return `(PolicyResult, error)` — the new
+    `PolicyDecision` enum (`Allow` < `Modify` < `StepUp` < `Defer`
+    < `Deny`, ordered by restrictiveness) is the R4 taxonomy from
+    the governance framework. `StepUp`/`Defer` are reserved for R4b
+    (#210) / R4c (#211) and not yet emitted; callers today still
+    read only Allow / Modify / Deny.
+  - Every `guardrail_check` audit event already carried a
+    `fields.decision` string; nothing on the audit wire shape
+    changes.
+
 ### Added
 
 - **Anthropic-format custom URLs + AWS Bedrock SigV4 outbound auth

@@ -31,6 +31,51 @@ removes the `cli_execute` short-circuit so:
   `applyOutputPolicy` so future call sites (MCP tool result hook,
   RAG context ingestion) can reuse the same MODIFY semantics.
 
+### ⚠️ Behavior change: match target asymmetry
+
+`deny_commands` patterns match against **different target strings**
+depending on the tool:
+
+| Tool             | Match target                                            |
+|------------------|---------------------------------------------------------|
+| `cli_execute`    | Reconstructed shell command line: `binary arg1 arg2 …`  |
+| any other tool   | The raw tool-input JSON verbatim                        |
+
+For `cli_execute` this preserves the pre-#209 semantics — patterns
+authored as shell-style regexes (`\bget\s+secrets?\b`, `rm\s+-rf`)
+still fire the same way against the parsed `binary`+`args`.
+
+For every other tool, the match runs against the JSON payload as
+the LLM produced it. A pattern like `"query":"kubectl get secrets"`
+will match a `web_search` invocation whose LLM-provided arguments
+happen to contain that substring; a pattern like `rm\s+-rf` will
+NOT (there's no reconstructed command line for `web_search`).
+
+**Migration**: operators upgrading a pre-#209 skill should audit
+their `deny_commands` list. A permissive shell-style pattern that
+previously affected only `cli_execute` may now start denying
+`web_search` / `http_request` / MCP calls whose JSON body happens
+to contain that text. Split rules that were meant for one tool
+family into per-tool patterns anchored on JSON structure (e.g.
+`"binary":"kubectl"` for cli_execute-only matches) if the wider
+scope is undesirable.
+
+### Block/redact ordering
+
+`applyOutputPolicy` evaluates `deny_output` filters in two passes:
+
+1. **Block pass** — every `block` pattern is checked against the
+   **original** content. A single match short-circuits the whole
+   call to `Deny`.
+2. **Redact pass** — every `redact` pattern is applied cumulatively
+   to the (possibly already-partially-redacted) content, returning
+   `Modify` if any substitution happened.
+
+The two-pass design guarantees an earlier `redact` cannot suppress a
+later `block` match by rewriting the substring the block pattern
+would have caught — a `Deny`-worthy string is never silently
+downgraded to `Modify`.
+
 ## Audit event mapping
 
 Every `guardrail_check` event carries a `fields.decision` string:

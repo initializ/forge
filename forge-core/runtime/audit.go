@@ -65,6 +65,15 @@ const (
 	// the cancellation point. See issue #87 / FWS-3.
 	AuditLLMCallCancelled = "llm_call_cancelled"
 
+	// Credential events (governance R9). Emitted per BeforeToolExec
+	// when a JIT credential is materialized for a tool call, and again
+	// on AfterToolExec when a revocable credential is revoked. Fields:
+	// provider (plugin name), tool, ttl, scope. Payloads never carry
+	// the credential material itself — only its metadata.
+	AuditCredentialIssued  = "credential_issued"
+	AuditCredentialRevoked = "credential_revoked"
+	AuditCredentialFailed  = "credential_failed"
+
 	// AuditPolicyLoaded is emitted once at agent startup when a
 	// non-zero platform policy is present. Carries a summary of the
 	// effective policy (sizes of deny lists, max bounds) so audit

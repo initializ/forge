@@ -206,8 +206,8 @@ func VerifySignature(pub ed25519.PublicKey, canonical []byte, sigB64 string) err
 
 // canonicalBytesForSigning returns the JSON bytes over which the
 // signature is computed. Rule: marshal the event with its Sig field
-// EMPTY so the signature covers everything else (including PrevHash
-// when #212 also lands). Since Sig is `omitempty`, an empty value
+// EMPTY so the signature covers every other field on the event.
+// Since Sig is `omitempty`, an empty value
 // produces the same bytes as if the field weren't there — the
 // verifier can round-trip through the same transformation.
 func canonicalBytesForSigning(evt AuditEvent) ([]byte, error) {

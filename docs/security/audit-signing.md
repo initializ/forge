@@ -48,6 +48,32 @@ When signing is on, each NDJSON event carries two new fields:
 Because `sig` is `omitempty`, unsigned events do not include either
 field — deployments that never turned signing on see no change.
 
+## Canonicalization
+
+The signed bytes are the event marshaled with Go's `encoding/json`
+after clearing the `sig` field. This is a **fixed-point** definition
+— the verifier reproduces the input by clearing `sig` and re-marshaling
+through the same encoder — not a language-neutral canonical JSON.
+
+If your verifier is Go, use `forge audit verify` or import
+`coreruntime.VerifyAuditLog` — no work.
+
+If your verifier is **not** Go, you must reproduce Go's
+`encoding/json` output exactly:
+
+- Struct field order: declaration order (matches the `AuditEvent`
+  struct in `forge-core/runtime/audit.go`).
+- Map keys: sorted alphabetically ascending (Go's default).
+- HTML-safe escaping: `<`, `>`, `&` → `<`, `>`, `&`.
+  Go's default `encoding/json` behavior; do NOT `SetEscapeHTML(false)`.
+- No trailing newline in the signed payload (Emit appends the `\n`
+  after signing).
+
+Cross-language verifiers are welcome; adopting JCS (RFC 8785) is
+tracked as a follow-up so operators aren't forced to reimplement
+Go's marshaler quirks. Until then, treat the Go marshaler as the
+normative spec.
+
 ## Verification
 
 ### Runtime JWKS endpoint

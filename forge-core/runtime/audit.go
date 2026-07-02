@@ -585,36 +585,65 @@ func (a *AuditLogger) Emit(event AuditEvent) {
 			event.EntityType = staticEntityType
 		}
 	}
+	// Snapshot signer + sinks + opsLog under a short critical section.
+	// Sign / marshal / sink-write run OUTSIDE the lock so:
+	//   1. logSinkErrorOnce (which itself acquires a.mu) cannot
+	//      self-deadlock — sync.Mutex is not reentrant.
+	//   2. Slow sink I/O does not serialize other Emit callers.
+	// ed25519.Sign is stateless; the signer + sink pointers only need
+	// stable-view semantics for the duration of one emit.
 	a.mu.Lock()
-	defer a.mu.Unlock()
+	signer := a.signer
+	sinks := append([]Sink(nil), a.sinks...)
+	opsLog := a.opsLog
+	a.mu.Unlock()
 
 	// Signing pass (#213 / governance R6). Sign the canonical bytes
 	// with Sig empty so the verifier can reproduce them by clearing
 	// Sig before rehashing. Applies iff a signer is installed;
 	// deployments without signing emit the pre-#213 shape verbatim.
-	if a.signer != nil {
-		event.Kid = a.signer.Kid()
+	if signer != nil {
+		event.Kid = signer.Kid()
 		canonical, sigErr := canonicalBytesForSigning(event)
 		if sigErr != nil {
+			// Log-and-drop rather than silent drop — an audit-signing
+			// failure is exactly the class of event an operator must
+			// see. Choosing drop-over-emit-unsigned because a signed
+			// pipeline's downstream verifier will treat a missing sig
+			// as evidence of tampering; better to leave a visible gap
+			// (via ops log + sink Write not fired) than to write an
+			// unsigned row into a stream the SIEM expects to be signed.
+			if opsLog != nil {
+				opsLog.Error("audit signing failed; event dropped", map[string]any{
+					"event": event.Event,
+					"error": sigErr.Error(),
+				})
+			}
 			return
 		}
-		event.Sig = a.signer.Sign(canonical)
+		event.Sig = signer.Sign(canonical)
 	}
 
 	data, err := json.Marshal(event)
 	if err != nil {
+		if opsLog != nil {
+			opsLog.Error("audit marshal failed; event dropped", map[string]any{
+				"event": event.Event,
+				"error": err.Error(),
+			})
+		}
 		return
 	}
 	data = append(data, '\n')
 
-	for _, s := range a.sinks {
+	for _, s := range sinks {
 		// Per-event context with a generous parent deadline; each sink
 		// further bounds the actual I/O via its own configured timeout.
 		// We use context.Background here because Emit is called from
 		// non-request scopes too (startup banners, policy_loaded).
 		// Sink writes are bounded internally.
 		if err := s.Write(context.Background(), data); err != nil {
-			a.logSinkErrorOnce(a.opsLog, s.Name(), err)
+			a.logSinkErrorOnce(opsLog, s.Name(), err)
 		}
 	}
 }

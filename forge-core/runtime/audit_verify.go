@@ -57,9 +57,9 @@ type VerifyOptions struct {
 // pubkey is supplied and the event is signed) a bad signature.
 // Never panics on malformed input.
 //
-// This function does NOT check hash chains — that lives in the #212
-// hash-chain code path which is separate. When both features ship,
-// verify runs both checks on every event.
+// This function checks signatures only. A separate hash-chain
+// verifier ships alongside #212 (governance R5); when both features
+// are merged, `forge audit verify` runs both checks per event.
 func VerifyAuditLog(r io.Reader, opts VerifyOptions) (VerifyResult, error) {
 	var res VerifyResult
 	scanner := bufio.NewScanner(r)

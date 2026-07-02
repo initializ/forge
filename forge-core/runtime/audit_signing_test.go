@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -98,14 +99,27 @@ func TestLoadEd25519KeyFromEnv_InvalidBase64(t *testing.T) {
 }
 
 func TestLoadEd25519KeyFromEnv_RSARejected(t *testing.T) {
-	// A non-Ed25519 PKCS#8 payload must be rejected — we never want
-	// the operator to accidentally boot Forge signing with an RSA
-	// key.
-	badPKCS8 := []byte{0x30, 0x02, 0x30, 0x00} // truncated garbage
-	t.Setenv("FORGE_TEST_KEY", base64.StdEncoding.EncodeToString(badPKCS8))
-	_, err := LoadEd25519KeyFromEnv("FORGE_TEST_KEY", "FORGE_TEST_KID")
+	// A well-formed RSA PKCS#8 key must be rejected at the type
+	// assertion — the loader must refuse anything that isn't
+	// ed25519.PrivateKey so an operator can't accidentally boot Forge
+	// signing with a weaker algorithm. Reviewer initializ-mk noted
+	// the earlier fixture used truncated garbage which failed at
+	// ParsePKCS8 rather than exercising this branch.
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa.GenerateKey: %v", err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(rsaKey)
+	if err != nil {
+		t.Fatalf("MarshalPKCS8PrivateKey(rsa): %v", err)
+	}
+	t.Setenv("FORGE_TEST_KEY", base64.StdEncoding.EncodeToString(der))
+	_, err = LoadEd25519KeyFromEnv("FORGE_TEST_KEY", "FORGE_TEST_KID")
 	if err == nil {
-		t.Fatal("expected error on non-Ed25519 key")
+		t.Fatal("expected error on RSA key")
+	}
+	if !strings.Contains(err.Error(), "expected Ed25519 key") {
+		t.Errorf("expected type-assertion error message, got: %v", err)
 	}
 }
 

@@ -97,8 +97,6 @@ func TestVerifyAuditLog_UnknownKidFails(t *testing.T) {
 	data, _ := signedStreamFixture(t, "unknown-kid", 1)
 	// Supply a pubkey under a different kid — the verifier should
 	// flag the mismatch, not silently pass.
-	_, otherPub, _ := ed25519.GenerateKey(rand.Reader)
-	_ = otherPub
 	pub, _, _ := ed25519.GenerateKey(rand.Reader)
 	opts := VerifyOptions{Pubkeys: map[string]ed25519.PublicKey{"different-kid": pub}}
 	res, err := VerifyAuditLog(bytes.NewReader(data), opts)

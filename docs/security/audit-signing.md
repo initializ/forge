@@ -50,29 +50,73 @@ field — deployments that never turned signing on see no change.
 
 ## Canonicalization
 
-The signed bytes are the event marshaled with Go's `encoding/json`
-after clearing the `sig` field. This is a **fixed-point** definition
-— the verifier reproduces the input by clearing `sig` and re-marshaling
-through the same encoder — not a language-neutral canonical JSON.
+The signed bytes are the **RFC 8785 (JCS) canonical form** of the
+event value with the `sig` member removed. The scheme is marked on
+the wire via the `sigp` field (currently the only value: `"jcs-1"`),
+which is itself covered by the signature so a tamperer can't
+downgrade it.
 
-If your verifier is Go, use `forge audit verify` or import
-`coreruntime.VerifyAuditLog` — no work.
+Any language with a JCS implementation (Python `jcs`, JS `canonicalize`,
+Go `github.com/gowebpki/jcs`, Java `webpki.org.jcs`, Rust `serde_jcs`,
+…) can compute the preimage from the parsed JSON — no need to
+replicate Go's `encoding/json` field order, key sort, or escaping
+quirks.
 
-If your verifier is **not** Go, you must reproduce Go's
-`encoding/json` output exactly:
+### Verifier flow (any language)
 
-- Struct field order: declaration order (matches the `AuditEvent`
-  struct in `forge-core/runtime/audit.go`).
-- Map keys: sorted alphabetically ascending (Go's default).
-- HTML-safe escaping: `<`, `>`, `&` → `<`, `>`, `&`.
-  Go's default `encoding/json` behavior; do NOT `SetEscapeHTML(false)`.
-- No trailing newline in the signed payload (Emit appends the `\n`
-  after signing).
+1. Parse the NDJSON line to a JSON value.
+2. Read `sigp` — reject if unknown (unsupported canonicalization).
+3. Read `kid` — look up the Ed25519 public key from JWKS.
+4. Read `sig` — base64-decode.
+5. **Delete the `sig` member** from the parsed value.
+6. Canonicalize the modified value via JCS.
+7. `Ed25519.Verify(pub, canonical_bytes, sig_bytes)`.
 
-Cross-language verifiers are welcome; adopting JCS (RFC 8785) is
-tracked as a follow-up so operators aren't forced to reimplement
-Go's marshaler quirks. Until then, treat the Go marshaler as the
-normative spec.
+Python reference:
+
+```python
+import json, base64, jcs
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+def verify_line(line, kid_to_pub):
+    evt = json.loads(line)
+    sig = evt.pop("sig", None)
+    if sig is None:
+        return True  # unsigned event; structural check only
+    if evt.get("sigp") != "jcs-1":
+        raise ValueError(f"unsupported sigp: {evt.get('sigp')!r}")
+    pub = kid_to_pub[evt["kid"]]
+    pub.verify(base64.b64decode(sig), jcs.canonicalize(evt))
+    return True
+```
+
+### Large-integer caveat (must-know)
+
+JCS's number rule is IEEE-754 double (ES6 §6.1.6). Any field value
+that MUST be preserved bit-exact past 53 bits (nanosecond epochs,
+64-bit database IDs) **MUST be carried as a JSON string** in
+`fields`, or the signature will commit to the rounded value.
+
+Bad:
+```json
+"fields": { "trace_id": 9007199254740993 }   // truncates to ...992
+```
+
+Good:
+```json
+"fields": { "trace_id": "9007199254740993" } // preserved bit-exact
+```
+
+The Forge library does not enforce this — it's a producer-side
+discipline. If your integration surfaces 64-bit identifiers into
+audit fields, stringify at insertion.
+
+### Scheme evolution
+
+`sigp` is written on every signed event so future canonicalizations
+can coexist during a transition. If a stronger scheme lands (say
+`"cbor-1"` using deterministic CBOR), producers stamp the new value,
+verifiers reject `"jcs-1"` events only after a documented cutover.
 
 ## Verification
 

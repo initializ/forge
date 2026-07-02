@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -12,6 +13,12 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 )
+
+// AuditChainGenesis is the `prev_hash` value written on the very first
+// audit event of a process. Downstream verifiers recognize this as
+// "no predecessor" — sha256 (32 zero bytes) rendered in hex. See
+// docs/security/audit-tamper-evidence.md (governance R5, issue #212).
+const AuditChainGenesis = "0000000000000000000000000000000000000000000000000000000000000000"
 
 // Audit event type constants.
 const (
@@ -195,6 +202,25 @@ type AuditEvent struct {
 	// See issue #91 / FWS-8.
 	Sequence int64 `json:"seq,omitempty"`
 
+	// PrevHash carries the sha256 of the previous event's line bytes
+	// on the sink stream (raw line without the trailing newline).
+	// Together with the per-emit tail-hash update this forms a hash
+	// chain over the stream — any post-hoc alteration to a prior
+	// event breaks the chain at that point.
+	//
+	// The very first event of the AuditLogger's lifetime carries
+	// AuditChainGenesis ("00…00" — 32 zero bytes hex-encoded); verifiers
+	// treat that value as "no predecessor" and start their walk there.
+	// The field is written on EVERY event (no omitempty) — its absence
+	// is itself a tampering signal.
+	//
+	// PrevHash is covered by the Ed25519 signature (Sig) because the
+	// signature is computed after PrevHash is stamped and with only
+	// Sig blanked — so tampering with prev_hash breaks both the chain
+	// verification AND the signature verification. See #212 (R5) and
+	// #213 (R6) / docs/security/audit-tamper-evidence.md.
+	PrevHash string `json:"prev_hash"`
+
 	// Kid identifies the audit signing key used to produce Sig.
 	// Consumers cross-reference it against the JWKS served at
 	// /.well-known/forge-audit-keys (or an out-of-band published
@@ -369,6 +395,18 @@ type AuditLogger struct {
 	// signing off (pre-#213 behavior; Sig + Kid absent from output).
 	// Configured once at startup via SetSigner from the loaded key.
 	signer *AuditSigner
+
+	// lastHash is the sha256 (hex-encoded) of the previous event's
+	// raw line bytes (as they went to the sink, WITHOUT the trailing
+	// newline). Each Emit stamps event.PrevHash = lastHash then
+	// updates lastHash to sha256(current event's line bytes). The
+	// very first Emit sees lastHash == "" and writes AuditChainGenesis
+	// so downstream verifiers have a well-defined start value.
+	//
+	// Guarded by mu; the chain-mint + sign + marshal + hash + sink-write
+	// sequence executes under the same lock so events land on disk in
+	// the same order they were chained. See #212 (R5).
+	lastHash string
 
 	// Static tenancy stamp, installed once at agent startup via
 	// WithTenancy(). Populated from FORGE_ORG_ID / FORGE_WORKSPACE_ID
@@ -585,65 +623,112 @@ func (a *AuditLogger) Emit(event AuditEvent) {
 			event.EntityType = staticEntityType
 		}
 	}
-	// Snapshot signer + sinks + opsLog under a short critical section.
-	// Sign / marshal / sink-write run OUTSIDE the lock so:
-	//   1. logSinkErrorOnce (which itself acquires a.mu) cannot
-	//      self-deadlock — sync.Mutex is not reentrant.
-	//   2. Slow sink I/O does not serialize other Emit callers.
-	// ed25519.Sign is stateless; the signer + sink pointers only need
-	// stable-view semantics for the duration of one emit.
-	a.mu.Lock()
-	signer := a.signer
-	sinks := append([]Sink(nil), a.sinks...)
-	opsLog := a.opsLog
-	a.mu.Unlock()
+	// Governance R5 (#212, chain) + R6 (#213, signing) integration.
+	//
+	// Hold a.mu across the whole chain-mint → sign → marshal → hash →
+	// sink-write sequence. Chain order MUST equal on-disk order —
+	// two concurrent emits mustn't race on a.lastHash, and the sink
+	// writes MUST land in the order they were chained (or a verifier
+	// sees an event referencing a prev_hash whose predecessor hasn't
+	// arrived).
+	//
+	// Deadlock avoidance: since logSinkErrorOnce reacquires a.mu
+	// (sync.Mutex is non-reentrant), we CANNOT call it from inside
+	// the locked section. Instead we collect sink errors under the
+	// lock and log them after an explicit Unlock() below.
+	type sinkErr struct {
+		name string
+		err  error
+	}
+	var (
+		sinkErrs      []sinkErr
+		signErr       error
+		marshalErr    error
+		droppedEvent  string
+		opsLogForPost Logger
+	)
 
-	// Signing pass (#213 / governance R6). Sign the canonical bytes
-	// with Sig empty so the verifier can reproduce them by clearing
-	// Sig before rehashing. Applies iff a signer is installed;
-	// deployments without signing emit the pre-#213 shape verbatim.
-	if signer != nil {
-		event.Kid = signer.Kid()
-		canonical, sigErr := canonicalBytesForSigning(event)
-		if sigErr != nil {
-			// Log-and-drop rather than silent drop — an audit-signing
-			// failure is exactly the class of event an operator must
-			// see. Choosing drop-over-emit-unsigned because a signed
-			// pipeline's downstream verifier will treat a missing sig
-			// as evidence of tampering; better to leave a visible gap
-			// (via ops log + sink Write not fired) than to write an
-			// unsigned row into a stream the SIEM expects to be signed.
-			if opsLog != nil {
-				opsLog.Error("audit signing failed; event dropped", map[string]any{
-					"event": event.Event,
-					"error": sigErr.Error(),
+	a.mu.Lock()
+
+	// Chain stamp: pin this event to the previous event's line-hash.
+	event.PrevHash = a.lastHash
+	if event.PrevHash == "" {
+		event.PrevHash = AuditChainGenesis
+	}
+
+	// Signing pass — signature covers every field except Sig itself
+	// (canonicalBytesForSigning clones and blanks Sig). Because
+	// PrevHash and Kid are stamped BEFORE canonicalize, tampering with
+	// either breaks both the signature verification AND the chain
+	// verification. See docs/security/audit-tamper-evidence.md.
+	if a.signer != nil {
+		event.Kid = a.signer.Kid()
+		canonical, err := canonicalBytesForSigning(event)
+		if err != nil {
+			// Drop-and-log rather than silent drop or emit-unsigned:
+			// on a signed pipeline the SIEM treats missing sig as
+			// tampering evidence, so a visible gap (ops log + no
+			// sink write + no chain update) is the right failure
+			// mode. Chain state is preserved for the next call.
+			signErr = err
+			droppedEvent = event.Event
+			opsLogForPost = a.opsLog
+			a.mu.Unlock()
+			if opsLogForPost != nil {
+				opsLogForPost.Error("audit signing failed; event dropped", map[string]any{
+					"event": droppedEvent,
+					"error": signErr.Error(),
 				})
 			}
 			return
 		}
-		event.Sig = signer.Sign(canonical)
+		event.Sig = a.signer.Sign(canonical)
 	}
 
+	// Marshal into the exact bytes we'll write AND hash.
 	data, err := json.Marshal(event)
 	if err != nil {
-		if opsLog != nil {
-			opsLog.Error("audit marshal failed; event dropped", map[string]any{
-				"event": event.Event,
-				"error": err.Error(),
+		marshalErr = err
+		droppedEvent = event.Event
+		opsLogForPost = a.opsLog
+		a.mu.Unlock()
+		if opsLogForPost != nil {
+			opsLogForPost.Error("audit marshal failed; event dropped", map[string]any{
+				"event": droppedEvent,
+				"error": marshalErr.Error(),
 			})
 		}
 		return
 	}
+
+	// Update chain state on the RAW line bytes (excluding the trailing
+	// newline appended below). Hashing raw bytes — not the
+	// re-marshaled event — is the fix for the precision hole reviewer
+	// initializ-mk flagged: json.Marshal(json.Unmarshal(x)) is not a
+	// fixed point when Fields carries integers > 2^53 (they round-trip
+	// through float64). Hashing the producer-authored bytes sidesteps
+	// the problem entirely.
+	sum := sha256.Sum256(data)
+	a.lastHash = hex.EncodeToString(sum[:])
+
+	// Append newline for the NDJSON stream.
 	data = append(data, '\n')
 
-	for _, s := range sinks {
-		// Per-event context with a generous parent deadline; each sink
-		// further bounds the actual I/O via its own configured timeout.
-		// We use context.Background here because Emit is called from
-		// non-request scopes too (startup banners, policy_loaded).
-		// Sink writes are bounded internally.
+	// Sink writes, collecting errors for post-unlock logging.
+	for _, s := range a.sinks {
 		if err := s.Write(context.Background(), data); err != nil {
-			a.logSinkErrorOnce(opsLog, s.Name(), err)
+			sinkErrs = append(sinkErrs, sinkErr{name: s.Name(), err: err})
+		}
+	}
+	opsLogForPost = a.opsLog
+
+	a.mu.Unlock()
+
+	// Deadlock-safe: log errors AFTER releasing a.mu so
+	// logSinkErrorOnce can reacquire it.
+	if opsLogForPost != nil {
+		for _, se := range sinkErrs {
+			a.logSinkErrorOnce(opsLogForPost, se.name, se.err)
 		}
 	}
 }

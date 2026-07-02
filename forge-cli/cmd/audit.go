@@ -16,27 +16,39 @@ var auditCmd = &cobra.Command{
 	Short: "Inspect Forge audit logs",
 	Long: `Tools for validating Forge NDJSON audit streams.
 
-Every emitted event may carry an Ed25519 signature (Sig + Kid fields)
-when the agent has audit signing enabled — see
-docs/security/audit-signing.md. ` + "`forge audit verify`" + ` reports the first
-integrity failure it encounters.`,
+Every event carries a prev_hash chain link (governance R5 / #212).
+When audit signing is enabled the event also carries Kid + Sig
+(R6 / #213). ` + "`forge audit verify`" + ` walks the chain and — when a
+JWKS is supplied — verifies signatures too. See
+docs/security/audit-tamper-evidence.md and audit-signing.md.`,
 }
 
 var (
 	auditVerifyPubKeyFile string
+	auditVerifySkipChain  bool
 )
 
 var auditVerifyCmd = &cobra.Command{
 	Use:   "verify <file>",
-	Short: "Verify an NDJSON audit stream (signatures + structural integrity)",
-	Long: `Reads an NDJSON audit log line by line, parses each event, and
-optionally verifies its Ed25519 signature against a JWKS file.
+	Short: "Verify an NDJSON audit stream (hash chain + signatures + structural integrity)",
+	Long: `Reads an NDJSON audit log line by line and verifies:
+
+  - JSON well-formedness of each event.
+  - The prev_hash chain from event to event (R5). The first event
+    must carry the genesis hash (64 zeros) or a soft warning is
+    printed for head-of-stream truncation.
+  - Ed25519 signatures against a JWKS file when --pubkey is supplied
+    (R6). Without --pubkey, signed events are walked structurally
+    and a warning is printed.
 
 Exits 0 when the whole stream verifies, non-zero when the first
-integrity failure is detected (line number, reason, and best-effort
+integrity failure is detected (line number, reason, best-effort
 event body printed).
 
 Use "-" as the file path to read from stdin.
+
+--skip-chain checks signatures only. Useful for SIEM tail ingestion
+where the head of stream is out of view.
 `,
 	Args: cobra.ExactArgs(1),
 	RunE: auditVerifyRun,
@@ -44,7 +56,9 @@ Use "-" as the file path to read from stdin.
 
 func init() {
 	auditVerifyCmd.Flags().StringVar(&auditVerifyPubKeyFile, "pubkey", "",
-		"path to a JWKS file with the audit signing keys (skip signature verification when absent)")
+		"path to a JWKS file with the audit signing keys (signatures unverified when absent)")
+	auditVerifyCmd.Flags().BoolVar(&auditVerifySkipChain, "skip-chain", false,
+		"skip prev_hash chain verification (for tail ingestion where head is out of view)")
 	auditCmd.AddCommand(auditVerifyCmd)
 	rootCmd.AddCommand(auditCmd)
 }
@@ -53,7 +67,7 @@ func auditVerifyRun(cmd *cobra.Command, args []string) error {
 	path := args[0]
 
 	// Load pubkeys if the operator supplied a JWKS.
-	opts := coreruntime.VerifyOptions{}
+	opts := coreruntime.VerifyOptions{SkipChain: auditVerifySkipChain}
 	if auditVerifyPubKeyFile != "" {
 		keys, err := loadJWKSFile(auditVerifyPubKeyFile)
 		if err != nil {
@@ -85,8 +99,8 @@ func auditVerifyRun(cmd *cobra.Command, args []string) error {
 
 	if res.OK() {
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(),
-			"OK: %d events verified (%d signatures checked)\n",
-			res.EventCount, res.SigChecked)
+			"OK: %d events verified (%d chain links, %d signatures checked)\n",
+			res.EventCount, res.ChainChecked, res.SigChecked)
 		return nil
 	}
 

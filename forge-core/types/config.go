@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/initializ/forge/forge-core/credentials"
 	"gopkg.in/yaml.v3"
 )
 
@@ -40,6 +41,27 @@ type ForgeConfig struct {
 	// is off by default to stop workflow identity from leaking to
 	// third-party APIs.
 	WorkflowPropagation WorkflowPropagationConfig `yaml:"workflow_propagation,omitempty"`
+
+	// Credentials declares per-tool JIT credential specs (governance R9).
+	// Each entry names a provider (registered in credentials.DefaultRegistry
+	// via one of the credentials/* subpackages) plus provider-specific
+	// spec bytes. The runner materializes fresh credentials on every
+	// tool call whose Tool + Binary matches the spec; the resulting env
+	// is merged into the tool's subprocess environment. Empty → no JIT
+	// injection (pre-R9 behavior).
+	//
+	// Example:
+	//
+	//   credentials:
+	//     - tool: cli_execute
+	//       binary: aws
+	//       provider: sts_assume_role
+	//       spec:
+	//         role_arn: arn:aws:iam::123456789012:role/skill-read
+	//         duration: 15m
+	//
+	// See docs/security/least-privilege-credentials.md.
+	Credentials []credentials.CredentialSpec `yaml:"credentials,omitempty"`
 }
 
 // WorkflowPropagationConfig opts-in specific downstream hosts to

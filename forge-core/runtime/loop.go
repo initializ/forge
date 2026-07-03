@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -791,29 +792,16 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 				result = truncateToolResult(result, e.maxToolResultChars)
 			}
 
-			// Handle file_create tool: always create a file part.
-			// For other tools with large output, detect content type.
-			// Skip cli_execute: it's an intermediate tool — the LLM should
-			// analyze its output and produce a human-readable response, not
-			// forward raw JSON. Attaching cli_execute output as a file causes
-			// the LLM to say "see attached" instead of writing a report.
-			if tc.Function.Name == "file_create" {
-				var fc struct {
-					Filename string `json:"filename"`
-					Content  string `json:"content"`
-					MimeType string `json:"mime_type"`
-				}
-				if err := json.Unmarshal([]byte(result), &fc); err == nil && fc.Filename != "" {
-					largeToolOutputs = append(largeToolOutputs, a2a.Part{
-						Kind: a2a.PartKindFile,
-						File: &a2a.FileContent{
-							Name:     fc.Filename,
-							MimeType: fc.MimeType,
-							Bytes:    []byte(fc.Content),
-						},
-					})
-				}
-			} else if tc.Function.Name != "cli_execute" && len(result) > largeToolOutputThreshold {
+			// Handle artifact-emitting tools (file_create, browser_screenshot):
+			// always create a file part. For other tools with large output,
+			// detect content type. Skip cli_execute and browser_* tools:
+			// they're intermediate tools — the LLM should analyze their
+			// output and produce a human-readable response, not forward raw
+			// JSON/digests. Attaching their output as a file causes the LLM
+			// to say "see attached" instead of writing a report.
+			if part := fileArtifactFromToolResult(tc.Function.Name, result); part != nil {
+				largeToolOutputs = append(largeToolOutputs, *part)
+			} else if !isIntermediateOutputTool(tc.Function.Name) && len(result) > largeToolOutputThreshold {
 				name, mime := detectFileType(result, tc.Function.Name)
 				largeToolOutputs = append(largeToolOutputs, a2a.Part{
 					Kind: a2a.PartKindFile,
@@ -967,6 +955,60 @@ func a2aMessagesEqual(a, b a2a.Message) bool {
 		return false
 	}
 	return a2aMessageToLLM(a).Content == a2aMessageToLLM(b).Content
+}
+
+// artifactEmittingTools name the tools whose result JSON describes a file to
+// attach as a channel artifact. file_create carries the bytes inline in
+// `content`; browser_screenshot writes to disk and carries only `path`, so
+// image bytes never enter the LLM conversation.
+var artifactEmittingTools = map[string]bool{
+	"file_create":        true,
+	"browser_screenshot": true,
+}
+
+// fileArtifactFromToolResult parses an artifact-emitting tool's result into a
+// file part. Returns nil for other tools or unparseable results (the
+// confirmation text still reaches the LLM either way).
+func fileArtifactFromToolResult(toolName, result string) *a2a.Part {
+	if !artifactEmittingTools[toolName] {
+		return nil
+	}
+	var fc struct {
+		Filename string `json:"filename"`
+		Content  string `json:"content"`
+		MimeType string `json:"mime_type"`
+		Path     string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(result), &fc); err != nil || fc.Filename == "" {
+		return nil
+	}
+	data := []byte(fc.Content)
+	if len(data) == 0 && fc.Path != "" {
+		fileBytes, err := os.ReadFile(fc.Path)
+		if err != nil {
+			return nil
+		}
+		data = fileBytes
+	}
+	if len(data) == 0 {
+		return nil
+	}
+	return &a2a.Part{
+		Kind: a2a.PartKindFile,
+		File: &a2a.FileContent{
+			Name:     fc.Filename,
+			MimeType: fc.MimeType,
+			Bytes:    data,
+		},
+	}
+}
+
+// isIntermediateOutputTool reports whether a tool's output is an intermediate
+// observation the LLM should analyze rather than a deliverable to auto-attach
+// when large. cli_execute output is raw command JSON; browser_* outputs are
+// page digests/extracts.
+func isIntermediateOutputTool(toolName string) bool {
+	return toolName == "cli_execute" || strings.HasPrefix(toolName, "browser_")
 }
 
 // detectFileType inspects tool output content and returns an appropriate

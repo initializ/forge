@@ -896,7 +896,7 @@ func (r *Runner) Run(ctx context.Context) error {
 					// compresses what redaction left; the client wrapper sits
 					// below the FallbackChain so it also covers retries and
 					// compactor summarization calls.
-					if comp := r.initCompression(reg); comp != nil {
+					if comp := r.initCompression(reg, auditLogger); comp != nil {
 						defer comp.Close() //nolint:errcheck
 						hooks.Register(coreruntime.AfterToolExec, comp.AfterToolExecHook())
 						llmClient = comp.WrapClient(llmClient)
@@ -3411,7 +3411,13 @@ func (r *Runner) promptCachingEnabled() bool {
 // initCompression builds the ctxzip compression runtime and registers the
 // context_expand tool. Returns nil when compression is disabled or the store
 // cannot be opened (the agent then runs uncompressed — fail-open).
-func (r *Runner) initCompression(reg *tools.Registry) *compress.Runtime {
+//
+// When auditLogger is non-nil, compression emits context_compressed /
+// context_expanded audit events (correlation_id/task_id stamped from ctx via
+// EmitFromContext) carrying per-event savings plus running totals, so SIEM
+// consumers can attribute token reduction to compression rather than
+// inferring it from tool_exec result sizes.
+func (r *Runner) initCompression(reg *tools.Registry, auditLogger *coreruntime.AuditLogger) *compress.Runtime {
 	if !r.compressionEnabled() {
 		return nil
 	}
@@ -3432,12 +3438,23 @@ func (r *Runner) initCompression(reg *tools.Registry) *compress.Runtime {
 		}
 	}
 
+	var auditFn compress.AuditFunc
+	if auditLogger != nil {
+		auditFn = func(ctx context.Context, event string, fields map[string]any) {
+			auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
+				Event:  event,
+				Fields: fields,
+			})
+		}
+	}
+
 	comp, err := compress.New(compress.Config{
 		StorePath:          storePath,
 		TTL:                ttl,
 		MinToolOutputChars: cc.MinToolOutputChars,
 		KeepPatterns:       cc.KeepPatterns,
 		Logger:             r.logger,
+		Audit:              auditFn,
 	})
 	if err != nil {
 		r.logger.Warn("failed to init compression, running uncompressed", map[string]any{

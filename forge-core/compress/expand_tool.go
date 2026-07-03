@@ -53,7 +53,7 @@ func (t *expandTool) InputSchema() json.RawMessage {
 	}`)
 }
 
-func (t *expandTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
+func (t *expandTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	var input expandInput
 	if err := json.Unmarshal(args, &input); err != nil {
 		return "", fmt.Errorf("parsing input: %w", err)
@@ -72,6 +72,7 @@ func (t *expandTool) Execute(_ context.Context, args json.RawMessage) (string, e
 			original, ok = ctxzip.Unzip(t.rt.store, full)
 		}
 	}
+	t.rt.recordExpansion(ctx, hash, ok, len(original))
 	if !ok {
 		// A miss is not a dead end — the disk or the original command is the
 		// source of truth. Say so instead of returning a bare error.

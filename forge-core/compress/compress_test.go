@@ -234,6 +234,78 @@ func TestNormalizeHash(t *testing.T) {
 	}
 }
 
+// Compression must be attributable in the audit stream: every compression
+// and expansion emits an event carrying per-event savings AND running totals,
+// so auditors see cumulative savings, not just per-tool-call deltas.
+func TestAuditEvents_SavingsAndTotals(t *testing.T) {
+	type captured struct {
+		event  string
+		fields map[string]any
+	}
+	var events []captured
+
+	rt, err := New(Config{
+		StorePath: filepath.Join(t.TempDir(), "ctxzip.db"),
+		Audit: func(_ context.Context, event string, fields map[string]any) {
+			events = append(events, captured{event, fields})
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rt.Close() })
+
+	// Two hook compressions accumulate totals.
+	hook := rt.AfterToolExecHook()
+	h1 := &runtime.HookContext{ToolName: "list_pods", ToolOutput: bigJSON(80)}
+	_ = hook(context.Background(), h1)
+	h2 := &runtime.HookContext{ToolName: "list_nodes", ToolOutput: bigJSON(90)}
+	_ = hook(context.Background(), h2)
+
+	if len(events) != 2 {
+		t.Fatalf("want 2 context_compressed events, got %d", len(events))
+	}
+	for i, e := range events {
+		if e.event != AuditEventCompressed {
+			t.Fatalf("event %d = %s, want %s", i, e.event, AuditEventCompressed)
+		}
+		if e.fields["seam"] != "tool_output" {
+			t.Errorf("event %d seam = %v", i, e.fields["seam"])
+		}
+		if saved, _ := e.fields["saved_tokens"].(int); saved <= 0 {
+			t.Errorf("event %d saved_tokens = %v, want > 0", i, e.fields["saved_tokens"])
+		}
+	}
+	// Running total on the second event exceeds its own per-event saving.
+	second := events[1].fields
+	if second["total_compressions"].(int64) != 2 {
+		t.Errorf("total_compressions = %v, want 2", second["total_compressions"])
+	}
+	if second["total_saved_tokens"].(int64) <= int64(second["saved_tokens"].(int)) {
+		t.Errorf("running total %v should exceed per-event %v",
+			second["total_saved_tokens"], second["saved_tokens"])
+	}
+
+	// An expansion emits the cost-side event with the same totals context.
+	hashes := ccr.ExtractHashes(h1.ToolOutput)
+	args, _ := json.Marshal(map[string]string{"hash": hashes[0]})
+	_, _ = rt.ExpandTool().Execute(context.Background(), args)
+
+	last := events[len(events)-1]
+	if last.event != AuditEventExpanded {
+		t.Fatalf("want %s event after expand, got %s", AuditEventExpanded, last.event)
+	}
+	if last.fields["hit"] != true || last.fields["total_expansions"].(int64) != 1 {
+		t.Errorf("expansion fields wrong: %+v", last.fields)
+	}
+
+	// Totals snapshot agrees.
+	tot := rt.Totals()
+	if tot.Compressions != 2 || tot.Expansions != 1 || tot.SavedTokens <= 0 {
+		t.Errorf("Totals() = %+v", tot)
+	}
+}
+
 // KeepPatterns (forge.yaml compression.keep_patterns) must flow through to
 // the hook so builder-flagged rows survive the compressed view.
 func TestHook_KeepPatterns(t *testing.T) {

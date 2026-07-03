@@ -27,13 +27,13 @@ jobs:
           cd ../forge-plugins && go mod verify
 
       - name: Vet
-        run: go vet ./forge-core/... ./forge-cli/... ./forge-plugins/...
+        run: go vet ./forge-core/... ./forge-cli/... ./forge-skills/... ./forge-plugins/...
 
       - name: Check formatting
-        run: test -z "$(gofmt -l forge-core forge-cli forge-plugins)"
+        run: test -z "$(gofmt -l forge-core forge-cli forge-skills forge-plugins)"
 
       - name: Test
-        run: go test -race -coverprofile=coverage.out ./forge-core/... ./forge-cli/... ./forge-plugins/...
+        run: go test -race -coverprofile=coverage.out ./forge-core/... ./forge-cli/... ./forge-skills/... ./forge-plugins/...
 
       - name: Check coverage threshold
         run: |
@@ -62,7 +62,7 @@ jobs:
       - uses: golangci/golangci-lint-action@v7
         with:
           version: v2.10.1
-          args: ./forge-core/... ./forge-cli/... ./forge-plugins/...
+          args: ./forge-core/... ./forge-cli/... ./forge-skills/... ./forge-plugins/...
 
   integration:
     name: Integration Tests
@@ -76,7 +76,7 @@ jobs:
           go-version: "1.25"
 
       - name: Integration tests
-        run: go test -race -tags=integration ./forge-core/... ./forge-cli/... ./forge-plugins/...
+        run: go test -race -tags=integration ./forge-core/... ./forge-cli/... ./forge-skills/... ./forge-plugins/...
 
   build:
     name: Build (${{ matrix.goos }}/${{ matrix.goarch }})

@@ -1,6 +1,7 @@
 package requirements
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/initializ/forge/forge-skills/contract"
@@ -226,5 +227,50 @@ func TestAggregate_NoRequirements(t *testing.T) {
 	}
 	if len(reqs.EnvOneOf) != 0 {
 		t.Errorf("expected 0 oneOf, got %d", len(reqs.EnvOneOf))
+	}
+}
+
+func TestAggregate_Capabilities(t *testing.T) {
+	entries := []contract.SkillEntry{
+		{
+			Name: "web-browse",
+			ForgeReqs: &contract.SkillRequirements{
+				Capabilities: []string{"browser"},
+			},
+		},
+		{
+			Name: "price-watch",
+			ForgeReqs: &contract.SkillRequirements{
+				Capabilities: []string{"browser", "zeta-future-cap"},
+			},
+		},
+		{
+			Name:      "summarize",
+			ForgeReqs: &contract.SkillRequirements{},
+		},
+		{
+			Name: "no-reqs",
+		},
+	}
+
+	agg := AggregateRequirements(entries)
+	want := []string{"browser", "zeta-future-cap"}
+	if !reflect.DeepEqual(agg.Capabilities, want) {
+		t.Errorf("Capabilities = %v, want %v (deduplicated, sorted)", agg.Capabilities, want)
+	}
+}
+
+func TestAggregate_NoCapabilities(t *testing.T) {
+	entries := []contract.SkillEntry{
+		{
+			Name: "github",
+			ForgeReqs: &contract.SkillRequirements{
+				Bins: []contract.BinRequirement{{Name: "curl"}},
+			},
+		},
+	}
+	agg := AggregateRequirements(entries)
+	if agg.Capabilities != nil {
+		t.Errorf("Capabilities = %v, want nil", agg.Capabilities)
 	}
 }

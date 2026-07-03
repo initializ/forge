@@ -1,6 +1,7 @@
 package requirements
 
 import (
+	"slices"
 	"sort"
 
 	"github.com/initializ/forge/forge-skills/contract"
@@ -61,6 +62,37 @@ func DeriveCLIConfig(reqs *contract.AggregatedRequirements) *contract.DerivedCLI
 		EgressDomains:   reqs.EgressDomains,  // already sorted from AggregateRequirements
 		WorkflowPhases:  reqs.WorkflowPhases, // already sorted from AggregateRequirements
 	}
+}
+
+// DeriveBrowserConfig reports whether the aggregated requirements activate the
+// browser capability. Returns nil when no active skill declares
+// requires.capabilities: [browser]; a non-nil config otherwise, naming the
+// declaring skills for logs and startup errors.
+//
+// Unlike DeriveCLIConfig there are no merge semantics: capability presence is
+// binary, and explicit forge.yaml tool config cannot grant or revoke it.
+func DeriveBrowserConfig(reqs *contract.AggregatedRequirements, entries []contract.SkillEntry) *contract.DerivedBrowserConfig {
+	if reqs == nil || !slices.Contains(reqs.Capabilities, contract.CapabilityBrowser) {
+		return nil
+	}
+
+	var sources []string
+	seen := make(map[string]bool)
+	for _, e := range entries {
+		if e.ForgeReqs == nil || !slices.Contains(e.ForgeReqs.Capabilities, contract.CapabilityBrowser) {
+			continue
+		}
+		name := e.Name
+		if name == "" && e.Metadata != nil {
+			name = e.Metadata.Name
+		}
+		if name != "" && !seen[name] {
+			seen[name] = true
+			sources = append(sources, name)
+		}
+	}
+
+	return &contract.DerivedBrowserConfig{SourceSkills: sources}
 }
 
 // MergeCLIConfig merges derived config with explicit forge.yaml config.

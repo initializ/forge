@@ -3,7 +3,7 @@ VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo de
 COMMIT    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 LDFLAGS   := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)
 COVERFILE := coverage.out
-MODULES   := forge-core forge-cli forge-plugins forge-ui
+MODULES   := forge-core forge-cli forge-skills forge-plugins forge-ui
 
 .PHONY: build test test-integration vet fmt lint cover cover-html install clean release fetch-monaco help
 

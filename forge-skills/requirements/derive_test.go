@@ -1,6 +1,7 @@
 package requirements
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/initializ/forge/forge-skills/contract"
@@ -102,5 +103,58 @@ func TestMerge_NilAllowsDerived(t *testing.T) {
 	}
 	if len(merged.EnvPassthrough) != 1 || merged.EnvPassthrough[0] != "API_KEY" {
 		t.Errorf("EnvPassthrough = %v, want [API_KEY]", merged.EnvPassthrough)
+	}
+}
+
+func TestDeriveBrowserConfig_NilWithoutCapability(t *testing.T) {
+	entries := []contract.SkillEntry{
+		{
+			Name: "github",
+			ForgeReqs: &contract.SkillRequirements{
+				Bins: []contract.BinRequirement{{Name: "curl"}},
+			},
+		},
+	}
+	reqs := AggregateRequirements(entries)
+	if cfg := DeriveBrowserConfig(reqs, entries); cfg != nil {
+		t.Errorf("DeriveBrowserConfig = %+v, want nil without browser capability", cfg)
+	}
+	if cfg := DeriveBrowserConfig(nil, nil); cfg != nil {
+		t.Errorf("DeriveBrowserConfig(nil, nil) = %+v, want nil", cfg)
+	}
+}
+
+func TestDeriveBrowserConfig_SourceSkills(t *testing.T) {
+	entries := []contract.SkillEntry{
+		{
+			Name:      "web-browse",
+			ForgeReqs: &contract.SkillRequirements{Capabilities: []string{"browser"}},
+		},
+		{
+			// Second entry from the same SKILL.md (multi-tool skills share
+			// Name via metadata) must not duplicate the source.
+			Name:      "web-browse",
+			ForgeReqs: &contract.SkillRequirements{Capabilities: []string{"browser"}},
+		},
+		{
+			Name:      "price-watch",
+			ForgeReqs: &contract.SkillRequirements{Capabilities: []string{"browser"}},
+		},
+		{
+			Name:      "summarize",
+			ForgeReqs: &contract.SkillRequirements{},
+		},
+	}
+	reqs := AggregateRequirements(entries)
+	cfg := DeriveBrowserConfig(reqs, entries)
+	if cfg == nil {
+		t.Fatal("DeriveBrowserConfig = nil, want non-nil with browser capability")
+	}
+	want := []string{"web-browse", "price-watch"}
+	if !reflect.DeepEqual(cfg.SourceSkills, want) {
+		t.Errorf("SourceSkills = %v, want %v", cfg.SourceSkills, want)
+	}
+	if cfg.AllowSensitiveFill {
+		t.Error("AllowSensitiveFill = true, want false by default")
 	}
 }

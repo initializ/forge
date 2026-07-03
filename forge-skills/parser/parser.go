@@ -216,27 +216,38 @@ func validateCategoryAndTags(meta *contract.SkillMetadata) error {
 	return nil
 }
 
-// ExtractForgeReqs extracts SkillRequirements, egress_domains, and guardrails from the generic
-// metadata map by re-marshaling metadata["forge"] through yaml round-trip into ForgeSkillMeta.
-func ExtractForgeReqs(meta *contract.SkillMetadata) (*contract.SkillRequirements, []string, *contract.SkillGuardrailConfig) {
+// ExtractForgeMeta extracts the full typed ForgeSkillMeta from the generic
+// metadata map by re-marshaling metadata["forge"] through a yaml round-trip.
+// Returns nil when no forge namespace exists or it fails to parse.
+func ExtractForgeMeta(meta *contract.SkillMetadata) *contract.ForgeSkillMeta {
 	if meta == nil || meta.Metadata == nil {
-		return nil, nil, nil
+		return nil
 	}
 	forgeMap, ok := meta.Metadata["forge"]
 	if !ok || forgeMap == nil {
-		return nil, nil, nil
+		return nil
 	}
 
 	// Re-marshal the forge map to YAML, then unmarshal into ForgeSkillMeta
 	data, err := yaml.Marshal(forgeMap)
 	if err != nil {
-		return nil, nil, nil
+		return nil
 	}
 
 	var forgeMeta contract.ForgeSkillMeta
 	if err := yaml.Unmarshal(data, &forgeMeta); err != nil {
-		return nil, nil, nil
+		return nil
 	}
 
+	return &forgeMeta
+}
+
+// ExtractForgeReqs extracts SkillRequirements, egress_domains, and guardrails from the generic
+// metadata map. Thin wrapper over ExtractForgeMeta for existing call sites.
+func ExtractForgeReqs(meta *contract.SkillMetadata) (*contract.SkillRequirements, []string, *contract.SkillGuardrailConfig) {
+	forgeMeta := ExtractForgeMeta(meta)
+	if forgeMeta == nil {
+		return nil, nil, nil
+	}
 	return forgeMeta.Requires, forgeMeta.EgressDomains, forgeMeta.Guardrails
 }

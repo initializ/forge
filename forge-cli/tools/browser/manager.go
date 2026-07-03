@@ -56,6 +56,16 @@ type Manager struct {
 	// gen is the digest generation counter; bumped on every snapshot so
 	// interaction tools can detect stale element indices.
 	gen int64
+	// shots numbers default screenshot filenames.
+	shots int64
+}
+
+// nextShot returns a monotonically increasing screenshot number.
+func (m *Manager) nextShot() int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.shots++
+	return m.shots
 }
 
 // NewManager validates cfg and returns an unlaunched Manager.

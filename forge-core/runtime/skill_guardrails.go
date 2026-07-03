@@ -103,23 +103,27 @@ func NewSkillGuardrailEngine(rules *agentspec.SkillGuardrailRules, enforce bool,
 	return engine
 }
 
-// CheckCommandInput validates a tool call before execution. It only fires for
-// cli_execute tool calls. Returns an error if the command matches a deny pattern.
+// CheckCommandInput validates a tool call before execution.
+//
+// For cli_execute, the JSON is parsed to build a "binary arg1 arg2..."
+// canonical string so operators can author shell-style patterns
+// (`git.*--force`). For any other tool, the raw tool-input JSON is
+// used as the match target — so `deny_commands` can match on payload
+// fragments of http_request / mcp / builtin tool calls too. This
+// generalizes MODIFY/DENY beyond the cli_execute-only path called
+// out in governance R4a (#209).
 func (s *SkillGuardrailEngine) CheckCommandInput(toolName, toolInput string) error {
-	if toolName != "cli_execute" {
-		return nil
-	}
 	if len(s.denyCommands) == 0 {
 		return nil
 	}
 
-	cmdLine := extractCommandLine(toolInput)
-	if cmdLine == "" {
+	matchTarget := canonicalizeToolInput(toolName, toolInput)
+	if matchTarget == "" {
 		return nil
 	}
 
 	for _, f := range s.denyCommands {
-		if f.re.MatchString(cmdLine) {
+		if f.re.MatchString(matchTarget) {
 			msg := f.message
 			if msg == "" {
 				msg = "command blocked by skill guardrail"
@@ -129,7 +133,8 @@ func (s *SkillGuardrailEngine) CheckCommandInput(toolName, toolInput string) err
 			}
 			s.logger.Warn("skill guardrail command match", map[string]any{
 				"pattern": f.re.String(),
-				"command": cmdLine,
+				"tool":    toolName,
+				"target":  matchTarget,
 				"message": msg,
 			})
 			return fmt.Errorf("skill guardrail: %s", msg)
@@ -139,35 +144,85 @@ func (s *SkillGuardrailEngine) CheckCommandInput(toolName, toolInput string) err
 	return nil
 }
 
-// CheckCommandOutput validates tool output after execution. It only fires for
-// cli_execute tool calls. Returns the (possibly redacted) output and an error
-// if the output matches a "block" pattern.
+// CheckCommandOutput validates tool output after execution.
+//
+// Applies deny_output patterns to the output of ANY tool — not just
+// cli_execute. Governance R4a (#209) requires MODIFY (redact) to be
+// available for all tool outputs, not a special-cased path. The
+// pattern-matching loop is delegated to applyOutputPolicy so other
+// call sites (LLM response scanning, future MCP tool result hook)
+// can reuse the same block/redact semantics.
 func (s *SkillGuardrailEngine) CheckCommandOutput(toolName, toolOutput string) (string, error) {
-	if toolName != "cli_execute" {
-		return toolOutput, nil
-	}
 	if len(s.denyOutput) == 0 || toolOutput == "" {
 		return toolOutput, nil
 	}
+	result := applyOutputPolicy(toolOutput, s.denyOutput, s.logger, toolName)
+	switch result.Decision {
+	case DecisionDeny:
+		return "", fmt.Errorf("tool output blocked by skill guardrail")
+	case DecisionModify:
+		return result.Modified, nil
+	default:
+		return toolOutput, nil
+	}
+}
 
-	for _, f := range s.denyOutput {
-		if !f.re.MatchString(toolOutput) {
-			continue
-		}
-
-		switch f.action {
-		case "block":
-			return "", fmt.Errorf("tool output blocked by skill guardrail")
-		case "redact":
-			toolOutput = f.re.ReplaceAllString(toolOutput, "[BLOCKED BY POLICY]")
-			s.logger.Warn("skill guardrail output redaction", map[string]any{
-				"pattern": f.re.String(),
-				"action":  "redact",
-			})
+// applyOutputPolicy runs the block/redact pattern chain over content
+// and returns the resulting PolicyResult. Hoisted out of
+// CheckCommandOutput for R4a (#209) so future call sites (LLM output
+// scanning, RAG-context scanning, MCP tool-result scanning) can share
+// the same MODIFY semantics.
+//
+// Two-pass evaluation (fixes the redact-hides-block downgrade
+// reviewer initializ-mk flagged): pass 1 checks every "block" pattern
+// against the ORIGINAL content and short-circuits to Deny on any
+// match. Only after all blocks pass does pass 2 apply "redact"
+// substitutions cumulatively. This guarantees a block-worthy string
+// isn't silently downgraded to Modify by an earlier redact that
+// rewrote the substring the block pattern would have caught.
+//
+// `logger` and `tool` are for the redaction log line — pass "" for
+// tool when the caller isn't tool-scoped.
+func applyOutputPolicy(content string, filters []compiledOutputFilter, logger Logger, tool string) PolicyResult {
+	// Pass 1: block checks against ORIGINAL content.
+	for _, f := range filters {
+		if f.action == "block" && f.re.MatchString(content) {
+			return Deny("output matched deny_output block pattern")
 		}
 	}
+	// Pass 2: cumulative redacts.
+	modified := content
+	changed := false
+	for _, f := range filters {
+		if f.action != "redact" || !f.re.MatchString(modified) {
+			continue
+		}
+		modified = f.re.ReplaceAllString(modified, "[BLOCKED BY POLICY]")
+		changed = true
+		fields := map[string]any{
+			"pattern": f.re.String(),
+			"action":  "redact",
+		}
+		if tool != "" {
+			fields["tool"] = tool
+		}
+		logger.Warn("skill guardrail output redaction", fields)
+	}
+	if changed {
+		return Modify(modified, "output matched deny_output redact pattern")
+	}
+	return Allow()
+}
 
-	return toolOutput, nil
+// canonicalizeToolInput returns the string against which deny_commands
+// patterns are matched. For cli_execute this reconstructs the shell
+// command line ("binary args..."); for any other tool the raw JSON is
+// used so operators can author payload-shape patterns.
+func canonicalizeToolInput(toolName, toolInput string) string {
+	if toolName == "cli_execute" {
+		return extractCommandLine(toolInput)
+	}
+	return toolInput
 }
 
 // CheckUserInput validates a user message against deny_prompts patterns.

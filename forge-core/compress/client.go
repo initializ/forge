@@ -61,6 +61,9 @@ func (c *compressingClient) compressRequest(req *llm.ChatRequest) *llm.ChatReque
 	opts := ctxzip.DefaultOptions()
 	opts.Store = c.rt.store
 	opts.Query = firstUserContent(req.Messages)
+	// Expansion results in history must stay verbatim — recompressing them
+	// recreates the marker the model already resolved.
+	opts.SkipNames = map[string]bool{expandToolName: true}
 
 	res, err := ctxzip.Compress(zmsgs, opts)
 	if err != nil || res == nil || res.SavedTokens() == 0 {
@@ -72,6 +75,7 @@ func (c *compressingClient) compressRequest(req *llm.ChatRequest) *llm.ChatReque
 	copy(out.Messages, req.Messages)
 	for _, tr := range res.Transforms {
 		out.Messages[tr.Index].Content = res.Messages[tr.Index].Content
+		c.rt.rememberMarkers(tr.Markers)
 	}
 
 	c.rt.debugf("compressed request", map[string]any{

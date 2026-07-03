@@ -25,6 +25,12 @@ func (r *Runtime) AfterToolExecHook() runtime.Hook {
 		if hctx.Error != nil || len(hctx.ToolOutput) < r.minSize {
 			return nil
 		}
+		// Never compress the expansion tool's own output — the model just
+		// asked for those bytes back; re-crushing them recreates the marker
+		// it resolved and the loop chases its own tail (observed live).
+		if hctx.ToolName == expandToolName {
+			return nil
+		}
 
 		opts := ctxzip.DefaultOptions()
 		opts.Store = r.store
@@ -47,6 +53,9 @@ func (r *Runtime) AfterToolExecHook() runtime.Hook {
 			return nil
 		}
 
+		for _, tr := range res.Transforms {
+			r.rememberMarkers(tr.Markers)
+		}
 		r.debugf("compressed tool output", map[string]any{
 			"tool":          hctx.ToolName,
 			"tokens_before": res.TokensBefore,

@@ -28,6 +28,10 @@ package compress
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/initializ/ctxzip/ccr"
@@ -61,6 +65,47 @@ type Runtime struct {
 	store   *ccr.BoltStore
 	minSize int
 	logger  runtime.Logger
+
+	// recent remembers marker hashes this process emitted so the expand tool
+	// can resolve a unique prefix when the model transcribes a hash
+	// imperfectly (observed live: models truncate hex hashes).
+	mu     sync.Mutex
+	recent map[string]struct{}
+}
+
+// rememberMarkers records emitted marker hashes for prefix resolution.
+func (r *Runtime) rememberMarkers(hashes []string) {
+	if len(hashes) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.recent == nil {
+		r.recent = make(map[string]struct{})
+	}
+	for _, h := range hashes {
+		r.recent[h] = struct{}{}
+	}
+}
+
+// resolvePrefix returns the unique remembered hash starting with prefix, or
+// "" when the prefix is too short, unknown, or ambiguous.
+func (r *Runtime) resolvePrefix(prefix string) string {
+	if len(prefix) < 6 {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var found string
+	for h := range r.recent {
+		if strings.HasPrefix(h, prefix) {
+			if found != "" {
+				return "" // ambiguous
+			}
+			found = h
+		}
+	}
+	return found
 }
 
 // New opens the durable store and returns a Runtime. Call Close on shutdown.
@@ -73,6 +118,14 @@ func New(cfg Config) (*Runtime, error) {
 	}
 	if cfg.MinToolOutputChars <= 0 {
 		cfg.MinToolOutputChars = DefaultMinToolOutputChars
+	}
+	// bbolt creates the DB file but not its parent directory; on a fresh
+	// project .forge/ does not exist yet, so create it (0700 — originals can
+	// hold sensitive tool output).
+	if dir := filepath.Dir(cfg.StorePath); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return nil, fmt.Errorf("compress: creating store dir: %w", err)
+		}
 	}
 	store, err := ccr.NewBoltStore(ccr.BoltConfig{Path: cfg.StorePath, TTL: cfg.TTL})
 	if err != nil {

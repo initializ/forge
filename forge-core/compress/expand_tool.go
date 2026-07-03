@@ -29,7 +29,11 @@ type expandInput struct {
 	Hash string `json:"hash"`
 }
 
-func (t *expandTool) Name() string { return "context_expand" }
+// expandToolName is referenced by the hook and client wrapper to exempt this
+// tool's output from compression.
+const expandToolName = "context_expand"
+
+func (t *expandTool) Name() string { return expandToolName }
 
 func (t *expandTool) Description() string {
 	return "Retrieve the original content behind a <<ctxzip:HASH ...>> compression marker. " +
@@ -61,6 +65,14 @@ func (t *expandTool) Execute(_ context.Context, args json.RawMessage) (string, e
 
 	original, ok := ctxzip.Unzip(t.rt.store, hash)
 	if !ok {
+		// Models sometimes transcribe a marker hash imperfectly (truncated
+		// hex). If the given value uniquely prefixes a hash this process
+		// emitted, resolve and retry before declaring a miss.
+		if full := t.rt.resolvePrefix(hash); full != "" {
+			original, ok = ctxzip.Unzip(t.rt.store, full)
+		}
+	}
+	if !ok {
 		// A miss is not a dead end — the disk or the original command is the
 		// source of truth. Say so instead of returning a bare error.
 		return fmt.Sprintf(
@@ -73,16 +85,18 @@ func (t *expandTool) Execute(_ context.Context, args json.RawMessage) (string, e
 }
 
 // normalizeHash tolerates the model passing a whole marker instead of the
-// bare hash: "<<ctxzip:abc123 51_rows_offloaded>>", "ctxzip:abc123", or
-// "hash=abc123" all normalize to "abc123".
+// bare hash: "<<ctxzip:abc123 51_rows_offloaded>>", "ctxzip:abc123",
+// "hash=abc123", or "abc123:51" (count glued on, observed live) all
+// normalize to "abc123".
 func normalizeHash(s string) string {
 	s = strings.TrimSpace(s)
 	s = strings.TrimPrefix(s, "<<")
 	s = strings.TrimPrefix(s, "ctxzip:")
 	s = strings.TrimPrefix(s, "hash=")
 	s = strings.TrimSuffix(s, ">>")
-	// Keep only the leading token — markers carry a trailing note.
-	if i := strings.IndexAny(s, " ,"); i >= 0 {
+	// Keep only the leading token — markers carry a trailing note, and
+	// models sometimes glue it on with a colon.
+	if i := strings.IndexAny(s, " ,:"); i >= 0 {
 		s = s[:i]
 	}
 	return strings.ToLower(strings.TrimSpace(s))

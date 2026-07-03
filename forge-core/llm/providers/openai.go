@@ -5,6 +5,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,12 +20,13 @@ import (
 // OpenAIClient implements llm.Client for the OpenAI Chat Completions API.
 // Also works with Azure OpenAI and any OpenAI-compatible endpoint.
 type OpenAIClient struct {
-	apiKey     string
-	baseURL    string
-	model      string
-	orgID      string
-	authScheme string
-	client     *http.Client
+	apiKey        string
+	baseURL       string
+	model         string
+	orgID         string
+	authScheme    string
+	promptCaching bool
+	client        *http.Client
 }
 
 // NewOpenAIClient creates a new OpenAI client.
@@ -51,12 +54,13 @@ func NewOpenAIClient(cfg llm.ClientConfig) *OpenAIClient {
 		httpClient.Transport = newBedrockSigningTransport(cfg.AWSRegion, http.DefaultTransport)
 	}
 	return &OpenAIClient{
-		apiKey:     cfg.APIKey,
-		baseURL:    strings.TrimRight(baseURL, "/"),
-		model:      cfg.Model,
-		orgID:      cfg.OrgID,
-		authScheme: cfg.AuthScheme,
-		client:     httpClient,
+		apiKey:        cfg.APIKey,
+		baseURL:       strings.TrimRight(baseURL, "/"),
+		model:         cfg.Model,
+		orgID:         cfg.OrgID,
+		authScheme:    cfg.AuthScheme,
+		promptCaching: cfg.PromptCaching,
+		client:        httpClient,
 	}
 }
 
@@ -147,6 +151,11 @@ type openaiRequest struct {
 	MaxTokens     int                  `json:"max_tokens,omitempty"`
 	Stream        bool                 `json:"stream,omitempty"`
 	StreamOptions *streamOptions       `json:"stream_options,omitempty"`
+	// PromptCacheKey pins OpenAI's prompt-cache routing so requests from
+	// this agent land on the same cache shard. Prefix caching itself is
+	// automatic (≥1024 tokens); the key improves hit locality. Only set
+	// when ClientConfig.PromptCaching is on.
+	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
 }
 
 type streamOptions struct {
@@ -199,7 +208,33 @@ func (c *OpenAIClient) toOpenAIRequest(req *llm.ChatRequest, stream bool) openai
 		r.StreamOptions = &streamOptions{IncludeUsage: true}
 	}
 
+	if c.promptCaching {
+		r.PromptCacheKey = derivePromptCacheKey(model, req)
+	}
+
 	return r
+}
+
+// derivePromptCacheKey builds a stable cache-routing key from the parts of
+// the request that define the cacheable prefix: model, system prompt, and
+// tool names. Identical (model, system, tools) across turns → identical key
+// → OpenAI routes the session to the same cache shard.
+func derivePromptCacheKey(model string, req *llm.ChatRequest) string {
+	h := sha256.New()
+	h.Write([]byte(model))
+	h.Write([]byte{0})
+	for _, m := range req.Messages {
+		if m.Role == llm.RoleSystem {
+			h.Write([]byte(m.Content))
+			break
+		}
+	}
+	h.Write([]byte{0})
+	for _, t := range req.Tools {
+		h.Write([]byte(t.Function.Name))
+		h.Write([]byte{0})
+	}
+	return "forge-" + hex.EncodeToString(h.Sum(nil))[:16]
 }
 
 // openaiResponse is the OpenAI-specific response format.

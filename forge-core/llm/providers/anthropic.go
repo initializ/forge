@@ -16,11 +16,12 @@ import (
 
 // AnthropicClient implements llm.Client for the Anthropic Messages API.
 type AnthropicClient struct {
-	apiKey     string
-	baseURL    string
-	model      string
-	authScheme string
-	client     *http.Client
+	apiKey        string
+	baseURL       string
+	model         string
+	authScheme    string
+	promptCaching bool
+	client        *http.Client
 }
 
 // NewAnthropicClient creates a new Anthropic client.
@@ -51,11 +52,12 @@ func NewAnthropicClient(cfg llm.ClientConfig) *AnthropicClient {
 		httpClient.Transport = newBedrockSigningTransport(cfg.AWSRegion, http.DefaultTransport)
 	}
 	return &AnthropicClient{
-		apiKey:     cfg.APIKey,
-		baseURL:    strings.TrimRight(baseURL, "/"),
-		model:      cfg.Model,
-		authScheme: cfg.AuthScheme,
-		client:     httpClient,
+		apiKey:        cfg.APIKey,
+		baseURL:       strings.TrimRight(baseURL, "/"),
+		model:         cfg.Model,
+		authScheme:    cfg.AuthScheme,
+		promptCaching: cfg.PromptCaching,
+		client:        httpClient,
 	}
 }
 
@@ -158,13 +160,34 @@ func (c *AnthropicClient) setHeaders(req *http.Request) {
 }
 
 // Anthropic-specific request types.
+//
+// System is `any` because the Messages API accepts either a plain string or
+// an array of content blocks. Without prompt caching it stays a string —
+// byte-identical to the pre-caching wire format; with prompt caching it
+// becomes []anthropicSystemBlock so a cache_control breakpoint can be
+// attached.
 type anthropicRequest struct {
 	Model     string             `json:"model"`
 	Messages  []anthropicMessage `json:"messages"`
-	System    string             `json:"system,omitempty"`
+	System    any                `json:"system,omitempty"`
 	MaxTokens int                `json:"max_tokens"`
 	Tools     []anthropicTool    `json:"tools,omitempty"`
 	Stream    bool               `json:"stream,omitempty"`
+}
+
+// anthropicCacheControl marks a prompt-cache breakpoint. Everything up to and
+// including the marked block (in Anthropic's tools → system → messages cache
+// order) is cached for ~5 minutes and re-billed at ~10% on hit.
+type anthropicCacheControl struct {
+	Type string `json:"type"` // always "ephemeral"
+}
+
+// anthropicSystemBlock is the block form of the system prompt, used only when
+// prompt caching is enabled.
+type anthropicSystemBlock struct {
+	Type         string                 `json:"type"` // "text"
+	Text         string                 `json:"text"`
+	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
 }
 
 type anthropicMessage struct {
@@ -183,9 +206,10 @@ type anthropicContentBlock struct {
 }
 
 type anthropicTool struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	InputSchema json.RawMessage `json:"input_schema"`
+	Name         string                 `json:"name"`
+	Description  string                 `json:"description"`
+	InputSchema  json.RawMessage        `json:"input_schema"`
+	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
 }
 
 func (c *AnthropicClient) toAnthropicRequest(req *llm.ChatRequest, stream bool) anthropicRequest {
@@ -206,12 +230,16 @@ func (c *AnthropicClient) toAnthropicRequest(req *llm.ChatRequest, stream bool) 
 	}
 
 	// Extract system message and convert remaining messages
+	var system string
 	for _, m := range req.Messages {
 		if m.Role == llm.RoleSystem {
-			r.System = m.Content
+			system = m.Content
 			continue
 		}
 		r.Messages = append(r.Messages, c.convertMessage(m))
+	}
+	if system != "" {
+		r.System = system
 	}
 
 	// Convert tools
@@ -221,6 +249,24 @@ func (c *AnthropicClient) toAnthropicRequest(req *llm.ChatRequest, stream bool) 
 			Description: t.Function.Description,
 			InputSchema: t.Function.Parameters,
 		})
+	}
+
+	// Prompt-cache breakpoints (opt-in via ClientConfig.PromptCaching).
+	// Anthropic's cache prefix serializes tools → system → messages, so a
+	// breakpoint on the system block caches tools+system, and one on the
+	// last tool keeps the tools segment cached even when the system prompt
+	// churns. Forge's provider-agnostic types cannot express cache_control,
+	// so no caller placement can conflict with this injection. Tool order is
+	// already deterministic (Registry.ToolDefinitions sorts by name), which
+	// is what makes the cached prefix byte-stable across turns.
+	if c.promptCaching {
+		ephemeral := &anthropicCacheControl{Type: "ephemeral"}
+		if n := len(r.Tools); n > 0 {
+			r.Tools[n-1].CacheControl = ephemeral
+		}
+		if system != "" {
+			r.System = []anthropicSystemBlock{{Type: "text", Text: system, CacheControl: ephemeral}}
+		}
 	}
 
 	return r

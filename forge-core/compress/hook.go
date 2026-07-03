@@ -42,6 +42,7 @@ func (r *Runtime) AfterToolExecHook() runtime.Hook {
 		// what the model wanted from this output — and they are fixed at call
 		// time, so recompression determinism is not a concern here.
 		opts.Query = hctx.ToolInput
+		opts.MustKeep = r.keep
 
 		msgs := []ctxzip.Message{{
 			Role:    ctxzip.RoleTool,

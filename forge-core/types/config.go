@@ -475,6 +475,12 @@ type CompressionConfig struct {
 	// value of Enabled; set explicitly to run hints without compression or
 	// compression without hints.
 	CacheHints *bool `yaml:"cache_hints,omitempty"`
+	// KeepPatterns is the agent's domain vocabulary of case-insensitive
+	// substrings that compression must never drop — e.g. Kubernetes state
+	// words ("CrashLoopBackOff", "ImagePullBackOff") or product error codes.
+	// Union with the built-in error floor (error/fail/panic/timeout/...):
+	// entries only ever add protection.
+	KeepPatterns []string `yaml:"keep_patterns,omitempty"`
 }
 
 // EgressRef configures egress security controls.

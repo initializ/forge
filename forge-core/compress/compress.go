@@ -55,6 +55,10 @@ type Config struct {
 	// MinToolOutputChars is the size below which tool outputs are left
 	// alone by the AfterToolExec hook. Default 2048.
 	MinToolOutputChars int
+	// KeepPatterns is the builder's domain vocabulary of case-insensitive
+	// substrings compression must never drop (forge.yaml
+	// compression.keep_patterns). Union with ctxzip's built-in error floor.
+	KeepPatterns []string
 	// Logger is optional; nil disables logging.
 	Logger runtime.Logger
 }
@@ -64,6 +68,7 @@ type Config struct {
 type Runtime struct {
 	store   *ccr.BoltStore
 	minSize int
+	keep    []string
 	logger  runtime.Logger
 
 	// recent remembers marker hashes this process emitted so the expand tool
@@ -131,7 +136,12 @@ func New(cfg Config) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("compress: opening store: %w", err)
 	}
-	return &Runtime{store: store, minSize: cfg.MinToolOutputChars, logger: cfg.Logger}, nil
+	return &Runtime{
+		store:   store,
+		minSize: cfg.MinToolOutputChars,
+		keep:    cfg.KeepPatterns,
+		logger:  cfg.Logger,
+	}, nil
 }
 
 // Close releases the underlying store.

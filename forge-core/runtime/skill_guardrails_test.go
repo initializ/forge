@@ -447,3 +447,90 @@ func TestCheckCommandInput_NilRules(t *testing.T) {
 		t.Errorf("output should pass through with nil rules")
 	}
 }
+
+func TestCheckCommandInput_BrowserTools(t *testing.T) {
+	rules := &agentspec.SkillGuardrailRules{
+		DenyCommands: []agentspec.CommandFilter{
+			{Pattern: `internal\.corp`, Message: "internal hosts are off-limits"},
+			{Pattern: `(?i)drop\s+table`, Message: "no sql in form fields"},
+		},
+	}
+	sg := NewSkillGuardrailEngine(rules, true, &testLogger{})
+
+	tests := []struct {
+		name      string
+		toolName  string
+		toolInput string
+		wantErr   bool
+	}{
+		{
+			name:      "navigate to denied host blocked",
+			toolName:  "browser_navigate",
+			toolInput: `{"url":"https://internal.corp/admin"}`,
+			wantErr:   true,
+		},
+		{
+			name:      "navigate to allowed host passes",
+			toolName:  "browser_navigate",
+			toolInput: `{"url":"https://docs.example.com/"}`,
+			wantErr:   false,
+		},
+		{
+			name:      "fill with denied content blocked",
+			toolName:  "browser_fill",
+			toolInput: `{"index":3,"text":"; DROP TABLE users;","generation":1}`,
+			wantErr:   true,
+		},
+		{
+			name:      "fill with normal content passes",
+			toolName:  "browser_fill",
+			toolInput: `{"index":3,"text":"mk@example.com","generation":1}`,
+			wantErr:   false,
+		},
+		{
+			name:      "click input has no denied content",
+			toolName:  "browser_click",
+			toolInput: `{"index":1,"generation":1}`,
+			wantErr:   false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := sg.CheckCommandInput(tt.toolName, tt.toolInput)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("CheckCommandInput(%s) err = %v, wantErr %v", tt.toolName, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestCheckCommandOutput_BrowserTools(t *testing.T) {
+	rules := &agentspec.SkillGuardrailRules{
+		DenyOutput: []agentspec.OutputFilter{
+			{Pattern: `AKIA[0-9A-Z]{16}`, Action: "redact"},
+			{Pattern: `BEGIN RSA PRIVATE KEY`, Action: "block"},
+		},
+	}
+	sg := NewSkillGuardrailEngine(rules, true, &testLogger{})
+
+	t.Run("digest secret redacted", func(t *testing.T) {
+		digest := "Page: Dashboard\n[3] input \"key\"\n--- page text ---\nkey: AKIAABCDEFGHIJKLMNOP done"
+		out, err := sg.CheckCommandOutput("browser_extract", digest)
+		if err != nil {
+			t.Fatalf("unexpected block: %v", err)
+		}
+		if strings.Contains(out, "AKIAABCDEFGHIJKLMNOP") {
+			t.Errorf("secret not redacted from browser output: %s", out)
+		}
+		if !strings.Contains(out, "[BLOCKED BY POLICY]") {
+			t.Errorf("redaction marker missing: %s", out)
+		}
+	})
+
+	t.Run("blocking pattern blocks digest", func(t *testing.T) {
+		_, err := sg.CheckCommandOutput("browser_state", "-----BEGIN RSA PRIVATE KEY-----")
+		if err == nil {
+			t.Error("private key in browser output not blocked")
+		}
+	})
+}

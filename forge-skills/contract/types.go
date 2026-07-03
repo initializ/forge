@@ -101,10 +101,20 @@ const (
 
 // SkillGuardrailConfig declares domain-specific guardrails for a skill.
 type SkillGuardrailConfig struct {
-	DenyCommands  []SkillCommandFilter `yaml:"deny_commands,omitempty" json:"deny_commands,omitempty"`
-	DenyOutput    []SkillOutputFilter  `yaml:"deny_output,omitempty" json:"deny_output,omitempty"`
-	DenyPrompts   []SkillCommandFilter `yaml:"deny_prompts,omitempty" json:"deny_prompts,omitempty"`
-	DenyResponses []SkillCommandFilter `yaml:"deny_responses,omitempty" json:"deny_responses,omitempty"`
+	DenyCommands  []SkillCommandFilter    `yaml:"deny_commands,omitempty" json:"deny_commands,omitempty"`
+	DenyOutput    []SkillOutputFilter     `yaml:"deny_output,omitempty" json:"deny_output,omitempty"`
+	DenyPrompts   []SkillCommandFilter    `yaml:"deny_prompts,omitempty" json:"deny_prompts,omitempty"`
+	DenyResponses []SkillCommandFilter    `yaml:"deny_responses,omitempty" json:"deny_responses,omitempty"`
+	Browser       *SkillBrowserGuardrails `yaml:"browser,omitempty" json:"browser,omitempty"`
+}
+
+// SkillBrowserGuardrails tunes browser tool safety for skills declaring the
+// browser capability.
+type SkillBrowserGuardrails struct {
+	// AllowSensitiveFill opts in to browser_fill on password and payment
+	// fields (input type=password, autocomplete cc-*/…-password), which are
+	// refused by default.
+	AllowSensitiveFill bool `yaml:"allow_sensitive_fill,omitempty" json:"allow_sensitive_fill,omitempty"`
 }
 
 // SkillCommandFilter blocks tool execution when the command matches.

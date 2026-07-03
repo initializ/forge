@@ -14,6 +14,8 @@ order: 3
 | `FORGE_MEMORY_LONG_TERM` | Set `true` to enable long-term memory |
 | `FORGE_COMPRESSION` | Set `true`/`false` to override `compression.enabled` (reversible context compression); the `--compression` flag overrides both |
 | `FORGE_EMBEDDING_PROVIDER` | Override embedding provider |
+| `FORGE_BROWSER_BIN` | Absolute path to the Chromium binary for the browser tools (overrides discovery) |
+| `FORGE_BROWSER_HEADLESS` | Set `false` or `0` to run the browser headful for local debugging (default headless) |
 | `OPENAI_API_KEY` | OpenAI API key |
 | `OPENAI_ORG_ID` | OpenAI Organization ID (enterprise); overrides `organization_id` in YAML |
 | `ANTHROPIC_API_KEY` | Anthropic API key |

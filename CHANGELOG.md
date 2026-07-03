@@ -45,6 +45,24 @@
   warns and falls back to `file`. The file backend and its tests are
   unchanged. See `docs/core-concepts/memory-system.md`.
 
+- **Opt-in browser tool family (issue #94).** Agents can drive a real
+  headless Chromium (via `chromedp`) to navigate, read, click, fill, and
+  screenshot web pages — registered as a conditional tool family
+  (`browser_navigate`, `browser_state`, `browser_click`, `browser_fill`,
+  `browser_extract`, `browser_screenshot`) only when an active skill
+  declares `requires.capabilities: [browser]` and a Chromium binary is
+  present. Token-optimized: the LLM drives the page through a compact
+  indexed digest (not raw HTML) and acts by element index, so each
+  observation is ~1–3 KB and every action returns the new state.
+  All traffic is forced through the existing `EgressProxy` (same
+  allowlist / SSRF / DNS-rebinding protection); `browser_fill` refuses
+  password and payment fields unless the skill opts in via
+  `guardrails.browser.allow_sensitive_fill`; the analyzer scores the
+  capability high-risk and flags a `browser` + `trust_hints.network:
+  false` contradiction as a Critical violation. `forge build` installs
+  Chromium into the image only for browser agents. New env vars
+  `FORGE_BROWSER_BIN` and `FORGE_BROWSER_HEADLESS`; bundled `web-browse`
+  reference skill. See `docs/reference/browser-tools.md`.
 - **Anthropic-format custom URLs + AWS Bedrock SigV4 outbound auth
   (issue #202).** Two-phase rollout:
   - **Phase 1**: `forge init`'s "Custom" provider option now asks

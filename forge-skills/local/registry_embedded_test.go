@@ -16,12 +16,12 @@ func TestEmbeddedRegistry_DiscoverAll(t *testing.T) {
 		t.Fatalf("List error: %v", err)
 	}
 
-	if len(skills) != 15 {
+	if len(skills) != 16 {
 		names := make([]string, len(skills))
 		for i, s := range skills {
 			names[i] = s.Name
 		}
-		t.Fatalf("expected 15 skills, got %d: %v", len(skills), names)
+		t.Fatalf("expected 16 skills, got %d: %v", len(skills), names)
 	}
 
 	// Verify all expected skills are present
@@ -46,6 +46,7 @@ func TestEmbeddedRegistry_DiscoverAll(t *testing.T) {
 		"k8s-pod-rightsizer":    {displayName: "K8s Pod Rightsizer", hasEnv: false, hasBins: true, hasEgress: false},
 		"k8s-cost-visibility":   {displayName: "K8s Cost Visibility", hasEnv: false, hasBins: true, hasEgress: true},
 		"linear":                {displayName: "Linear", hasEnv: true, hasBins: true, hasEgress: true},
+		"web-browse":            {displayName: "Web Browse", hasEnv: false, hasBins: false, hasEgress: true},
 	}
 
 	for _, s := range skills {
@@ -396,6 +397,12 @@ func TestEmbeddedRegistry_LoadContent(t *testing.T) {
 		}
 		if len(content) == 0 {
 			t.Errorf("LoadContent(%q) returned empty content", s.Name)
+		}
+		// Capability skills (e.g. requires.capabilities: [browser]) are
+		// instructional: they teach the LLM to drive runtime-registered
+		// tools and declare no '## Tool:' script entries of their own.
+		if strings.Contains(string(content), "capabilities:") {
+			continue
 		}
 		if !strings.Contains(string(content), "## Tool:") {
 			t.Errorf("LoadContent(%q) missing '## Tool:' heading", s.Name)

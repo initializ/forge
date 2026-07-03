@@ -82,9 +82,15 @@ func DeriveBrowserConfig(reqs *contract.AggregatedRequirements, entries []contra
 		if e.ForgeReqs == nil || !slices.Contains(e.ForgeReqs.Capabilities, contract.CapabilityBrowser) {
 			continue
 		}
-		name := e.Name
-		if name == "" && e.Metadata != nil {
+		// Prefer the skill name (frontmatter) over the tool-entry name: a
+		// multi-tool skill shares one declaration, and errors should point
+		// at the skill.
+		name := ""
+		if e.Metadata != nil {
 			name = e.Metadata.Name
+		}
+		if name == "" {
+			name = e.Name
 		}
 		if name != "" && !seen[name] {
 			seen[name] = true

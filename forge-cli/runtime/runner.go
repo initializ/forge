@@ -15,6 +15,7 @@ import (
 	"github.com/initializ/forge/forge-cli/server"
 	cliskills "github.com/initializ/forge/forge-cli/skills"
 	clitools "github.com/initializ/forge/forge-cli/tools"
+	"github.com/initializ/forge/forge-cli/tools/browser"
 	"github.com/initializ/forge/forge-core/a2a"
 	"github.com/initializ/forge/forge-core/agentspec"
 	"github.com/initializ/forge/forge-core/auth"
@@ -50,6 +51,7 @@ import (
 	"github.com/initializ/forge/forge-core/tools/builtins"
 	"github.com/initializ/forge/forge-core/types"
 	"github.com/initializ/forge/forge-skills/contract"
+	skillsparser "github.com/initializ/forge/forge-skills/parser"
 	"github.com/initializ/forge/forge-skills/requirements"
 	"github.com/initializ/forge/forge-skills/resolver"
 )
@@ -139,23 +141,25 @@ After editing, trace the failing input through your new code. Read the functions
 
 // Runner orchestrates the local A2A development server.
 type Runner struct {
-	cfg              RunnerConfig
-	logger           coreruntime.Logger
-	cliExecTool      *clitools.CLIExecuteTool
-	modelConfig      *coreruntime.ModelConfig          // resolved model config (for banner)
-	derivedCLIConfig *contract.DerivedCLIConfig        // auto-derived from skill requirements
-	skillGuardrails  *agentspec.SkillGuardrailRules    // runtime-parsed skill guardrails (fallback when no build artifact)
-	schedBackend     scheduler.Backend                 // schedule backend (nil until started); FileBackend in non-cluster deploys, KubernetesBackend (#162 part 2b) when running in-cluster with scheduler.backend=auto|kubernetes
-	startTime        time.Time                         // server start time (for /health uptime)
-	scheduleNotifier ScheduleNotifier                  // optional: delivers cron results to channels
-	authToken        string                            // resolved auth token (empty if --no-auth)
-	cancelRegistry   *coreruntime.CancellationRegistry // per-Runner in-flight cancellation registry (issue #88 / FWS-4)
-	auditSigningKey  *coreruntime.LoadedKey            // loaded once at startup; nil when signing is off (#213). Served on JWKS endpoint.
-	compression      *compress.Runtime                 // ctxzip compression runtime; nil when compression is disabled
-	intentEngine     *intent.Engine                    // R3 (#208) intent-alignment engine; nil when disabled
-	stepUpEngine     *stepup.Engine                    // R4b (#210) step-up authorization engine; nil when disabled
-	deferEngine      *deferengine.Engine               // R4c (#211) deferred-authorization engine; nil when disabled
-	taskStore        *a2a.TaskStore                    // shared task store, populated once srv is built; read by defer hook when it fires
+	cfg                  RunnerConfig
+	logger               coreruntime.Logger
+	cliExecTool          *clitools.CLIExecuteTool
+	modelConfig          *coreruntime.ModelConfig          // resolved model config (for banner)
+	derivedCLIConfig     *contract.DerivedCLIConfig        // auto-derived from skill requirements
+	derivedBrowserConfig *contract.DerivedBrowserConfig    // non-nil when a skill declares requires.capabilities: [browser] (#94)
+	browserManager       *browser.Manager                  // lazy Chromium owner; nil unless browser tools registered
+	skillGuardrails      *agentspec.SkillGuardrailRules    // runtime-parsed skill guardrails (fallback when no build artifact)
+	schedBackend         scheduler.Backend                 // schedule backend (nil until started); FileBackend in non-cluster deploys, KubernetesBackend (#162 part 2b) when running in-cluster with scheduler.backend=auto|kubernetes
+	startTime            time.Time                         // server start time (for /health uptime)
+	scheduleNotifier     ScheduleNotifier                  // optional: delivers cron results to channels
+	authToken            string                            // resolved auth token (empty if --no-auth)
+	cancelRegistry       *coreruntime.CancellationRegistry // per-Runner in-flight cancellation registry (issue #88 / FWS-4)
+	auditSigningKey      *coreruntime.LoadedKey            // loaded once at startup; nil when signing is off (#213). Served on JWKS endpoint.
+	compression          *compress.Runtime                 // ctxzip compression runtime; nil when compression is disabled
+	intentEngine         *intent.Engine                    // R3 (#208) intent-alignment engine; nil when disabled
+	stepUpEngine         *stepup.Engine                    // R4b (#210) step-up authorization engine; nil when disabled
+	deferEngine          *deferengine.Engine               // R4c (#211) deferred-authorization engine; nil when disabled
+	taskStore            *a2a.TaskStore                    // shared task store, populated once srv is built; read by defer hook when it fires
 }
 
 // NewRunner creates a Runner from the given config.
@@ -639,8 +643,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		egressClient.Transport = coreruntime.WrapTransportForWorkflowPropagation(
 			egressClient.Transport, propagationMatcher)
 
-		// Start local proxy for subprocess egress enforcement
-		if !security.InContainer() && egressCfg.Mode != security.ModeDevOpen {
+		// Start local proxy for subprocess egress enforcement. The browser
+		// capability force-starts it even in-container / dev-open: browser
+		// tools never run unproxied ("no direct-network escape hatch", #94).
+		// In dev-open mode the matcher allows all domains, so the proxy is a
+		// pass-through with audit logging.
+		browserActive := r.derivedBrowserConfig != nil
+		if (!security.InContainer() && egressCfg.Mode != security.ModeDevOpen) || browserActive {
 			matcher := security.NewDomainMatcher(egressCfg.Mode, egressCfg.AllDomains)
 			egressProxy = security.NewEgressProxy(matcher, allowPrivateIPs)
 			egressProxy.OnAttempt = func(domain string, allowed bool) {
@@ -656,7 +665,13 @@ func (r *Runner) Run(ctx context.Context) error {
 			var pErr error
 			proxyURL, pErr = egressProxy.Start(ctx)
 			if pErr != nil {
-				r.logger.Warn("failed to start egress proxy", map[string]any{"error": pErr.Error()})
+				if browserActive {
+					// Browser tools fail closed on proxyURL == "" — this is
+					// why they will not register.
+					r.logger.Error("failed to start egress proxy; browser tools will not be registered", map[string]any{"error": pErr.Error()})
+				} else {
+					r.logger.Warn("failed to start egress proxy", map[string]any{"error": pErr.Error()})
+				}
 				egressProxy = nil
 			} else {
 				r.logger.Info("egress proxy started", map[string]any{"url": proxyURL})
@@ -830,6 +845,39 @@ func (r *Runner) Run(ctx context.Context) error {
 				rss := clitools.NewRunSkillScriptTool(r.cfg.WorkDir, proxyURL, envPass)
 				if regErr := reg.Register(rss); regErr != nil {
 					r.logger.Warn("failed to register run_skill_script", map[string]any{"error": regErr.Error()})
+				}
+			}
+
+			// Register the browser tool family when an active skill declared
+			// requires.capabilities: [browser] (#94). Conditional on a
+			// Chromium binary and the egress proxy, mirroring the
+			// cli_execute conditional path above.
+			if r.derivedBrowserConfig != nil {
+				binPath, resErr := browser.ResolveBinary()
+				if ok, reason := browserRegistrationDecision(r.derivedBrowserConfig, binPath, resErr, proxyURL); !ok {
+					r.logger.Error("browser capability declared but browser tools not registered", map[string]any{
+						"reason": reason,
+						"skills": r.derivedBrowserConfig.SourceSkills,
+					})
+				} else if mgr, mErr := browser.NewManager(browser.Config{
+					BinaryPath:         binPath,
+					Headless:           browser.HeadlessFromEnv(),
+					ProxyURL:           proxyURL,
+					WorkDir:            r.cfg.WorkDir,
+					AllowSensitiveFill: r.derivedBrowserConfig.AllowSensitiveFill,
+				}); mErr != nil {
+					r.logger.Error("browser manager init failed", map[string]any{"error": mErr.Error()})
+				} else if regErr := browser.RegisterTools(reg, mgr); regErr != nil {
+					r.logger.Error("failed to register browser tools", map[string]any{"error": regErr.Error()})
+					mgr.Stop()
+				} else {
+					r.browserManager = mgr
+					defer mgr.Stop() // LIFO: browser dies before the egress proxy it depends on
+					r.logger.Info("browser tools registered", map[string]any{
+						"binary":   binPath,
+						"headless": browser.HeadlessFromEnv(),
+						"skills":   r.derivedBrowserConfig.SourceSkills,
+					})
 				}
 			}
 
@@ -3418,12 +3466,20 @@ func (r *Runner) validateSkillRequirements(envVars map[string]string) error {
 
 	var allEntries []contract.SkillEntry
 	for _, match := range matches {
-		entries, _, err := cliskills.ParseFileWithMetadata(match)
+		entries, meta, err := cliskills.ParseFileWithMetadata(match)
 		if err != nil {
 			r.logger.Warn("failed to parse skills with metadata", map[string]any{
 				"file": match, "error": err.Error(),
 			})
 			continue
+		}
+		if len(entries) == 0 && meta != nil && meta.Metadata["forge"] != nil {
+			// Instructional skill (no "## Tool:" entries): its forge
+			// metadata — capabilities, egress_domains, guardrails — still
+			// applies. Synthesize a metadata-only entry so aggregation sees
+			// it; registerSkillTools does its own parse and is unaffected.
+			forgeReqs, _, _ := skillsparser.ExtractForgeReqs(meta)
+			entries = []contract.SkillEntry{{Name: meta.Name, Metadata: meta, ForgeReqs: forgeReqs}}
 		}
 		allEntries = append(allEntries, entries...)
 	}
@@ -3441,7 +3497,18 @@ func (r *Runner) validateSkillRequirements(envVars map[string]string) error {
 		r.skillGuardrails = convertSkillGuardrails(reqs.SkillGuardrails)
 	}
 
+	// Derive the browser capability early for the same reason: a browser
+	// skill may declare no bins/env at all (#94).
+	r.derivedBrowserConfig = requirements.DeriveBrowserConfig(reqs, entries)
+
 	if len(reqs.Bins) == 0 && len(reqs.EnvRequired) == 0 && len(reqs.EnvOneOf) == 0 && len(reqs.EnvOptional) == 0 {
+		// Skills carrying only egress_domains / denied_tools / capabilities /
+		// workflow phases still need their derived config stored: the egress
+		// resolver (proxy allowlist) and denied-tools removal read it.
+		// Previously these were silently dropped for bins/env-less skills.
+		if len(reqs.EgressDomains) > 0 || len(reqs.DeniedTools) > 0 || len(reqs.Capabilities) > 0 || len(reqs.WorkflowPhases) > 0 {
+			r.derivedCLIConfig = requirements.DeriveCLIConfig(reqs)
+		}
 		return nil
 	}
 

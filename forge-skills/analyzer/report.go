@@ -152,11 +152,3 @@ func FormatText(report *AuditReport) string {
 
 	return b.String()
 }
-
-func toAnySlice(ss []string) []any {
-	result := make([]any, len(ss))
-	for i, s := range ss {
-		result[i] = s
-	}
-	return result
-}

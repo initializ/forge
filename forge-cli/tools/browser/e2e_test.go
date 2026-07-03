@@ -72,7 +72,7 @@ func testServer(t *testing.T) *httptest.Server {
 	mux.HandleFunc("/article", page(articleHTML()))
 	mux.HandleFunc("/submitted", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprintf(w, `<html><head><title>Submitted</title></head><body><p>email=%s plan=%s</p></body></html>`,
+		_, _ = fmt.Fprintf(w, `<html><head><title>Submitted</title></head><body><p>email=%s plan=%s</p></body></html>`,
 			r.URL.Query().Get("email"), r.URL.Query().Get("plan"))
 	})
 	ts := httptest.NewServer(mux)

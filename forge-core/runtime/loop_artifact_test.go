@@ -86,7 +86,7 @@ func TestIsIntermediateOutputTool(t *testing.T) {
 	// observation), while an unknown tool of the same size still is. This
 	// mirrors the branch in the executor loop.
 	big := strings.Repeat("x", 20000)
-	if !(len(big) > 8000) || isIntermediateOutputTool("browser_extract") == false {
+	if len(big) <= 8000 || !isIntermediateOutputTool("browser_extract") {
 		t.Fatal("test premise broken")
 	}
 }

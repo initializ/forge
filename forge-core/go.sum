@@ -24,6 +24,10 @@ github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 h1:5VipnvEpbqr2gA2VbM+nYVbkIF2
 github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0/go.mod h1:Hyl3n6Twe1hvtd9XUXDec4pTvgMSEixRuQKPTMH2bNs=
 github.com/initializ/ctxzip v0.0.0-20260703193602-ca7fa8003af9 h1:a3rJaFaP+M3hERbrqAnnA5WOKYBMYuCP12wpHAMtLt8=
 github.com/initializ/ctxzip v0.0.0-20260703193602-ca7fa8003af9/go.mod h1:Qs4CpXTEeEOlZwIMPm/qaFPmil+AUIqH7Jg/K81FTmU=
+github.com/initializ/ctxzip v0.0.0-20260703214515-a8b792373e0b h1:9E4+wyRmJIhWnMpt6VdvMqNLKyyZT/pL3fJwVjTxkF0=
+github.com/initializ/ctxzip v0.0.0-20260703214515-a8b792373e0b/go.mod h1:Qs4CpXTEeEOlZwIMPm/qaFPmil+AUIqH7Jg/K81FTmU=
+github.com/initializ/ctxzip v0.0.0-20260703215102-94668f48685c h1:w5Mq+/LEhuqElhyErASHaEJNLRvJSqdwMYwD37nC3H0=
+github.com/initializ/ctxzip v0.0.0-20260703215102-94668f48685c/go.mod h1:Qs4CpXTEeEOlZwIMPm/qaFPmil+AUIqH7Jg/K81FTmU=
 github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=
 github.com/kr/pretty v0.3.1/go.mod h1:hoEshYVHaxMs3cyo3Yncou5ZscifuDolrwPKZanG3xk=
 github.com/kr/text v0.2.0 h1:5Nx0Ya0ZqY2ygV366QzturHI13Jq95ApcVaJBhpS+AY=

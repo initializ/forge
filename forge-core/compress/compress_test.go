@@ -24,6 +24,18 @@ func newRuntime(t *testing.T) *Runtime {
 	return rt
 }
 
+// Regression: on a fresh project .forge/ does not exist yet — New must create
+// the store's parent directory instead of failing open (found in live testing:
+// "open .forge/ctxzip.db: no such file or directory").
+func TestNew_CreatesMissingStoreDir(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".forge", "nested", "ctxzip.db")
+	rt, err := New(Config{StorePath: path})
+	if err != nil {
+		t.Fatalf("New should create missing parent dirs: %v", err)
+	}
+	_ = rt.Close()
+}
+
 // bigJSON builds a large JSON-array tool output with one error row.
 func bigJSON(n int) string {
 	items := make([]map[string]any, n)
@@ -85,6 +97,36 @@ func TestHook_SkipsErrorsAndSmallOutput(t *testing.T) {
 	_ = hook(context.Background(), small)
 	if small.ToolOutput != "tiny result" {
 		t.Error("small output must not be compressed")
+	}
+}
+
+// Regression (live-test find): the loop chased its own tail — context_expand
+// returned the original, the hook re-crushed it back into a marker. Expansion
+// output must stay verbatim at both seams.
+func TestNoRecompressionOfExpandOutput(t *testing.T) {
+	rt := newRuntime(t)
+
+	// Hook seam.
+	big := bigJSON(80)
+	hctx := &runtime.HookContext{ToolName: "context_expand", ToolOutput: big}
+	_ = rt.AfterToolExecHook()(context.Background(), hctx)
+	if hctx.ToolOutput != big {
+		t.Fatal("hook recompressed context_expand output")
+	}
+
+	// Client-wrapper seam: an expansion result sitting in the live zone.
+	inner := &capturingClient{}
+	client := rt.WrapClient(inner)
+	msgs := []llm.ChatMessage{
+		{Role: llm.RoleSystem, Content: "sys"},
+		{Role: llm.RoleUser, Content: "count the pods"},
+		{Role: llm.RoleTool, Name: "context_expand", ToolCallID: "tc9", Content: big},
+		{Role: llm.RoleAssistant, Content: "counting"},
+		{Role: llm.RoleUser, Content: "go on"},
+	}
+	_, _ = client.Chat(context.Background(), &llm.ChatRequest{Model: "m", Messages: msgs})
+	if inner.lastReq.Messages[2].Content != big {
+		t.Fatal("wrapper recompressed context_expand output in history")
 	}
 }
 
@@ -183,11 +225,35 @@ func TestNormalizeHash(t *testing.T) {
 		"ctxzip:abc123":                       "abc123",
 		"hash=abc123":                         "abc123",
 		"  ABC123  ":                          "abc123",
+		"ctxzip:abc123:108":                   "abc123", // count glued on (observed live)
 	}
 	for in, want := range cases {
 		if got := normalizeHash(in); got != want {
 			t.Errorf("normalizeHash(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// Regression (live-test find): models truncate hex hashes when transcribing a
+// marker into a tool call. A unique prefix of an emitted hash must resolve.
+func TestExpandTool_ResolvesTruncatedHash(t *testing.T) {
+	rt := newRuntime(t)
+	hook := rt.AfterToolExecHook()
+	hctx := &runtime.HookContext{ToolName: "list_pods", ToolOutput: bigJSON(80)}
+	_ = hook(context.Background(), hctx)
+
+	hashes := ccr.ExtractHashes(hctx.ToolOutput)
+	if len(hashes) == 0 {
+		t.Fatal("no marker emitted")
+	}
+	// The model passes only the first 8 chars of the hash.
+	args, _ := json.Marshal(map[string]string{"hash": hashes[0][:8]})
+	out, err := rt.ExpandTool().Execute(context.Background(), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "No stored content") {
+		t.Fatalf("truncated hash did not resolve via prefix: %q", out[:80])
 	}
 }
 

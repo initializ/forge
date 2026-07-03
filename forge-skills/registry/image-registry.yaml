@@ -243,7 +243,9 @@ bins:
     default_version: "1.48.0"
     requires_ubuntu: true
   chromium:
-    apt: chromium-browser
+    # Debian (default base is debian:bookworm-slim) ships the browser as
+    # "chromium"; "chromium-browser" is Ubuntu's transitional name.
+    apt: chromium
     apk: chromium
   ffmpeg:
     apt: ffmpeg

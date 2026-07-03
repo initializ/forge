@@ -77,11 +77,39 @@ func (s *RequirementsStage) Execute(ctx context.Context, bc *pipeline.BuildConte
 		}
 	}
 
+	// The browser capability needs a Chromium binary in the image, but it is
+	// not a skill-declared bin. Inject a synthetic requirement so the smart
+	// Dockerfile installs it (resolved via the well-known image registry) —
+	// and only for browser agents, keeping the browser optional.
+	binReqs := reqs.BinRequirements
+	browserCapability := false
+	for _, c := range reqs.Capabilities {
+		if c == contract.CapabilityBrowser {
+			browserCapability = true
+			break
+		}
+	}
+	if browserCapability {
+		hasChromium := false
+		for _, b := range binReqs {
+			if b.Name == "chromium" {
+				hasChromium = true
+				break
+			}
+		}
+		if !hasChromium {
+			binReqs = append(binReqs, contract.BinRequirement{Name: "chromium"})
+		}
+	}
+
 	// Build BinManifest from rich requirements for smart Dockerfile generation
-	if len(reqs.BinRequirements) > 0 {
+	if len(binReqs) > 0 {
 		manifest := &packaging.BinManifest{
-			Requirements: reqs.BinRequirements,
+			Requirements: binReqs,
 			SkillOrigin:  make(map[string]string),
+		}
+		if browserCapability {
+			manifest.SkillOrigin["chromium"] = "capability:browser"
 		}
 		// Populate skill origins from entries if available
 		if bc.SkillEntries != nil {

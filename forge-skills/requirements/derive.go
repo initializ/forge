@@ -98,7 +98,14 @@ func DeriveBrowserConfig(reqs *contract.AggregatedRequirements, entries []contra
 		}
 	}
 
-	return &contract.DerivedBrowserConfig{SourceSkills: sources}
+	allowSensitiveFill := reqs.SkillGuardrails != nil &&
+		reqs.SkillGuardrails.Browser != nil &&
+		reqs.SkillGuardrails.Browser.AllowSensitiveFill
+
+	return &contract.DerivedBrowserConfig{
+		SourceSkills:       sources,
+		AllowSensitiveFill: allowSensitiveFill,
+	}
 }
 
 // MergeCLIConfig merges derived config with explicit forge.yaml config.

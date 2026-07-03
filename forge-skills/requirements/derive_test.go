@@ -158,3 +158,35 @@ func TestDeriveBrowserConfig_SourceSkills(t *testing.T) {
 		t.Error("AllowSensitiveFill = true, want false by default")
 	}
 }
+
+func TestDeriveBrowserConfig_AllowSensitiveFillOptIn(t *testing.T) {
+	optIn := map[string]map[string]any{
+		"forge": {
+			"guardrails": map[string]any{
+				"browser": map[string]any{"allow_sensitive_fill": true},
+			},
+		},
+	}
+	entries := []contract.SkillEntry{
+		{
+			Name:      "portal-login",
+			Metadata:  &contract.SkillMetadata{Name: "portal-login", Metadata: optIn},
+			ForgeReqs: &contract.SkillRequirements{Capabilities: []string{"browser"}},
+		},
+	}
+	reqs := AggregateRequirements(entries)
+	if reqs.SkillGuardrails == nil || reqs.SkillGuardrails.Browser == nil || !reqs.SkillGuardrails.Browser.AllowSensitiveFill {
+		t.Fatalf("aggregated guardrails = %+v, want browser.allow_sensitive_fill", reqs.SkillGuardrails)
+	}
+	cfg := DeriveBrowserConfig(reqs, entries)
+	if cfg == nil || !cfg.AllowSensitiveFill {
+		t.Errorf("DeriveBrowserConfig = %+v, want AllowSensitiveFill true", cfg)
+	}
+
+	// Without the opt-in the flag stays false.
+	entries[0].Metadata.Metadata = nil
+	reqs2 := AggregateRequirements(entries)
+	if cfg2 := DeriveBrowserConfig(reqs2, entries); cfg2 == nil || cfg2.AllowSensitiveFill {
+		t.Errorf("DeriveBrowserConfig without opt-in = %+v, want AllowSensitiveFill false", cfg2)
+	}
+}

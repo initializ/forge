@@ -28,6 +28,7 @@ func AggregateRequirements(entries []contract.SkillEntry) *contract.AggregatedRe
 	var denyOutput []contract.SkillOutputFilter
 	var denyPrompts []contract.SkillCommandFilter
 	var denyResponses []contract.SkillCommandFilter
+	var browserGuardrails *contract.SkillBrowserGuardrails
 	cmdPatternSeen := make(map[string]bool)
 	outPatternSeen := make(map[string]bool)
 	promptPatternSeen := make(map[string]bool)
@@ -91,6 +92,14 @@ func AggregateRequirements(entries []contract.SkillEntry) *contract.AggregatedRe
 									responsePatternSeen[r.Pattern] = true
 									denyResponses = append(denyResponses, r)
 								}
+							}
+							// OR across skills: any one opting in enables
+							// sensitive fill for the agent's browser.
+							if gc.Browser != nil && gc.Browser.AllowSensitiveFill {
+								if browserGuardrails == nil {
+									browserGuardrails = &contract.SkillBrowserGuardrails{}
+								}
+								browserGuardrails.AllowSensitiveFill = true
 							}
 						}
 					}
@@ -156,12 +165,13 @@ func AggregateRequirements(entries []contract.SkillEntry) *contract.AggregatedRe
 	agg.EnvRequired = sortedKeys(reqSet)
 	agg.EnvOptional = sortedKeys(optSet)
 
-	if len(denyCommands) > 0 || len(denyOutput) > 0 || len(denyPrompts) > 0 || len(denyResponses) > 0 {
+	if len(denyCommands) > 0 || len(denyOutput) > 0 || len(denyPrompts) > 0 || len(denyResponses) > 0 || browserGuardrails != nil {
 		agg.SkillGuardrails = &contract.SkillGuardrailConfig{
 			DenyCommands:  denyCommands,
 			DenyOutput:    denyOutput,
 			DenyPrompts:   denyPrompts,
 			DenyResponses: denyResponses,
+			Browser:       browserGuardrails,
 		}
 	}
 

@@ -29,6 +29,7 @@ import (
 	"github.com/initializ/forge/forge-core/auth/providers/httpverifier"
 	_ "github.com/initializ/forge/forge-core/auth/providers/oidc"
 	"github.com/initializ/forge/forge-core/auth/providers/statictoken"
+	"github.com/initializ/forge/forge-core/compress"
 	"github.com/initializ/forge/forge-core/llm"
 	"github.com/initializ/forge/forge-core/llm/oauth"
 	"github.com/initializ/forge/forge-core/llm/providers"
@@ -888,6 +889,17 @@ func (r *Runner) Run(ctx context.Context) error {
 					if sgRules != nil {
 						sg := coreruntime.NewSkillGuardrailEngine(sgRules, r.cfg.EnforceGuardrails, r.logger)
 						r.registerSkillGuardrailHooks(hooks, sg)
+					}
+
+					// Reversible context compression (ctxzip). The hook is
+					// registered AFTER guardrail/redaction hooks so it
+					// compresses what redaction left; the client wrapper sits
+					// below the FallbackChain so it also covers retries and
+					// compactor summarization calls.
+					if comp := r.initCompression(reg); comp != nil {
+						defer comp.Close() //nolint:errcheck
+						hooks.Register(coreruntime.AfterToolExec, comp.AfterToolExecHook())
+						llmClient = comp.WrapClient(llmClient)
 					}
 
 					// Compute model-aware character budget.
@@ -2355,6 +2367,11 @@ func (r *Runner) buildLLMClient(mc *coreruntime.ModelConfig) (llm.Client, error)
 // OPENAI_API_KEY for that endpoint; if it's missing, surface the
 // configuration error rather than tunneling to ChatGPT.
 func (r *Runner) createProviderClient(provider string, cfg llm.ClientConfig) (llm.Client, error) {
+	// Provider prompt-cache hints (anthropic cache_control breakpoints /
+	// openai prompt_cache_key). Off by default; opted in via forge.yaml
+	// compression.cache_hints (or compression.enabled). See ClientConfig.
+	cfg.PromptCaching = r.promptCachingEnabled()
+
 	// Check for stored OAuth credentials — but only if no real API key is
 	// configured. The "__oauth__" sentinel means the user chose OAuth auth
 	// during init, so we should load the actual token from the credential store.
@@ -3361,6 +3378,82 @@ func (r *Runner) initLongTermMemory(ctx context.Context, mc *coreruntime.ModelCo
 	})
 
 	return mgr
+}
+
+// compressionEnabled reports whether reversible context compression is on.
+// forge.yaml `compression.enabled` sets the default; FORGE_COMPRESSION=true /
+// =false overrides it either way (matching the FORGE_MEMORY_* env pattern).
+// Nil-safe: callers (createProviderClient) also run with bare Runners in tests.
+func (r *Runner) compressionEnabled() bool {
+	enabled := false
+	if r.cfg.Config != nil && r.cfg.Config.Compression.Enabled != nil {
+		enabled = *r.cfg.Config.Compression.Enabled
+	}
+	switch os.Getenv("FORGE_COMPRESSION") {
+	case "true":
+		enabled = true
+	case "false":
+		enabled = false
+	}
+	return enabled
+}
+
+// promptCachingEnabled reports whether provider prompt-cache hints should be
+// injected. Defaults to compressionEnabled(); compression.cache_hints
+// overrides explicitly in either direction.
+func (r *Runner) promptCachingEnabled() bool {
+	if r.cfg.Config != nil && r.cfg.Config.Compression.CacheHints != nil {
+		return *r.cfg.Config.Compression.CacheHints
+	}
+	return r.compressionEnabled()
+}
+
+// initCompression builds the ctxzip compression runtime and registers the
+// context_expand tool. Returns nil when compression is disabled or the store
+// cannot be opened (the agent then runs uncompressed — fail-open).
+func (r *Runner) initCompression(reg *tools.Registry) *compress.Runtime {
+	if !r.compressionEnabled() {
+		return nil
+	}
+
+	cc := r.cfg.Config.Compression
+	storePath := cc.StorePath
+	if storePath == "" {
+		storePath = filepath.Join(r.cfg.WorkDir, ".forge", "ctxzip.db")
+	}
+	var ttl time.Duration
+	if cc.TTL != "" {
+		if d, err := time.ParseDuration(cc.TTL); err == nil {
+			ttl = d
+		} else {
+			r.logger.Warn("invalid compression.ttl, using default", map[string]any{
+				"ttl": cc.TTL, "error": err.Error(),
+			})
+		}
+	}
+
+	comp, err := compress.New(compress.Config{
+		StorePath:          storePath,
+		TTL:                ttl,
+		MinToolOutputChars: cc.MinToolOutputChars,
+		Logger:             r.logger,
+	})
+	if err != nil {
+		r.logger.Warn("failed to init compression, running uncompressed", map[string]any{
+			"error": err.Error(),
+		})
+		return nil
+	}
+
+	if regErr := reg.Register(comp.ExpandTool()); regErr != nil {
+		r.logger.Warn("failed to register context_expand tool", map[string]any{"error": regErr.Error()})
+	}
+
+	r.logger.Info("context compression enabled", map[string]any{
+		"store_path":  storePath,
+		"cache_hints": r.promptCachingEnabled(),
+	})
+	return comp
 }
 
 // resolveEmbedder creates an embedder from config or auto-detection.

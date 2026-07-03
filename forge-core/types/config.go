@@ -22,6 +22,7 @@ type ForgeConfig struct {
 	Egress         EgressRef           `yaml:"egress,omitempty"`
 	Skills         SkillsRef           `yaml:"skills,omitempty"`
 	Memory         MemoryConfig        `yaml:"memory,omitempty"`
+	Compression    CompressionConfig   `yaml:"compression,omitempty"`
 	Secrets        SecretsConfig       `yaml:"secrets,omitempty"`
 	Auth           AuthConfig          `yaml:"auth,omitempty"`
 	MCP            MCPConfig           `yaml:"mcp,omitempty"`
@@ -450,6 +451,30 @@ type MemoryConfig struct {
 	VectorWeight      float64 `yaml:"vector_weight,omitempty"`        // default: 0.7
 	KeywordWeight     float64 `yaml:"keyword_weight,omitempty"`       // default: 0.3
 	DecayHalfLifeDays int     `yaml:"decay_half_life_days,omitempty"` // default: 7
+}
+
+// CompressionConfig configures reversible context compression (ctxzip).
+//
+// When enabled, bulky tool outputs and conversation content are compressed
+// before reaching the LLM; everything dropped is stored locally (bbolt) and
+// retrievable via the context_expand tool, so compression is lossy on the
+// wire but lossless end-to-end. Enable via `compression.enabled: true` in
+// forge.yaml or FORGE_COMPRESSION=true (env wins; "false" forces off).
+type CompressionConfig struct {
+	Enabled *bool `yaml:"enabled,omitempty"` // default: false
+	// StorePath is the bbolt file holding offloaded originals.
+	StorePath string `yaml:"store_path,omitempty"` // default: .forge/ctxzip.db
+	// TTL is how long offloaded originals stay retrievable (Go duration,
+	// e.g. "30m", "2h").
+	TTL string `yaml:"ttl,omitempty"` // default: 30m
+	// MinToolOutputChars is the tool-output size below which the
+	// compression hook leaves the output alone.
+	MinToolOutputChars int `yaml:"min_tool_output_chars,omitempty"` // default: 2048
+	// CacheHints controls provider prompt-cache hints (Anthropic
+	// cache_control breakpoints, OpenAI prompt_cache_key). Defaults to the
+	// value of Enabled; set explicitly to run hints without compression or
+	// compression without hints.
+	CacheHints *bool `yaml:"cache_hints,omitempty"`
 }
 
 // EgressRef configures egress security controls.

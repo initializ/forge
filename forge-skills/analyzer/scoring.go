@@ -54,6 +54,13 @@ var highRiskBinaries = map[string]bool{
 	"ruby":    true,
 }
 
+// highRiskCapabilities are opt-in runtime capabilities that materially widen a
+// skill's attack surface. "browser" drives a real headless Chromium with
+// network access, comparable to a high-risk binary.
+var highRiskCapabilities = map[string]bool{
+	contract.CapabilityBrowser: true,
+}
+
 // Patterns that indicate sensitive environment variables.
 var sensitiveEnvPatterns = []string{
 	"SECRET",
@@ -71,6 +78,7 @@ func AnalyzeSkillDescriptor(sd *contract.SkillDescriptor, hasScript bool, policy
 
 	factors = append(factors, scoreEgress(sd.EgressDomains, policy)...)
 	factors = append(factors, scoreBinaries(sd.RequiredBins, policy)...)
+	factors = append(factors, scoreCapabilities(sd.Capabilities)...)
 	factors = append(factors, scoreEnv(sd.RequiredEnv, sd.OneOfEnv, sd.OptionalEnv, policy)...)
 	if hasScript {
 		factors = append(factors, scoreScript()...)
@@ -118,8 +126,14 @@ func AnalyzeSkillEntry(entry *contract.SkillEntry, hasScript bool, policy Securi
 		}
 	}
 
+	var capabilities []string
+	if entry.ForgeReqs != nil {
+		capabilities = entry.ForgeReqs.Capabilities
+	}
+
 	factors = append(factors, scoreEgress(egressDomains, policy)...)
 	factors = append(factors, scoreBinaries(bins, policy)...)
+	factors = append(factors, scoreCapabilities(capabilities)...)
 	factors = append(factors, scoreEnv(reqEnv, oneOfEnv, optEnv, policy)...)
 	if hasScript {
 		factors = append(factors, scoreScript()...)
@@ -273,6 +287,26 @@ func scoreEnv(reqEnv, oneOfEnv, optEnv []string, policy SecurityPolicy) []RiskFa
 		})
 	}
 
+	return factors
+}
+
+func scoreCapabilities(caps []string) []RiskFactor {
+	var factors []RiskFactor
+	for _, c := range caps {
+		if highRiskCapabilities[c] {
+			factors = append(factors, RiskFactor{
+				Category:    "capability",
+				Description: fmt.Sprintf("high-risk capability: %s (headless browser web access)", c),
+				Points:      15,
+			})
+		} else {
+			factors = append(factors, RiskFactor{
+				Category:    "capability",
+				Description: fmt.Sprintf("capability: %s", c),
+				Points:      3,
+			})
+		}
+	}
 	return factors
 }
 

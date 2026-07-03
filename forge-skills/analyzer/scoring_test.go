@@ -291,3 +291,51 @@ func TestGenerateRecommendations(t *testing.T) {
 		t.Fatalf("expected at least 3 recommendations, got %d", len(recs))
 	}
 }
+
+func TestScoreCapabilities_Browser(t *testing.T) {
+	sd := &contract.SkillDescriptor{Name: "web-browse", Capabilities: []string{"browser"}}
+	a := AnalyzeSkillDescriptor(sd, false, SecurityPolicy{})
+	if a.Score.Value != 15 {
+		t.Errorf("browser capability score = %d, want 15", a.Score.Value)
+	}
+	found := false
+	for _, f := range a.Factors {
+		if f.Category == "capability" && f.Points == 15 && contains(f.Description, "browser") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("missing high-risk browser capability factor: %+v", a.Factors)
+	}
+}
+
+func TestScoreCapabilities_Unknown(t *testing.T) {
+	sd := &contract.SkillDescriptor{Name: "future", Capabilities: []string{"zeta-cap"}}
+	a := AnalyzeSkillDescriptor(sd, false, SecurityPolicy{})
+	if a.Score.Value != 3 {
+		t.Errorf("unknown capability score = %d, want 3", a.Score.Value)
+	}
+}
+
+func TestScoreCapabilities_AdditiveWithBinary(t *testing.T) {
+	sd := &contract.SkillDescriptor{
+		Name:         "browse-and-shell",
+		Capabilities: []string{"browser"},
+		RequiredBins: []string{"python"}, // high-risk +15
+	}
+	a := AnalyzeSkillDescriptor(sd, false, SecurityPolicy{})
+	if a.Score.Value != 30 {
+		t.Errorf("browser + python score = %d, want 30", a.Score.Value)
+	}
+}
+
+func TestScoreCapabilities_ViaEntry(t *testing.T) {
+	entry := &contract.SkillEntry{
+		Name:      "web-browse",
+		ForgeReqs: &contract.SkillRequirements{Capabilities: []string{"browser"}},
+	}
+	a := AnalyzeSkillEntry(entry, false, SecurityPolicy{})
+	if a.Score.Value != 15 {
+		t.Errorf("entry browser capability score = %d, want 15", a.Score.Value)
+	}
+}

@@ -3436,6 +3436,7 @@ func (r *Runner) initCompression(reg *tools.Registry) *compress.Runtime {
 		StorePath:          storePath,
 		TTL:                ttl,
 		MinToolOutputChars: cc.MinToolOutputChars,
+		KeepPatterns:       cc.KeepPatterns,
 		Logger:             r.logger,
 	})
 	if err != nil {

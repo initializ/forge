@@ -234,6 +234,35 @@ func TestNormalizeHash(t *testing.T) {
 	}
 }
 
+// KeepPatterns (forge.yaml compression.keep_patterns) must flow through to
+// the hook so builder-flagged rows survive the compressed view.
+func TestHook_KeepPatterns(t *testing.T) {
+	rt, err := New(Config{
+		StorePath:    filepath.Join(t.TempDir(), "ctxzip.db"),
+		KeepPatterns: []string{"Quarantined"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rt.Close() })
+
+	items := make([]map[string]any, 80)
+	for i := range items {
+		items[i] = map[string]any{"id": fmt.Sprintf("r-%03d", i), "state": "nominal", "zone": "us-east-1"}
+	}
+	items[40] = map[string]any{"id": "r-040", "state": "QUARANTINED", "zone": "us-east-1"}
+	blob, _ := json.Marshal(items)
+
+	hctx := &runtime.HookContext{ToolName: "fleet_list", ToolOutput: string(blob)}
+	_ = rt.AfterToolExecHook()(context.Background(), hctx)
+	if hctx.ToolOutput == string(blob) {
+		t.Fatal("expected compression to occur")
+	}
+	if !strings.Contains(hctx.ToolOutput, "QUARANTINED") {
+		t.Fatal("keep_patterns row dropped from compressed view")
+	}
+}
+
 // Regression (live-test find): models truncate hex hashes when transcribing a
 // marker into a tool call. A unique prefix of an emitted hash must resolve.
 func TestExpandTool_ResolvesTruncatedHash(t *testing.T) {

@@ -64,6 +64,7 @@ func (c *compressingClient) compressRequest(req *llm.ChatRequest) *llm.ChatReque
 	// Expansion results in history must stay verbatim — recompressing them
 	// recreates the marker the model already resolved.
 	opts.SkipNames = map[string]bool{expandToolName: true}
+	opts.MustKeep = c.rt.keep
 
 	res, err := ctxzip.Compress(zmsgs, opts)
 	if err != nil || res == nil || res.SavedTokens() == 0 {

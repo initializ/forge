@@ -20,6 +20,8 @@ type SkillDescriptor struct {
 	RequiredBins  []string
 	EgressDomains []string
 	DeniedTools   []string
+	Capabilities  []string    // runtime capabilities from requires.capabilities (e.g. "browser")
+	TrustHints    *TrustHints // author-declared behavior hints (analyzer consistency checks)
 	TimeoutHint   int         // suggested timeout in seconds (0 = use default)
 	Provenance    *Provenance `json:"provenance,omitempty"`
 }
@@ -72,6 +74,23 @@ type ForgeSkillMeta struct {
 	DeniedTools   []string              `yaml:"denied_tools,omitempty" json:"denied_tools,omitempty"`
 	WorkflowPhase string                `yaml:"workflow_phase,omitempty" json:"workflow_phase,omitempty"`
 	Guardrails    *SkillGuardrailConfig `yaml:"guardrails,omitempty" json:"guardrails,omitempty"`
+	TrustHints    *TrustHints           `yaml:"trust_hints,omitempty" json:"trust_hints,omitempty"`
+}
+
+// TrustHints are the skill author's self-declared behavior hints, checked for
+// consistency by the security analyzer (they never raise trust, only flag
+// contradictions — e.g. declaring the browser capability while claiming
+// network: false).
+//
+// Network and Shell are pointer-bools because absence and explicit false are
+// different statements: only an explicit false contradicts a network-requiring
+// capability.
+type TrustHints struct {
+	Network *bool `yaml:"network,omitempty" json:"network,omitempty"`
+	// Filesystem is a mode string as used by existing skills: "read",
+	// "write", "none", or empty (undeclared).
+	Filesystem string `yaml:"filesystem,omitempty" json:"filesystem,omitempty"`
+	Shell      *bool  `yaml:"shell,omitempty" json:"shell,omitempty"`
 }
 
 // Valid Runtime values for ForgeSkillMeta.Runtime.
@@ -140,11 +159,20 @@ func (b *BinRequirement) UnmarshalYAML(value *yaml.Node) error {
 	}
 }
 
-// SkillRequirements declares CLI binaries and environment variables a skill needs.
+// SkillRequirements declares CLI binaries, environment variables, and runtime
+// capabilities a skill needs.
 type SkillRequirements struct {
 	Bins []BinRequirement `yaml:"bins,omitempty" json:"bins,omitempty"`
 	Env  *EnvRequirements `yaml:"env,omitempty" json:"env,omitempty"`
+	// Capabilities are opt-in runtime capabilities the skill needs the runner
+	// to provide (conditional tool families, not binaries). Currently
+	// recognized: "browser".
+	Capabilities []string `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
 }
+
+// CapabilityBrowser gates registration of the browser_* tool family: a
+// proxied headless Chromium the LLM drives via indexed page digests.
+const CapabilityBrowser = "browser"
 
 // EnvRequirements declares environment variable requirements at different levels.
 type EnvRequirements struct {
@@ -191,6 +219,7 @@ type AggregatedRequirements struct {
 	EgressDomains   []string              // union of egress domains across skills, deduplicated, sorted
 	WorkflowPhases  []string              // union of workflow_phase values across skills, deduplicated, sorted
 	SkillGuardrails *SkillGuardrailConfig // aggregated guardrails from all skills
+	Capabilities    []string              // union of requires.capabilities across skills, deduplicated, sorted
 }
 
 // DerivedCLIConfig holds auto-derived cli_execute configuration from skill requirements.
@@ -201,6 +230,20 @@ type DerivedCLIConfig struct {
 	DeniedTools     []string // tools to remove from registry before LLM execution
 	EgressDomains   []string // additional egress domains from skills
 	WorkflowPhases  []string // workflow phases from skills (edit, finalize, query)
+}
+
+// DerivedBrowserConfig signals that at least one active skill declared the
+// browser capability. A non-nil value means the runner should register the
+// browser_* tool family (subject to a Chromium binary and egress proxy being
+// available). Runtime concerns — binary path, headless mode, proxy URL — are
+// deliberately not here; they belong to the runner and the browser package.
+type DerivedBrowserConfig struct {
+	// SourceSkills names the skills that declared the capability, for logs
+	// and actionable startup errors.
+	SourceSkills []string
+	// AllowSensitiveFill permits browser_fill on password/payment fields.
+	// Set via skill guardrail opt-in; default false.
+	AllowSensitiveFill bool
 }
 
 // TrustLevel indicates the trust classification of a skill.

@@ -21,6 +21,7 @@ func AggregateRequirements(entries []contract.SkillEntry) *contract.AggregatedRe
 	deniedSet := make(map[string]bool)
 	egressSet := make(map[string]bool)
 	phaseSet := make(map[string]bool)
+	capSet := make(map[string]bool)
 	var oneOfGroups [][]string
 
 	var denyCommands []contract.SkillCommandFilter
@@ -100,6 +101,11 @@ func AggregateRequirements(entries []contract.SkillEntry) *contract.AggregatedRe
 		if e.ForgeReqs == nil {
 			continue
 		}
+		for _, c := range e.ForgeReqs.Capabilities {
+			if c != "" {
+				capSet[c] = true
+			}
+		}
 		for _, b := range e.ForgeReqs.Bins {
 			binSet[b.Name] = true
 			// Keep richer entry: one with more fields set wins
@@ -145,6 +151,7 @@ func AggregateRequirements(entries []contract.SkillEntry) *contract.AggregatedRe
 		DeniedTools:     sortedKeys(deniedSet),
 		EgressDomains:   sortedKeys(egressSet),
 		WorkflowPhases:  sortedKeys(phaseSet),
+		Capabilities:    sortedKeys(capSet),
 	}
 	agg.EnvRequired = sortedKeys(reqSet)
 	agg.EnvOptional = sortedKeys(optSet)

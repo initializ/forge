@@ -733,3 +733,67 @@ Does things.
 		t.Errorf("Tags should be empty, got %v", meta.Tags)
 	}
 }
+
+func TestExtractForgeMeta_CapabilitiesAndTrustHints(t *testing.T) {
+	input := `---
+name: web-browse
+description: Browse the web via the browser tool family
+metadata:
+  forge:
+    requires:
+      capabilities:
+        - browser
+    egress_domains:
+      - "example.com"
+    trust_hints:
+      network: true
+      filesystem: none
+      shell: false
+---
+## Tool: web_browse
+Browse pages.
+`
+	entries, meta, err := ParseWithMetadata(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseWithMetadata: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(entries))
+	}
+
+	// Capabilities flow through the existing ForgeReqs convenience field.
+	if entries[0].ForgeReqs == nil {
+		t.Fatal("ForgeReqs = nil")
+	}
+	if !reflect.DeepEqual(entries[0].ForgeReqs.Capabilities, []string{"browser"}) {
+		t.Errorf("Capabilities = %v, want [browser]", entries[0].ForgeReqs.Capabilities)
+	}
+
+	forgeMeta := ExtractForgeMeta(meta)
+	if forgeMeta == nil {
+		t.Fatal("ExtractForgeMeta = nil")
+	}
+	th := forgeMeta.TrustHints
+	if th == nil {
+		t.Fatal("TrustHints = nil")
+	}
+	if th.Network == nil || !*th.Network {
+		t.Error("trust_hints.network not parsed as explicit true")
+	}
+	if th.Filesystem != "none" {
+		t.Errorf("trust_hints.filesystem = %q, want %q", th.Filesystem, "none")
+	}
+	if th.Shell == nil || *th.Shell {
+		t.Error("trust_hints.shell not parsed as explicit false")
+	}
+}
+
+func TestExtractForgeMeta_NoForgeNamespace(t *testing.T) {
+	if got := ExtractForgeMeta(nil); got != nil {
+		t.Errorf("ExtractForgeMeta(nil) = %+v, want nil", got)
+	}
+	meta := &contract.SkillMetadata{Name: "plain"}
+	if got := ExtractForgeMeta(meta); got != nil {
+		t.Errorf("ExtractForgeMeta(no forge ns) = %+v, want nil", got)
+	}
+}

@@ -54,9 +54,11 @@ func (s *SkillsStage) Execute(ctx context.Context, bc *pipeline.BuildContext) er
 	// Store entries for downstream stages (e.g. security analysis)
 	bc.SkillEntries = entries
 
-	// Aggregate skill requirements and store in build context
+	// Aggregate skill requirements and store in build context. Capabilities
+	// count even with no bins/env: the browser capability drives a synthetic
+	// chromium install in the requirements stage.
 	reqs := requirements.AggregateRequirements(entries)
-	if len(reqs.Bins) > 0 || len(reqs.EnvRequired) > 0 || len(reqs.EnvOneOf) > 0 || len(reqs.EnvOptional) > 0 {
+	if len(reqs.Bins) > 0 || len(reqs.EnvRequired) > 0 || len(reqs.EnvOneOf) > 0 || len(reqs.EnvOptional) > 0 || len(reqs.Capabilities) > 0 {
 		bc.SkillRequirements = reqs
 	}
 

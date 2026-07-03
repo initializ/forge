@@ -112,6 +112,15 @@ func ScanWithRoot(fsys fs.FS, rootPath string) ([]contract.SkillDescriptor, erro
 				if forgeMap, ok := meta.Metadata["forge"]; ok {
 					sd.RequiredBins, sd.RequiredEnv, sd.OneOfEnv, sd.OptionalEnv, sd.EgressDomains, sd.DeniedTools, sd.TimeoutHint = extractFromForgeMap(forgeMap)
 				}
+				// Capabilities, trust hints, and deny_output presence via the
+				// typed forge metadata (analyzer consistency checks).
+				if fm := parser.ExtractForgeMeta(meta); fm != nil {
+					if fm.Requires != nil {
+						sd.Capabilities = fm.Requires.Capabilities
+					}
+					sd.TrustHints = fm.TrustHints
+					sd.HasDenyOutput = fm.Guardrails != nil && len(fm.Guardrails.DenyOutput) > 0
+				}
 			}
 
 			// Extract version from frontmatter if present

@@ -203,3 +203,70 @@ func TestCheckPolicy_MaxRiskScore(t *testing.T) {
 		t.Fatal("expected max_risk_score error")
 	}
 }
+
+func boolPtr(b bool) *bool { return &b }
+
+func TestCheckPolicy_BrowserTrustConflict(t *testing.T) {
+	sd := &contract.SkillDescriptor{
+		Name:          "sneaky",
+		Capabilities:  []string{"browser"},
+		TrustHints:    &contract.TrustHints{Network: boolPtr(false)},
+		HasDenyOutput: true,
+	}
+	violations := CheckPolicy(sd, false, DefaultPolicy())
+	found := false
+	for _, v := range violations {
+		if v.Rule == "capability_trust_conflict" && v.Severity == "critical" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("browser + network:false not flagged critical: %+v", violations)
+	}
+}
+
+func TestCheckPolicy_BrowserNetworkTrueOK(t *testing.T) {
+	sd := &contract.SkillDescriptor{
+		Name:          "honest",
+		Capabilities:  []string{"browser"},
+		TrustHints:    &contract.TrustHints{Network: boolPtr(true)},
+		HasDenyOutput: true,
+	}
+	for _, v := range CheckPolicy(sd, false, DefaultPolicy()) {
+		if v.Rule == "capability_trust_conflict" {
+			t.Errorf("browser + network:true wrongly flagged: %+v", v)
+		}
+	}
+}
+
+func TestCheckPolicy_BrowserAbsentTrustHintOK(t *testing.T) {
+	// Undeclared network hint (nil) must not conflict.
+	sd := &contract.SkillDescriptor{
+		Name:          "no-hint",
+		Capabilities:  []string{"browser"},
+		HasDenyOutput: true,
+	}
+	for _, v := range CheckPolicy(sd, false, DefaultPolicy()) {
+		if v.Rule == "capability_trust_conflict" {
+			t.Errorf("browser with absent network hint wrongly flagged: %+v", v)
+		}
+	}
+}
+
+func TestCheckPolicy_BrowserGuardrailGap(t *testing.T) {
+	sd := &contract.SkillDescriptor{
+		Name:          "leaky",
+		Capabilities:  []string{"browser"},
+		TrustHints:    &contract.TrustHints{Network: boolPtr(true)},
+		HasDenyOutput: false,
+	}
+	found := false
+	for _, v := range CheckPolicy(sd, false, DefaultPolicy()) {
+		if v.Rule == "capability_guardrail_gap" && v.Severity == "warning" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("browser without deny_output not warned: %+v", CheckPolicy(sd, false, DefaultPolicy()))
+	}
+}

@@ -22,6 +22,7 @@ type SkillDescriptor struct {
 	DeniedTools   []string
 	Capabilities  []string    // runtime capabilities from requires.capabilities (e.g. "browser")
 	TrustHints    *TrustHints // author-declared behavior hints (analyzer consistency checks)
+	HasDenyOutput bool        // whether guardrails.deny_output declares at least one pattern
 	TimeoutHint   int         // suggested timeout in seconds (0 = use default)
 	Provenance    *Provenance `json:"provenance,omitempty"`
 }

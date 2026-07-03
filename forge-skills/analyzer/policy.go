@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/initializ/forge/forge-skills/contract"
+	"github.com/initializ/forge/forge-skills/parser"
 )
 
 // DefaultPolicy returns a SecurityPolicy with sensible defaults.
@@ -116,7 +117,40 @@ func CheckPolicy(sd *contract.SkillDescriptor, hasScript bool, policy SecurityPo
 		}
 	}
 
+	// Rule 7: capability/trust-hint consistency. Declaring the browser
+	// capability while claiming network: false is a contradiction —
+	// browsing requires network by definition — and a sign the trust hints
+	// were not written honestly.
+	if hasCapability(sd.Capabilities, contract.CapabilityBrowser) &&
+		sd.TrustHints != nil && sd.TrustHints.Network != nil && !*sd.TrustHints.Network {
+		violations = append(violations, PolicyViolation{
+			Rule:     "capability_trust_conflict",
+			Severity: "critical",
+			Message:  "skill declares the browser capability but trust_hints.network is false; browsing requires network access",
+		})
+	}
+
+	// Rule 8: a browser skill with no deny_output guardrail can leak
+	// whatever it reads (page content flows back verbatim). Warn so authors
+	// add a redaction pattern.
+	if hasCapability(sd.Capabilities, contract.CapabilityBrowser) && !sd.HasDenyOutput {
+		violations = append(violations, PolicyViolation{
+			Rule:     "capability_guardrail_gap",
+			Severity: "warning",
+			Message:  "browser skill declares no guardrails.deny_output; extracted page content is returned unredacted",
+		})
+	}
+
 	return violations
+}
+
+func hasCapability(caps []string, want string) bool {
+	for _, c := range caps {
+		if c == want {
+			return true
+		}
+	}
+	return false
 }
 
 // CheckPolicyFromEntry evaluates a SkillEntry against a SecurityPolicy.
@@ -144,19 +178,17 @@ func entryToDescriptor(entry *contract.SkillEntry) *contract.SkillDescriptor {
 			sd.OneOfEnv = entry.ForgeReqs.Env.OneOf
 			sd.OptionalEnv = entry.ForgeReqs.Env.Optional
 		}
+		sd.Capabilities = entry.ForgeReqs.Capabilities
 	}
-	if entry.Metadata != nil && entry.Metadata.Metadata != nil {
-		if forgeMap, ok := entry.Metadata.Metadata["forge"]; ok {
-			if raw, ok := forgeMap["egress_domains"]; ok {
-				if arr, ok := raw.([]any); ok {
-					for _, v := range arr {
-						if s, ok := v.(string); ok {
-							sd.EgressDomains = append(sd.EgressDomains, s)
-						}
-					}
-				}
-			}
+	// Read egress_domains, trust_hints, and guardrails from the typed forge
+	// metadata (round-tripped through ExtractForgeMeta).
+	if fm := parser.ExtractForgeMeta(entry.Metadata); fm != nil {
+		sd.EgressDomains = fm.EgressDomains
+		sd.TrustHints = fm.TrustHints
+		if fm.Requires != nil && len(fm.Requires.Capabilities) > 0 {
+			sd.Capabilities = fm.Requires.Capabilities
 		}
+		sd.HasDenyOutput = fm.Guardrails != nil && len(fm.Guardrails.DenyOutput) > 0
 	}
 	return sd
 }

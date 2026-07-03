@@ -10,106 +10,87 @@ import (
 )
 
 // GenerateReport produces a full audit report from a SkillRegistry.
+//
+// Registry skills carry fully-typed SkillDescriptors (capabilities, trust
+// hints, deny_output presence populated by the scanner), so this path
+// analyzes descriptors directly rather than round-tripping through entries,
+// which would drop those fields.
 func GenerateReport(registry contract.SkillRegistry, policy SecurityPolicy) (*AuditReport, error) {
 	skills, err := registry.List()
 	if err != nil {
 		return nil, fmt.Errorf("listing skills: %w", err)
 	}
 
-	entries := make([]contract.SkillEntry, 0, len(skills))
-	for _, sd := range skills {
-		entry := contract.SkillEntry{
-			Name:        sd.Name,
-			Description: sd.Description,
-		}
-		if len(sd.RequiredBins) > 0 || len(sd.RequiredEnv) > 0 || len(sd.OneOfEnv) > 0 || len(sd.OptionalEnv) > 0 || len(sd.EgressDomains) > 0 {
-			var binReqs []contract.BinRequirement
-			for _, name := range sd.RequiredBins {
-				binReqs = append(binReqs, contract.BinRequirement{Name: name})
-			}
-			entry.ForgeReqs = &contract.SkillRequirements{
-				Bins: binReqs,
-			}
-			if len(sd.RequiredEnv) > 0 || len(sd.OneOfEnv) > 0 || len(sd.OptionalEnv) > 0 {
-				entry.ForgeReqs.Env = &contract.EnvRequirements{
-					Required: sd.RequiredEnv,
-					OneOf:    sd.OneOfEnv,
-					Optional: sd.OptionalEnv,
-				}
-			}
-			if len(sd.EgressDomains) > 0 {
-				entry.Metadata = &contract.SkillMetadata{
-					Metadata: map[string]map[string]any{
-						"forge": {
-							"egress_domains": toAnySlice(sd.EgressDomains),
-						},
-					},
-				}
-			}
-		}
-		entries = append(entries, entry)
+	report := newReport(len(skills))
+	acc := &reportAccumulator{}
+	for i := range skills {
+		sd := &skills[i]
+		hs := registry.HasScript(sd.Name)
+		assessment := AnalyzeSkillDescriptor(sd, hs, policy)
+		assessment.Violations = CheckPolicy(sd, hs, policy)
+		acc.add(report, assessment)
 	}
-
-	hasScript := func(name string) bool {
-		return registry.HasScript(name)
-	}
-
-	return GenerateReportFromEntries(entries, hasScript, policy), nil
+	acc.finalize(report, len(skills))
+	return report, nil
 }
 
 // GenerateReportFromEntries produces an audit report from parsed skill entries.
 func GenerateReportFromEntries(entries []contract.SkillEntry, hasScript func(string) bool, policy SecurityPolicy) *AuditReport {
-	report := &AuditReport{
-		Timestamp:   time.Now().UTC().Format(time.RFC3339),
-		SkillCount:  len(entries),
-		Assessments: make([]SkillRiskAssessment, 0, len(entries)),
-	}
-
-	totalScore := 0
-	totalErrors := 0
-	totalWarnings := 0
-
+	report := newReport(len(entries))
+	acc := &reportAccumulator{}
 	for i := range entries {
 		entry := &entries[i]
 		hs := hasScript != nil && hasScript(entry.Name)
-
 		assessment := AnalyzeSkillEntry(entry, hs, policy)
-
-		// Run policy checks
-		violations := CheckPolicyFromEntry(entry, hs, policy)
-		assessment.Violations = violations
-
-		for _, v := range violations {
-			switch v.Severity {
-			case "error":
-				totalErrors++
-			case "warning":
-				totalWarnings++
-			}
-		}
-
-		totalScore += assessment.Score.Value
-		report.Assessments = append(report.Assessments, assessment)
+		assessment.Violations = CheckPolicyFromEntry(entry, hs, policy)
+		acc.add(report, assessment)
 	}
-
-	// Compute aggregate score as average
-	avgScore := 0
-	if len(entries) > 0 {
-		avgScore = totalScore / len(entries)
-	}
-	report.AggregateScore = RiskScore{
-		Value: avgScore,
-		Level: classifyScore(avgScore),
-	}
-
-	report.PolicySummary = PolicySummary{
-		TotalViolations: totalErrors + totalWarnings,
-		Errors:          totalErrors,
-		Warnings:        totalWarnings,
-		Passed:          totalErrors == 0,
-	}
-
+	acc.finalize(report, len(entries))
 	return report
+}
+
+// reportAccumulator carries running totals while assessments are added.
+type reportAccumulator struct {
+	totalScore    int
+	totalErrors   int
+	totalWarnings int
+}
+
+func newReport(n int) *AuditReport {
+	return &AuditReport{
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		SkillCount:  n,
+		Assessments: make([]SkillRiskAssessment, 0, n),
+	}
+}
+
+// add appends an assessment and folds its violations into the running totals.
+// "critical" counts as a failing severity alongside "error".
+func (acc *reportAccumulator) add(report *AuditReport, assessment SkillRiskAssessment) {
+	for _, v := range assessment.Violations {
+		switch v.Severity {
+		case "error", "critical":
+			acc.totalErrors++
+		case "warning":
+			acc.totalWarnings++
+		}
+	}
+	acc.totalScore += assessment.Score.Value
+	report.Assessments = append(report.Assessments, assessment)
+}
+
+func (acc *reportAccumulator) finalize(report *AuditReport, n int) {
+	avgScore := 0
+	if n > 0 {
+		avgScore = acc.totalScore / n
+	}
+	report.AggregateScore = RiskScore{Value: avgScore, Level: classifyScore(avgScore)}
+	report.PolicySummary = PolicySummary{
+		TotalViolations: acc.totalErrors + acc.totalWarnings,
+		Errors:          acc.totalErrors,
+		Warnings:        acc.totalWarnings,
+		Passed:          acc.totalErrors == 0,
+	}
 }
 
 // FormatJSON serializes an AuditReport to indented JSON.
@@ -140,8 +121,11 @@ func FormatText(report *AuditReport) string {
 			b.WriteString("  Violations:\n")
 			for _, v := range a.Violations {
 				sev := "WARN "
-				if v.Severity == "error" {
+				switch v.Severity {
+				case "error":
 					sev = "ERROR"
+				case "critical":
+					sev = "CRIT "
 				}
 				fmt.Fprintf(&b, "    %s %s: %s\n", sev, v.Rule, v.Message)
 			}

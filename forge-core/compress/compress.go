@@ -27,6 +27,7 @@
 package compress
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -37,6 +38,26 @@ import (
 	"github.com/initializ/ctxzip/ccr"
 
 	"github.com/initializ/forge/forge-core/runtime"
+)
+
+// AuditFunc receives compression audit events. The runner wires this to the
+// AuditLogger (EmitFromContext, so correlation_id/task_id are stamped from
+// ctx); nil disables audit emission. Token figures are tokenizer estimates,
+// not provider-billed counts — directionally accurate for savings reporting.
+type AuditFunc func(ctx context.Context, event string, fields map[string]any)
+
+// Audit event names emitted by the compression runtime.
+const (
+	// AuditEventCompressed fires whenever content is compressed, from either
+	// seam (tool_output hook or request wrapper). Fields: seam, tool,
+	// tokens_before, tokens_after, saved_tokens, plus running totals
+	// total_saved_tokens / total_compressions / total_expansions so any
+	// single event shows the cumulative savings picture.
+	AuditEventCompressed = "context_compressed"
+	// AuditEventExpanded fires when the model retrieves offloaded content
+	// via context_expand. Fields: hash, hit, bytes, plus the same running
+	// totals — expansions are the "cost" side auditors net against savings.
+	AuditEventExpanded = "context_expanded"
 )
 
 // Defaults for Config fields left at their zero value.
@@ -61,6 +82,8 @@ type Config struct {
 	KeepPatterns []string
 	// Logger is optional; nil disables logging.
 	Logger runtime.Logger
+	// Audit is optional; nil disables audit emission. See AuditFunc.
+	Audit AuditFunc
 }
 
 // Runtime owns the shared CCR store and produces the hook, client wrapper,
@@ -70,12 +93,81 @@ type Runtime struct {
 	minSize int
 	keep    []string
 	logger  runtime.Logger
+	audit   AuditFunc
 
 	// recent remembers marker hashes this process emitted so the expand tool
 	// can resolve a unique prefix when the model transcribes a hash
 	// imperfectly (observed live: models truncate hex hashes).
 	mu     sync.Mutex
 	recent map[string]struct{}
+	totals SavingsTotals
+}
+
+// SavingsTotals is the process-lifetime savings picture. Token figures are
+// tokenizer estimates.
+type SavingsTotals struct {
+	// Compressions is how many times content was compressed (either seam).
+	Compressions int64
+	// SavedTokens is the cumulative estimated token reduction.
+	SavedTokens int64
+	// Expansions / ExpansionMisses count context_expand retrievals — the
+	// cost side to net against SavedTokens.
+	Expansions      int64
+	ExpansionMisses int64
+}
+
+// Totals returns a snapshot of the cumulative savings picture.
+func (r *Runtime) Totals() SavingsTotals {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.totals
+}
+
+// recordCompression accumulates savings and emits AuditEventCompressed with
+// per-event figures plus the running totals.
+func (r *Runtime) recordCompression(ctx context.Context, seam, tool string, before, after int) {
+	r.mu.Lock()
+	r.totals.Compressions++
+	r.totals.SavedTokens += int64(before - after)
+	t := r.totals
+	r.mu.Unlock()
+
+	if r.audit == nil {
+		return
+	}
+	r.audit(ctx, AuditEventCompressed, map[string]any{
+		"seam":               seam,
+		"tool":               tool,
+		"tokens_before":      before,
+		"tokens_after":       after,
+		"saved_tokens":       before - after,
+		"total_saved_tokens": t.SavedTokens,
+		"total_compressions": t.Compressions,
+		"total_expansions":   t.Expansions,
+	})
+}
+
+// recordExpansion accumulates retrieval stats and emits AuditEventExpanded.
+func (r *Runtime) recordExpansion(ctx context.Context, hash string, hit bool, bytes int) {
+	r.mu.Lock()
+	r.totals.Expansions++
+	if !hit {
+		r.totals.ExpansionMisses++
+	}
+	t := r.totals
+	r.mu.Unlock()
+
+	if r.audit == nil {
+		return
+	}
+	r.audit(ctx, AuditEventExpanded, map[string]any{
+		"hash":                   hash,
+		"hit":                    hit,
+		"bytes":                  bytes,
+		"total_saved_tokens":     t.SavedTokens,
+		"total_expansions":       t.Expansions,
+		"total_expansion_misses": t.ExpansionMisses,
+	})
 }
 
 // rememberMarkers records emitted marker hashes for prefix resolution.
@@ -141,6 +233,7 @@ func New(cfg Config) (*Runtime, error) {
 		minSize: cfg.MinToolOutputChars,
 		keep:    cfg.KeepPatterns,
 		logger:  cfg.Logger,
+		audit:   cfg.Audit,
 	}, nil
 }
 

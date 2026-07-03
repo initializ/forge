@@ -29,12 +29,12 @@ type compressingClient struct {
 
 // Chat implements llm.Client.
 func (c *compressingClient) Chat(ctx context.Context, req *llm.ChatRequest) (*llm.ChatResponse, error) {
-	return c.inner.Chat(ctx, c.compressRequest(req))
+	return c.inner.Chat(ctx, c.compressRequest(ctx, req))
 }
 
 // ChatStream implements llm.Client.
 func (c *compressingClient) ChatStream(ctx context.Context, req *llm.ChatRequest) (<-chan llm.StreamDelta, error) {
-	return c.inner.ChatStream(ctx, c.compressRequest(req))
+	return c.inner.ChatStream(ctx, c.compressRequest(ctx, req))
 }
 
 // ModelID implements llm.Client.
@@ -43,7 +43,7 @@ func (c *compressingClient) ModelID() string { return c.inner.ModelID() }
 // compressRequest returns req with compressed live-zone messages, or req
 // unchanged when there is nothing to gain. The caller's request is never
 // mutated — the loop may reuse its message slice.
-func (c *compressingClient) compressRequest(req *llm.ChatRequest) *llm.ChatRequest {
+func (c *compressingClient) compressRequest(ctx context.Context, req *llm.ChatRequest) *llm.ChatRequest {
 	if req == nil || len(req.Messages) == 0 {
 		return req
 	}
@@ -86,6 +86,7 @@ func (c *compressingClient) compressRequest(req *llm.ChatRequest) *llm.ChatReque
 		"tokens_after":  res.TokensAfter,
 		"saved_tokens":  res.SavedTokens(),
 	})
+	c.rt.recordCompression(ctx, "request", "", res.TokensBefore, res.TokensAfter)
 	return &out
 }
 

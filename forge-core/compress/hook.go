@@ -21,7 +21,7 @@ import (
 // Error results (hctx.Error != nil) are always left verbatim — dropping parts
 // of an error the user is about to debug is the catastrophic failure mode.
 func (r *Runtime) AfterToolExecHook() runtime.Hook {
-	return func(_ context.Context, hctx *runtime.HookContext) error {
+	return func(ctx context.Context, hctx *runtime.HookContext) error {
 		if hctx.Error != nil || len(hctx.ToolOutput) < r.minSize {
 			return nil
 		}
@@ -63,6 +63,7 @@ func (r *Runtime) AfterToolExecHook() runtime.Hook {
 			"tokens_after":  res.TokensAfter,
 			"saved_tokens":  res.SavedTokens(),
 		})
+		r.recordCompression(ctx, "tool_output", hctx.ToolName, res.TokensBefore, res.TokensAfter)
 		hctx.ToolOutput = res.Messages[0].Content
 		return nil
 	}

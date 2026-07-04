@@ -306,6 +306,18 @@ func TestAuditEvents_SavingsAndTotals(t *testing.T) {
 	}
 }
 
+// The runtime-owned system directive is what makes compression work for ANY
+// skill without skill authors documenting it. Guard that it names the real
+// tool and the real marker prefix, so a rename cannot silently orphan it.
+func TestSystemDirective_MatchesToolAndMarker(t *testing.T) {
+	if !strings.Contains(SystemDirective, expandToolName) {
+		t.Errorf("SystemDirective does not mention the %s tool", expandToolName)
+	}
+	if !strings.Contains(SystemDirective, ccr.MarkerPrefix) {
+		t.Errorf("SystemDirective does not show the %q marker shape", ccr.MarkerPrefix)
+	}
+}
+
 // Per-invocation savings are keyed by correlation ID so concurrent tasks
 // don't cross-contaminate, and TakeInvocationTotals pops exactly once.
 func TestTakeInvocationTotals_PerCorrelation(t *testing.T) {

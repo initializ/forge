@@ -30,6 +30,8 @@ github.com/initializ/ctxzip v0.0.0-20260703215102-94668f48685c h1:w5Mq+/LEhuqElh
 github.com/initializ/ctxzip v0.0.0-20260703215102-94668f48685c/go.mod h1:Qs4CpXTEeEOlZwIMPm/qaFPmil+AUIqH7Jg/K81FTmU=
 github.com/initializ/ctxzip v0.0.0-20260703221254-304962fbf29f h1:RLaBHp/SGK3uW/klYJGh3WpWr4qRQWuwHf3ZoW/tqV0=
 github.com/initializ/ctxzip v0.0.0-20260703221254-304962fbf29f/go.mod h1:Qs4CpXTEeEOlZwIMPm/qaFPmil+AUIqH7Jg/K81FTmU=
+github.com/initializ/ctxzip v0.1.0 h1:GDCpfYSYUB630e1aaGpH7YatTXilu1n3pZ1m5WHtLBw=
+github.com/initializ/ctxzip v0.1.0/go.mod h1:Qs4CpXTEeEOlZwIMPm/qaFPmil+AUIqH7Jg/K81FTmU=
 github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=
 github.com/kr/pretty v0.3.1/go.mod h1:hoEshYVHaxMs3cyo3Yncou5ZscifuDolrwPKZanG3xk=
 github.com/kr/text v0.2.0 h1:5Nx0Ya0ZqY2ygV366QzturHI13Jq95ApcVaJBhpS+AY=

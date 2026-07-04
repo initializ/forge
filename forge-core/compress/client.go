@@ -66,8 +66,9 @@ func (c *compressingClient) compressRequest(ctx context.Context, req *llm.ChatRe
 	opts.SkipNames = map[string]bool{expandToolName: true}
 	opts.MustKeep = c.rt.keep
 
+	// <= 0 for the same reason as the hook: never apply inflated output.
 	res, err := ctxzip.Compress(zmsgs, opts)
-	if err != nil || res == nil || res.SavedTokens() == 0 {
+	if err != nil || res == nil || res.SavedTokens() <= 0 {
 		return req
 	}
 

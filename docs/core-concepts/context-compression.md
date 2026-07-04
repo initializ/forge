@@ -107,6 +107,8 @@ Token figures are tokenizer estimates (directionally accurate); billed truth rem
 
 Fail-open, always: if the store cannot be opened, a compressor errors, or "compression" would grow a message, the original content is used unchanged. Error tool results are never compressed. An expired retrieval is not a dead end — the model is told to re-run the tool that produced the output.
 
+**Single-writer store.** The bbolt store at `store_path` holds an exclusive file lock — one store per process. A second process pointing at the same file (two replicas on a shared volume, or `forge run` alongside `forge serve` in the same directory) fails to acquire the lock after a 5-second timeout and that process runs uncompressed (fail-open, with a startup warning). Give each replica its own `store_path` — offloaded originals are only ever retrieved by the process that offloaded them, so the store has no reason to be shared.
+
 ## Related
 
 - [Runtime Engine](runtime-engine.md) — where the hook and client wrapper sit in the agent loop

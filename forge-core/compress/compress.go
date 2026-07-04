@@ -97,16 +97,41 @@ type Runtime struct {
 
 	// recent remembers marker hashes this process emitted so the expand tool
 	// can resolve a unique prefix when the model transcribes a hash
-	// imperfectly (observed live: models truncate hex hashes).
-	mu     sync.Mutex
-	recent map[string]struct{}
-	totals SavingsTotals
+	// imperfectly (observed live: models truncate hex hashes). Bounded to
+	// maxRecentMarkers, evicting oldest-emitted first — only *recent*
+	// markers matter for transcription repair.
+	mu          sync.Mutex
+	recent      map[string]struct{}
+	recentOrder []string
+	totals      SavingsTotals
 	// perInvocation accumulates savings keyed by correlation ID so
 	// invocation_complete can report this invocation's savings without
 	// cross-contamination from concurrent tasks. Entries are popped by
-	// TakeInvocationTotals at the invocation's response boundary.
-	perInvocation map[string]*SavingsTotals
+	// TakeInvocationTotals at the invocation's response boundary; as a
+	// leak backstop for any emission path that misses the pop, the map is
+	// bounded to maxInvocationBuckets with oldest-touched eviction.
+	perInvocation map[string]*invocationBucket
 }
+
+// invocationBucket carries one invocation's savings plus a touch time for
+// oldest-first eviction at the cap.
+type invocationBucket struct {
+	totals  SavingsTotals
+	touched time.Time
+}
+
+// Bounds for the Runtime's process-lifetime maps (PR #241 review).
+const (
+	// maxInvocationBuckets bounds perInvocation. Normal operation pops each
+	// bucket at invocation end, so this only matters if an emission path
+	// misses the pop — 1024 in-flight correlation IDs is far beyond any
+	// realistic concurrency.
+	maxInvocationBuckets = 1024
+	// maxRecentMarkers bounds the prefix-resolution set. 2048 markers is
+	// hours of heavy compression; older hashes are no longer "recent" and
+	// exact-hash retrieval from the store still works without them.
+	maxRecentMarkers = 2048
+)
 
 // SavingsTotals is the process-lifetime savings picture. Token figures are
 // tokenizer estimates.
@@ -140,29 +165,42 @@ func (r *Runtime) TakeInvocationTotals(ctx context.Context) SavingsTotals {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if t, ok := r.perInvocation[cid]; ok {
+	if b, ok := r.perInvocation[cid]; ok {
 		delete(r.perInvocation, cid)
-		return *t
+		return b.totals
 	}
 	return SavingsTotals{}
 }
 
-// bumpInvocation accumulates into the ctx's per-invocation bucket. Caller
-// holds r.mu.
+// bumpInvocation accumulates into the ctx's per-invocation bucket, evicting
+// the oldest-touched bucket when the map exceeds maxInvocationBuckets (leak
+// backstop — normal operation pops buckets at invocation end). Caller holds
+// r.mu.
 func (r *Runtime) bumpInvocation(ctx context.Context, f func(*SavingsTotals)) {
 	cid := runtime.CorrelationIDFromContext(ctx)
 	if cid == "" {
 		return
 	}
 	if r.perInvocation == nil {
-		r.perInvocation = make(map[string]*SavingsTotals)
+		r.perInvocation = make(map[string]*invocationBucket)
 	}
-	t, ok := r.perInvocation[cid]
+	b, ok := r.perInvocation[cid]
 	if !ok {
-		t = &SavingsTotals{}
-		r.perInvocation[cid] = t
+		if len(r.perInvocation) >= maxInvocationBuckets {
+			var oldestKey string
+			var oldest time.Time
+			for k, v := range r.perInvocation {
+				if oldestKey == "" || v.touched.Before(oldest) {
+					oldestKey, oldest = k, v.touched
+				}
+			}
+			delete(r.perInvocation, oldestKey)
+		}
+		b = &invocationBucket{}
+		r.perInvocation[cid] = b
 	}
-	f(t)
+	b.touched = time.Now()
+	f(&b.totals)
 }
 
 // recordCompression accumulates savings and emits AuditEventCompressed with
@@ -222,7 +260,8 @@ func (r *Runtime) recordExpansion(ctx context.Context, hash string, hit bool, by
 	})
 }
 
-// rememberMarkers records emitted marker hashes for prefix resolution.
+// rememberMarkers records emitted marker hashes for prefix resolution,
+// evicting the oldest-emitted entries beyond maxRecentMarkers.
 func (r *Runtime) rememberMarkers(hashes []string) {
 	if len(hashes) == 0 {
 		return
@@ -233,7 +272,15 @@ func (r *Runtime) rememberMarkers(hashes []string) {
 		r.recent = make(map[string]struct{})
 	}
 	for _, h := range hashes {
+		if _, ok := r.recent[h]; ok {
+			continue
+		}
 		r.recent[h] = struct{}{}
+		r.recentOrder = append(r.recentOrder, h)
+		if len(r.recentOrder) > maxRecentMarkers {
+			delete(r.recent, r.recentOrder[0])
+			r.recentOrder = r.recentOrder[1:]
+		}
 	}
 }
 

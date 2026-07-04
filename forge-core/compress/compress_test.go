@@ -354,6 +354,54 @@ func TestTakeInvocationTotals_PerCorrelation(t *testing.T) {
 	}
 }
 
+// PR #241 review: perInvocation must be bounded — an emission path that
+// misses TakeInvocationTotals must not leak buckets forever. Oldest-touched
+// buckets are evicted at the cap; the newest survives.
+func TestPerInvocationBuckets_Bounded(t *testing.T) {
+	rt := newRuntime(t)
+	for i := 0; i < maxInvocationBuckets+50; i++ {
+		ctx := runtime.WithCorrelationID(context.Background(), fmt.Sprintf("task-%05d", i))
+		rt.recordCompression(ctx, "tool_output", "t", 100, 10)
+	}
+	rt.mu.Lock()
+	n := len(rt.perInvocation)
+	rt.mu.Unlock()
+	if n > maxInvocationBuckets {
+		t.Fatalf("perInvocation grew past cap: %d > %d", n, maxInvocationBuckets)
+	}
+	// The most recent bucket must still be intact.
+	last := runtime.WithCorrelationID(context.Background(), fmt.Sprintf("task-%05d", maxInvocationBuckets+49))
+	if got := rt.TakeInvocationTotals(last); got.Compressions != 1 {
+		t.Fatalf("newest bucket evicted: %+v", got)
+	}
+}
+
+// PR #241 review: the recent-marker set must be bounded, evicting
+// oldest-emitted hashes first (only recent markers matter for repairing
+// imperfect transcriptions; exact hashes still resolve via the store).
+func TestRecentMarkers_Bounded(t *testing.T) {
+	rt := newRuntime(t)
+	// Fixed-width distinct hashes: "mk<6 digits>xx" — no hash is a prefix of
+	// another, so resolvePrefix answers are about presence, not ambiguity.
+	hash := func(i int) string { return fmt.Sprintf("mk%06dxx", i) }
+	for i := 0; i < maxRecentMarkers+10; i++ {
+		rt.rememberMarkers([]string{hash(i)})
+	}
+	rt.mu.Lock()
+	n, order := len(rt.recent), len(rt.recentOrder)
+	rt.mu.Unlock()
+	if n > maxRecentMarkers || order > maxRecentMarkers {
+		t.Fatalf("recent markers grew past cap: map=%d order=%d", n, order)
+	}
+	// Oldest evicted, newest still resolvable.
+	if got := rt.resolvePrefix(hash(0)); got != "" {
+		t.Errorf("oldest marker should have been evicted, resolved %q", got)
+	}
+	if got := rt.resolvePrefix(hash(maxRecentMarkers + 9)); got != hash(maxRecentMarkers+9) {
+		t.Errorf("newest marker should resolve, got %q", got)
+	}
+}
+
 // KeepPatterns (forge.yaml compression.keep_patterns) must flow through to
 // the hook so builder-flagged rows survive the compressed view.
 func TestHook_KeepPatterns(t *testing.T) {

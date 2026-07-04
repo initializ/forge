@@ -351,7 +351,19 @@ caps, compaction triggers. Embedding provider auto-detects from the
 LLM provider (Anthropic → `voyage-3` family; OpenAI → `text-embedding-3-small`)
 unless `memory.embedding_provider` is explicit.
 
-**Read**: `docs/core-concepts/memory-system.md`.
+Opt-in **context compression** (ctxzip): when `compression.enabled` is
+set, large tool outputs are compressed reversibly before reaching the
+LLM — an `AfterToolExec` hook compresses once at production time, an
+`llm.Client` wrapper compresses each request's live zone, and the
+`context_expand` builtin retrieves offloaded originals by
+`<<ctxzip:HASH>>` marker from a bbolt store (`.forge/ctxzip.db`,
+30-min TTL). `compression.keep_patterns` declares domain vocabulary
+that is never dropped; `compression.cache_hints` injects provider
+prompt-cache primitives (anthropic `cache_control`, openai
+`prompt_cache_key`). Fail-open: any error runs uncompressed.
+
+**Read**: `docs/core-concepts/memory-system.md`,
+`docs/core-concepts/context-compression.md`.
 
 ---
 
@@ -768,10 +780,10 @@ Full reference: `docs/reference/cli-reference.md`.
 
 | Subcommand | Purpose | Key flags |
 |---|---|---|
-| `forge init` | Scaffold a new agent: `forge.yaml`, `.env`, `SKILL.md`, `guardrails.json`. Interactive TUI by default; `--non-interactive` for CI | `--model-provider`, `--model-name`, `--channels`, `--auth`, `--from-skills` |
+| `forge init` | Scaffold a new agent: `forge.yaml`, `.env`, `SKILL.md`, `guardrails.json`. Interactive TUI by default; `--non-interactive` for CI | `--model-provider`, `--model-name`, `--channels`, `--auth`, `--from-skills`, `--compression` |
 | `forge build` | Run the build pipeline → `.forge-output/agent.json` + container Dockerfile + K8s manifests + (optional) signature | `--output-dir`, `--sign` |
 | `forge validate` | Lint `forge.yaml` + SKILL.md. `--platform-policy=PATH` lints a policy file standalone | `--strict`, `--command-compat`, `--platform-policy` |
-| `forge run` | Dev-mode A2A server with hot-reload | `--port`, `--host`, `--with slack,telegram`, `--mock-tools`, `--no-auth`, `--cors-origins`, `--audit-socket`, `--audit-http-endpoint`, `--rate-limit-*`, `--otel-enabled`, `--otel-endpoint`, `--otel-sampler` |
+| `forge run` | Dev-mode A2A server with hot-reload | `--port`, `--host`, `--with slack,telegram`, `--mock-tools`, `--no-auth`, `--cors-origins`, `--audit-socket`, `--audit-http-endpoint`, `--rate-limit-*`, `--otel-enabled`, `--otel-endpoint`, `--otel-sampler`, `--compression[=false]` |
 | `forge serve start \| stop \| status \| logs` | Daemonized A2A server (forks `forge run`). Forwards CLI flags + env to the child | `--port`, `--shutdown-timeout`, `--with` |
 | `forge export` | Export `agent.json` for registry upload | |
 | `forge package` | Generate Dockerfile + Kubernetes manifests + `egress_allowlist.json`. `--prod` rejects `dev-open` egress + dev-only tools | `--registry`, `--tag`, `--base`, `--prod` |
@@ -851,6 +863,11 @@ memory:
   sessions_dir: .forge/sessions
   long_term: false
   embedding_provider: openai
+
+compression:
+  enabled: false          # reversible context compression (ctxzip)
+  keep_patterns: []       # never-drop vocabulary
+  cache_hints: true       # provider prompt-cache primitives
 
 mcp:
   token_store_path: ~/.forge/mcp-tokens.enc
@@ -1042,7 +1059,9 @@ when OTel tracing is enabled (OTel v1 / Phase 4 / #105). Both use
 | `EventMCPToolConflict` | `mcp_tool_conflict` | Namespaced tool collision detected |
 | `EventMCPTokenRefresh` | `mcp_token_refresh` | OAuth 2.1 token refresh result |
 | `EventAgentCardPublished` | `agent_card_published` | Agent Card finalized at startup / hot-reload; `name`, `version`, `protocol_version`, `url`, `skill_count`, `capabilities`, `security_schemes`, `card_size_bytes`, `card_sha256` (FWS-1) |
-| `AuditInvocationComplete` | `invocation_complete` | A2A invocation closed; `duration_ms`, `input_tokens_total`, `output_tokens_total`, `llm_call_count`, `model`, `provider` (FWS-3) |
+| `context_compressed` | `context_compressed` | Context compression shrank content; `seam` (`tool_output` / `request`), `tool`, `tokens_before` / `tokens_after` / `saved_tokens` + running totals (tokenizer estimates) |
+| `context_expanded` | `context_expanded` | Model retrieved offloaded content via `context_expand`; `hash`, `hit`, `bytes` + running totals |
+| `AuditInvocationComplete` | `invocation_complete` | A2A invocation closed; `duration_ms`, `input_tokens_total`, `output_tokens_total`, `llm_call_count`, `model`, `provider` (FWS-3); with compression enabled also `compression_saved_tokens_total`, `compression_count`, `expansion_count` |
 | `AuditInvocationCancelled` | `invocation_cancelled` | A2A invocation cancelled via `tasks/cancel`; classified `reason` + partial token totals (FWS-4) |
 | `AuditTaskAdmissionDenied` | `task_admission_denied` | Inbound `tasks/send` denied by the platform admission middleware (#201; opt-in via `FORGE_ADMISSION_URL` + `FORGE_PLATFORM_TOKEN`); `reason`, `scope`, `window`, `reset_at`, `cached`. Caller sees HTTP 402 Payment Required. |
 | `AuditPolicyLoaded` | `policy_loaded` | One per non-empty policy layer at startup; `layer`, `source`, per-list size counters (FWS-5/6) |
@@ -1103,6 +1122,7 @@ docs/
 │   ├── skill-md-format.md        ← SKILL.md schema
 │   ├── channels.md
 │   ├── memory-system.md
+│   ├── context-compression.md    ← reversible tool-output compression
 │   ├── scheduling.md
 │   └── observability-tracing.md  ← OTel v1 (#108) — spans, propagation, audit cross-link
 ├── security/

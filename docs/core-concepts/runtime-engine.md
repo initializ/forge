@@ -277,6 +277,10 @@ The `FilesDir` is set via `LLMExecutorConfig.FilesDir` and made available to too
 
 For details on session persistence, context window management, compaction, and long-term memory, see [Memory](memory-system.md).
 
+## Context Compression
+
+When `compression.enabled` is set, the runner wires reversible context compression (ctxzip) into the loop at three points: an `AfterToolExec` hook compresses large tool outputs once, before they enter memory (registered after the guardrail hooks, so it compresses redacted output); the LLM client is wrapped in a compressing decorator below the fallback chain (so retries and compactor summarization calls are covered too); and the `context_expand` retrieval tool is registered so the model can recover offloaded content by marker hash. A constant system-prompt directive teaches the model what `<<ctxzip:...>>` markers are — individual skills need no awareness. Compression output is deterministic across turns and never touches the system prompt or recent messages, keeping provider prompt caches warm; `compression.cache_hints` additionally injects the provider's native cache primitives (anthropic `cache_control` breakpoints, openai `prompt_cache_key`). See [Context Compression](context-compression.md).
+
 ## Hooks
 
 The engine fires hooks at key points in the loop. See [Hooks](hooks.md) for details.

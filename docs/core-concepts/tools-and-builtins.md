@@ -30,6 +30,7 @@ Tools are capabilities that an LLM agent can invoke during execution. Forge prov
 | `read_skill` | Load full instructions for an available skill on demand |
 | `memory_search` | Search long-term memory (when enabled) |
 | `memory_get` | Read memory files (when enabled) |
+| `context_expand` | Retrieve the original content behind a `<<ctxzip:...>>` compression marker (when [compression](context-compression.md) is enabled) |
 | `cli_execute` | Execute pre-approved CLI binaries |
 | `schedule_set` | Create or update a recurring cron schedule |
 | `schedule_list` | List all active and inactive schedules |
@@ -179,6 +180,10 @@ When [long-term memory](memory-system.md) is enabled, two additional tools are r
 - **`memory_get`** — Read specific memory files by path
 
 These tools allow the agent to recall information from previous sessions.
+
+## Context Expansion Tool
+
+When [context compression](context-compression.md) is enabled, the `context_expand` tool is registered. Compressed tool outputs carry inline `<<ctxzip:HASH note>>` markers; the model calls `context_expand` with the hash to retrieve the offloaded original from the local store. The tool tolerates imperfect input — a whole marker pasted as the hash, or a truncated hash that uniquely prefixes a recently emitted one — and a miss (expired/evicted entry) returns guidance to re-run the producing tool rather than an error.
 
 ## Development Tools
 

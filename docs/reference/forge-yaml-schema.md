@@ -156,6 +156,15 @@ memory:
   keyword_weight: 0.3               # Hybrid search keyword weight
   decay_half_life_days: 7           # Temporal decay half-life
 
+compression:                        # Reversible context compression (default: off)
+  enabled: true                     # Compress bulky tool outputs (default: false)
+  keep_patterns:                    # Domain vocabulary never dropped (case-insensitive substrings)
+    - CrashLoopBackOff
+  store_path: ".forge/ctxzip.db"    # Offloaded-originals store (bbolt)
+  ttl: "30m"                        # How long originals stay retrievable
+  min_tool_output_chars: 2048       # Hook floor; smaller outputs untouched
+  cache_hints: true                 # Provider prompt-cache hints (defaults to enabled)
+
 guardrails_path: "guardrails.json"  # Path to guardrails config (default: "guardrails.json")
 
 schedules:                          # Recurring scheduled tasks (optional)
@@ -296,6 +305,21 @@ workflow_propagation:
 | `allowed_hosts` | `[]` (opt-in only) | Hostnames whose outbound HTTP tool calls auto-receive the `X-Workflow-Id` / `X-Workflow-Execution-Id` / `X-Workflow-Stage-Id` / `X-Workflow-Step-Id` / `X-Invocation-Caller` headers from the current request context. Exact entries match a single host (port stripped before comparison); entries beginning with `*.` match any strictly-deeper subdomain. Empty list keeps the pre-#186 opt-in behavior — tools must call `WorkflowContext.ApplyToHTTPHeaders(req.Header)` explicitly. See [Workflow correlation IDs › Outbound propagation](../security/workflow-correlation.md#outbound-propagation-agent-to-agent). Issue #186 / FORGE-1. |
 
 The matcher is consulted by a `RoundTripper` wrapper around the egress transport at runner startup, so every built-in HTTP tool (`http_request`, `webhook_call`, `web_search_*`) inherits the auto-apply without per-tool changes. Empty config = zero-overhead pass-through.
+
+## `compression` — reversible context compression
+
+Compresses bulky tool outputs before they reach the LLM; dropped content is stored locally and retrievable via the `context_expand` tool, so compression is lossy on the wire but lossless end-to-end. Off by default.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Master switch. Env `FORGE_COMPRESSION=true\|false` overrides; `forge run --compression[=false]` overrides both |
+| `keep_patterns` | — | Case-insensitive substrings never dropped (domain error codes, state words). Union with the built-in error floor — entries only add protection |
+| `store_path` | `.forge/ctxzip.db` | bbolt store for offloaded originals (created 0600) |
+| `ttl` | `30m` | How long originals stay retrievable; after expiry the model is told to re-run the producing tool |
+| `min_tool_output_chars` | `2048` | Tool outputs below this size are never touched |
+| `cache_hints` | value of `enabled` | Inject provider prompt-cache primitives (anthropic `cache_control`, openai `prompt_cache_key`) |
+
+See [Context Compression](../core-concepts/context-compression.md) for how the pieces fit together.
 
 ## `security` — build-time security knobs
 

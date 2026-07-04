@@ -86,6 +86,7 @@ You write a `SKILL.md`. Forge compiles it into a secure, runnable agent with egr
 | [Tools](docs/core-concepts/tools-and-builtins.md) | Built-in tools, adapters, and custom tools |
 | [Runtime](docs/core-concepts/runtime-engine.md) | LLM providers, fallback chains, running modes |
 | [Memory](docs/core-concepts/memory-system.md) | Session persistence and long-term memory |
+| [Context Compression](docs/core-concepts/context-compression.md) | Reversible compression of bulky tool outputs — fewer tokens, nothing lost |
 | [Channels](docs/core-concepts/channels.md) | Slack and Telegram adapter setup |
 | [Scheduling](docs/core-concepts/scheduling.md) | Cron configuration and schedule tools |
 | [Tracing](docs/core-concepts/observability-tracing.md) | OpenTelemetry distributed tracing — spans, propagation, audit cross-link |

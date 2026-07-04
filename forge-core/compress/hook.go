@@ -49,8 +49,11 @@ func (r *Runtime) AfterToolExecHook() runtime.Hook {
 			Content: hctx.ToolOutput,
 			Name:    hctx.ToolName,
 		}}
+		// <= 0 (not == 0): ctxzip clamps SavedTokens at zero today, but the
+		// guard must not silently apply inflated output if that contract
+		// ever changes (PR #241 review).
 		res, err := ctxzip.Compress(msgs, opts)
-		if err != nil || res == nil || res.SavedTokens() == 0 {
+		if err != nil || res == nil || res.SavedTokens() <= 0 {
 			return nil
 		}
 

@@ -1293,6 +1293,9 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 					fields["provider"] = snap.PrimaryProvider
 				}
 			}
+			// Pops the per-correlation compression bucket — required on
+			// every invocation_complete path (leak otherwise).
+			r.appendCompressionFields(ctx, fields)
 			auditLogger.EmitInvocationComplete(ctx, snap.InvocationDuration, fields)
 		}()
 
@@ -1544,18 +1547,8 @@ func (r *Runner) executeTask(
 				fields["provider"] = snap.PrimaryProvider
 			}
 		}
-		// Per-invocation compression savings (tokenizer estimates), popped
-		// from the runtime by this invocation's correlation ID so concurrent
-		// tasks don't cross-contaminate. Present whenever compression is
-		// enabled — zero values mean "on, but nothing was worth compressing".
-		if r.compression != nil {
-			ct := r.compression.TakeInvocationTotals(ctx)
-			fields["compression_saved_tokens_total"] = ct.SavedTokens
-			fields["compression_count"] = ct.Compressions
-			if ct.Expansions > 0 {
-				fields["expansion_count"] = ct.Expansions
-			}
-		}
+		// Per-invocation compression savings — see appendCompressionFields.
+		r.appendCompressionFields(ctx, fields)
 		if task.Status.State == a2a.TaskStateCanceled {
 			auditLogger.EmitInvocationCancelled(ctx,
 				coreruntime.CancellationReasonFromCause(ctx),
@@ -1818,6 +1811,9 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 					fields["provider"] = snap.PrimaryProvider
 				}
 			}
+			// Pops the per-correlation compression bucket — required on
+			// every invocation_complete path (leak otherwise).
+			r.appendCompressionFields(ctx, fields)
 			auditLogger.EmitInvocationComplete(ctx, snap.InvocationDuration, fields)
 		}()
 
@@ -3399,6 +3395,29 @@ func (r *Runner) initLongTermMemory(ctx context.Context, mc *coreruntime.ModelCo
 	})
 
 	return mgr
+}
+
+// appendCompressionFields pops this invocation's compression savings (keyed
+// by the ctx's correlation ID) and adds them to an invocation_complete /
+// invocation_cancelled fields map: compression_saved_tokens_total,
+// compression_count, and expansion_count (when nonzero). Values are tokenizer
+// estimates; zeros mean "compression on, nothing worth compressing".
+//
+// MUST be called exactly once per invocation, at the emission site — there
+// are THREE (executeTask plus both tasks/sendSubscribe streaming handlers,
+// JSON-RPC SSE and REST). Missing a site both leaks the per-correlation
+// bucket and drops the metrics from that path's invocation_complete
+// (PR #241 review finding). No-op when compression is disabled.
+func (r *Runner) appendCompressionFields(ctx context.Context, fields map[string]any) {
+	if r.compression == nil {
+		return
+	}
+	ct := r.compression.TakeInvocationTotals(ctx)
+	fields["compression_saved_tokens_total"] = ct.SavedTokens
+	fields["compression_count"] = ct.Compressions
+	if ct.Expansions > 0 {
+		fields["expansion_count"] = ct.Expansions
+	}
 }
 
 // compressionEnabled reports whether reversible context compression is on.

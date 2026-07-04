@@ -36,6 +36,11 @@ var (
 	runAuthURL           string
 	runAuthOrgID         string
 	runCORSOrigins       string
+	// runCompression toggles reversible context compression. Applied only
+	// when the flag is explicitly passed (cmd.Flags().Changed) so the
+	// yaml/env resolution is untouched otherwise; --compression=false
+	// force-disables even when forge.yaml enables it.
+	runCompression bool
 
 	// FWS-7 audit export sink flags (issue #95). Default zero means
 	// "stderr only" — fully backward-compatible with pre-FWS-7. The
@@ -90,6 +95,7 @@ func init() {
 	runCmd.Flags().BoolVar(&runNoGuardrails, "no-guardrails", false, "disable all guardrail enforcement")
 	runCmd.Flags().StringVar(&runModel, "model", "", "override model name (sets MODEL_NAME env var)")
 	runCmd.Flags().StringVar(&runProvider, "provider", "", "LLM provider (openai, anthropic, ollama)")
+	runCmd.Flags().BoolVar(&runCompression, "compression", false, "enable reversible context compression; --compression=false forces it off (overrides forge.yaml; sets FORGE_COMPRESSION)")
 	runCmd.Flags().StringVar(&runEnvFile, "env", ".env", "path to .env file")
 	runCmd.Flags().StringVar(&runWithChannels, "with", "", "comma-separated channel adapters to start (e.g. slack,telegram)")
 	runCmd.Flags().BoolVar(&runNoAuth, "no-auth", false, "disable bearer token authentication (localhost only)")
@@ -135,6 +141,14 @@ func runRun(cmd *cobra.Command, args []string) error {
 	cfg, workDir, err := loadAndPrepareConfig(runEnvFile)
 	if err != nil {
 		return err
+	}
+
+	// --compression / --compression=false → FORGE_COMPRESSION env, which the
+	// runner resolves with highest precedence (flag > env > forge.yaml).
+	// Only when explicitly passed, so absent flag leaves yaml/env behavior
+	// untouched. Same pattern as --model → MODEL_NAME.
+	if cmd.Flags().Changed("compression") {
+		_ = os.Setenv("FORGE_COMPRESSION", strconv.FormatBool(runCompression))
 	}
 
 	activeChannels := parseChannels(runWithChannels)

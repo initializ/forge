@@ -45,6 +45,7 @@ type initOptions struct {
 	Force          bool   // overwrite existing directory
 	CustomModel    string // custom provider model name
 	AuthMethod     string // "apikey" or "oauth"
+	Compression    bool   // reversible context compression (ctxzip) — compression.enabled in forge.yaml
 
 	// A2A auth chain (from the wizard's Authentication step or CLI flags).
 	AuthMode        string         // "", "none", "oidc", "http_verifier", "custom"
@@ -76,6 +77,7 @@ type templateData struct {
 	EgressDomains  []string
 	EnvVars        []envVarEntry
 	HasSecrets     bool
+	Compression    bool
 
 	// Auth chain rendering (see forge.yaml.tmpl). Pre-rendered as a YAML
 	// fragment because nested maps in the settings block (e.g. claim_map)
@@ -126,6 +128,7 @@ func init() {
 	initCmd.Flags().StringSlice("channels", nil, "communication channels (e.g., slack,telegram)")
 	initCmd.Flags().String("from-skills", "", "path to SKILL.md file to parse for tools")
 	initCmd.Flags().Bool("non-interactive", false, "run without interactive prompts (requires all flags)")
+	initCmd.Flags().Bool("compression", false, "enable reversible context compression (writes compression.enabled: true to forge.yaml)")
 	initCmd.Flags().StringSlice("tools", nil, "builtin tools to enable (e.g., web_search,http_request)")
 	initCmd.Flags().StringSlice("skills", nil, "registry skills to include (e.g., github,weather)")
 	initCmd.Flags().String("api-key", "", "LLM provider API key")
@@ -181,6 +184,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	opts.Skills, _ = cmd.Flags().GetStringSlice("skills")
 	opts.APIKey, _ = cmd.Flags().GetString("api-key")
 	opts.OrganizationID, _ = cmd.Flags().GetString("org-id")
+	opts.Compression, _ = cmd.Flags().GetBool("compression")
 	fallbackProviders, _ := cmd.Flags().GetStringSlice("fallbacks")
 	for _, p := range fallbackProviders {
 		opts.Fallbacks = append(opts.Fallbacks, tui.FallbackProvider{Provider: p})
@@ -323,6 +327,7 @@ func collectInteractive(opts *initOptions) error {
 		steps.NewChannelStep(styles),
 		steps.NewToolsStep(styles, toolInfos, validateWebSearchKeyFn),
 		steps.NewSkillsStep(styles, skillInfos),
+		steps.NewCompressionStep(styles),
 		steps.NewAuthStep(styles),
 		steps.NewEgressStep(styles, deriveEgressFn),
 		steps.NewReviewStep(styles), // scaffold is handled by the caller after collectInteractive returns
@@ -372,6 +377,7 @@ func collectInteractive(opts *initOptions) error {
 
 	opts.BuiltinTools = ctx.BuiltinTools
 	opts.Skills = ctx.Skills
+	opts.Compression = ctx.Compression
 
 	// Store provider env var
 	storeProviderEnvVar(opts)
@@ -1115,6 +1121,7 @@ func buildTemplateData(opts *initOptions) templateData {
 		Channels:       opts.Channels,
 		Tools:          opts.Tools,
 		BuiltinTools:   opts.BuiltinTools,
+		Compression:    opts.Compression,
 	}
 
 	// Set entrypoint based on framework (only for subprocess-based frameworks)

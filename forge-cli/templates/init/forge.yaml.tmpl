@@ -41,6 +41,14 @@ builtin_tools:
   - {{.}}
 {{- end}}
 {{- end}}
+{{- if .Compression}}
+
+# Reversible context compression (ctxzip): bulky tool outputs are compressed
+# before reaching the LLM; dropped content stays retrievable via the
+# context_expand tool. Tune with keep_patterns / ttl / cache_hints.
+compression:
+  enabled: true
+{{- end}}
 {{- if .EgressDomains}}
 
 egress:

@@ -33,6 +33,7 @@ var (
 	serveNoGuardrails      bool
 	serveModel             string
 	serveProvider          string
+	serveCompression       bool
 	serveEnvFile           string
 	serveWithChannels      string
 	serveNoAuth            bool
@@ -115,6 +116,7 @@ func registerServeFlags(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&serveNoGuardrails, "no-guardrails", false, "disable all guardrail enforcement")
 	cmd.Flags().StringVar(&serveModel, "model", "", "override model name (sets MODEL_NAME env var)")
 	cmd.Flags().StringVar(&serveProvider, "provider", "", "LLM provider (openai, anthropic, ollama)")
+	cmd.Flags().BoolVar(&serveCompression, "compression", false, "enable reversible context compression; --compression=false forces it off (forwarded to the daemon)")
 	cmd.Flags().StringVar(&serveEnvFile, "env", ".env", "path to .env file")
 	cmd.Flags().StringVar(&serveWithChannels, "with", "", "comma-separated channel adapters to start (e.g. slack,telegram)")
 	cmd.Flags().BoolVar(&serveNoAuth, "no-auth", false, "disable bearer token authentication (localhost only)")
@@ -212,6 +214,11 @@ func serveStartRun(cmd *cobra.Command, args []string) error {
 	}
 	if serveProvider != "" {
 		runArgs = append(runArgs, "--provider", serveProvider)
+	}
+	// Forward only when explicitly passed — mirrors the run flag's
+	// tri-state (absent = yaml/env decide, =true / =false override).
+	if cmd.Flags().Changed("compression") {
+		runArgs = append(runArgs, "--compression="+strconv.FormatBool(serveCompression))
 	}
 	if serveEnvFile != ".env" {
 		runArgs = append(runArgs, "--env", serveEnvFile)

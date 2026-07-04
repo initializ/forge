@@ -40,6 +40,12 @@ type WizardContext struct {
 	CustomShape string
 	EnvVars     map[string]string
 
+	// Compression enables reversible context compression (ctxzip): bulky
+	// tool outputs are compressed before reaching the LLM and stay
+	// retrievable via the context_expand tool. Written to forge.yaml as
+	// compression.enabled.
+	Compression bool
+
 	// AuthMode is the user's selection from the auth step:
 	//   ""             — wizard step did not run
 	//   "none"         — anonymous access (no auth: block written)

@@ -306,6 +306,42 @@ func TestAuditEvents_SavingsAndTotals(t *testing.T) {
 	}
 }
 
+// Per-invocation savings are keyed by correlation ID so concurrent tasks
+// don't cross-contaminate, and TakeInvocationTotals pops exactly once.
+func TestTakeInvocationTotals_PerCorrelation(t *testing.T) {
+	rt := newRuntime(t)
+	hook := rt.AfterToolExecHook()
+
+	ctxA := runtime.WithCorrelationID(context.Background(), "task-a")
+	ctxB := runtime.WithCorrelationID(context.Background(), "task-b")
+
+	// Two compressions under A, one under B.
+	for _, c := range []struct {
+		ctx context.Context
+		n   int
+	}{{ctxA, 80}, {ctxA, 90}, {ctxB, 100}} {
+		h := &runtime.HookContext{ToolName: "t", ToolOutput: bigJSON(c.n)}
+		_ = hook(c.ctx, h)
+	}
+
+	a := rt.TakeInvocationTotals(ctxA)
+	if a.Compressions != 2 || a.SavedTokens <= 0 {
+		t.Fatalf("A totals = %+v, want 2 compressions", a)
+	}
+	b := rt.TakeInvocationTotals(ctxB)
+	if b.Compressions != 1 {
+		t.Fatalf("B totals = %+v, want 1 compression", b)
+	}
+	// Popped — a second take returns zeros.
+	if again := rt.TakeInvocationTotals(ctxA); again.Compressions != 0 {
+		t.Fatalf("second take should be empty, got %+v", again)
+	}
+	// No correlation ID → zeros, no accumulation.
+	if none := rt.TakeInvocationTotals(context.Background()); none.Compressions != 0 {
+		t.Fatalf("no-correlation take should be empty, got %+v", none)
+	}
+}
+
 // KeepPatterns (forge.yaml compression.keep_patterns) must flow through to
 // the hook so builder-flagged rows survive the compressed view.
 func TestHook_KeepPatterns(t *testing.T) {

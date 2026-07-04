@@ -101,6 +101,11 @@ type Runtime struct {
 	mu     sync.Mutex
 	recent map[string]struct{}
 	totals SavingsTotals
+	// perInvocation accumulates savings keyed by correlation ID so
+	// invocation_complete can report this invocation's savings without
+	// cross-contamination from concurrent tasks. Entries are popped by
+	// TakeInvocationTotals at the invocation's response boundary.
+	perInvocation map[string]*SavingsTotals
 }
 
 // SavingsTotals is the process-lifetime savings picture. Token figures are
@@ -123,12 +128,53 @@ func (r *Runtime) Totals() SavingsTotals {
 	return r.totals
 }
 
+// TakeInvocationTotals pops and returns the savings accumulated under the
+// ctx's correlation ID. Call it exactly once, at the invocation's response
+// boundary (invocation_complete emission); subsequent calls for the same
+// invocation return zeros. Safe under concurrent invocations — each
+// correlation ID accumulates independently.
+func (r *Runtime) TakeInvocationTotals(ctx context.Context) SavingsTotals {
+	cid := runtime.CorrelationIDFromContext(ctx)
+	if cid == "" {
+		return SavingsTotals{}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if t, ok := r.perInvocation[cid]; ok {
+		delete(r.perInvocation, cid)
+		return *t
+	}
+	return SavingsTotals{}
+}
+
+// bumpInvocation accumulates into the ctx's per-invocation bucket. Caller
+// holds r.mu.
+func (r *Runtime) bumpInvocation(ctx context.Context, f func(*SavingsTotals)) {
+	cid := runtime.CorrelationIDFromContext(ctx)
+	if cid == "" {
+		return
+	}
+	if r.perInvocation == nil {
+		r.perInvocation = make(map[string]*SavingsTotals)
+	}
+	t, ok := r.perInvocation[cid]
+	if !ok {
+		t = &SavingsTotals{}
+		r.perInvocation[cid] = t
+	}
+	f(t)
+}
+
 // recordCompression accumulates savings and emits AuditEventCompressed with
 // per-event figures plus the running totals.
 func (r *Runtime) recordCompression(ctx context.Context, seam, tool string, before, after int) {
 	r.mu.Lock()
 	r.totals.Compressions++
 	r.totals.SavedTokens += int64(before - after)
+	r.bumpInvocation(ctx, func(t *SavingsTotals) {
+		t.Compressions++
+		t.SavedTokens += int64(before - after)
+	})
 	t := r.totals
 	r.mu.Unlock()
 
@@ -154,6 +200,12 @@ func (r *Runtime) recordExpansion(ctx context.Context, hash string, hit bool, by
 	if !hit {
 		r.totals.ExpansionMisses++
 	}
+	r.bumpInvocation(ctx, func(t *SavingsTotals) {
+		t.Expansions++
+		if !hit {
+			t.ExpansionMisses++
+		}
+	})
 	t := r.totals
 	r.mu.Unlock()
 

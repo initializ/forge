@@ -145,6 +145,7 @@ type Runner struct {
 	authToken        string                            // resolved auth token (empty if --no-auth)
 	cancelRegistry   *coreruntime.CancellationRegistry // per-Runner in-flight cancellation registry (issue #88 / FWS-4)
 	auditSigningKey  *coreruntime.LoadedKey            // loaded once at startup; nil when signing is off (#213). Served on JWKS endpoint.
+	compression      *compress.Runtime                 // ctxzip compression runtime; nil when compression is disabled
 }
 
 // NewRunner creates a Runner from the given config.
@@ -900,6 +901,7 @@ func (r *Runner) Run(ctx context.Context) error {
 						defer comp.Close() //nolint:errcheck
 						hooks.Register(coreruntime.AfterToolExec, comp.AfterToolExecHook())
 						llmClient = comp.WrapClient(llmClient)
+						r.compression = comp // invocation_complete reads per-task savings
 					}
 
 					// Compute model-aware character budget.
@@ -1533,6 +1535,18 @@ func (r *Runner) executeTask(
 			}
 			if snap.PrimaryProvider != "" {
 				fields["provider"] = snap.PrimaryProvider
+			}
+		}
+		// Per-invocation compression savings (tokenizer estimates), popped
+		// from the runtime by this invocation's correlation ID so concurrent
+		// tasks don't cross-contaminate. Present whenever compression is
+		// enabled — zero values mean "on, but nothing was worth compressing".
+		if r.compression != nil {
+			ct := r.compression.TakeInvocationTotals(ctx)
+			fields["compression_saved_tokens_total"] = ct.SavedTokens
+			fields["compression_count"] = ct.Compressions
+			if ct.Expansions > 0 {
+				fields["expansion_count"] = ct.Expansions
 			}
 		}
 		if task.Status.State == a2a.TaskStateCanceled {

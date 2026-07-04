@@ -18,7 +18,7 @@ Complete reference for all Forge CLI commands.
 
 ## `forge init`
 
-Initialize a new agent project.
+Initialize a new agent project. Without `--non-interactive`, a TUI wizard walks through: name → model provider → fallbacks → channel → tools → skills → context compression → authentication → egress review → summary.
 
 ```
 forge init [name] [flags]
@@ -39,6 +39,7 @@ forge init [name] [flags]
 | `--org-id` | | | OpenAI Organization ID (enterprise) |
 | `--from-skills` | | | Path to a SKILL.md file for auto-configuration |
 | `--non-interactive` | | `false` | Skip interactive prompts |
+| `--compression` | | `false` | Enable reversible context compression — writes `compression.enabled: true` to the scaffolded forge.yaml. See [Context Compression](../core-concepts/context-compression.md) |
 | `--auth` | | | Auth mode: `none`, `oidc`, `http_verifier`, `aws_sigv4`, `gcp_iap`, `azure_ad`, `custom` |
 | `--auth-issuer` | | | OIDC issuer URL (required with `--auth=oidc`) |
 | `--auth-audience` | | | OIDC audience (required with `--auth=oidc`) |
@@ -217,6 +218,7 @@ forge run [flags]
 | `--enforce-guardrails` | `false` | Enforce guardrail violations as errors |
 | `--model` | | Override model name (sets `MODEL_NAME` env var) |
 | `--provider` | | LLM provider: `openai`, `anthropic`, or `ollama` |
+| `--compression` | | Enable reversible context compression; `--compression=false` forces it off. Absent = forge.yaml/env decide (sets `FORGE_COMPRESSION`). See [Context Compression](../core-concepts/context-compression.md) |
 | `--env` | `.env` | Path to .env file |
 | `--with` | | Comma-separated channel adapters (e.g., `slack,telegram`) |
 | `--auth-url` | | External auth provider URL for token validation |
@@ -291,6 +293,7 @@ forge serve [start|stop|status|logs] [flags]
 | `--host` | `127.0.0.1` | Bind address (secure default) |
 | `--with` | | Channel adapters |
 | `--cors-origins` | localhost | Comma-separated CORS allowed origins |
+| `--compression` | | Enable reversible context compression; `--compression=false` forces it off. Forwarded to the daemon `forge run` only when explicitly passed |
 
 ### Examples
 

@@ -915,6 +915,13 @@ func (r *Runner) Run(ctx context.Context) error {
 					if r.hasSkill("code-agent") {
 						sysPrompt += "\n\n" + codeAgentDirective
 					}
+					// Compression marker-awareness is a runtime concern, not a
+					// per-skill one: whenever compression is on, every skill's
+					// agent learns what <<ctxzip:...>> markers are and when to
+					// call context_expand — skill authors need do nothing.
+					if r.compression != nil {
+						sysPrompt += "\n\n" + compress.SystemDirective
+					}
 
 					execCfg := coreruntime.LLMExecutorConfig{
 						Client:        llmClient,

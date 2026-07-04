@@ -33,6 +33,24 @@ type expandInput struct {
 // tool's output from compression.
 const expandToolName = "context_expand"
 
+// SystemDirective is appended to the agent's system prompt whenever
+// compression is enabled, so EVERY skill gets marker-awareness from the
+// runtime — skill authors never need to document compression themselves.
+// The text is constant, which keeps the system prompt byte-stable across
+// turns (provider prompt caches stay warm).
+const SystemDirective = `## Compressed context
+
+Large tool outputs may be automatically compressed to fit your context.
+Compressed sections are replaced inline by a marker like
+<<ctxzip:HASH N_lines_offloaded>> — the note says how much was offloaded. The
+visible remainder keeps errors, anomalies, and representative content, so for
+many questions you will not need the offloaded part.
+
+When you DO need offloaded data to answer precisely (exact counts, full
+listings, a specific record you cannot see), call the ` + expandToolName + ` tool with the
+marker's hash to retrieve the original content. If it reports the content
+expired, re-run the tool that produced the output.`
+
 func (t *expandTool) Name() string { return expandToolName }
 
 func (t *expandTool) Description() string {

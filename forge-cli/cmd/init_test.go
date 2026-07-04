@@ -439,6 +439,57 @@ func TestScaffold_EgressInForgeYAML(t *testing.T) {
 	}
 }
 
+func TestScaffold_CompressionInForgeYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	origDir, _ := os.Getwd()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(origDir) }()
+
+	// With --compression: the block is written enabled.
+	opts := &initOptions{
+		Name:           "comp-test",
+		AgentID:        "comp-test",
+		Framework:      "forge",
+		ModelProvider:  "openai",
+		EnvVars:        map[string]string{},
+		NonInteractive: true,
+		Compression:    true,
+	}
+	if err := scaffold(opts); err != nil {
+		t.Fatalf("scaffold error: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join("comp-test", "forge.yaml"))
+	if err != nil {
+		t.Fatalf("reading forge.yaml: %v", err)
+	}
+	if !strings.Contains(string(content), "compression:") ||
+		!strings.Contains(string(content), "enabled: true") {
+		t.Errorf("forge.yaml missing compression block:\n%s", content)
+	}
+
+	// Without it: no compression block (off by default).
+	opts2 := &initOptions{
+		Name:           "nocomp-test",
+		AgentID:        "nocomp-test",
+		Framework:      "forge",
+		ModelProvider:  "openai",
+		EnvVars:        map[string]string{},
+		NonInteractive: true,
+	}
+	if err := scaffold(opts2); err != nil {
+		t.Fatalf("scaffold error: %v", err)
+	}
+	content2, err := os.ReadFile(filepath.Join("nocomp-test", "forge.yaml"))
+	if err != nil {
+		t.Fatalf("reading forge.yaml: %v", err)
+	}
+	if strings.Contains(string(content2), "compression:") {
+		t.Errorf("forge.yaml should not contain a compression block by default:\n%s", content2)
+	}
+}
+
 func TestScaffold_GitignoreIncludesEnv(t *testing.T) {
 	tmpDir := t.TempDir()
 	origDir, _ := os.Getwd()

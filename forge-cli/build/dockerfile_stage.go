@@ -92,6 +92,9 @@ func (s *DockerfileStage) generateSmartDockerfile(bc *pipeline.BuildContext, man
 	data.RuntimeAptPackages = frags.RuntimeAptPackages
 	data.RuntimeApkPackages = frags.RuntimeApkPackages
 	data.PathExtensions = frags.PathExtensions
+	// When curl is a declared runtime bin, the forge bootstrap must not purge it.
+	data.KeepRuntimeCurl = containsPackage(frags.RuntimeAptPackages, "curl") ||
+		containsPackage(frags.RuntimeApkPackages, "curl")
 
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {
@@ -345,4 +348,14 @@ Dockerfile
 	}
 	bc.AddFile(".dockerignore", ignorePath)
 	return nil
+}
+
+// containsPackage reports whether name is among the given package names.
+func containsPackage(pkgs []string, name string) bool {
+	for _, p := range pkgs {
+		if p == name {
+			return true
+		}
+	}
+	return false
 }

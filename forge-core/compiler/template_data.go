@@ -43,6 +43,13 @@ type TemplateSpecData struct {
 	RuntimeAptPackages []string // runtime apt packages installed in the application stage (debian).
 	RuntimeApkPackages []string // runtime apk packages installed in the application stage (alpine).
 	PathExtensions     []string // PATH directories for non-standard binary locations.
+
+	// KeepRuntimeCurl is true when curl is a declared runtime binary (present
+	// in RuntimeAptPackages/RuntimeApkPackages). The forge-framework bootstrap
+	// borrows curl to fetch the forge binary and then purges it; when a skill
+	// legitimately requires curl at runtime, that purge would clobber it, so
+	// the Dockerfile template skips the purge in that case.
+	KeepRuntimeCurl bool
 }
 
 // TemplateRuntimeData holds runtime-specific template data.

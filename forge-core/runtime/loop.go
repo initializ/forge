@@ -39,6 +39,15 @@ type ToolExecutor interface {
 	ToolDefinitions() []llm.ToolDefinition
 }
 
+// Pre-hook safety ceiling for deferred tool-result truncation: hooks must
+// never scan unbounded payloads, but the ceiling must be generous enough
+// that real bulky outputs (e.g. kubectl get -o json on a large cluster)
+// reach the compression hook intact.
+const (
+	toolResultCeilingMultiplier = 16
+	toolResultCeilingAbsolute   = 4 << 20 // 4MB
+)
+
 // LLMExecutor implements AgentExecutor using an LLM client with tool calling.
 type LLMExecutor struct {
 	client             llm.Client
@@ -56,6 +65,13 @@ type LLMExecutor struct {
 	filesDir           string        // directory for file_create output
 	sessionMaxAge      time.Duration // max age for session recovery (0 = no limit)
 	workflowPhases     []string      // workflow phases from skills (edit, finalize, query)
+	// deferToolTruncation moves the maxToolResultChars cut to AFTER the
+	// AfterToolExec hooks, so a compression hook sees the full output and
+	// the (usually smaller) compressed result is what gets capped. A
+	// pre-hook safety ceiling still bounds pathological outputs. Set by the
+	// runner only when context compression is enabled — off, the
+	// pre-compression truncation order is byte-identical to before.
+	deferToolTruncation bool
 	// tracingCfg governs Phase 3.5 span-attribute content capture
 	// (issue #130). Only CaptureContent + Redact are consumed here;
 	// the rest of the struct is honored by the cli runner's tracer
@@ -80,6 +96,12 @@ type LLMExecutorConfig struct {
 	FilesDir       string        // directory for file_create output (default: $TMPDIR/forge-files)
 	SessionMaxAge  time.Duration // max idle time before session recovery is skipped (0 = 30m default)
 	WorkflowPhases []string      // workflow phases from skills (edit, finalize, query)
+	// DeferToolResultTruncation applies the tool-result size cap after the
+	// AfterToolExec hooks instead of before, behind a pre-hook safety
+	// ceiling (16x the cap, absolute max 4MB). Enable when a compression
+	// hook is registered: pre-hook truncation both destroys data and breaks
+	// the JSON envelopes the compressor could otherwise shrink losslessly.
+	DeferToolResultTruncation bool
 	// TracingConfig is the same observability.TracingConfig the cli
 	// runner resolves and passes to NewTracerProvider. The executor
 	// reads CaptureContent + Redact to decide whether to stamp
@@ -128,22 +150,23 @@ func NewLLMExecutor(cfg LLMExecutorConfig) *LLMExecutor {
 	}
 
 	return &LLMExecutor{
-		client:             cfg.Client,
-		tools:              cfg.Tools,
-		hooks:              hooks,
-		systemPrompt:       cfg.SystemPrompt,
-		maxIter:            maxIter,
-		compactor:          cfg.Compactor,
-		store:              cfg.Store,
-		logger:             logger,
-		modelName:          cfg.ModelName,
-		provider:           cfg.Provider,
-		charBudget:         budget,
-		maxToolResultChars: toolLimit,
-		filesDir:           cfg.FilesDir,
-		sessionMaxAge:      sessionMaxAge,
-		workflowPhases:     cfg.WorkflowPhases,
-		tracingCfg:         cfg.TracingConfig,
+		client:              cfg.Client,
+		tools:               cfg.Tools,
+		hooks:               hooks,
+		systemPrompt:        cfg.SystemPrompt,
+		maxIter:             maxIter,
+		compactor:           cfg.Compactor,
+		store:               cfg.Store,
+		logger:              logger,
+		modelName:           cfg.ModelName,
+		provider:            cfg.Provider,
+		charBudget:          budget,
+		maxToolResultChars:  toolLimit,
+		filesDir:            cfg.FilesDir,
+		sessionMaxAge:       sessionMaxAge,
+		workflowPhases:      cfg.WorkflowPhases,
+		deferToolTruncation: cfg.DeferToolResultTruncation,
+		tracingCfg:          cfg.TracingConfig,
 	}
 }
 
@@ -701,7 +724,24 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 
 			// Truncate oversized tool results to avoid LLM API errors.
 			// Limit is proportional to model context budget (25%, floor 2K, cap 400K).
-			if len(result) > e.maxToolResultChars {
+			//
+			// With compression enabled (deferToolTruncation), the cut moves
+			// to AFTER the hooks: pre-hook truncation destroys data AND
+			// breaks the JSON envelopes the compression hook could shrink
+			// losslessly (live finding: a 108KB kubectl -o json envelope was
+			// cut mid-string, defeating compression entirely). A generous
+			// pre-hook safety ceiling still bounds pathological outputs so
+			// hooks never scan unbounded payloads; the normal cap is applied
+			// to the post-hook (usually compressed) result below.
+			if e.deferToolTruncation {
+				ceiling := e.maxToolResultChars * toolResultCeilingMultiplier
+				if ceiling > toolResultCeilingAbsolute {
+					ceiling = toolResultCeilingAbsolute
+				}
+				if len(result) > ceiling {
+					result = result[:ceiling] + "\n\n[OUTPUT TRUNCATED -- original length: " + strconv.Itoa(len(result)) + " chars]"
+				}
+			} else if len(result) > e.maxToolResultChars {
 				result = result[:e.maxToolResultChars] + "\n\n[OUTPUT TRUNCATED -- original length: " + strconv.Itoa(len(result)) + " chars]"
 			}
 
@@ -719,6 +759,13 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 				return nil, fmt.Errorf("after tool exec hook: %w", err)
 			}
 			result = afterHctx.ToolOutput // allow hooks to redact output
+
+			// Deferred mode: apply the normal cap to the post-hook result —
+			// compression usually brought it far below the limit, making
+			// this a no-op; when it didn't, the context window still wins.
+			if e.deferToolTruncation && len(result) > e.maxToolResultChars {
+				result = result[:e.maxToolResultChars] + "\n\n[OUTPUT TRUNCATED -- original length: " + strconv.Itoa(len(result)) + " chars]"
+			}
 
 			// Handle file_create tool: always create a file part.
 			// For other tools with large output, detect content type.

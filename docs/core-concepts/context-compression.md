@@ -107,6 +107,8 @@ Token figures are tokenizer estimates (directionally accurate); billed truth rem
 
 Fail-open, always: if the store cannot be opened, a compressor errors, or "compression" would grow a message, the original content is used unchanged. Error tool results are never compressed. An expired retrieval is not a dead end — the model is told to re-run the tool that produced the output.
 
+**Interaction with tool-output truncation.** Forge normally hard-caps tool results at 25% of the context budget *before* anything else sees them. With compression enabled, that cut moves to **after** the compression hook (behind a safety ceiling of 16× the cap, absolute max 4MB): pre-hook truncation both destroys data and breaks the JSON envelopes compression would shrink losslessly. The compressed result is then capped as usual — normally a no-op. If an envelope still arrives cut mid-string (the safety ceiling, or another runtime), ctxzip salvages the intact prefix and adds a `_ctxzip_note` field telling the model the tail was destroyed upstream — not offloaded — so it re-runs the tool rather than calling `context_expand` for bytes that no longer exist.
+
 **Single-writer store.** The bbolt store at `store_path` holds an exclusive file lock — one store per process. A second process pointing at the same file (two replicas on a shared volume, or `forge run` alongside `forge serve` in the same directory) fails to acquire the lock after a 5-second timeout and that process runs uncompressed (fail-open, with a startup warning). Give each replica its own `store_path` — offloaded originals are only ever retrieved by the process that offloaded them, so the store has no reason to be shared.
 
 ## Related

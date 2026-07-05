@@ -57,6 +57,11 @@ func (s *CompressionStep) Title() string { return "Context Compression" }
 func (s *CompressionStep) Icon() string  { return "🗜️" }
 
 func (s *CompressionStep) Init() tea.Cmd {
+	// Init also runs when the user navigates BACK to this step; reset the
+	// selection state (SkillsStep pattern) or the completed selector would
+	// swallow all input and strand the wizard here.
+	s.complete = false
+	s.selector.Reset()
 	return s.selector.Init()
 }
 
@@ -72,6 +77,9 @@ func (s *CompressionStep) Update(msg tea.Msg) (tui.Step, tea.Cmd) {
 		_, val := s.selector.Selected()
 		s.enabled = val == "enabled"
 		s.complete = true
+		// The wizard advances ONLY on StepCompleteMsg — setting complete
+		// without emitting it leaves the wizard stuck on this step.
+		return s, func() tea.Msg { return tui.StepCompleteMsg{} }
 	}
 	return s, cmd
 }

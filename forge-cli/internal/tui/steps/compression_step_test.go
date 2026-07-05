@@ -82,7 +82,7 @@ func TestCompressionStep_BackNavigationResets(t *testing.T) {
 		t.Fatal("Init must reset completion for back-navigation")
 	}
 	// The step must accept a fresh selection after the reset.
-	s, msg := pressCompression(t, s, tea.KeyEnter)
+	_, msg := pressCompression(t, s, tea.KeyEnter)
 	if _, ok := msg.(tui.StepCompleteMsg); !ok {
 		t.Fatalf("step did not accept a new selection after reset, got %T", msg)
 	}

@@ -934,6 +934,11 @@ func (r *Runner) Run(ctx context.Context) error {
 						MaxIterations: 100,
 						CharBudget:    charBudget,
 						FilesDir:      filepath.Join(r.cfg.WorkDir, ".forge", "files"),
+						// With compression on, tool results are capped AFTER
+						// the compression hook (behind a 16x/4MB safety
+						// ceiling) — pre-hook truncation destroys data and
+						// breaks the JSON envelopes compression would shrink.
+						DeferToolResultTruncation: r.compression != nil,
 						// Issue #130 — the same resolved TracingConfig
 						// already passed to NewTracerProvider drives Phase
 						// 3.5 span-content capture inside the executor

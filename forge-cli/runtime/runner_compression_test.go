@@ -8,8 +8,24 @@ import (
 	"testing"
 
 	"github.com/initializ/forge/forge-core/compress"
+	"github.com/initializ/forge/forge-core/llm"
 	coreruntime "github.com/initializ/forge/forge-core/runtime"
 )
+
+// stubLLMClient satisfies llm.Client for driving the compressing wrapper.
+type stubLLMClient struct{}
+
+func (stubLLMClient) Chat(_ context.Context, _ *llm.ChatRequest) (*llm.ChatResponse, error) {
+	return &llm.ChatResponse{Message: llm.ChatMessage{Role: llm.RoleAssistant, Content: "ok"}}, nil
+}
+
+func (stubLLMClient) ChatStream(_ context.Context, _ *llm.ChatRequest) (<-chan llm.StreamDelta, error) {
+	ch := make(chan llm.StreamDelta)
+	close(ch)
+	return ch, nil
+}
+
+func (stubLLMClient) ModelID() string { return "stub" }
 
 // PR #241 review: invocation_complete is emitted from THREE sites
 // (executeTask + both sendSubscribe streaming handlers), and every one must
@@ -41,6 +57,17 @@ func TestAppendCompressionFields_PopsAndPopulates(t *testing.T) {
 		t.Fatal("fixture did not compress — test cannot exercise the bucket")
 	}
 
+	// One LLM call carries the compressed output in history — realized (wire)
+	// savings accrue per outbound request, not per compression event.
+	wrapped := comp.WrapClient(stubLLMClient{})
+	_, _ = wrapped.Chat(ctx, &llm.ChatRequest{Model: "m", Messages: []llm.ChatMessage{
+		{Role: llm.RoleSystem, Content: "sys"},
+		{Role: llm.RoleUser, Content: "check"},
+		{Role: llm.RoleTool, Name: "list", ToolCallID: "t1", Content: hctx.ToolOutput},
+		{Role: llm.RoleAssistant, Content: "ok"},
+		{Role: llm.RoleUser, Content: "go"},
+	}})
+
 	// First call: fields populated, bucket popped.
 	fields := map[string]any{}
 	r.appendCompressionFields(ctx, fields)
@@ -48,7 +75,10 @@ func TestAppendCompressionFields_PopsAndPopulates(t *testing.T) {
 		t.Fatalf("compression_count = %v, want 1", fields["compression_count"])
 	}
 	if fields["compression_saved_tokens_total"].(int64) <= 0 {
-		t.Fatalf("compression_saved_tokens_total = %v, want > 0", fields["compression_saved_tokens_total"])
+		t.Fatalf("compression_saved_tokens_total (wire) = %v, want > 0", fields["compression_saved_tokens_total"])
+	}
+	if fields["compression_event_saved_tokens"].(int64) <= 0 {
+		t.Fatalf("compression_event_saved_tokens = %v, want > 0", fields["compression_event_saved_tokens"])
 	}
 
 	// Second call for the same invocation: bucket already popped → zeros

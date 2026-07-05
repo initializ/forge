@@ -99,7 +99,7 @@ Savings are first-class audit events, not log noise — see [Audit Logging](../s
 
 - `context_compressed` — per compression: seam, tool, tokens before/after/saved, plus running totals.
 - `context_expanded` — per retrieval: hash, hit, bytes — the cost side to net against savings.
-- `invocation_complete` gains `compression_saved_tokens_total`, `compression_count`, and `expansion_count`, accumulated per invocation (concurrent tasks never cross-contaminate).
+- `invocation_complete` gains `compression_saved_tokens_total` (**realized** savings — tokens this invocation's LLM calls did not send; a tool output compressed once but resent in history across four calls saves its delta four times), `compression_event_saved_tokens` (one-time per-compression deltas), `compression_count`, and `expansion_count`, accumulated per invocation (concurrent tasks never cross-contaminate).
 
 Token figures are tokenizer estimates (directionally accurate); billed truth remains `llm_call.input_tokens`. A surgical session that produced only small outputs correctly reports `compression_count: 0` — compression is insurance against bulk, not a tax on every call.
 

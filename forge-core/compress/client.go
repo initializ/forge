@@ -43,7 +43,25 @@ func (c *compressingClient) ModelID() string { return c.inner.ModelID() }
 // compressRequest returns req with compressed live-zone messages, or req
 // unchanged when there is nothing to gain. The caller's request is never
 // mutated — the loop may reuse its message slice.
+//
+// It also credits REALIZED wire savings for this call: every marker riding in
+// the outbound messages (from this call's transforms or from history
+// compressed on earlier turns) is tokens this request did not send. That
+// compounding — not the one-time compression events — is where most savings
+// live, and it is what invocation_complete reports.
 func (c *compressingClient) compressRequest(ctx context.Context, req *llm.ChatRequest) *llm.ChatRequest {
+	out := c.compressRequestInner(ctx, req)
+	if out != nil && len(out.Messages) > 0 {
+		contents := make([]string, 0, len(out.Messages))
+		for _, m := range out.Messages {
+			contents = append(contents, m.Content)
+		}
+		c.rt.recordWireSavings(ctx, contents)
+	}
+	return out
+}
+
+func (c *compressingClient) compressRequestInner(ctx context.Context, req *llm.ChatRequest) *llm.ChatRequest {
 	if req == nil || len(req.Messages) == 0 {
 		return req
 	}
@@ -77,7 +95,7 @@ func (c *compressingClient) compressRequest(ctx context.Context, req *llm.ChatRe
 	copy(out.Messages, req.Messages)
 	for _, tr := range res.Transforms {
 		out.Messages[tr.Index].Content = res.Messages[tr.Index].Content
-		c.rt.rememberMarkers(tr.Markers)
+		c.rt.rememberMarkers(tr.Markers, int64(tr.TokensBefore-tr.TokensAfter))
 	}
 
 	c.rt.debugf("compressed request", map[string]any{

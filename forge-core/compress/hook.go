@@ -58,7 +58,7 @@ func (r *Runtime) AfterToolExecHook() runtime.Hook {
 		}
 
 		for _, tr := range res.Transforms {
-			r.rememberMarkers(tr.Markers)
+			r.rememberMarkers(tr.Markers, int64(tr.TokensBefore-tr.TokensAfter))
 		}
 		r.debugf("compressed tool output", map[string]any{
 			"tool":          hctx.ToolName,

@@ -3399,9 +3399,18 @@ func (r *Runner) initLongTermMemory(ctx context.Context, mc *coreruntime.ModelCo
 
 // appendCompressionFields pops this invocation's compression savings (keyed
 // by the ctx's correlation ID) and adds them to an invocation_complete /
-// invocation_cancelled fields map: compression_saved_tokens_total,
-// compression_count, and expansion_count (when nonzero). Values are tokenizer
-// estimates; zeros mean "compression on, nothing worth compressing".
+// invocation_cancelled fields map. Values are tokenizer estimates; zeros mean
+// "compression on, nothing worth compressing".
+//
+//   - compression_saved_tokens_total — REALIZED savings: tokens this
+//     invocation's LLM calls did not send because markers rode in place of
+//     originals. Compounds per resend — a tool output compressed once but
+//     carried in history across four calls saves its delta four times. This
+//     matches the provider bill (live finding: per-event accounting reported
+//     1,257 while the invocation actually avoided ~31K billed tokens).
+//   - compression_event_saved_tokens — the one-time, per-compression deltas
+//     (matches the sum of this invocation's context_compressed events).
+//   - compression_count / expansion_count.
 //
 // MUST be called exactly once per invocation, at the emission site — there
 // are THREE (executeTask plus both tasks/sendSubscribe streaming handlers,
@@ -3413,7 +3422,8 @@ func (r *Runner) appendCompressionFields(ctx context.Context, fields map[string]
 		return
 	}
 	ct := r.compression.TakeInvocationTotals(ctx)
-	fields["compression_saved_tokens_total"] = ct.SavedTokens
+	fields["compression_saved_tokens_total"] = ct.WireSavedTokens
+	fields["compression_event_saved_tokens"] = ct.SavedTokens
 	fields["compression_count"] = ct.Compressions
 	if ct.Expansions > 0 {
 		fields["expansion_count"] = ct.Expansions

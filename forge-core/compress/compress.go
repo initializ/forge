@@ -95,13 +95,15 @@ type Runtime struct {
 	logger  runtime.Logger
 	audit   AuditFunc
 
-	// recent remembers marker hashes this process emitted so the expand tool
-	// can resolve a unique prefix when the model transcribes a hash
-	// imperfectly (observed live: models truncate hex hashes). Bounded to
-	// maxRecentMarkers, evicting oldest-emitted first — only *recent*
-	// markers matter for transcription repair.
+	// recent remembers marker hashes this process emitted — for the expand
+	// tool's prefix resolution when the model transcribes a hash imperfectly
+	// (observed live), and mapping each hash to the tokens its compression
+	// saved so the client wrapper can credit REALIZED savings every time the
+	// marker rides in an outbound request (savings compound per resend, not
+	// per compression). Bounded to maxRecentMarkers, evicting oldest-emitted
+	// first.
 	mu          sync.Mutex
-	recent      map[string]struct{}
+	recent      map[string]int64
 	recentOrder []string
 	totals      SavingsTotals
 	// perInvocation accumulates savings keyed by correlation ID so
@@ -138,10 +140,19 @@ const (
 type SavingsTotals struct {
 	// Compressions is how many times content was compressed (either seam).
 	Compressions int64
-	// SavedTokens is the cumulative estimated token reduction.
+	// SavedTokens is the cumulative per-EVENT token reduction — counted once
+	// per compression, at compression time.
 	SavedTokens int64
+	// WireSavedTokens is the cumulative REALIZED reduction: every time a
+	// marker rides in an outbound LLM request, that marker's saved tokens are
+	// tokens this request did not send. A tool output compressed once but
+	// resent in history across ten calls saves its delta ten times — this is
+	// the number that matches the provider's bill (live finding: an
+	// invocation reporting 1,257 event-saved tokens had actually avoided
+	// ~31K billed tokens through history compounding).
+	WireSavedTokens int64
 	// Expansions / ExpansionMisses count context_expand retrievals — the
-	// cost side to net against SavedTokens.
+	// cost side to net against savings.
 	Expansions      int64
 	ExpansionMisses int64
 }
@@ -260,28 +271,56 @@ func (r *Runtime) recordExpansion(ctx context.Context, hash string, hit bool, by
 	})
 }
 
-// rememberMarkers records emitted marker hashes for prefix resolution,
-// evicting the oldest-emitted entries beyond maxRecentMarkers.
-func (r *Runtime) rememberMarkers(hashes []string) {
+// rememberMarkers records emitted marker hashes with the tokens their
+// compression saved (savedTokens is split evenly across the transform's
+// markers), evicting the oldest-emitted entries beyond maxRecentMarkers.
+func (r *Runtime) rememberMarkers(hashes []string, savedTokens int64) {
 	if len(hashes) == 0 {
 		return
 	}
+	perMarker := savedTokens / int64(len(hashes))
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.recent == nil {
-		r.recent = make(map[string]struct{})
+		r.recent = make(map[string]int64)
 	}
 	for _, h := range hashes {
 		if _, ok := r.recent[h]; ok {
 			continue
 		}
-		r.recent[h] = struct{}{}
+		r.recent[h] = perMarker
 		r.recentOrder = append(r.recentOrder, h)
 		if len(r.recentOrder) > maxRecentMarkers {
 			delete(r.recent, r.recentOrder[0])
 			r.recentOrder = r.recentOrder[1:]
 		}
 	}
+}
+
+// recordWireSavings credits the realized savings of one outbound request:
+// every marker present in the request's message contents represents tokens
+// this request did not send. Called by the client wrapper on every Chat /
+// ChatStream, including calls where nothing new was compressed — history
+// markers keep saving on every resend, which is where most realized savings
+// live.
+func (r *Runtime) recordWireSavings(ctx context.Context, contents []string) {
+	var saved int64
+	r.mu.Lock()
+	for _, c := range contents {
+		if !ccr.HasMarker(c) {
+			continue
+		}
+		for _, h := range ccr.ExtractHashes(c) {
+			saved += r.recent[h]
+		}
+	}
+	if saved > 0 {
+		r.totals.WireSavedTokens += saved
+		r.bumpInvocation(ctx, func(t *SavingsTotals) {
+			t.WireSavedTokens += saved
+		})
+	}
+	r.mu.Unlock()
 }
 
 // resolvePrefix returns the unique remembered hash starting with prefix, or

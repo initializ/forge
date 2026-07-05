@@ -234,6 +234,46 @@ func TestNormalizeHash(t *testing.T) {
 	}
 }
 
+// Realized (wire) savings compound per RESEND: a tool output compressed once
+// by the hook keeps saving its delta on every subsequent LLM call that
+// carries it in history. This is the number invocation_complete reports —
+// per-event accounting alone under-reported a live invocation 1,257 vs ~31K.
+func TestWireSavings_CompoundPerResend(t *testing.T) {
+	rt := newRuntime(t)
+	ctx := runtime.WithCorrelationID(context.Background(), "task-wire")
+
+	// Hook compresses one big tool output (creates a marker, saves S once).
+	hctx := &runtime.HookContext{ToolName: "list_pods", ToolOutput: bigJSON(80)}
+	_ = rt.AfterToolExecHook()(ctx, hctx)
+	if !strings.Contains(hctx.ToolOutput, "<<ctxzip:") {
+		t.Fatal("fixture did not compress")
+	}
+
+	// The compressed output now sits in history; three LLM calls resend it.
+	inner := &capturingClient{}
+	client := rt.WrapClient(inner)
+	msgs := []llm.ChatMessage{
+		{Role: llm.RoleSystem, Content: "sys"},
+		{Role: llm.RoleUser, Content: "check pods"},
+		{Role: llm.RoleTool, Name: "list_pods", ToolCallID: "t1", Content: hctx.ToolOutput},
+		{Role: llm.RoleAssistant, Content: "looking"},
+		{Role: llm.RoleUser, Content: "go on"},
+	}
+	for i := 0; i < 3; i++ {
+		_, _ = client.Chat(ctx, &llm.ChatRequest{Model: "m", Messages: msgs})
+	}
+
+	ct := rt.TakeInvocationTotals(ctx)
+	if ct.SavedTokens <= 0 {
+		t.Fatal("event savings missing")
+	}
+	// Three resends must credit ~3x the one-time event saving.
+	if ct.WireSavedTokens < 2*ct.SavedTokens {
+		t.Fatalf("wire savings did not compound: event=%d wire=%d (want wire ≈ 3x event)",
+			ct.SavedTokens, ct.WireSavedTokens)
+	}
+}
+
 // Compression must be attributable in the audit stream: every compression
 // and expansion emits an event carrying per-event savings AND running totals,
 // so auditors see cumulative savings, not just per-tool-call deltas.
@@ -385,7 +425,7 @@ func TestRecentMarkers_Bounded(t *testing.T) {
 	// another, so resolvePrefix answers are about presence, not ambiguity.
 	hash := func(i int) string { return fmt.Sprintf("mk%06dxx", i) }
 	for i := 0; i < maxRecentMarkers+10; i++ {
-		rt.rememberMarkers([]string{hash(i)})
+		rt.rememberMarkers([]string{hash(i)}, 10)
 	}
 	rt.mu.Lock()
 	n, order := len(rt.recent), len(rt.recentOrder)

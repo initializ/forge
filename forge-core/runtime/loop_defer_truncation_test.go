@@ -101,6 +101,76 @@ func TestDeferredTruncation_PostHookCapStillApplies(t *testing.T) {
 	}
 }
 
+// PR #241 review: a byte-offset cut can bisect a <<ctxzip:HASH ...>> marker,
+// leaving the model a corrupted pointer it cannot expand even though the
+// content is still in the store. The cut must carry whole markers or none.
+func TestTruncateToolResult_MarkerBoundary(t *testing.T) {
+	marker := "<<ctxzip:ac998fea694b 149_lines_offloaded>>"
+
+	t.Run("under limit unchanged", func(t *testing.T) {
+		if got := truncateToolResult("short", 100); got != "short" {
+			t.Fatalf("got %q", got)
+		}
+	})
+
+	t.Run("no marker plain cut", func(t *testing.T) {
+		got := truncateToolResult(strings.Repeat("x", 200), 100)
+		if !strings.HasPrefix(got, strings.Repeat("x", 100)) || !strings.Contains(got, "[OUTPUT TRUNCATED") {
+			t.Fatalf("got %q", got)
+		}
+	})
+
+	t.Run("marker straddling the cut is dropped whole", func(t *testing.T) {
+		// Cut lands mid-marker: prefix(80) + marker starts at 80, limit 100.
+		s := strings.Repeat("a", 80) + marker + strings.Repeat("b", 200)
+		got := truncateToolResult(s, 100)
+		if strings.Contains(got, CompressionMarkerPrefix) {
+			t.Fatalf("broken/partial marker survived the cut: %q", got)
+		}
+		if !strings.HasPrefix(got, strings.Repeat("a", 80)) {
+			t.Fatalf("prefix lost: %q", got)
+		}
+	})
+
+	t.Run("marker fully before the cut is kept", func(t *testing.T) {
+		s := marker + strings.Repeat("b", 300)
+		got := truncateToolResult(s, 200)
+		if !strings.Contains(got, marker) {
+			t.Fatalf("complete marker should survive: %q", got)
+		}
+	})
+
+	t.Run("unterminated marker before cut is dropped", func(t *testing.T) {
+		s := strings.Repeat("a", 50) + "<<ctxzip:deadbeef0000 partial" // no closing >>
+		got := truncateToolResult(s+strings.Repeat("b", 200), 100)
+		if strings.Contains(got, CompressionMarkerPrefix) {
+			t.Fatalf("unterminated marker survived: %q", got)
+		}
+	})
+}
+
+// End-to-end: a compression hook whose output still exceeds the cap, with a
+// marker positioned to straddle the byte cut — the LLM must never see a
+// partial marker.
+func TestDeferredTruncation_NeverSplitsMarker(t *testing.T) {
+	// Cap is 25K (CharBudget 100_000). Place the marker straddling 25_000.
+	marker := "<<ctxzip:ac998fea694b 149_lines_offloaded>>"
+	compressed := strings.Repeat("k", 24_990) + marker + strings.Repeat("t", 5_000)
+
+	hook := func(_ context.Context, hctx *HookContext) error {
+		hctx.ToolOutput = compressed
+		return nil
+	}
+	_, llmSaw := deferHarness(t, strings.Repeat("x", 60_000), hook)
+
+	if strings.Contains(llmSaw, CompressionMarkerPrefix) && !strings.Contains(llmSaw, marker) {
+		t.Fatalf("LLM saw a partial marker:\n...%s", llmSaw[len(llmSaw)-120:])
+	}
+	if !strings.Contains(llmSaw, "[OUTPUT TRUNCATED") {
+		t.Fatal("cap should still have fired")
+	}
+}
+
 // Pathological outputs are still bounded BEFORE hooks by the safety ceiling
 // (16x cap, absolute 4MB) so hooks never scan unbounded payloads.
 func TestDeferredTruncation_SafetyCeiling(t *testing.T) {

@@ -48,6 +48,31 @@ const (
 	toolResultCeilingAbsolute   = 4 << 20 // 4MB
 )
 
+// CompressionMarkerPrefix mirrors ctxzip's ccr.MarkerPrefix. The runtime
+// cannot import forge-core/compress (it imports runtime — cycle), so the
+// literal is pinned here and a guard test in the compress package asserts
+// the two stay equal.
+const CompressionMarkerPrefix = "<<ctxzip:"
+
+// truncateToolResult cuts s at limit without splitting a compression marker:
+// a byte-offset cut can land inside "<<ctxzip:HASH note>>", leaving the model
+// a corrupted marker it cannot expand even though the offloaded content is
+// still in the store. If the cut would bisect a marker, it backs up to the
+// marker's start so the output carries whole markers or none.
+func truncateToolResult(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	cut := limit
+	if start := strings.LastIndex(s[:cut], CompressionMarkerPrefix); start >= 0 {
+		end := strings.Index(s[start:], ">>")
+		if end < 0 || start+end+2 > cut {
+			cut = start // marker straddles the cut — drop it whole
+		}
+	}
+	return s[:cut] + "\n\n[OUTPUT TRUNCATED -- original length: " + strconv.Itoa(len(s)) + " chars]"
+}
+
 // LLMExecutor implements AgentExecutor using an LLM client with tool calling.
 type LLMExecutor struct {
 	client             llm.Client
@@ -738,9 +763,7 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 				if ceiling > toolResultCeilingAbsolute {
 					ceiling = toolResultCeilingAbsolute
 				}
-				if len(result) > ceiling {
-					result = result[:ceiling] + "\n\n[OUTPUT TRUNCATED -- original length: " + strconv.Itoa(len(result)) + " chars]"
-				}
+				result = truncateToolResult(result, ceiling)
 			} else if len(result) > e.maxToolResultChars {
 				result = result[:e.maxToolResultChars] + "\n\n[OUTPUT TRUNCATED -- original length: " + strconv.Itoa(len(result)) + " chars]"
 			}
@@ -763,8 +786,8 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 			// Deferred mode: apply the normal cap to the post-hook result —
 			// compression usually brought it far below the limit, making
 			// this a no-op; when it didn't, the context window still wins.
-			if e.deferToolTruncation && len(result) > e.maxToolResultChars {
-				result = result[:e.maxToolResultChars] + "\n\n[OUTPUT TRUNCATED -- original length: " + strconv.Itoa(len(result)) + " chars]"
+			if e.deferToolTruncation {
+				result = truncateToolResult(result, e.maxToolResultChars)
 			}
 
 			// Handle file_create tool: always create a file part.

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/initializ/forge/forge-core/credentials"
 	coretools "github.com/initializ/forge/forge-core/tools"
 )
 
@@ -35,6 +36,11 @@ type CLIExecuteTool struct {
 	proxyURL    string // egress proxy URL (e.g., "http://127.0.0.1:54321")
 	workDir     string // resolved absolute workDir for path confinement
 	homeDir     string // resolved $HOME for path confinement
+
+	// credInjector, when non-nil, mints JIT credentials per Execute
+	// call and merges them into the subprocess env. Governance R9.
+	// Nil injector → no-op, preserving pre-R9 behavior.
+	credInjector *credentials.Injector
 }
 
 // cliExecuteArgs is the JSON input schema for Execute.
@@ -101,6 +107,14 @@ func NewCLIExecuteTool(config CLIExecuteConfig) *CLIExecuteTool {
 		}
 	}
 
+	return t
+}
+
+// WithCredentialInjector attaches an R9 JIT-credential injector.
+// Called by the runner at startup after resolving AgentSpec.Credentials.
+// nil-safe: passing nil is equivalent to not calling this.
+func (t *CLIExecuteTool) WithCredentialInjector(inj *credentials.Injector) *CLIExecuteTool {
+	t.credInjector = inj
 	return t
 }
 
@@ -211,6 +225,37 @@ func (t *CLIExecuteTool) Execute(ctx context.Context, args json.RawMessage) (str
 	// Security check 6: Env isolation
 	cmd.Env = t.buildEnv(input.Binary)
 
+	// R9 JIT credentials: if the runner wired a credentials.Injector,
+	// mint fresh scoped-down creds now, merge them into the subprocess
+	// env, and defer revocation. Nil injector → no-op. Non-cli_execute
+	// spec matches are simply skipped by Injector.Materialize.
+	//
+	// Override semantics: if an operator lists a JIT key (e.g.
+	// AWS_ACCESS_KEY_ID) in env_passthrough AND has a JIT provider
+	// stamping the same name, the JIT value MUST win — otherwise the
+	// subprocess silently keeps the broader source creds (a privilege
+	// escalation). Go's os/exec dedups env keeping the last entry, but
+	// we don't want the security of the pipeline to depend on that: we
+	// explicitly strip conflicting keys BEFORE appending the JIT env.
+	// Regression test in cli_execute_creds_test.go.
+	if t.credInjector != nil {
+		rawArgs, _ := json.Marshal(input)
+		handle, err := t.credInjector.Materialize(ctx, "cli_execute", input.Binary, rawArgs)
+		if err != nil {
+			return "", fmt.Errorf("cli_execute: minting JIT credentials: %w", err)
+		}
+		if handle != nil {
+			defer func() { _ = handle.Close(ctx) }()
+			jitEnv := handle.Env()
+			if len(jitEnv) > 0 {
+				cmd.Env = stripEnvKeys(cmd.Env, jitEnv)
+				for k, v := range jitEnv {
+					cmd.Env = append(cmd.Env, k+"="+v)
+				}
+			}
+		}
+	}
+
 	// Stdin
 	if input.Stdin != "" {
 		cmd.Stdin = strings.NewReader(input.Stdin)
@@ -260,6 +305,28 @@ func (t *CLIExecuteTool) Availability() (available, missing []string) {
 
 // SetProxyURL sets the egress proxy URL for subprocess env injection.
 func (t *CLIExecuteTool) SetProxyURL(url string) { t.proxyURL = url }
+
+// stripEnvKeys returns env minus any "KEY=…" entry whose KEY appears
+// in override. Used before appending JIT credentials so a same-named
+// env_passthrough entry can't shadow the scoped-down JIT value.
+// Comparison is exact (case-sensitive) — matches Go's own env
+// dedup behavior.
+func stripEnvKeys(env []string, override map[string]string) []string {
+	if len(override) == 0 || len(env) == 0 {
+		return env
+	}
+	out := env[:0:len(env)]
+	for _, kv := range env {
+		eq := strings.IndexByte(kv, '=')
+		if eq > 0 {
+			if _, drop := override[kv[:eq]]; drop {
+				continue
+			}
+		}
+		out = append(out, kv)
+	}
+	return out
+}
 
 // buildEnv constructs an isolated environment with only PATH, HOME, LANG
 // and explicitly configured passthrough variables. When workDir is set,

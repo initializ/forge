@@ -30,6 +30,9 @@ import (
 	_ "github.com/initializ/forge/forge-core/auth/providers/oidc"
 	"github.com/initializ/forge/forge-core/auth/providers/statictoken"
 	"github.com/initializ/forge/forge-core/compress"
+	"github.com/initializ/forge/forge-core/credentials"
+	_ "github.com/initializ/forge/forge-core/credentials/static" //nolint:revive // registers static provider via init()
+	_ "github.com/initializ/forge/forge-core/credentials/sts"    //nolint:revive // registers sts_assume_role provider via init()
 	"github.com/initializ/forge/forge-core/llm"
 	"github.com/initializ/forge/forge-core/llm/oauth"
 	"github.com/initializ/forge/forge-core/llm/providers"
@@ -354,6 +357,24 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 	r.auditSigningKey = auditSigningKey
 
+	// R9 (#215) JIT credential injector. Resolves each declared
+	// CredentialSpec against the DefaultRegistry — imports of
+	// credentials/static and credentials/sts wire providers via init().
+	// Absent when the operator hasn't declared any specs (nil-safe:
+	// tools that hold this pointer treat nil as "no JIT").
+	var credInjector *credentials.Injector
+	if len(r.cfg.Config.Credentials) > 0 {
+		sink := &auditSinkAdapter{logger: auditLogger}
+		inj, err := credentials.NewInjector(ctx, credentials.DefaultRegistry, r.cfg.Config.Credentials, sink)
+		if err != nil {
+			return fmt.Errorf("resolving credentials: %w", err)
+		}
+		credInjector = inj
+		r.logger.Info("JIT credential injector wired", map[string]any{
+			"specs": len(r.cfg.Config.Credentials),
+		})
+	}
+
 	// Resolve TracingConfig early so we can thread it into the
 	// guardrail engine before the tracer provider itself is installed
 	// further down. ResolveTracingConfig is a pure config-resolution
@@ -660,7 +681,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		default:
 			// Forge framework — build tool registry and use built-in LLM executor
 			reg := tools.NewRegistry()
-			if err := builtins.RegisterAll(reg); err != nil {
+			// R9: wire the JIT credential injector into http_request
+			// alongside cli_execute (further down). Nil injector →
+			// no-op inside the tool, so unsigned-cred deployments
+			// see pre-R9 behavior.
+			if err := builtins.RegisterAll(reg, builtins.Options{
+				HTTPCredentialInjector: credInjector,
+			}); err != nil {
 				r.logger.Warn("failed to register builtin tools", map[string]any{"error": err.Error()})
 			}
 
@@ -700,7 +727,7 @@ func (r *Runner) Run(ctx context.Context) error {
 						cliCfg.TimeoutSeconds = r.derivedCLIConfig.TimeoutHint
 					}
 					if len(cliCfg.AllowedBinaries) > 0 {
-						r.cliExecTool = clitools.NewCLIExecuteTool(cliCfg)
+						r.cliExecTool = clitools.NewCLIExecuteTool(cliCfg).WithCredentialInjector(credInjector)
 						if regErr := reg.Register(r.cliExecTool); regErr != nil {
 							r.logger.Warn("failed to register cli_execute", map[string]any{"error": regErr.Error()})
 						} else {
@@ -721,7 +748,7 @@ func (r *Runner) Run(ctx context.Context) error {
 					TimeoutSeconds:  r.derivedCLIConfig.TimeoutHint,
 					WorkDir:         r.cfg.WorkDir,
 				}
-				r.cliExecTool = clitools.NewCLIExecuteTool(cliCfg)
+				r.cliExecTool = clitools.NewCLIExecuteTool(cliCfg).WithCredentialInjector(credInjector)
 				if regErr := reg.Register(r.cliExecTool); regErr != nil {
 					r.logger.Warn("failed to register auto-derived cli_execute", map[string]any{"error": regErr.Error()})
 				} else {

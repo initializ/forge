@@ -10,11 +10,28 @@ import (
 	"strings"
 	"time"
 
+	"github.com/initializ/forge/forge-core/credentials"
 	"github.com/initializ/forge/forge-core/security"
 	"github.com/initializ/forge/forge-core/tools"
 )
 
-type httpRequestTool struct{}
+type httpRequestTool struct {
+	// credInjector, when non-nil, mints JIT credentials per Execute
+	// call and merges the resulting headers into the outbound HTTP
+	// request. Governance R9 — the HTTP/API half of least-privilege
+	// scoping (the subprocess env half lives in cli_execute). Nil
+	// injector → no-op, preserving pre-R9 behavior.
+	credInjector *credentials.Injector
+}
+
+// WithCredentialInjector attaches an R9 JIT-credential injector.
+// Called by the runner at startup after resolving
+// ForgeConfig.Credentials. nil-safe: passing nil is equivalent to
+// not calling this.
+func (t *httpRequestTool) WithCredentialInjector(inj *credentials.Injector) *httpRequestTool {
+	t.credInjector = inj
+	return t
+}
 
 type httpRequestInput struct {
 	Method  string            `json:"method"`
@@ -65,6 +82,25 @@ func (t *httpRequestTool) Execute(ctx context.Context, args json.RawMessage) (st
 
 	for k, v := range input.Headers {
 		req.Header.Set(k, v)
+	}
+
+	// R9 JIT credentials: if the runner wired a credentials.Injector,
+	// mint fresh scoped-down creds now, merge them into request
+	// headers, and defer revocation. Nil injector → no-op.
+	// JIT headers OVERRIDE any same-named header the LLM specified
+	// via input.Headers — the operator's declared credential spec
+	// takes precedence over an LLM-authored Authorization header.
+	if t.credInjector != nil {
+		handle, err := t.credInjector.Materialize(ctx, "http_request", "", args)
+		if err != nil {
+			return "", fmt.Errorf("http_request: minting JIT credentials: %w", err)
+		}
+		if handle != nil {
+			defer func() { _ = handle.Close(ctx) }()
+			for k, v := range handle.Headers() {
+				req.Header.Set(k, v)
+			}
+		}
 	}
 
 	client := &http.Client{

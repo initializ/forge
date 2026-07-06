@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/initializ/forge/forge-core/credentials"
 	"gopkg.in/yaml.v3"
 )
 
@@ -41,6 +42,38 @@ type ForgeConfig struct {
 	// is off by default to stop workflow identity from leaking to
 	// third-party APIs.
 	WorkflowPropagation WorkflowPropagationConfig `yaml:"workflow_propagation,omitempty"`
+
+	// Credentials declares per-tool JIT credential specs (governance R9).
+	// Each entry names a provider (registered in credentials.DefaultRegistry
+	// via one of the credentials/* subpackages) plus provider-specific
+	// spec bytes. The runner materializes fresh credentials on every
+	// tool call whose Tool + Binary matches the spec; the resulting env
+	// is merged into the tool's subprocess environment. Empty → no JIT
+	// injection (pre-R9 behavior).
+	//
+	// Coupling note (per @initializ-mk's #236 review): `types` intentionally
+	// imports `credentials` here so operators get a single self-describing
+	// yaml schema type. The invariant that keeps this safe: the base
+	// `credentials` package MUST stay stdlib-only. Provider implementations
+	// with external deps (AWS SDK, Vault client, HSM libs) belong in
+	// `credentials/<provider>` subpackages — which the runner imports for
+	// its init()-time registration but which the config type never sees.
+	// Do NOT add non-stdlib imports to `forge-core/credentials/*.go`
+	// (root files) — a lint / CI check should be added if this becomes a
+	// recurring temptation.
+	//
+	// Example:
+	//
+	//   credentials:
+	//     - tool: cli_execute
+	//       binary: aws
+	//       provider: sts_assume_role
+	//       spec:
+	//         role_arn: arn:aws:iam::123456789012:role/skill-read
+	//         duration: 15m
+	//
+	// See docs/security/least-privilege-credentials.md.
+	Credentials []credentials.CredentialSpec `yaml:"credentials,omitempty"`
 }
 
 // WorkflowPropagationConfig opts-in specific downstream hosts to

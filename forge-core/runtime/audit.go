@@ -40,6 +40,19 @@ const (
 	EventAuthVerify = "auth_verify" // every successful auth decision
 	EventAuthFail   = "auth_fail"   // every failed auth decision (with reason code)
 
+	// AuditAuthStepUpRequired is emitted when the R4b (#210) step-up
+	// engine rejects a tool call because the caller's acr claim
+	// doesn't satisfy the tool's required acr. Fields carry:
+	//   - tool          : the tool name
+	//   - required_acr  : the operator-declared required acr
+	//   - presented_acr : the caller's current acr, or "" when absent
+	//   - reason        : short human-readable classification
+	// Payload never carries token bytes or full claim maps. The
+	// runner also returns HTTP 401 with an RFC 9470
+	// WWW-Authenticate challenge alongside emitting this event.
+	// See docs/security/step-up-auth.md.
+	AuditAuthStepUpRequired = "auth_step_up_required"
+
 	// MCP events. Like auth, these carry NO byte payload — never the
 	// arguments to a tool call, never the result content. Emitters
 	// include only sizes (args_size, result_size), durations, server +

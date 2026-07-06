@@ -187,6 +187,13 @@ type SecurityConfig struct {
 	// embedding + cosine machinery). See
 	// docs/security/intent-alignment.md.
 	IntentDrift IntentDriftConfig `yaml:"intent_drift,omitempty"`
+
+	// StepUp configures the R4b (#210) step-up authorization policy.
+	// Names tools that require a higher auth-context class before
+	// the runtime executes them; on a mismatch, Forge returns an
+	// RFC 9470 challenge and the caller re-authenticates.
+	// Opt-in — no default enforcement.
+	StepUp StepUpConfig `yaml:"step_up,omitempty"`
 }
 
 // IntentDriftConfig is the forge.yaml-facing block for R7 drift
@@ -281,6 +288,44 @@ type IntentAlignmentConfig struct {
 	// 0 disables the LRU (still caches per-task intent). Default
 	// 1024 when enabled and unspecified.
 	CacheSize int `yaml:"cache_size,omitempty"`
+}
+
+// StepUpConfig is the forge.yaml-facing block for R4b step-up
+// authorization.
+//
+// Tools listed in Tools require the caller's authenticated identity
+// to carry an `acr` claim matching (or exceeding, if AcrHierarchy is
+// declared) the required value. On a mismatch, the runtime aborts
+// the tool call and returns HTTP 401 with a
+// `WWW-Authenticate: Bearer error="step_up_required",
+// acr_values="<value>"` header per RFC 9470. The caller's client is
+// expected to trigger a higher-assurance authentication and retry.
+type StepUpConfig struct {
+	// Enabled turns step-up enforcement on. Default false — the
+	// engine is constructed but the hook is not registered.
+	Enabled bool `yaml:"enabled,omitempty"`
+
+	// Tools maps tool name → required acr value. A tool absent from
+	// this map has no step-up requirement. When a tool IS present,
+	// the caller's auth Identity MUST carry an `acr` claim equal to
+	// the value (or listed in AcrHierarchy above the required value).
+	//
+	// Example:
+	//   tools:
+	//     cli_execute: acr:mfa
+	//     http_request: acr:mfa
+	Tools map[string]string `yaml:"tools,omitempty"`
+
+	// AcrHierarchy is an optional ordered list of acr values,
+	// lowest-assurance first. A caller presenting acr X satisfies a
+	// requirement for acr Y iff index(X) >= index(Y) in this list.
+	// When AcrHierarchy is empty, comparison is strict-equal.
+	//
+	// Example:
+	//   acr_hierarchy: ["acr:password", "acr:mfa", "acr:hardware"]
+	// — a caller with "acr:hardware" satisfies a requirement for
+	// "acr:mfa" or "acr:password".
+	AcrHierarchy []string `yaml:"acr_hierarchy,omitempty"`
 }
 
 // ObservabilityConfig groups telemetry-related sub-blocks. Today it

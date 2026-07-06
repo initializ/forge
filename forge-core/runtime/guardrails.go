@@ -71,15 +71,33 @@ func (d PolicyDecision) String() string {
 
 // PolicyResult carries the outcome of one policy evaluation.
 //
-// For DecisionAllow / DecisionDeny / DecisionStepUp / DecisionDefer,
-// Modified is empty. For DecisionModify, Modified holds the
-// rewritten content; callers substitute it into the value stream.
-// Reason is a short human-readable string surfaced on audit events
-// and (for Deny) returned to the caller as an error message.
+// For DecisionAllow / DecisionDeny / DecisionDefer, Modified is
+// empty. For DecisionModify, Modified holds the rewritten content;
+// callers substitute it into the value stream. For DecisionStepUp,
+// RequiredAcr names the auth-context class the caller must re-authenticate
+// under (see #210 / R4b). Reason is a short human-readable string
+// surfaced on audit events and (for Deny/StepUp) returned to the caller
+// as an error message.
 type PolicyResult struct {
 	Decision PolicyDecision
 	Modified string
 	Reason   string
+
+	// RequiredAcr is populated only when Decision == DecisionStepUp
+	// (governance R4b / #210). Names the auth-context class the
+	// caller MUST re-authenticate under before the action is admitted.
+	// The runner turns this into an RFC 9470 WWW-Authenticate challenge
+	// on the 401 response: `Bearer error="step_up_required",
+	// acr_values="<value>"`. Consumers (SDKs, browsers) trigger a
+	// higher-assurance authentication and retry.
+	//
+	// Typical values follow the ACR conventions of the caller's IdP:
+	//   - "acr:mfa"          — arbitrary MFA method acceptable
+	//   - "urn:mace:incommon:iap:silver" — InCommon Silver
+	//   - "0"/"1"/"2"        — SAML/oidc-style tier numbers
+	// Forge doesn't interpret the value; it just relays it end-to-end
+	// so operator + IdP + caller agree on the semantics.
+	RequiredAcr string
 }
 
 // Allow constructs a passthrough result.
@@ -93,6 +111,12 @@ func Deny(reason string) PolicyResult {
 // Modify constructs a redact-and-continue result.
 func Modify(newContent, reason string) PolicyResult {
 	return PolicyResult{Decision: DecisionModify, Modified: newContent, Reason: reason}
+}
+
+// StepUp constructs a step-up-required result. The `acr` is relayed
+// to the caller in the RFC 9470 challenge header. See #210 / R4b.
+func StepUp(requiredAcr, reason string) PolicyResult {
+	return PolicyResult{Decision: DecisionStepUp, RequiredAcr: requiredAcr, Reason: reason}
 }
 
 // GuardrailChecker validates messages, tool calls, retrieved context,

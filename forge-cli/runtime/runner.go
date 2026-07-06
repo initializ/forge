@@ -43,6 +43,7 @@ import (
 	"github.com/initializ/forge/forge-core/secrets"
 	"github.com/initializ/forge/forge-core/security"
 	"github.com/initializ/forge/forge-core/security/intent"
+	"github.com/initializ/forge/forge-core/security/stepup"
 	"github.com/initializ/forge/forge-core/tools"
 	"github.com/initializ/forge/forge-core/tools/adapters"
 	"github.com/initializ/forge/forge-core/tools/builtins"
@@ -151,6 +152,7 @@ type Runner struct {
 	auditSigningKey  *coreruntime.LoadedKey            // loaded once at startup; nil when signing is off (#213). Served on JWKS endpoint.
 	compression      *compress.Runtime                 // ctxzip compression runtime; nil when compression is disabled
 	intentEngine     *intent.Engine                    // R3 (#208) intent-alignment engine; nil when disabled
+	stepUpEngine     *stepup.Engine                    // R4b (#210) step-up authorization engine; nil when disabled
 }
 
 // NewRunner creates a Runner from the given config.
@@ -391,6 +393,23 @@ func (r *Runner) Run(ctx context.Context) error {
 			"threshold":      r.cfg.Config.Security.IntentAlignment.Threshold,
 			"hard_threshold": r.cfg.Config.Security.IntentAlignment.HardThreshold,
 			"provider":       r.cfg.Config.Security.IntentAlignment.Provider,
+		})
+	}
+
+	// R4b (#210) step-up authorization engine. When enabled, a
+	// BeforeToolExec hook enforces per-tool acr requirements from
+	// forge.yaml security.step_up and returns HTTP 401 with an
+	// RFC 9470 challenge on mismatch.
+	stepUpEngine, err := r.buildStepUpEngine()
+	if err != nil {
+		return fmt.Errorf("step_up: %w", err)
+	}
+	if stepUpEngine != nil {
+		r.stepUpEngine = stepUpEngine
+		r.logger.Info("step-up authorization enabled", map[string]any{
+			"tools":        len(r.cfg.Config.Security.StepUp.Tools),
+			"known_acrs":   stepUpEngine.KnownAcrValues(),
+			"hierarchical": len(r.cfg.Config.Security.StepUp.AcrHierarchy) > 0,
 		})
 	}
 
@@ -931,6 +950,13 @@ func (r *Runner) Run(ctx context.Context) error {
 					// BeforeToolExec. No-op when the engine is
 					// disabled (r.intentEngine == nil).
 					r.registerIntentAlignmentHook(hooks, reg, auditLogger)
+
+					// R4b (#210) — step-up authorization on every
+					// BeforeToolExec. Fires AFTER guardrails so a
+					// caller whose input is guardrail-denied doesn't
+					// see the step-up challenge unnecessarily.
+					// No-op when the engine is disabled.
+					r.registerStepUpHook(hooks, auditLogger)
 
 					// Register skill-level guardrails if present.
 					// Prefer build-time artifact; fall back to runtime-parsed guardrails.
@@ -1814,6 +1840,12 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 			coreruntime.TenancyContextFromHTTPHeaders(req.Header))
 		task, snap, err := r.executeTask(ctx, params, store, executor, guardrails, egressClient, auditLogger)
 		if err != nil {
+			// R4b: a step-up-required error takes priority — we
+			// return HTTP 401 with the RFC 9470 challenge header so
+			// the caller can re-authenticate and retry.
+			if WriteStepUpChallengeOnError(w, err) {
+				return
+			}
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}

@@ -147,6 +147,75 @@ func TestAuditVerifyCLI_BadJWKSFile(t *testing.T) {
 	}
 }
 
+// TestAuditVerifyCLI_RequireGenesisRejectsTruncatedHead covers the
+// --require-genesis flag reviewer @initializ-mk asked for on #237.
+// Default behavior is a soft warning; --require-genesis promotes to
+// hard failure for operators verifying a complete stream (not a SIEM tail).
+func TestAuditVerifyCLI_RequireGenesisRejectsTruncatedHead(t *testing.T) {
+	dir := t.TempDir()
+	auditPath, jwksPath := writeAuditFixture(t, dir, "cli-kid", false)
+
+	// Truncate the head: drop the first line so the remaining stream's
+	// first event no longer carries the genesis prev_hash.
+	data, err := os.ReadFile(auditPath)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	lines := bytes.SplitN(data, []byte("\n"), 2)
+	if len(lines) < 2 {
+		t.Fatalf("audit fixture has too few lines")
+	}
+	if err := os.WriteFile(auditPath, lines[1], 0o600); err != nil {
+		t.Fatalf("write truncated: %v", err)
+	}
+
+	auditVerifyPubKeyFile = jwksPath
+	auditVerifyRequireGenesis = true
+	defer func() {
+		auditVerifyPubKeyFile = ""
+		auditVerifyRequireGenesis = false
+	}()
+
+	var stdout, stderr bytes.Buffer
+	auditVerifyCmd.SetOut(&stdout)
+	auditVerifyCmd.SetErr(&stderr)
+	err = auditVerifyRun(auditVerifyCmd, []string{auditPath})
+	if err == nil {
+		t.Fatal("expected --require-genesis to fail on head-truncated stream")
+	}
+	if !strings.Contains(err.Error(), "first event is not genesis") {
+		t.Errorf("error should mention genesis: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "FAILED: --require-genesis") {
+		t.Errorf("stdout should announce require-genesis failure: %q", stdout.String())
+	}
+}
+
+// TestAuditVerifyCLI_RequireGenesisAcceptsCompleteStream is the
+// happy-path counterpart: a stream that begins at genesis passes
+// under --require-genesis.
+func TestAuditVerifyCLI_RequireGenesisAcceptsCompleteStream(t *testing.T) {
+	dir := t.TempDir()
+	auditPath, jwksPath := writeAuditFixture(t, dir, "cli-kid", false)
+
+	auditVerifyPubKeyFile = jwksPath
+	auditVerifyRequireGenesis = true
+	defer func() {
+		auditVerifyPubKeyFile = ""
+		auditVerifyRequireGenesis = false
+	}()
+
+	var stdout, stderr bytes.Buffer
+	auditVerifyCmd.SetOut(&stdout)
+	auditVerifyCmd.SetErr(&stderr)
+	if err := auditVerifyRun(auditVerifyCmd, []string{auditPath}); err != nil {
+		t.Fatalf("unexpected error on complete stream: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "OK:") {
+		t.Errorf("stdout should say OK: got %q", stdout.String())
+	}
+}
+
 // TestLoadJWKSFile_RoundTrip cross-checks that the file→map loader
 // produces a pubkey that verifies signatures the corresponding
 // signer produces.

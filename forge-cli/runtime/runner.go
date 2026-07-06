@@ -42,6 +42,7 @@ import (
 	"github.com/initializ/forge/forge-core/scheduler"
 	"github.com/initializ/forge/forge-core/secrets"
 	"github.com/initializ/forge/forge-core/security"
+	"github.com/initializ/forge/forge-core/security/intent"
 	"github.com/initializ/forge/forge-core/tools"
 	"github.com/initializ/forge/forge-core/tools/adapters"
 	"github.com/initializ/forge/forge-core/tools/builtins"
@@ -149,6 +150,7 @@ type Runner struct {
 	cancelRegistry   *coreruntime.CancellationRegistry // per-Runner in-flight cancellation registry (issue #88 / FWS-4)
 	auditSigningKey  *coreruntime.LoadedKey            // loaded once at startup; nil when signing is off (#213). Served on JWKS endpoint.
 	compression      *compress.Runtime                 // ctxzip compression runtime; nil when compression is disabled
+	intentEngine     *intent.Engine                    // R3 (#208) intent-alignment engine; nil when disabled
 }
 
 // NewRunner creates a Runner from the given config.
@@ -372,6 +374,23 @@ func (r *Runner) Run(ctx context.Context) error {
 		credInjector = inj
 		r.logger.Info("JIT credential injector wired", map[string]any{
 			"specs": len(r.cfg.Config.Credentials),
+		})
+	}
+
+	// R3 (#208) intent-alignment engine. Opt-in via
+	// security.intent_alignment.enabled. When enabled, we build an
+	// embedder from the operator's chosen provider and construct the
+	// engine; the A2A handlers call engine.RegisterIntent on
+	// tasks/send entry and a BeforeToolExec hook scores each call.
+	// Nil engine (default) → no hook registered, no embedder calls.
+	if intentEngine, ierr := r.buildIntentEngine(); ierr != nil {
+		return fmt.Errorf("intent_alignment: %w", ierr)
+	} else if intentEngine != nil {
+		r.intentEngine = intentEngine
+		r.logger.Info("intent-alignment engine wired", map[string]any{
+			"threshold":      r.cfg.Config.Security.IntentAlignment.Threshold,
+			"hard_threshold": r.cfg.Config.Security.IntentAlignment.HardThreshold,
+			"provider":       r.cfg.Config.Security.IntentAlignment.Provider,
 		})
 	}
 
@@ -908,6 +927,11 @@ func (r *Runner) Run(ctx context.Context) error {
 					r.registerProgressHooks(hooks)
 					r.registerGuardrailHooks(hooks, guardrails)
 
+					// R3 (#208) — intent-alignment check on every
+					// BeforeToolExec. No-op when the engine is
+					// disabled (r.intentEngine == nil).
+					r.registerIntentAlignmentHook(hooks, reg, auditLogger)
+
 					// Register skill-level guardrails if present.
 					// Prefer build-time artifact; fall back to runtime-parsed guardrails.
 					sgRules := scaffold.SkillGuardrails
@@ -1387,6 +1411,10 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 			return
 		}
 
+		// R3 (#208): capture stated intent for the intent-alignment
+		// engine. No-op when the engine is disabled.
+		r.CaptureStatedIntent(ctx, params.ID, &params.Message)
+
 		// Append inbound user message to task history.
 		task.History = append(task.History, params.Message)
 
@@ -1629,6 +1657,10 @@ func (r *Runner) executeTask(
 		emitInvocationLifecycle()
 		return task, acc.Snapshot(), nil
 	}
+
+	// R3 (#208): capture stated intent for the intent-alignment
+	// engine. No-op when the engine is disabled.
+	r.CaptureStatedIntent(ctx, params.ID, &params.Message)
 
 	task.History = append(task.History, params.Message)
 	task.Status = a2a.TaskStatus{State: a2a.TaskStateWorking}
@@ -1902,6 +1934,10 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 			})
 			return
 		}
+
+		// R3 (#208): capture stated intent for the intent-alignment
+		// engine. No-op when the engine is disabled.
+		r.CaptureStatedIntent(ctx, params.ID, &params.Message)
 
 		task.History = append(task.History, params.Message)
 		task.Status = a2a.TaskStatus{State: a2a.TaskStateWorking}

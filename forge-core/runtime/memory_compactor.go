@@ -30,7 +30,7 @@ type CompactorConfig struct {
 	Client llm.Client
 	// Store persists sessions to disk after compaction. If nil, compaction
 	// still reduces in-memory messages but nothing is flushed.
-	Store *MemoryStore
+	Store SessionStore
 	// Logger for compaction events.
 	Logger Logger
 	// CharBudget is the total character budget. Compaction triggers when
@@ -52,7 +52,7 @@ type CompactorConfig struct {
 // acceptable — no concurrent access occurs.
 type Compactor struct {
 	client        llm.Client
-	store         *MemoryStore
+	store         SessionStore
 	logger        Logger
 	charBudget    int
 	triggerRatio  float64

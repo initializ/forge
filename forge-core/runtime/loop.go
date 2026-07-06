@@ -81,7 +81,7 @@ type LLMExecutor struct {
 	systemPrompt       string
 	maxIter            int
 	compactor          *Compactor
-	store              *MemoryStore
+	store              SessionStore
 	logger             Logger
 	modelName          string        // resolved model name for context budget
 	provider           string        // resolved provider name (anthropic, openai, ollama, custom)
@@ -113,7 +113,7 @@ type LLMExecutorConfig struct {
 	SystemPrompt   string
 	MaxIterations  int
 	Compactor      *Compactor
-	Store          *MemoryStore
+	Store          SessionStore
 	Logger         Logger
 	ModelName      string        // model name for context-aware budgeting
 	Provider       string        // provider name (anthropic, openai, ollama, custom) — for audit attribution

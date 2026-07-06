@@ -443,6 +443,17 @@ type MemoryConfig struct {
 	TriggerRatio  float64 `yaml:"trigger_ratio,omitempty"`
 	CharBudget    int     `yaml:"char_budget,omitempty"`
 
+	// SessionStore selects the session-memory backend (issue #243):
+	//   "file"   (default) — local .forge/sessions/*.json; single-pod / dev.
+	//   "remote"           — push snapshots to a platform session service
+	//                        so stateless pods resume any task on any replica.
+	// Env override: FORGE_SESSION_STORE. When "remote", SessionStoreURL
+	// (or FORGE_SESSION_STORE_URL) must point at the service; the pod
+	// reuses FORGE_PLATFORM_TOKEN + FORGE_ORG_ID/FORGE_WORKSPACE_ID for
+	// auth/tenancy, exactly as the admission client does.
+	SessionStore    string `yaml:"session_store,omitempty"`
+	SessionStoreURL string `yaml:"session_store_url,omitempty"`
+
 	// Long-term memory (persistent cross-session knowledge).
 	LongTerm          *bool   `yaml:"long_term,omitempty"`            // default: false
 	MemoryDir         string  `yaml:"memory_dir,omitempty"`           // default: .forge/memory

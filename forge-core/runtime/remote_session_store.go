@@ -43,8 +43,11 @@ const remoteStoreTimeout = 3 * time.Second
 // header — a conditional GET avoids re-pulling unchanged state (304),
 // and an If-Match PUT turns the rare rolling-deploy overlap window into
 // a detectable 412 instead of a silent lost update. On 412 the store
-// rebases (re-reads the current version) and retries the PUT once; it
-// never re-runs the LLM.
+// YIELDS — it surfaces ErrConflict rather than re-PUTting its (now stale)
+// snapshot, so the concurrent writer's committed turn is never clobbered.
+// The loop treats that as a best-effort-persist failure: it logs and moves
+// on, the newer state wins, and the model is never re-run. The store's
+// cache self-heals on the next turn's conditional GET.
 //
 // Auth mirrors the admission client exactly: Bearer FORGE_PLATFORM_TOKEN
 // plus the Org-Id / Workspace-Id tenancy headers (omitted when empty).
@@ -154,14 +157,15 @@ func (r *RemoteSessionStore) Load(taskID string) (*SessionData, error) {
 }
 
 // Save commits a full snapshot. It sends If-Match with the last-seen
-// version so a concurrent writer's intervening commit is caught as a
-// 412; on 412 it rebases (re-reads the current version) and retries the
-// PUT once. It never re-invokes the model.
+// version so a concurrent writer's intervening commit is caught as a 412.
+// On 412 it YIELDS (returns ErrConflict) rather than re-PUTting: this
+// store holds only a full snapshot built from the stale version, so a
+// blind retry would overwrite the other writer's committed turn — the
+// exact lost update the If-Match exists to detect. A message-level rebase
+// isn't available (and is semantically fragile for a conversation), so
+// the correct resolution is to let the newer state win. The model is
+// never re-run; the cached ETag self-heals on the next conditional GET.
 func (r *RemoteSessionStore) Save(data *SessionData) error {
-	return r.save(data, true)
-}
-
-func (r *RemoteSessionStore) save(data *SessionData, allowRebase bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), remoteStoreTimeout)
 	defer cancel()
 
@@ -195,13 +199,11 @@ func (r *RemoteSessionStore) save(data *SessionData, allowRebase bool) error {
 		r.remember(data.TaskID, etagUnquote(resp.Header.Get("ETag")), data)
 		return nil
 	case http.StatusPreconditionFailed:
-		if allowRebase {
-			// Rebase onto the store's current version, then retry once.
-			// Load refreshes the cached ETag; the model is not re-run.
-			if _, lerr := r.Load(data.TaskID); lerr == nil {
-				return r.save(data, false)
-			}
-		}
+		// Drop our stale cache entry so the next Load pulls the winner's
+		// state fresh (no stale If-None-Match), then yield.
+		r.mu.Lock()
+		delete(r.cache, data.TaskID)
+		r.mu.Unlock()
 		return ErrConflict
 	default:
 		return fmt.Errorf("session store PUT %s: HTTP %d", data.TaskID, resp.StatusCode)
@@ -278,14 +280,24 @@ func etagUnquote(v string) string {
 }
 
 // cloneSession deep-copies a SessionData so a cached snapshot can't be
-// mutated by a caller (and vice-versa).
+// mutated by a caller (and vice-versa). Each ChatMessage's ToolCalls slice
+// is copied too — otherwise the clone's messages would share a backing
+// array with the original, and an in-place mutation on either side would
+// leak across the cache boundary. (ToolCall/FunctionCall are value types
+// with only string fields, so copying the slice fully detaches it.)
 func cloneSession(d *SessionData) *SessionData {
 	if d == nil {
 		return nil
 	}
 	out := *d
-	// Copy the slice — ChatMessage values are treated as immutable once
-	// persisted, so a shallow element copy is sufficient.
-	out.Messages = append([]llm.ChatMessage(nil), d.Messages...)
+	if d.Messages != nil {
+		out.Messages = make([]llm.ChatMessage, len(d.Messages))
+		for i, m := range d.Messages {
+			if m.ToolCalls != nil {
+				m.ToolCalls = append([]llm.ToolCall(nil), m.ToolCalls...)
+			}
+			out.Messages[i] = m
+		}
+	}
 	return &out
 }

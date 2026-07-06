@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -255,7 +256,7 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 	if e.store != nil {
 		saved, err := e.store.Load(task.ID)
 		if err != nil {
-			e.logger.Warn("failed to load session from disk", map[string]any{
+			e.logger.Warn("failed to load session", map[string]any{
 				"task_id": task.ID, "error": err.Error(),
 			})
 		} else if saved != nil {
@@ -269,7 +270,7 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 			} else {
 				mem.LoadFromStore(saved)
 				recovered = true
-				e.logger.Info("session recovered from disk", map[string]any{
+				e.logger.Info("session recovered", map[string]any{
 					"task_id":  task.ID,
 					"messages": len(saved.Messages),
 				})
@@ -896,9 +897,17 @@ func (e *LLMExecutor) persistSession(taskID string, mem *Memory) {
 	}
 
 	if err := e.store.Save(data); err != nil {
-		e.logger.Warn("failed to persist session", map[string]any{
-			"task_id": taskID, "error": err.Error(),
-		})
+		if errors.Is(err, ErrConflict) {
+			// A concurrent writer committed first; we yielded rather than
+			// clobber it (remote backend). Expected, not a failure.
+			e.logger.Info("session persist yielded to a concurrent writer", map[string]any{
+				"task_id": taskID,
+			})
+		} else {
+			e.logger.Warn("failed to persist session", map[string]any{
+				"task_id": taskID, "error": err.Error(),
+			})
+		}
 	}
 }
 

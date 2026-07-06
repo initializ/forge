@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -312,10 +313,16 @@ func (c *Compactor) flushToDisk(taskID string, mem *Memory) {
 	}
 
 	if err := c.store.Save(data); err != nil {
-		c.logger.Warn("failed to flush session to disk", map[string]any{
-			"task_id": taskID,
-			"error":   err.Error(),
-		})
+		if errors.Is(err, ErrConflict) {
+			c.logger.Info("session flush yielded to a concurrent writer", map[string]any{
+				"task_id": taskID,
+			})
+		} else {
+			c.logger.Warn("failed to flush session", map[string]any{
+				"task_id": taskID,
+				"error":   err.Error(),
+			})
+		}
 	}
 }
 

@@ -29,6 +29,22 @@
 
 ### Added
 
+- **Pluggable session store with an opt-in `remote` backend (issue
+  #243).** `memory.session_store` selects `file` (default — today's
+  local `.forge/sessions/*.json`) or `remote`, which pushes per-task
+  session snapshots to a platform session service over HTTP so
+  stateless pods resume any task on any replica without a PVC. The
+  remote backend does a conditional GET before each turn
+  (`If-None-Match` → 304/200), commits with an `If-Match` CAS, and on
+  a 412 conflict **yields** (the newer state wins, the model is never
+  re-run) rather than clobbering the concurrent writer. Enable with
+  `memory.session_store: remote` + `session_store_url` (or
+  `FORGE_SESSION_STORE` / `FORGE_SESSION_STORE_URL`); auth reuses the
+  admission client's `FORGE_PLATFORM_TOKEN` + `FORGE_ORG_ID` /
+  `FORGE_WORKSPACE_ID`. A `remote` selection missing its URL or token
+  warns and falls back to `file`. The file backend and its tests are
+  unchanged. See `docs/core-concepts/memory-system.md`.
+
 - **Anthropic-format custom URLs + AWS Bedrock SigV4 outbound auth
   (issue #202).** Two-phase rollout:
   - **Phase 1**: `forge init`'s "Custom" provider option now asks

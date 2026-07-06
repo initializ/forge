@@ -346,6 +346,16 @@ func TestAuditEvents_SavingsAndTotals(t *testing.T) {
 	}
 }
 
+// The runtime's marker-aware tool-result truncation pins the ctxzip marker
+// prefix as a literal (importing this package from runtime would cycle).
+// Guard the two against drift.
+func TestRuntimeMarkerPrefix_MatchesCCR(t *testing.T) {
+	if runtime.CompressionMarkerPrefix != ccr.MarkerPrefix {
+		t.Fatalf("runtime.CompressionMarkerPrefix=%q != ccr.MarkerPrefix=%q — marker-aware truncation would miss markers",
+			runtime.CompressionMarkerPrefix, ccr.MarkerPrefix)
+	}
+}
+
 // The runtime-owned system directive is what makes compression work for ANY
 // skill without skill authors documenting it. Guard that it names the real
 // tool and the real marker prefix, so a rename cannot silently orphan it.

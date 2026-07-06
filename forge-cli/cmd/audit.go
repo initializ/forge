@@ -24,8 +24,9 @@ docs/security/audit-tamper-evidence.md and audit-signing.md.`,
 }
 
 var (
-	auditVerifyPubKeyFile string
-	auditVerifySkipChain  bool
+	auditVerifyPubKeyFile     string
+	auditVerifySkipChain      bool
+	auditVerifyRequireGenesis bool
 )
 
 var auditVerifyCmd = &cobra.Command{
@@ -49,6 +50,11 @@ Use "-" as the file path to read from stdin.
 
 --skip-chain checks signatures only. Useful for SIEM tail ingestion
 where the head of stream is out of view.
+
+--require-genesis treats a non-genesis first event as a hard
+failure rather than the default soft warning. Use when verifying a
+complete stream (e.g. an offline audit-of-record) where a missing
+head would mean the run's initial event was stripped.
 `,
 	Args: cobra.ExactArgs(1),
 	RunE: auditVerifyRun,
@@ -59,6 +65,8 @@ func init() {
 		"path to a JWKS file with the audit signing keys (signatures unverified when absent)")
 	auditVerifyCmd.Flags().BoolVar(&auditVerifySkipChain, "skip-chain", false,
 		"skip prev_hash chain verification (for tail ingestion where head is out of view)")
+	auditVerifyCmd.Flags().BoolVar(&auditVerifyRequireGenesis, "require-genesis", false,
+		"fail hard on a non-genesis first event (default: soft warning); use for complete-stream verification")
 	auditCmd.AddCommand(auditVerifyCmd)
 	rootCmd.AddCommand(auditCmd)
 }
@@ -95,6 +103,17 @@ func auditVerifyRun(cmd *cobra.Command, args []string) error {
 
 	for _, e := range res.Errors {
 		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning:", e)
+	}
+
+	// --require-genesis promotes the "first event isn't genesis"
+	// soft warning into a hard failure. Applies only when chain
+	// verification actually ran and produced events.
+	if auditVerifyRequireGenesis && !opts.SkipChain && res.EventCount > 0 && !res.GenesisSeen {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+			"FAILED: --require-genesis set but first event does not carry the genesis prev_hash\n"+
+				"  events read: %d, chain links checked: %d\n",
+			res.EventCount, res.ChainChecked)
+		return fmt.Errorf("audit verify failed: first event is not genesis (head of stream missing)")
 	}
 
 	if res.OK() {

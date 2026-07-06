@@ -172,8 +172,19 @@ the private key. It does **not** address:
 
 - Compromise of the signing key itself (protect via secret
   management, K8s secretRef, HSM if available).
-- Omission of events during collection (use the hash-chain
-  extension #212 to detect deletions).
+- **Post-hoc deletion of already-written events**: covered by the
+  hash chain (#212). The chain detects a gap between events that
+  DID land on the sink. It does NOT detect **suppression-at-emit**
+  — a signing failure, marshal failure, or sink drop that
+  prevents an event from being written at all. Those show up in
+  the ops log (`audit signing failed; event dropped`), and the
+  next successfully-emitted event's `prev_hash` links to the
+  event *before* the dropped one — verification passes cleanly
+  even though data was lost.
+  If a "must be signed, or fail loudly" posture is required, the
+  operator's fail-closed knob is the mitigation: run with
+  `FORGE_AUDIT_STRICT_SIGN=1` (planned) or route ops-log Errors to
+  an on-call channel today.
 - Post-hoc reordering across restarts (also covered by the hash
   chain when both features are in effect).
 

@@ -681,7 +681,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		default:
 			// Forge framework — build tool registry and use built-in LLM executor
 			reg := tools.NewRegistry()
-			if err := builtins.RegisterAll(reg); err != nil {
+			// R9: wire the JIT credential injector into http_request
+			// alongside cli_execute (further down). Nil injector →
+			// no-op inside the tool, so unsigned-cred deployments
+			// see pre-R9 behavior.
+			if err := builtins.RegisterAll(reg, builtins.Options{
+				HTTPCredentialInjector: credInjector,
+			}); err != nil {
 				r.logger.Warn("failed to register builtin tools", map[string]any{"error": err.Error()})
 			}
 

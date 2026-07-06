@@ -173,6 +173,98 @@ func TestCLIExecute_InjectorSkipsNonMatchingBinary(t *testing.T) {
 	}
 }
 
+// TestCLIExecute_JITOverridesEnvPassthrough is the security-critical
+// regression test reviewer initializ-mk asked for on #236: when an
+// operator lists a JIT key (e.g. AWS_ACCESS_KEY_ID) in env_passthrough
+// AND has a JIT provider stamping the same name, the JIT value MUST
+// win. Otherwise the subprocess silently keeps the broader source
+// creds — a privilege escalation.
+//
+// The pre-fix implementation relied on os/exec's env dedup keeping
+// the last entry (which does work on current Go), but Forge must not
+// depend on that runtime behavior for security. The fix explicitly
+// strips conflicting keys from cmd.Env before appending the JIT env;
+// this test asserts the JIT value wins even when we can't rely on
+// exec dedup.
+func TestCLIExecute_JITOverridesEnvPassthrough(t *testing.T) {
+	// Seed the process env with a broad "source" value that
+	// env_passthrough will propagate.
+	t.Setenv("AWS_ACCESS_KEY_ID", "AKIASOURCEBROAD")
+
+	sink := &captureSink{}
+	inj, err := credentials.NewInjector(
+		context.Background(),
+		credentials.DefaultRegistry,
+		[]credentials.CredentialSpec{{
+			Tool:     "cli_execute",
+			Binary:   "env",
+			Provider: "static",
+			Spec: json.RawMessage(`{
+				"env": {"AWS_ACCESS_KEY_ID": "AKIAJITSCOPED"}
+			}`),
+		}},
+		sink,
+	)
+	if err != nil {
+		t.Fatalf("NewInjector: %v", err)
+	}
+
+	tool := NewCLIExecuteTool(CLIExecuteConfig{
+		AllowedBinaries: []string{"env"},
+		// EnvPassthrough conflicts intentionally with the JIT key.
+		EnvPassthrough: []string{"AWS_ACCESS_KEY_ID"},
+		TimeoutSeconds: 10,
+	}).WithCredentialInjector(inj)
+
+	avail, _ := tool.Availability()
+	if !containsString(avail, "env") {
+		t.Skip("`env` binary not available in PATH")
+	}
+	args, _ := json.Marshal(cliExecuteArgs{Binary: "env"})
+	out, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var result cliExecuteResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("parsing tool output: %v", err)
+	}
+
+	// The JIT value MUST be present.
+	if !strings.Contains(result.Stdout, "AWS_ACCESS_KEY_ID=AKIAJITSCOPED") {
+		t.Errorf("subprocess env missing JIT-scoped key.\nstdout: %s", result.Stdout)
+	}
+	// The source value MUST NOT be present — belt-and-suspenders
+	// stripping means only one AWS_ACCESS_KEY_ID line exists.
+	if strings.Contains(result.Stdout, "AWS_ACCESS_KEY_ID=AKIASOURCEBROAD") {
+		t.Errorf("source-broad key leaked past the JIT override.\nstdout: %s", result.Stdout)
+	}
+	// Also assert there's exactly ONE AWS_ACCESS_KEY_ID= line —
+	// duplicates would mean stripping didn't fire and we were
+	// relying on exec dedup. The test proves the strip pass ran.
+	if got := strings.Count(result.Stdout, "AWS_ACCESS_KEY_ID="); got != 1 {
+		t.Errorf("expected 1 AWS_ACCESS_KEY_ID line after strip, got %d.\nstdout: %s",
+			got, result.Stdout)
+	}
+}
+
+// TestStripEnvKeys unit-tests the pure helper independent of the
+// subprocess plumbing, so regressions land here first.
+func TestStripEnvKeys(t *testing.T) {
+	env := []string{"PATH=/usr/bin", "AWS_ACCESS_KEY_ID=source", "HOME=/tmp", "AWS_SECRET_ACCESS_KEY=also-source"}
+	override := map[string]string{"AWS_ACCESS_KEY_ID": "jit", "AWS_SECRET_ACCESS_KEY": "jit-sec"}
+	got := stripEnvKeys(env, override)
+	// PATH and HOME survive; both AWS_ keys are stripped.
+	if len(got) != 2 {
+		t.Fatalf("expected 2 survivors, got %d: %v", len(got), got)
+	}
+	for _, kv := range got {
+		if strings.HasPrefix(kv, "AWS_ACCESS_KEY_ID=") || strings.HasPrefix(kv, "AWS_SECRET_ACCESS_KEY=") {
+			t.Errorf("conflicting key survived: %s", kv)
+		}
+	}
+}
+
 func containsString(xs []string, want string) bool {
 	for _, x := range xs {
 		if x == want {

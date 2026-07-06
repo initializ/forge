@@ -158,18 +158,35 @@ func (h *Handle) Kind() string {
 
 // Close revokes the credential (if the provider supports it) and
 // emits credential_revoked. Idempotent — safe to defer.
+//
+// The emitted event carries a `revoked` bool distinguishing:
+//   - `revoked: true`  — the provider had a Revoke callback and it
+//     was invoked; the credential is invalidated at the source.
+//   - `revoked: false` — the provider has no Revoke path
+//     (`self_expiring: true`); the credential remains live until
+//     its TTL. Applies to STS + static providers today.
+//
+// Reviewer @initializ-mk asked for this on #236 — pre-fix,
+// credential_revoked was emitted even when nothing was invalidated,
+// so operators couldn't distinguish hard-revoke from tool-finished.
 func (h *Handle) Close(ctx context.Context) error {
 	if h == nil || h.closed {
 		return nil
 	}
 	h.closed = true
 	fields := map[string]any{
-		"provider": h.kind,
-		"tool":     h.tool,
-		"binary":   h.binary,
+		"provider":      h.kind,
+		"tool":          h.tool,
+		"binary":        h.binary,
+		"revoked":       h.revocable,
+		"self_expiring": !h.revocable,
 	}
 	if h.revocable {
 		if err := h.mat.Revoke(ctx); err != nil {
+			// Revoke failed — the credential is still live at the
+			// source. Correct the audit signal accordingly.
+			fields["revoked"] = false
+			fields["self_expiring"] = false
 			fields["error"] = err.Error()
 			h.audit.Emit(ctx, "credential_revoked", fields)
 			return err

@@ -1,11 +1,33 @@
 package builtins
 
-import "github.com/initializ/forge/forge-core/tools"
+import (
+	"github.com/initializ/forge/forge-core/credentials"
+	"github.com/initializ/forge/forge-core/tools"
+)
 
-// All returns all built-in tools.
-func All() []tools.Tool {
+// Options configures which optional per-tool integrations are wired
+// when constructing the builtin tools. Governance R9 uses this to
+// attach the JIT credential injector to http_request; future options
+// (per-tool tracing, per-tool rate limits) belong here too so the
+// public All() / RegisterAll() surface stays a small set of variadic
+// entry points.
+type Options struct {
+	// HTTPCredentialInjector, when non-nil, is wired into the
+	// http_request tool so per-call JIT credentials become request
+	// headers. Zero value → no JIT injection.
+	HTTPCredentialInjector *credentials.Injector
+}
+
+// All returns all built-in tools. Accepts zero or one Options
+// value; extra Options are ignored (variadic for backward-compat
+// only — callers should pass at most one).
+func All(opts ...Options) []tools.Tool {
+	var o Options
+	if len(opts) > 0 {
+		o = opts[0]
+	}
 	return []tools.Tool{
-		&httpRequestTool{},
+		(&httpRequestTool{}).WithCredentialInjector(o.HTTPCredentialInjector),
 		&jsonParseTool{},
 		&csvParseTool{},
 		&datetimeNowTool{},
@@ -17,8 +39,9 @@ func All() []tools.Tool {
 }
 
 // RegisterAll registers all built-in tools with the given registry.
-func RegisterAll(reg *tools.Registry) error {
-	for _, t := range All() {
+// Same variadic-Options convention as All(); pass at most one.
+func RegisterAll(reg *tools.Registry, opts ...Options) error {
+	for _, t := range All(opts...) {
 		if err := reg.Register(t); err != nil {
 			return err
 		}

@@ -25,12 +25,14 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/initializ/forge/forge-core/credentials"
@@ -116,10 +118,24 @@ type Credential struct {
 	duration   time.Duration
 	httpClient *http.Client
 	now        func() time.Time
+
+	// cacheMu guards the fields below. Materialize is called from
+	// multiple goroutines (one per tool invocation on a shared
+	// injector) so cache access must be serialized.
+	cacheMu     sync.Mutex
+	cached      credentials.Materialization
+	cachedUntil time.Time // wall-clock instant after which the cache is stale
 }
 
+// cacheSkew is the safety margin subtracted from the STS-issued
+// expiration when deciding whether the cached credential is still
+// safe to hand out. Reviewer @initializ-mk asked for caching
+// within TTL; giving up 60s at the tail keeps the tool call from
+// racing against expiration on a slow subprocess.
+const cacheSkew = 60 * time.Second
+
 // Kind returns the provider name for audit-event tagging.
-func (Credential) Kind() string { return ProviderName }
+func (*Credential) Kind() string { return ProviderName }
 
 // stsResponse is the subset of the AssumeRole XML response we care
 // about. STS returns:
@@ -155,10 +171,33 @@ type stsError struct {
 	} `xml:"Error"`
 }
 
-// Materialize issues one STS AssumeRole and returns the short-lived
-// credentials as AWS_* env vars. No revocation callback — STS creds
-// self-expire at the Duration; the runner records TTL for audit.
+// Materialize returns short-lived AWS credentials as env vars.
+//
+// Caches per-Credential: since Provider ignores per-call `args` (no
+// scope-down based on tool input), every call for a given spec yields
+// an equivalent credential, so serving the same materialization until
+// TTL-minus-skew expiration is safe and strictly better than re-issuing
+// on every tool call. Reviewer @initializ-mk asked for this — pre-fix,
+// an agent that ran `aws` N times made N AssumeRole calls, adding
+// latency per exec and risking account-level STS throttling.
+//
+// The cache is per-Credential (per-spec) and read under a mutex so
+// concurrent tool invocations from the same skill share.
+//
+// No revocation callback — STS creds expire on their own; the runner
+// records TTL for audit.
 func (c *Credential) Materialize(ctx context.Context, _ string, _ json.RawMessage) (credentials.Materialization, error) {
+	// Fast path: reuse a cached materialization when it's still safely
+	// within TTL.
+	c.cacheMu.Lock()
+	if !c.cachedUntil.IsZero() && c.nowFn().Before(c.cachedUntil) {
+		mat := c.cached
+		c.cacheMu.Unlock()
+		return cloneMaterialization(mat), nil
+	}
+	c.cacheMu.Unlock()
+
+	// Slow path: mint a fresh credential.
 	accessKey := os.Getenv(c.spec.SourceAccessKey)
 	secretKey := os.Getenv(c.spec.SourceSecretKey)
 	sessionToken := os.Getenv(c.spec.SourceToken) // optional (present when running under a role)
@@ -234,7 +273,7 @@ func (c *Credential) Materialize(ctx context.Context, _ string, _ json.RawMessag
 		return credentials.Materialization{}, fmt.Errorf("sts provider: empty credentials in response")
 	}
 
-	return credentials.Materialization{
+	mat := credentials.Materialization{
 		Env: map[string]string{
 			"AWS_ACCESS_KEY_ID":     creds.AccessKeyID,
 			"AWS_SECRET_ACCESS_KEY": creds.SecretAccessKey,
@@ -244,15 +283,60 @@ func (c *Credential) Materialize(ctx context.Context, _ string, _ json.RawMessag
 		// Revoke is nil — STS credentials expire on their own; there
 		// is no API to invalidate them early. Operators wanting hard
 		// revoke should switch to a Vault dynamic-secret provider.
-	}, nil
+	}
+
+	// Populate the cache. Prefer the STS-issued Expiration when
+	// parseable; fall back to now + duration. Either way subtract
+	// cacheSkew so we hand out a stale credential.
+	expireAt := c.nowFn().Add(c.duration)
+	if creds.Expiration != "" {
+		if t, err := time.Parse(time.RFC3339, creds.Expiration); err == nil {
+			expireAt = t
+		}
+	}
+	c.cacheMu.Lock()
+	c.cached = mat
+	c.cachedUntil = expireAt.Add(-cacheSkew)
+	c.cacheMu.Unlock()
+
+	return cloneMaterialization(mat), nil
+}
+
+// nowFn returns the injected clock or time.Now, so tests can advance
+// the clock without touching the wall.
+func (c *Credential) nowFn() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
+// cloneMaterialization deep-copies the env map so a caller can't
+// mutate the cached entry via the returned Materialization.
+func cloneMaterialization(m credentials.Materialization) credentials.Materialization {
+	out := m
+	if len(m.Env) > 0 {
+		out.Env = make(map[string]string, len(m.Env))
+		maps.Copy(out.Env, m.Env)
+	}
+	if len(m.Headers) > 0 {
+		out.Headers = make(map[string]string, len(m.Headers))
+		maps.Copy(out.Headers, m.Headers)
+	}
+	return out
 }
 
 // truncate cuts s to at most n runes with an ellipsis suffix.
+// Slices on runes, not bytes — a byte slice at an arbitrary offset
+// can split a multi-byte UTF-8 sequence and produce invalid UTF-8,
+// which then goes into an error message. Reviewer @initializ-mk
+// flagged this on #236.
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	runes := []rune(s)
+	if len(runes) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	return string(runes[:n]) + "…"
 }
 
 // ---- SigV4 signer (STS-only, stripped from providers/sigv4_transport.go) ----

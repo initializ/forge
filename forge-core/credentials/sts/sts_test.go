@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/initializ/forge/forge-core/credentials"
 )
@@ -22,6 +23,7 @@ type mockSTS struct {
 	lastBody     string
 	responseBody string
 	responseCode int
+	callCount    int // number of AssumeRole POSTs received
 }
 
 func newMockSTS() *mockSTS {
@@ -33,12 +35,13 @@ func newMockSTS() *mockSTS {
       <AccessKeyId>ASIAMOCKEXAMPLE</AccessKeyId>
       <SecretAccessKey>mockSecretAccessKeyMockSecretAccessKey0</SecretAccessKey>
       <SessionToken>mockSessionTokenMockSessionToken==</SessionToken>
-      <Expiration>2026-07-02T15:00:00Z</Expiration>
+      <Expiration>2099-01-01T00:00:00Z</Expiration>
     </Credentials>
   </AssumeRoleResult>
 </AssumeRoleResponse>`,
 	}
 	m.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		m.callCount++
 		m.lastAuth = r.Header.Get("Authorization")
 		m.lastDate = r.Header.Get("X-Amz-Date")
 		m.lastToken = r.Header.Get("X-Amz-Security-Token")
@@ -252,6 +255,113 @@ func TestSTSProvider_EmptyResponseCreds(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on empty creds response")
 	}
+}
+
+// TestSTSProvider_MaterializeCachesWithinTTL is the regression test
+// for reviewer @initializ-mk's #236 fix #2: repeated Materialize calls
+// within the STS credential's TTL must return the cached credential
+// rather than issuing a fresh AssumeRole. Pre-fix, an agent running
+// `aws` N times made N STS calls, adding latency and throttle risk.
+func TestSTSProvider_MaterializeCachesWithinTTL(t *testing.T) {
+	setSTSEnv(t)
+	m := newMockSTS()
+	defer m.srv.Close()
+
+	spec := credentials.CredentialSpec{
+		Provider: ProviderName,
+		Spec: mustJSON(t, Spec{
+			RoleARN:  "arn:aws:iam::1:role/x",
+			Duration: "15m",
+			Endpoint: m.srv.URL + "/",
+		}),
+	}
+	p := Provider{HTTPClient: m.srv.Client()}
+	cred, err := p.NewCredential(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("NewCredential: %v", err)
+	}
+
+	// Materialize five times.
+	var lastKey string
+	for i := range 5 {
+		mat, err := cred.Materialize(context.Background(), "cli_execute", nil)
+		if err != nil {
+			t.Fatalf("Materialize %d: %v", i, err)
+		}
+		if mat.Env["AWS_ACCESS_KEY_ID"] == "" {
+			t.Fatalf("Materialize %d: missing key", i)
+		}
+		lastKey = mat.Env["AWS_ACCESS_KEY_ID"]
+	}
+	if lastKey != "ASIAMOCKEXAMPLE" {
+		t.Errorf("materialized access key: got %q", lastKey)
+	}
+
+	// mock STS should have been hit ONCE — subsequent calls served
+	// from cache. Assertion covered by mockSTS.callCount below.
+	if m.callCount != 1 {
+		t.Errorf("STS AssumeRole call count: got %d, want 1 (5 Materialize → 1 cold + 4 cached)", m.callCount)
+	}
+}
+
+// TestSTSProvider_ExpiredCacheReMints proves the cache respects
+// expiration — pushing the clock past expiration triggers a re-mint.
+func TestSTSProvider_ExpiredCacheReMints(t *testing.T) {
+	setSTSEnv(t)
+	m := newMockSTS()
+	defer m.srv.Close()
+
+	// Emit an STS response with a fake Expiration in the near future.
+	m.responseBody = `<AssumeRoleResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+  <AssumeRoleResult>
+    <Credentials>
+      <AccessKeyId>ASIAMOCKEXAMPLE</AccessKeyId>
+      <SecretAccessKey>mockSecretKey</SecretAccessKey>
+      <SessionToken>mockToken</SessionToken>
+      <Expiration>2026-07-06T12:15:00Z</Expiration>
+    </Credentials>
+  </AssumeRoleResult>
+</AssumeRoleResponse>`
+
+	// Simulate a clock — start before expiration, advance past it.
+	fakeClock := mustTime("2026-07-06T12:00:00Z")
+	p := Provider{
+		HTTPClient: m.srv.Client(),
+		Now:        func() time.Time { return fakeClock },
+	}
+	spec := credentials.CredentialSpec{
+		Provider: ProviderName,
+		Spec: mustJSON(t, Spec{
+			RoleARN:  "arn:aws:iam::1:role/x",
+			Duration: "15m",
+			Endpoint: m.srv.URL + "/",
+		}),
+	}
+	cred, err := p.NewCredential(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("NewCredential: %v", err)
+	}
+	// Cold call.
+	if _, err := cred.Materialize(context.Background(), "", nil); err != nil {
+		t.Fatalf("cold: %v", err)
+	}
+	// Advance past cached expiration (12:15 - 60s skew = 12:14) →
+	// cache stale, must re-mint.
+	fakeClock = mustTime("2026-07-06T12:14:30Z")
+	if _, err := cred.Materialize(context.Background(), "", nil); err != nil {
+		t.Fatalf("re-mint: %v", err)
+	}
+	if m.callCount != 2 {
+		t.Errorf("STS AssumeRole call count: got %d, want 2 (cold + re-mint after expiry)", m.callCount)
+	}
+}
+
+func mustTime(s string) time.Time {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		panic(err)
+	}
+	return t
 }
 
 func mustJSON(t *testing.T, v any) json.RawMessage {

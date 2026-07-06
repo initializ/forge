@@ -118,6 +118,37 @@ Does not solve:
   Forge deployment role still works).
 - Revocation-under-attack when the underlying provider is offline.
 
-Combine JIT credentials (#215) with per-skill egress allow-lists
-(existing) + audit signing (#213) + hash chaining (#212) for full
-governance R9 posture.
+### Preventing credential leakage into the LLM (⚠️ operator action)
+
+`cli_execute` merges the JIT env into the subprocess env — which
+means a subprocess like `env`, or a misbehaving CLI that dumps its
+own environment, will emit the credential material into stdout,
+which the LLM then reads. This is the shape the `TestCLIExecute_
+JITCredentialsInjectedIntoEnv` regression test uses to prove
+injection works, but in production it's a footgun.
+
+**Mitigation**: use the R4a `deny_output` skill guardrail (#209 /
+`docs/security/policy-decisions.md`) to redact the material before
+the LLM sees it. Example `SKILL.md` frontmatter:
+
+```yaml
+forge:
+  deny_output:
+    - pattern: 'AKIA[0-9A-Z]{16}'
+      action: redact
+    - pattern: 'aws_secret_access_key\s*=\s*\S+'
+      action: redact
+```
+
+Post-#209 the redact loop fires for output of any tool (not just
+`cli_execute`), so the same pattern list covers `http_request`
+response bodies that leak credentials in the headers echo of a
+misconfigured API.
+
+Combine JIT credentials (#215) with:
+- R4a `deny_output` (#209) — redact credentials before LLM ingest,
+- per-skill egress allow-lists (existing),
+- audit signing (#213) + hash chaining (#212) — for tamper-evident
+  `credential_issued` events,
+
+for full governance R9 posture.

@@ -51,6 +51,17 @@ type ForgeConfig struct {
 	// is merged into the tool's subprocess environment. Empty → no JIT
 	// injection (pre-R9 behavior).
 	//
+	// Coupling note (per @initializ-mk's #236 review): `types` intentionally
+	// imports `credentials` here so operators get a single self-describing
+	// yaml schema type. The invariant that keeps this safe: the base
+	// `credentials` package MUST stay stdlib-only. Provider implementations
+	// with external deps (AWS SDK, Vault client, HSM libs) belong in
+	// `credentials/<provider>` subpackages — which the runner imports for
+	// its init()-time registration but which the config type never sees.
+	// Do NOT add non-stdlib imports to `forge-core/credentials/*.go`
+	// (root files) — a lint / CI check should be added if this becomes a
+	// recurring temptation.
+	//
 	// Example:
 	//
 	//   credentials:

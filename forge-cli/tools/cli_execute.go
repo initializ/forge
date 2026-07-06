@@ -229,6 +229,15 @@ func (t *CLIExecuteTool) Execute(ctx context.Context, args json.RawMessage) (str
 	// mint fresh scoped-down creds now, merge them into the subprocess
 	// env, and defer revocation. Nil injector → no-op. Non-cli_execute
 	// spec matches are simply skipped by Injector.Materialize.
+	//
+	// Override semantics: if an operator lists a JIT key (e.g.
+	// AWS_ACCESS_KEY_ID) in env_passthrough AND has a JIT provider
+	// stamping the same name, the JIT value MUST win — otherwise the
+	// subprocess silently keeps the broader source creds (a privilege
+	// escalation). Go's os/exec dedups env keeping the last entry, but
+	// we don't want the security of the pipeline to depend on that: we
+	// explicitly strip conflicting keys BEFORE appending the JIT env.
+	// Regression test in cli_execute_creds_test.go.
 	if t.credInjector != nil {
 		rawArgs, _ := json.Marshal(input)
 		handle, err := t.credInjector.Materialize(ctx, "cli_execute", input.Binary, rawArgs)
@@ -237,8 +246,12 @@ func (t *CLIExecuteTool) Execute(ctx context.Context, args json.RawMessage) (str
 		}
 		if handle != nil {
 			defer func() { _ = handle.Close(ctx) }()
-			for k, v := range handle.Env() {
-				cmd.Env = append(cmd.Env, k+"="+v)
+			jitEnv := handle.Env()
+			if len(jitEnv) > 0 {
+				cmd.Env = stripEnvKeys(cmd.Env, jitEnv)
+				for k, v := range jitEnv {
+					cmd.Env = append(cmd.Env, k+"="+v)
+				}
 			}
 		}
 	}
@@ -292,6 +305,28 @@ func (t *CLIExecuteTool) Availability() (available, missing []string) {
 
 // SetProxyURL sets the egress proxy URL for subprocess env injection.
 func (t *CLIExecuteTool) SetProxyURL(url string) { t.proxyURL = url }
+
+// stripEnvKeys returns env minus any "KEY=…" entry whose KEY appears
+// in override. Used before appending JIT credentials so a same-named
+// env_passthrough entry can't shadow the scoped-down JIT value.
+// Comparison is exact (case-sensitive) — matches Go's own env
+// dedup behavior.
+func stripEnvKeys(env []string, override map[string]string) []string {
+	if len(override) == 0 || len(env) == 0 {
+		return env
+	}
+	out := env[:0:len(env)]
+	for _, kv := range env {
+		eq := strings.IndexByte(kv, '=')
+		if eq > 0 {
+			if _, drop := override[kv[:eq]]; drop {
+				continue
+			}
+		}
+		out = append(out, kv)
+	}
+	return out
+}
 
 // buildEnv constructs an isolated environment with only PATH, HOME, LANG
 // and explicitly configured passthrough variables. When workDir is set,

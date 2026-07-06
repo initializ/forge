@@ -937,31 +937,54 @@ func (r *Runner) Run(ctx context.Context) error {
 						memPersistence = false
 					}
 					if memPersistence {
-						sessDir := r.cfg.Config.Memory.SessionsDir
-						if sessDir == "" {
-							sessDir = filepath.Join(r.cfg.WorkDir, ".forge", "sessions")
-						}
-						memStore, storeErr := coreruntime.NewMemoryStore(sessDir)
-						if storeErr != nil {
-							r.logger.Warn("failed to create memory store, persistence disabled", map[string]any{
-								"error": storeErr.Error(),
-							})
-						} else {
-							// Clean up old sessions on startup (7-day TTL).
-							deleted, _ := memStore.Cleanup(7 * 24 * time.Hour)
-							if deleted > 0 {
-								r.logger.Info("cleaned up old sessions", map[string]any{"deleted": deleted})
-							}
+						// Select the session-memory backend (issue #243).
+						// Remote (opt-in) pushes snapshots to the platform
+						// session service so stateless pods resume any task on
+						// any replica; file (default) keeps today's local
+						// .forge/sessions. buildSessionStore returns the remote
+						// store when configured, else nil to signal "use file".
+						var sessionStore coreruntime.SessionStore
+						var storeDesc map[string]any
 
+						if remote := buildRemoteSessionStore(
+							r.cfg.Config.AgentID,
+							r.cfg.Config.Memory.SessionStore,
+							r.cfg.Config.Memory.SessionStoreURL,
+							r.logger,
+						); remote != nil {
+							sessionStore = remote
+							storeDesc = map[string]any{"backend": "remote"}
+						} else {
+							sessDir := r.cfg.Config.Memory.SessionsDir
+							if sessDir == "" {
+								sessDir = filepath.Join(r.cfg.WorkDir, ".forge", "sessions")
+							}
+							memStore, storeErr := coreruntime.NewMemoryStore(sessDir)
+							if storeErr != nil {
+								r.logger.Warn("failed to create memory store, persistence disabled", map[string]any{
+									"error": storeErr.Error(),
+								})
+							} else {
+								// Clean up old sessions on startup (7-day TTL).
+								deleted, _ := memStore.Cleanup(7 * 24 * time.Hour)
+								if deleted > 0 {
+									r.logger.Info("cleaned up old sessions", map[string]any{"deleted": deleted})
+								}
+								sessionStore = memStore
+								storeDesc = map[string]any{"backend": "file", "sessions_dir": sessDir}
+							}
+						}
+
+						if sessionStore != nil {
 							compactor := coreruntime.NewCompactor(coreruntime.CompactorConfig{
 								Client:       llmClient,
-								Store:        memStore,
+								Store:        sessionStore,
 								Logger:       r.logger,
 								CharBudget:   charBudget,
 								TriggerRatio: r.cfg.Config.Memory.TriggerRatio,
 							})
 
-							execCfg.Store = memStore
+							execCfg.Store = sessionStore
 							execCfg.Compactor = compactor
 
 							// Session max age: stale sessions are discarded to prevent
@@ -976,9 +999,7 @@ func (r *Runner) Run(ctx context.Context) error {
 								}
 							}
 
-							r.logger.Info("memory persistence enabled", map[string]any{
-								"sessions_dir": sessDir,
-							})
+							r.logger.Info("memory persistence enabled", storeDesc)
 						}
 					}
 

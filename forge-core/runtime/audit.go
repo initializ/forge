@@ -91,6 +91,24 @@ const (
 	// scored decision. See docs/security/intent-alignment.md.
 	AuditIntentAlignment = "intent_alignment"
 
+	// AuditIntentDrift is emitted when the R7 (#214) rolling-window
+	// drift analyzer detects a state transition — either the task
+	// entered drift (mean-below-threshold OR monotone-decrease) or
+	// recovered. State-transition semantics keep the audit stream
+	// from flooding during a long drift stretch: one event on entry,
+	// one on recovery.
+	//
+	// Fields:
+	//   - tool       : the tool call that tripped the transition
+	//   - severity   : "mean_below_threshold" | "monotone_decrease" |
+	//                  "both" | "recovered"
+	//   - transition : "entered" | "recovered"
+	//   - mean       : rolling-window mean at trip time
+	//   - window     : the configured window size
+	// Payload never carries the individual scores. See
+	// docs/security/intent-alignment.md (drift section).
+	AuditIntentDrift = "intent_drift"
+
 	// AuditPolicyLoaded is emitted once at agent startup when a
 	// non-zero platform policy is present. Carries a summary of the
 	// effective policy (sizes of deny lists, max bounds) so audit

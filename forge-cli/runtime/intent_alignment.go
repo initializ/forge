@@ -68,12 +68,29 @@ func (r *Runner) buildIntentEngine() (*intent.Engine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("building embedder: %w", err)
 	}
-	return intent.New(intent.Config{
+	// R7 (#214) drift analyzer — opt-in on top of R3. Requires
+	// alignment to also be enabled; NewWithDrift enforces that.
+	driftCfg := r.cfg.Config.Security.IntentDrift
+	drift := intent.DriftConfig{
+		Enabled:        driftCfg.Enabled,
+		Window:         driftCfg.Window,
+		DriftThreshold: driftCfg.DriftThreshold,
+		MonotoneN:      driftCfg.MonotoneN,
+	}
+	if drift.Enabled {
+		if drift.Window == 0 {
+			drift.Window = 5
+		}
+		if drift.DriftThreshold == 0 {
+			drift.DriftThreshold = 0.35
+		}
+	}
+	return intent.NewWithDrift(intent.Config{
 		Enabled:       true,
 		Threshold:     threshold,
 		HardThreshold: hardThreshold,
 		CacheSize:     cfg.CacheSize,
-	}, embedder)
+	}, drift, embedder)
 }
 
 // registerIntentAlignmentHook wires the BeforeToolExec hook that
@@ -138,6 +155,25 @@ func (r *Runner) registerIntentAlignmentHook(hooks *coreruntime.HookRegistry, re
 			TaskID:        hctx.TaskID,
 			Fields:        fields,
 		})
+
+		// R7 (#214): the analyzer returns a non-nil Drift signal
+		// ONLY on state transitions (entered / recovered). Emit
+		// the intent_drift event alongside the per-call alignment
+		// event so SIEM queries can join on task_id.
+		if res.Drift != nil {
+			auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
+				Event:         coreruntime.AuditIntentDrift,
+				CorrelationID: hctx.CorrelationID,
+				TaskID:        hctx.TaskID,
+				Fields: map[string]any{
+					"tool":       hctx.ToolName,
+					"severity":   res.Drift.Severity,
+					"transition": res.Drift.Transition,
+					"mean":       res.Drift.Mean,
+					"window":     res.Drift.Window,
+				},
+			})
+		}
 
 		if res.Decision == intent.DecisionDeny {
 			return fmt.Errorf("intent_alignment: %s", res.Reason)

@@ -132,6 +132,78 @@ resulting cosine crosses the audit boundary.
   spurious high scores. Treat the embedder as part of your trust
   boundary — the same posture as any critical LLM provider.
 
+## Drift tracking (governance R7 / #214)
+
+Alignment is a per-action check. **Drift** is longitudinal — it
+watches the trend of alignment scores across many tool calls and
+flags the pattern of an agent progressively wandering from the
+stated intent even if each individual call scores above the R3
+threshold.
+
+Enable it alongside the R3 check:
+
+```yaml
+security:
+  intent_alignment:
+    enabled: true
+    provider: openai
+    model: text-embedding-3-small
+    threshold: 0.5
+    hard_threshold: 0.3
+
+  intent_drift:
+    enabled: true
+    window: 5              # last N scores considered
+    drift_threshold: 0.35  # rolling mean floor
+    monotone_n: 3          # additionally flag N-consecutive descents
+```
+
+The analyzer records every R3 score into a per-task ring buffer and
+flags drift when the last `window` scores' mean falls strictly below
+`drift_threshold`, OR the last `monotone_n` scores are strictly
+decreasing (the "boiling frog" pattern where each individual step is
+above the R3 threshold but the trend is unmistakably down).
+
+`intent_drift` events are **state-transition** — one event fires
+when the task first enters drift, one fires when it recovers.
+Long-drift stretches don't flood the audit stream.
+
+Fail-closed observations from R3 (embedder unavailable, unknown
+task) contribute to the drift ring too, treated as `-1` for the
+mean — a run of R3 failures surfaces as drift rather than
+invisible.
+
+### Audit event
+
+```json
+{
+  "event": "intent_drift",
+  "task_id": "task-abc",
+  "fields": {
+    "tool": "cli_execute",
+    "severity": "mean_below_threshold",
+    "transition": "entered",
+    "mean": 0.221,
+    "window": 5
+  }
+}
+```
+
+Severity is one of:
+
+- `mean_below_threshold` — rolling mean crossed `drift_threshold`.
+- `monotone_decrease` — last `monotone_n` scores strictly decreasing.
+- `both` — both signals fired on the same call.
+- `recovered` — task exited drift (only for `transition: "recovered"`).
+
+### Drift is telemetry, not a policy gate
+
+`intent_drift` never denies a tool call directly. Drift is meant
+for alerting and post-hoc audit; the R3 `hard_threshold` is where
+you enforce a stop. If you want drift to also stop the task, forward
+`intent_drift entered` events from your SIEM to a workflow that
+sets the R3 `hard_threshold` closer to the observed mean.
+
 Combine R3 alignment with R4a MODIFY (#209) + audit signing (#213) +
-hash chaining (#212) + JIT credentials (#215) for the governance
-framework's Section 3–9 story.
+hash chaining (#212) + JIT credentials (#215) + R7 drift (#214) for
+the governance framework's Section 3–9 story.

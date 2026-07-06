@@ -25,7 +25,7 @@ The loop terminates when `len(ToolCalls) == 0`. `FinishReason` is intentionally 
 
 ### Session Recovery Deduplication
 
-When a session is recovered from disk (e.g., after a premature loop exit), the executor checks whether the recovered conversation already ends with an identical user message. If so, the duplicate is skipped to prevent the same message from appearing twice in the context window. This handles the common case where a user retries the same prompt after a crash or timeout.
+When a session is recovered from the [session store](memory-system.md#session-store-backends) (e.g., after a premature loop exit, on any pod for the remote backend), the executor checks whether the recovered conversation already ends with an identical user message. If so, the duplicate is skipped to prevent the same message from appearing twice in the context window. This handles the common case where a user retries the same prompt after a crash or timeout.
 
 ### Q&A Nudge Suppression
 

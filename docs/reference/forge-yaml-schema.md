@@ -146,6 +146,8 @@ secrets:
 memory:
   persistence: true                 # Session persistence (default: true)
   sessions_dir: ".forge/sessions"
+  session_store: "file"             # Session backend: "file" (default) | "remote"
+  session_store_url: ""             # Platform session-service URL (required for "remote")
   char_budget: 200000               # Context budget override
   trigger_ratio: 0.6                # Compaction trigger ratio
   long_term: false                  # Long-term memory (default: false)

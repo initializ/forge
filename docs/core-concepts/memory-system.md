@@ -33,6 +33,34 @@ memory:
 export FORGE_SESSION_MAX_AGE=1h
 ```
 
+### Session Store Backends
+
+Session persistence has two backends, selected by `memory.session_store`:
+
+| Backend | When | Behavior |
+|---------|------|----------|
+| `file` (default) | Single pod / dev | Local JSON under `sessions_dir` (`.forge/sessions/*.json`). Durable only on that pod's filesystem. |
+| `remote` | Stateless / multi-pod | Snapshots are pushed to a platform **session service** over HTTP, so any replica can resume any task with no shared volume — no PVC. |
+
+The `remote` backend keeps agent pods stateless: a task started on one pod resumes on another. It:
+
+- **Pulls before each turn** with a conditional GET (`If-None-Match`) — the service answers `304` (the pod's cached snapshot is current) or `200` (fresh state), so unchanged sessions aren't re-downloaded.
+- **Commits with compare-and-swap** (`If-Match`) — a concurrent writer's intervening commit is detected as a `412`. On conflict the stale writer **yields** (the newer state wins) rather than clobbering it; the model is never re-run.
+- **Pulls lazily** — a cold pod fetches a session only when its task is first touched, not all sessions at once.
+
+```yaml
+memory:
+  session_store: remote                       # "file" (default) | "remote"
+  session_store_url: "https://sessions.example/api/v1/agent-sessions"
+```
+
+The pod authenticates to the service with its platform token, reusing the same env the admission client reads — `FORGE_PLATFORM_TOKEN` plus the `FORGE_ORG_ID` / `FORGE_WORKSPACE_ID` tenancy stamps. A `remote` selection missing its URL or token warns and falls back to the `file` backend, so session memory is never silently dropped.
+
+```bash
+export FORGE_SESSION_STORE=remote
+export FORGE_SESSION_STORE_URL=https://sessions.example/api/v1/agent-sessions
+```
+
 ## Context Window Management
 
 Forge automatically manages context window usage based on model capabilities:
@@ -105,6 +133,8 @@ memory:
   persistence: true
   sessions_dir: ".forge/sessions"
   session_max_age: "30m"      # discard sessions idle longer than this
+  session_store: "file"       # "file" (default) | "remote"
+  session_store_url: ""       # required when session_store: remote
   char_budget: 200000
   trigger_ratio: 0.6
   long_term: false
@@ -122,5 +152,7 @@ Environment variables:
 |----------|-------------|
 | `FORGE_MEMORY_PERSISTENCE` | Set `false` to disable session persistence |
 | `FORGE_SESSION_MAX_AGE` | Session idle timeout, e.g. `30m`, `1h` (default: `30m`) |
+| `FORGE_SESSION_STORE` | Session backend: `file` (default) or `remote` |
+| `FORGE_SESSION_STORE_URL` | Platform session-service URL (required for `remote`) |
 | `FORGE_MEMORY_LONG_TERM` | Set `true` to enable long-term memory |
 | `FORGE_EMBEDDING_PROVIDER` | Override embedding provider |

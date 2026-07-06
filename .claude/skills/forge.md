@@ -345,6 +345,16 @@ attributed to the deciding layer.
 Default-on **session memory**: per-session chat transcript + metadata
 under `<workdir>/.forge/sessions/`. Bounded by `memory.sessions_dir`.
 
+Pluggable **session store** (`memory.session_store`, issue #243): `file`
+(default, the local `.forge/sessions/*.json` above) or `remote` — snapshots
+pushed to a platform session service over HTTP so stateless pods resume any
+task on any replica with no PVC. Remote does a conditional GET before each
+turn (`If-None-Match` → 304/200) and an `If-Match` CAS on save; on a 412 the
+stale writer **yields** (newer state wins, model never re-run) rather than
+clobbering. Auth reuses the admission env (`FORGE_PLATFORM_TOKEN` +
+`FORGE_ORG_ID`/`FORGE_WORKSPACE_ID`); set `FORGE_SESSION_STORE=remote` +
+`FORGE_SESSION_STORE_URL`. Missing URL/token → warn + fall back to `file`.
+
 Opt-in **long-term memory**: vector-backed semantic + keyword hybrid
 retrieval with temporal decay (configurable half-life), context-budget
 caps, compaction triggers. Embedding provider auto-detects from the
@@ -849,6 +859,8 @@ secrets:
 memory:
   persistence: true
   sessions_dir: .forge/sessions
+  session_store: file            # file (default) | remote
+  session_store_url: ""          # required when session_store: remote
   long_term: false
   embedding_provider: openai
 

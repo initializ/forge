@@ -23,9 +23,8 @@ type fakeSessionService struct {
 	versions map[string]int
 	bodies   map[string][]byte
 
-	notModified  int  // count of 304s served
-	fullGets     int  // count of 200s served
-	forceConflct bool // when true, every PUT returns 412
+	notModified int // count of 304s served
+	fullGets    int // count of 200s served
 }
 
 func newFakeSessionService() *fakeSessionService {
@@ -58,10 +57,6 @@ func (f *fakeSessionService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPut:
 		cur := f.versions[id] // 0 when absent
-		if f.forceConflct {
-			w.WriteHeader(http.StatusPreconditionFailed)
-			return
-		}
 		if ifm := etagUnquote(r.Header.Get("If-Match")); ifm != "" && ifm != strconv.Itoa(cur) {
 			w.WriteHeader(http.StatusPreconditionFailed)
 			return
@@ -185,42 +180,43 @@ func TestRemoteSessionStore_ConditionalGetFreshness(t *testing.T) {
 	}
 }
 
-// TestRemoteSessionStore_SaveConflictOnStaleVersion: an intervening write
-// makes our If-Match stale; Save rebases (re-reads current) and retries
-// once, committing without re-running any turn. A persistent conflict
-// surfaces ErrConflict.
+// TestRemoteSessionStore_SaveConflictOnStaleVersion: a stale writer must
+// YIELD on 412, never clobber the concurrent writer's committed turn. Both
+// pods load v1; podB commits its turn (v2); podA (still at v1) then tries to
+// save and must get ErrConflict — and crucially podB's content must survive
+// on the server, unoverwritten.
 func TestRemoteSessionStore_SaveConflictOnStaleVersion(t *testing.T) {
-	fake := newFakeSessionService()
-	srv := httptest.NewServer(fake)
+	srv := httptest.NewServer(newFakeSessionService())
 	defer srv.Close()
 
 	podA := newTestRemoteStore(srv.URL)
 	podB := newTestRemoteStore(srv.URL)
 
-	if err := podA.Save(sampleSession("t", "a1")); err != nil { // version 1, cacheA=1
+	// Both pods take on the same task at v1.
+	if err := podA.Save(sampleSession("t", "a1")); err != nil { // v1, podA cached=1
 		t.Fatalf("podA.Save: %v", err)
 	}
-	if err := podB.Save(sampleSession("t", "b2")); err != nil { // no If-Match -> version 2
+	if _, err := podB.Load("t"); err != nil { // podB cached=1
+		t.Fatalf("podB.Load: %v", err)
+	}
+
+	// podB commits its turn first -> v2.
+	if err := podB.Save(sampleSession("t", "b2")); err != nil {
 		t.Fatalf("podB.Save: %v", err)
 	}
 
-	// podA still thinks version==1; Save should 412 -> rebase -> retry -> commit.
-	if err := podA.Save(sampleSession("t", "a3")); err != nil {
-		t.Fatalf("expected rebase-retry to succeed, got %v", err)
-	}
-	fake.mu.Lock()
-	finalVer := fake.versions["t"]
-	fake.mu.Unlock()
-	if finalVer != 3 {
-		t.Fatalf("expected version 3 after rebase-retry, got %d", finalVer)
+	// podA is now stale (cached v1). Its Save must yield, not clobber.
+	if err := podA.Save(sampleSession("t", "a3")); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale Save should yield ErrConflict, got %v", err)
 	}
 
-	// Persistent conflict -> ErrConflict surfaced.
-	fake.mu.Lock()
-	fake.forceConflct = true
-	fake.mu.Unlock()
-	err := podA.Save(sampleSession("t", "a4"))
-	if !errors.Is(err, ErrConflict) {
-		t.Fatalf("expected ErrConflict on persistent conflict, got %v", err)
+	// The concurrent writer's committed turn must survive on the server —
+	// a cold reader sees "b2", never podA's clobbering "a3".
+	got, err := newTestRemoteStore(srv.URL).Load("t")
+	if err != nil || got == nil {
+		t.Fatalf("cold Load: %v (got %v)", err, got)
+	}
+	if got.Messages[0].Content != "b2" {
+		t.Fatalf("concurrent writer's turn was clobbered: got %q, want %q", got.Messages[0].Content, "b2")
 	}
 }

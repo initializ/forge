@@ -1,0 +1,69 @@
+name: Edge (main)
+
+# Rolling prerelease of the forge runtime binaries on every merge to main.
+#
+# The Initializ platform bakes the forge RUNTIME into each agent image by
+# fetching a release tarball (forge-Linux-<arch>.tar.gz) from a GitHub release
+# tag — see forge-cli templates/Dockerfile.tmpl. Tagged releases (v*) can lag
+# main by days, so a runtime feature merged but not yet released (e.g. the
+# remote session store, #243/#244) is invisible to deployed agents even after
+# the platform side ships. This workflow republishes a fixed `vnext`
+# PRERELEASE pointing at the latest main commit, so agent-builder can pin
+# AGENT_FORGE_VERSION=vnext and test unreleased runtime changes end-to-end.
+#
+# It builds via goreleaser --snapshot (no tag needed) reusing .goreleaser.yaml,
+# so the archive names are byte-identical to a real release. It is a PRERELEASE
+# and never becomes `latest`, so tagged releases and existing agents pinned to
+# a version are unaffected.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: edge-prerelease
+  cancel-in-progress: true
+
+jobs:
+  edge:
+    name: Publish vnext prerelease
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      # Snapshot build: cross-compiles the same archives a release would, into
+      # dist/, without publishing or requiring a git tag. Publishers (brew,
+      # etc.) are skipped automatically in snapshot mode.
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: latest
+          args: release --snapshot --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Re-point the fixed `vnext` prerelease at this commit and replace its
+      # assets. delete --cleanup-tag drops the old tag so the new one tracks the
+      # latest main SHA; the Linux tarballs are what the agent Dockerfile pulls.
+      - name: Republish vnext prerelease
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete vnext --cleanup-tag --yes || true
+          gh release create vnext \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "vnext (main)" \
+            --notes "Rolling build of main @ ${GITHUB_SHA:0:7}. Prerelease (not latest). Pin agent-builder AGENT_FORGE_VERSION=vnext to test unreleased runtime changes." \
+            dist/forge-Linux-x86_64.tar.gz \
+            dist/forge-Linux-arm64.tar.gz \
+            dist/checksums.txt

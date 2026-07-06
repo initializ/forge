@@ -220,3 +220,49 @@ func TestRemoteSessionStore_SaveConflictOnStaleVersion(t *testing.T) {
 		t.Fatalf("concurrent writer's turn was clobbered: got %q, want %q", got.Messages[0].Content, "b2")
 	}
 }
+
+// TestRemoteSessionStore_CloneIsolatesMutableFields pins the cache/caller
+// isolation: a ChatMessage's ToolCalls slice must not be shared between the
+// caller's snapshot and the store's cached copy (or a shallow clone would let
+// an in-place mutation on either side leak across). Regressing cloneSession to
+// a shallow element copy fails this.
+func TestRemoteSessionStore_CloneIsolatesMutableFields(t *testing.T) {
+	srv := httptest.NewServer(newFakeSessionService())
+	defer srv.Close()
+	store := newTestRemoteStore(srv.URL)
+
+	orig := &SessionData{
+		TaskID: "t",
+		Messages: []llm.ChatMessage{{
+			Role: llm.RoleAssistant,
+			ToolCalls: []llm.ToolCall{
+				{ID: "c1", Type: "function", Function: llm.FunctionCall{Name: "orig", Arguments: "{}"}},
+			},
+		}},
+	}
+	if err := store.Save(orig); err != nil { // caches a clone of orig
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Mutate the caller's copy AFTER Save — must not leak into the cache.
+	orig.Messages[0].ToolCalls[0].Function.Name = "MUTATED"
+	orig.Messages[0].ToolCalls = append(orig.Messages[0].ToolCalls, llm.ToolCall{ID: "c2"})
+
+	got, err := store.Load("t") // served from cache -> a fresh clone
+	if err != nil || got == nil {
+		t.Fatalf("Load: %v (got %v)", err, got)
+	}
+	if len(got.Messages[0].ToolCalls) != 1 || got.Messages[0].ToolCalls[0].Function.Name != "orig" {
+		t.Fatalf("cache shared mutable ToolCalls with the caller: %+v", got.Messages[0].ToolCalls)
+	}
+
+	// And a clone handed back by Load must be independently mutable.
+	got.Messages[0].ToolCalls[0].Function.Name = "MUTATED2"
+	got2, err := store.Load("t")
+	if err != nil || got2 == nil {
+		t.Fatalf("second Load: %v", err)
+	}
+	if got2.Messages[0].ToolCalls[0].Function.Name != "orig" {
+		t.Fatalf("Load clone shared mutable ToolCalls with the cache: %q", got2.Messages[0].ToolCalls[0].Function.Name)
+	}
+}

@@ -42,6 +42,7 @@ import (
 	"github.com/initializ/forge/forge-core/scheduler"
 	"github.com/initializ/forge/forge-core/secrets"
 	"github.com/initializ/forge/forge-core/security"
+	deferengine "github.com/initializ/forge/forge-core/security/deferpolicy"
 	"github.com/initializ/forge/forge-core/security/intent"
 	"github.com/initializ/forge/forge-core/security/stepup"
 	"github.com/initializ/forge/forge-core/tools"
@@ -153,6 +154,8 @@ type Runner struct {
 	compression      *compress.Runtime                 // ctxzip compression runtime; nil when compression is disabled
 	intentEngine     *intent.Engine                    // R3 (#208) intent-alignment engine; nil when disabled
 	stepUpEngine     *stepup.Engine                    // R4b (#210) step-up authorization engine; nil when disabled
+	deferEngine      *deferengine.Engine               // R4c (#211) deferred-authorization engine; nil when disabled
+	taskStore        *a2a.TaskStore                    // shared task store, populated once srv is built; read by defer hook when it fires
 }
 
 // NewRunner creates a Runner from the given config.
@@ -410,6 +413,18 @@ func (r *Runner) Run(ctx context.Context) error {
 			"tools":        len(r.cfg.Config.Security.StepUp.Tools),
 			"known_acrs":   stepUpEngine.KnownAcrValues(),
 			"hierarchical": len(r.cfg.Config.Security.StepUp.AcrHierarchy) > 0,
+		})
+	}
+
+	// R4c (#211) deferred-authorization engine. When enabled,
+	// per-tool defer requirements from forge.yaml security.defer
+	// cause the BeforeToolExec hook to pause the executor until a
+	// decision arrives on POST /tasks/{id}/decisions (or the
+	// timeout auto-denies).
+	if r.cfg.Config.Security.Defer.Enabled {
+		r.deferEngine = deferengine.New()
+		r.logger.Info("defer engine wired", map[string]any{
+			"tools": len(r.cfg.Config.Security.Defer.Tools),
 		})
 	}
 
@@ -958,6 +973,14 @@ func (r *Runner) Run(ctx context.Context) error {
 					// No-op when the engine is disabled.
 					r.registerStepUpHook(hooks, auditLogger)
 
+					// R4c (#211) — defer hook. Pauses the executor
+					// when a listed tool is invoked, until a decision
+					// arrives (or the timeout auto-denies). The hook
+					// resolves r.taskStore lazily (populated after srv
+					// is built, below) so hook registration can happen
+					// before srv exists.
+					r.registerDeferHook(hooks, r, auditLogger)
+
 					// Register skill-level guardrails if present.
 					// Prefer build-time artifact; fall back to runtime-parsed guardrails.
 					sgRules := scaffold.SkillGuardrails
@@ -1240,6 +1263,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		AllowedOrigins:  corsOrigins,
 		RateLimit:       rateLimit,
 	})
+	// R4c: the task store is created inside NewServer; expose it
+	// on the runner so the defer hook (which registered earlier,
+	// before srv existed) can resolve it at fire time.
+	r.taskStore = srv.TaskStore()
 
 	// 7. Register JSON-RPC handlers
 	r.registerHandlers(srv, executor, guardrails, egressClient, auditLogger)
@@ -2124,6 +2151,11 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 	// when signing is off — the endpoint is always registered so
 	// consumers can probe for capability without a version check.
 	srv.RegisterHTTPHandler("GET /.well-known/forge-audit-keys", r.serveJWKS)
+
+	// R4c (#211) — decisions endpoint for external approvers to
+	// resolve pending deferrals. No-op wire (nothing registered)
+	// when defer is disabled.
+	r.registerDecisionsEndpoint(srv, auditLogger)
 }
 
 // serveJWKS is the handler for /.well-known/forge-audit-keys. Split

@@ -122,6 +122,23 @@ const (
 	// docs/security/intent-alignment.md (drift section).
 	AuditIntentDrift = "intent_drift"
 
+	// Defer events (governance R4c / #211). Three-stage lifecycle:
+	//   1. AuditTaskDeferred          — hook paused the executor,
+	//                                    task flipped to `deferred`
+	//                                    state. Fields: tool, to,
+	//                                    timeout_ms, context (truncated).
+	//   2. AuditTaskDeferredDecision  — POST /tasks/{id}/decisions
+	//                                    arrived. Fields: tool,
+	//                                    decision (approve|reject),
+	//                                    approver, note, wait_ms.
+	//   3. AuditTaskDeferredTimeout   — no decision arrived within
+	//                                    timeout, auto-DENYing.
+	//                                    Fields: tool, timeout_ms.
+	// Payload never carries token bytes or full LLM messages.
+	AuditTaskDeferred         = "task_deferred"
+	AuditTaskDeferredDecision = "task_deferred_decision"
+	AuditTaskDeferredTimeout  = "task_deferred_timeout"
+
 	// AuditPolicyLoaded is emitted once at agent startup when a
 	// non-zero platform policy is present. Carries a summary of the
 	// effective policy (sizes of deny lists, max bounds) so audit

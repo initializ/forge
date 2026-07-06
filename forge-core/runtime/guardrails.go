@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/initializ/forge/forge-core/a2a"
 )
@@ -71,13 +72,15 @@ func (d PolicyDecision) String() string {
 
 // PolicyResult carries the outcome of one policy evaluation.
 //
-// For DecisionAllow / DecisionDeny / DecisionDefer, Modified is
-// empty. For DecisionModify, Modified holds the rewritten content;
-// callers substitute it into the value stream. For DecisionStepUp,
-// RequiredAcr names the auth-context class the caller must re-authenticate
-// under (see #210 / R4b). Reason is a short human-readable string
-// surfaced on audit events and (for Deny/StepUp) returned to the caller
-// as an error message.
+// For DecisionAllow / DecisionDeny, Modified is empty. For
+// DecisionModify, Modified holds the rewritten content; callers
+// substitute it into the value stream. For DecisionStepUp,
+// RequiredAcr names the auth-context class the caller must
+// re-authenticate under (see #210 / R4b). For DecisionDefer, Defer
+// describes the out-of-band decision — target, timeout, context
+// (see #211 / R4c). Reason is a short human-readable string
+// surfaced on audit events and (for Deny / StepUp) returned to the
+// caller as an error message.
 type PolicyResult struct {
 	Decision PolicyDecision
 	Modified string
@@ -98,6 +101,39 @@ type PolicyResult struct {
 	// Forge doesn't interpret the value; it just relays it end-to-end
 	// so operator + IdP + caller agree on the semantics.
 	RequiredAcr string
+
+	// Defer carries the R4c (#211) deferral parameters. Populated
+	// only when Decision == DecisionDefer. See runtime.DeferSpec.
+	Defer *DeferSpec
+}
+
+// DeferSpec describes an R4c deferred decision — the target that
+// will decide (typically a human on a channel), the maximum wait
+// before auto-DENY, and the context payload the approver sees.
+type DeferSpec struct {
+	// To identifies the decision target. Free-form string so the
+	// runtime can route to the right channel/notifier — typical
+	// shapes:
+	//   - "channel:slack:#oncall"
+	//   - "channel:telegram:@sec-lead"
+	//   - "human:user-42"
+	//   - "external:https://approvals.internal/decisions"
+	// The defer engine relays this verbatim; interpretation lives
+	// in the notify adapter.
+	To string
+
+	// Timeout is the maximum wait before the deferral auto-DENYs.
+	// Zero → 10 minutes (a sensible ceiling; sync callers holding
+	// HTTP connections open longer than that risk proxy timeouts).
+	Timeout time.Duration
+
+	// ContextForApprover is a short (< 4KB) human-readable payload
+	// the approver sees to make the decision. Should NOT contain
+	// secrets or raw PII — the audit stream captures a truncated
+	// copy on the `task_deferred` event. Include: the tool name,
+	// the exact args the LLM chose, why the guardrail thought this
+	// needed a human decision.
+	ContextForApprover string
 }
 
 // Allow constructs a passthrough result.
@@ -117,6 +153,21 @@ func Modify(newContent, reason string) PolicyResult {
 // to the caller in the RFC 9470 challenge header. See #210 / R4b.
 func StepUp(requiredAcr, reason string) PolicyResult {
 	return PolicyResult{Decision: DecisionStepUp, RequiredAcr: requiredAcr, Reason: reason}
+}
+
+// Defer constructs an R4c deferred result. `to`, `timeout` and
+// `contextForApprover` name the target, wait ceiling, and payload
+// the human approver sees.
+func Defer(to string, timeout time.Duration, contextForApprover, reason string) PolicyResult {
+	return PolicyResult{
+		Decision: DecisionDefer,
+		Reason:   reason,
+		Defer: &DeferSpec{
+			To:                 to,
+			Timeout:            timeout,
+			ContextForApprover: contextForApprover,
+		},
+	}
 }
 
 // GuardrailChecker validates messages, tool calls, retrieved context,

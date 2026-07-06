@@ -23,6 +23,8 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+
+	"gopkg.in/yaml.v3"
 )
 
 // CredentialSpec is the declarative shape a skill's config uses to
@@ -41,6 +43,56 @@ type CredentialSpec struct {
 	Binary   string          `json:"binary,omitempty" yaml:"binary,omitempty"`
 	Provider string          `json:"provider" yaml:"provider"`
 	Spec     json.RawMessage `json:"spec,omitempty" yaml:"spec,omitempty"`
+}
+
+// UnmarshalYAML lets `CredentialSpec` round-trip through
+// `gopkg.in/yaml.v3`. Without this, `Spec json.RawMessage` fails to
+// decode from any YAML shape (`cannot unmarshal !!map into
+// json.RawMessage`) — that broke `forge.yaml` config loading of the
+// `credentials:` block, flagged in @initializ-mk's #236 second review.
+//
+// Strategy: decode the wrapping fields via a type-alias to avoid
+// recursion; then decode the `spec` sub-node into a generic Go value
+// and re-encode as JSON so providers keep receiving canonical
+// `json.RawMessage` bytes. Pattern mirrors
+// `forge-skills/contract/types.go`'s `BinRequirement.UnmarshalYAML`.
+func (c *CredentialSpec) UnmarshalYAML(node *yaml.Node) error {
+	// Alias with `Spec` swapped out for a yaml.Node so we can hold
+	// on to the raw sub-document and marshal it ourselves. If we
+	// left Spec as json.RawMessage on the alias yaml.v3 would fail
+	// the same way it fails on the parent.
+	type alias struct {
+		Tool     string    `yaml:"tool,omitempty"`
+		Binary   string    `yaml:"binary,omitempty"`
+		Provider string    `yaml:"provider"`
+		Spec     yaml.Node `yaml:"spec,omitempty"`
+	}
+	var a alias
+	if err := node.Decode(&a); err != nil {
+		return fmt.Errorf("credential spec: %w", err)
+	}
+	c.Tool = a.Tool
+	c.Binary = a.Binary
+	c.Provider = a.Provider
+	// Empty spec is legal (some providers infer everything from
+	// env). Detect that as "Spec has zero kind" — the default for
+	// an unset yaml.Node.
+	if a.Spec.Kind == 0 {
+		c.Spec = nil
+		return nil
+	}
+	// Decode into a generic Go value, then round-trip through
+	// encoding/json so downstream providers see stable JSON bytes.
+	var raw any
+	if err := a.Spec.Decode(&raw); err != nil {
+		return fmt.Errorf("credential spec: decoding sub-node: %w", err)
+	}
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return fmt.Errorf("credential spec: re-encoding as JSON: %w", err)
+	}
+	c.Spec = b
+	return nil
 }
 
 // Materialization is what a Credential produces at tool-call time.

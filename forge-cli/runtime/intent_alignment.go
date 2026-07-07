@@ -29,11 +29,18 @@ func (r *Runner) buildIntentEngine() (*intent.Engine, error) {
 		return nil, fmt.Errorf("intent_alignment.enabled but no provider set")
 	}
 	// Apply defaults where the operator left the yaml empty.
-	if cfg.Threshold == 0 {
-		cfg.Threshold = 0.5
+	// Thresholds are *float64 so an explicit `hard_threshold: 0`
+	// (which is a legitimate configuration on cosine's [-1,1]
+	// range, and the documented warn-only lever together with a
+	// negative value) is preserved instead of colliding with the
+	// zero-value default.
+	threshold := 0.5
+	if cfg.Threshold != nil {
+		threshold = *cfg.Threshold
 	}
-	if cfg.HardThreshold == 0 {
-		cfg.HardThreshold = 0.3
+	hardThreshold := 0.3
+	if cfg.HardThreshold != nil {
+		hardThreshold = *cfg.HardThreshold
 	}
 	if cfg.CacheSize == 0 {
 		cfg.CacheSize = 1024
@@ -63,8 +70,8 @@ func (r *Runner) buildIntentEngine() (*intent.Engine, error) {
 	}
 	return intent.New(intent.Config{
 		Enabled:       true,
-		Threshold:     cfg.Threshold,
-		HardThreshold: cfg.HardThreshold,
+		Threshold:     threshold,
+		HardThreshold: hardThreshold,
 		CacheSize:     cfg.CacheSize,
 	}, embedder)
 }

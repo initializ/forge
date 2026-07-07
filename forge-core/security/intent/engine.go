@@ -59,8 +59,9 @@ type Config struct {
 	Threshold float64
 
 	// HardThreshold is the HARD floor. Scores strictly below produce
-	// DecisionDeny. Set equal to Threshold to disable the warn tier.
-	// Sensible default 0.3.
+	// DecisionDeny. Set equal to Threshold to disable the warn tier;
+	// set to a negative value (e.g. -1) to run warn-only during the
+	// initial rollout. Sensible default 0.3.
 	HardThreshold float64
 
 	// CacheSize is the max number of action-side embeddings to
@@ -80,11 +81,15 @@ func (c Config) Validate() error {
 	if !c.Enabled {
 		return nil
 	}
-	if c.Threshold < 0 || c.Threshold > 1 {
-		return fmt.Errorf("intent_alignment: threshold %.3f outside [0,1]", c.Threshold)
+	// Cosine similarity is defined on [-1, 1]; a negative
+	// hard_threshold is the legitimate "warn-only" configuration
+	// (no score can be below -1, so deny never fires). The old
+	// [0,1] range rejected that configuration on startup.
+	if c.Threshold < -1 || c.Threshold > 1 {
+		return fmt.Errorf("intent_alignment: threshold %.3f outside [-1,1]", c.Threshold)
 	}
-	if c.HardThreshold < 0 || c.HardThreshold > 1 {
-		return fmt.Errorf("intent_alignment: hard_threshold %.3f outside [0,1]", c.HardThreshold)
+	if c.HardThreshold < -1 || c.HardThreshold > 1 {
+		return fmt.Errorf("intent_alignment: hard_threshold %.3f outside [-1,1]", c.HardThreshold)
 	}
 	if c.HardThreshold > c.Threshold {
 		return fmt.Errorf("intent_alignment: hard_threshold %.3f > threshold %.3f (would starve WARN tier)",

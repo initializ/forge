@@ -54,8 +54,11 @@ security:
 
 ## Recommended rollout: warn-only first
 
-Set `hard_threshold: 0` (or `-1`) for the first sprint so the check
-never denies. Tail the audit stream:
+Set `hard_threshold: -1` (or `0` if you accept that a bare-zero
+cosine — orthogonal action — still denies) for the first sprint so
+the check never denies. Both values are honored: `hard_threshold`
+is a pointer field, so an explicit `0` in yaml is preserved rather
+than colliding with the zero-value default. Tail the audit stream:
 
 ```sh
 tail -f audit.ndjson | jq 'select(.event=="intent_alignment")'
@@ -64,6 +67,17 @@ tail -f audit.ndjson | jq 'select(.event=="intent_alignment")'
 Collect a distribution of scores across your workload. Typical
 patterns: a normal working session clusters at 0.6–0.9; adversarial
 or off-topic tool calls cluster below 0.3.
+
+> **Calibrate to your embedder.** The default `threshold: 0.5 /
+> hard_threshold: 0.3` were picked against OpenAI
+> `text-embedding-3-small` on English prose. Other embedders
+> (Ollama `nomic-embed-text`, Gemini, self-hosted OpenAI-compatible
+> gateways) produce noticeably different score distributions —
+> `nomic-embed-text` in particular tends to compress the aligned
+> band below the OpenAI baseline, so a near-exact match can land at
+> ~0.48 rather than the ~0.8 the defaults assume. Running warn-only
+> for a sprint is not optional advice; it is how you find the
+> distribution your embedder actually produces.
 
 Once you have a distribution, set `hard_threshold` a bit below the
 observed floor of normal traffic and `threshold` at the median.

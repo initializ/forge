@@ -214,14 +214,20 @@ type IntentAlignmentConfig struct {
 	APIKeyEnv string `yaml:"api_key_env,omitempty"`
 
 	// Threshold is the soft floor. Scores strictly below produce
-	// WARN. Sensible default 0.5. Operators SHOULD start with a
-	// low value + hard_threshold=0 to run warn-only.
-	Threshold float64 `yaml:"threshold,omitempty"`
+	// WARN. Sensible default 0.5. Pointer so the operator can
+	// distinguish "unset, apply default" from "explicit 0" — 0 is
+	// a meaningful value on the cosine range [-1,1] and used to
+	// silently collide with the zero-value default.
+	Threshold *float64 `yaml:"threshold,omitempty"`
 
 	// HardThreshold is the hard floor. Scores strictly below DENY
 	// the tool call. Sensible default 0.3. Set equal to Threshold
-	// to disable the WARN tier.
-	HardThreshold float64 `yaml:"hard_threshold,omitempty"`
+	// to disable the WARN tier; set to a negative value (e.g. -1)
+	// to run warn-only during the initial rollout — see the
+	// "Recommended rollout" section in docs/security/intent-
+	// alignment.md. Pointer so an explicit 0 is preserved (see
+	// Threshold's comment).
+	HardThreshold *float64 `yaml:"hard_threshold,omitempty"`
 
 	// CacheSize is the max entries in the action-side embedding LRU.
 	// 0 disables the LRU (still caches per-task intent). Default

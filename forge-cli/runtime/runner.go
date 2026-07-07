@@ -1736,6 +1736,17 @@ func (r *Runner) executeTask(
 			Fields:        map[string]any{"state": string(a2a.TaskStateFailed)},
 		})
 		emitInvocationLifecycle()
+		// R4b: bubble a step-up error up to the handler so it can
+		// emit the RFC 9470 401 challenge instead of writing 200
+		// with a failed-task body. The task-store + audit side
+		// effects above still run — the caller can inspect the
+		// task via GET /tasks/{id} AFTER re-authenticating and
+		// retrying with a stronger acr. Other executor errors
+		// keep the pre-#247 behavior (task written, err=nil so
+		// handler renders a 200 with the failed task).
+		if _, isStepUp := stepup.AsRequiredError(err); isStepUp {
+			return task, acc.Snapshot(), err
+		}
 		return task, acc.Snapshot(), nil
 	}
 

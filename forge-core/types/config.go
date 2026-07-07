@@ -194,6 +194,13 @@ type SecurityConfig struct {
 	// RFC 9470 challenge and the caller re-authenticates.
 	// Opt-in — no default enforcement.
 	StepUp StepUpConfig `yaml:"step_up,omitempty"`
+
+	// Defer configures the R4c (#211) DEFER authorization decision.
+	// Names tools that pause execution mid-run and hand off to an
+	// external approver (typically a human via a channel adapter).
+	// Opt-in; requires a decision to arrive at
+	// `POST /tasks/{id}/decisions` before the tool call proceeds.
+	Defer DeferConfig `yaml:"defer,omitempty"`
 }
 
 // IntentDriftConfig is the forge.yaml-facing block for R7 drift
@@ -326,6 +333,72 @@ type StepUpConfig struct {
 	// — a caller with "acr:hardware" satisfies a requirement for
 	// "acr:mfa" or "acr:password".
 	AcrHierarchy []string `yaml:"acr_hierarchy,omitempty"`
+}
+
+// DeferConfig is the forge.yaml-facing block for R4c deferred
+// authorization.
+//
+// Tools listed in Tools trigger a pause on BeforeToolExec: the
+// executor blocks the calling goroutine, flips the A2A task status
+// to `deferred`, and waits for a decision to arrive via the
+// decisions endpoint (or the configured timeout, whichever first).
+// On approve, the tool proceeds; on reject or timeout, the tool
+// call fails with a defer-denied error.
+type DeferConfig struct {
+	// Enabled turns deferred authorization on. Default false — the
+	// hook is not registered; POST /tasks/{id}/decisions returns 404.
+	Enabled bool `yaml:"enabled,omitempty"`
+
+	// Tools maps tool name → deferral parameters. A tool absent from
+	// this map has no deferral requirement. Value shape:
+	//   tools:
+	//     cli_execute:
+	//       to: channel:slack:#oncall
+	//       timeout: 10m
+	//       context_template: "agent about to run {binary} {args}"
+	Tools map[string]DeferToolConfig `yaml:"tools,omitempty"`
+
+	// DefaultTimeout applies when a tool's Timeout is unset. Zero →
+	// 10 minutes.
+	DefaultTimeout time.Duration `yaml:"default_timeout,omitempty"`
+
+	// DefaultTo applies when a tool's To is unset. Empty is
+	// legal — the deferral fires and the audit event carries "" for
+	// operators to route on downstream.
+	DefaultTo string `yaml:"default_to,omitempty"`
+}
+
+// Validate returns an error when the config would silently no-op or
+// misroute at runtime. Called at Runner construction so an operator
+// who typos `enabled: true` without declaring any tools fails
+// startup rather than getting a "defer engine wired" log line and
+// zero enforcement. Matches the fail-loud posture of the sibling R4
+// PRs (step_up + intent_alignment).
+func (c DeferConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	if len(c.Tools) == 0 {
+		return fmt.Errorf("security.defer: enabled but no tools declared — either list tools under `defer.tools:` or set `defer.enabled: false`")
+	}
+	return nil
+}
+
+// DeferToolConfig configures deferral for one tool.
+type DeferToolConfig struct {
+	// To identifies the decision target (channel, human, external
+	// endpoint). Empty falls back to DeferConfig.DefaultTo.
+	To string `yaml:"to,omitempty"`
+
+	// Timeout is the maximum wait before auto-deny. Empty falls
+	// back to DeferConfig.DefaultTimeout.
+	Timeout time.Duration `yaml:"timeout,omitempty"`
+
+	// ContextTemplate is the string that becomes the approver's
+	// context payload. `{tool}` / `{args}` placeholders are expanded
+	// at hook time. When empty, the payload is
+	// `"tool={tool} args={args}"`.
+	ContextTemplate string `yaml:"context_template,omitempty"`
 }
 
 // ObservabilityConfig groups telemetry-related sub-blocks. Today it

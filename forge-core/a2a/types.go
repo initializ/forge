@@ -13,6 +13,16 @@ const (
 	TaskStateInputRequired TaskState = "input-required"
 	TaskStateAuthRequired  TaskState = "auth-required"
 	TaskStateRejected      TaskState = "rejected"
+
+	// TaskStateDeferred (governance R4c / #211): the executor paused
+	// mid-task awaiting an out-of-band decision (typically human
+	// approval for a high-risk action). Distinct from
+	// `input-required` (which needs more input FROM the user) and
+	// `auth-required` (which needs step-up auth per R4b). A deferred
+	// task is resolved by `POST /tasks/{id}/decisions`; on timeout,
+	// it auto-transitions to `failed` with a deferred-timeout audit.
+	// See docs/security/defer-decisions.md.
+	TaskStateDeferred TaskState = "deferred"
 )
 
 // TaskStatus holds the current state of a task along with an optional message.

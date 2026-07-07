@@ -11,10 +11,9 @@ import (
 )
 
 var (
-	skillNamePattern  = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
-	kebabCasePattern  = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
-	egressURLPattern  = regexp.MustCompile(`https?://([^/\s"'` + "`" + `]+)`)
-	artifactFenceExpr = regexp.MustCompile("(?s)````(skill\\.md|script:[^\n]+)\n(.*?)````")
+	skillNamePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+	kebabCasePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+	egressURLPattern = regexp.MustCompile(`https?://([^/\s"'` + "`" + `]+)`)
 )
 
 // validateSkillMD validates SKILL.md content and optional scripts.
@@ -198,24 +197,103 @@ func detectUndeclaredEgress(scripts map[string]string, declaredEgress []string) 
 	return undeclared
 }
 
-// extractArtifacts parses labeled code fences from an LLM response.
-// Returns the SKILL.md content and a map of script filename → content.
+// extractArtifacts parses labeled code fences from an LLM response and
+// returns the SKILL.md content and a map of script filename → content.
+//
+// It is deliberately tolerant of the ways LLMs deviate from the prompt's
+// exact quadruple-backtick format, because a missed extraction leaves the
+// preview pane empty and the user with no way to save. It accepts:
+//   - 3-or-more backticks (not strictly 4), with the closing fence needing
+//     at least as many as the opener — so an inner ```json block inside a
+//     ````skill.md block doesn't close it early;
+//   - a label with surrounding whitespace ("skill.md ", "script: foo.sh");
+//   - a block that is unlabeled or language-tagged (```yaml / ```markdown)
+//     whose content is clearly a SKILL.md (starts with `---` frontmatter
+//     carrying a `name:` key) — used only if no explicit skill.md fence
+//     was found.
 func extractArtifacts(response string) (skillMD string, scripts map[string]string) {
 	scripts = make(map[string]string)
 
-	matches := artifactFenceExpr.FindAllStringSubmatch(response, -1)
-	for _, m := range matches {
-		if len(m) < 3 {
+	lines := strings.Split(response, "\n")
+	i := 0
+	for i < len(lines) {
+		openTicks, label, isOpen := fenceOpen(lines[i])
+		if !isOpen {
+			i++
 			continue
 		}
-		label := m[1]
-		content := m[2]
-		if label == "skill.md" {
-			skillMD = strings.TrimSpace(content)
-		} else if strings.HasPrefix(label, "script:") {
-			filename := strings.TrimPrefix(label, "script:")
-			scripts[filename] = strings.TrimRight(content, "\n")
+		// Find the closing fence: a line of only backticks, at least as
+		// many as the opener (so nested lower-count fences are content).
+		j := i + 1
+		for j < len(lines) && !fenceClose(lines[j], openTicks) {
+			j++
 		}
+		content := strings.Join(lines[i+1:min(j, len(lines))], "\n")
+		classifyArtifact(label, content, &skillMD, scripts)
+		i = j + 1
 	}
 	return
+}
+
+// fenceOpen reports whether line opens a labeled code fence, returning the
+// backtick count and the trimmed label. A bare fence (no label) is not
+// treated as an opener so a stray closing fence can't start a phantom block.
+func fenceOpen(line string) (ticks int, label string, ok bool) {
+	n := 0
+	for n < len(line) && line[n] == '`' {
+		n++
+	}
+	if n < 3 {
+		return 0, "", false
+	}
+	label = strings.TrimSpace(line[n:])
+	if label == "" {
+		return 0, "", false
+	}
+	return n, label, true
+}
+
+// fenceClose reports whether line is a closing fence for an opener with
+// openTicks backticks: only backticks (optionally surrounded by space),
+// at least openTicks of them.
+func fenceClose(line string, openTicks int) bool {
+	t := strings.TrimSpace(line)
+	if t == "" {
+		return false
+	}
+	for i := 0; i < len(t); i++ {
+		if t[i] != '`' {
+			return false
+		}
+	}
+	return len(t) >= openTicks
+}
+
+// classifyArtifact routes a fenced block to skillMD or scripts by its label,
+// with a frontmatter-based fallback for unlabeled / language-tagged blocks.
+func classifyArtifact(label, content string, skillMD *string, scripts map[string]string) {
+	low := strings.ToLower(label)
+	switch {
+	case low == "skill.md" || low == "skill":
+		*skillMD = strings.TrimSpace(content)
+	case strings.HasPrefix(low, "script:"):
+		filename := strings.TrimSpace(label[len("script:"):])
+		if filename != "" {
+			scripts[filename] = strings.TrimRight(content, "\n")
+		}
+	default:
+		if *skillMD == "" && looksLikeSkillMD(content) {
+			*skillMD = strings.TrimSpace(content)
+		}
+	}
+}
+
+// looksLikeSkillMD reports whether content is plausibly a SKILL.md body:
+// a YAML frontmatter block carrying a name key.
+func looksLikeSkillMD(content string) bool {
+	t := strings.TrimSpace(content)
+	if !strings.HasPrefix(t, "---") {
+		return false
+	}
+	return strings.Contains(t, "\nname:")
 }

@@ -146,6 +146,13 @@ type Result struct {
 	// Reason is a short human-readable classification — surfaced on
 	// the audit event and, on Deny, returned as the tool-exec error.
 	Reason string
+
+	// Drift is non-nil ONLY on the tool call that transitions the
+	// task into or out of drift (R7 / #214). The hook consumer
+	// emits an `intent_drift` audit event when set. State-transition
+	// semantics keep the audit stream from flooding across long
+	// stretches of drift.
+	Drift *DriftSignal
 }
 
 // Engine is the per-runtime intent-alignment coordinator. Safe for
@@ -161,6 +168,11 @@ type Engine struct {
 	actions    *lruCache
 	lastGCUnix int64 // last time expired intent entries were swept, unix seconds
 	nowFn      func() time.Time
+
+	// drift is the R7 (#214) rolling-window analyzer. Nil when
+	// intent_drift is disabled; the Engine treats nil as "no drift
+	// tracking" so R3 keeps working without R7.
+	drift *analyzer
 }
 
 type intentEntry struct {
@@ -168,14 +180,28 @@ type intentEntry struct {
 	expiresAt time.Time
 }
 
-// New constructs an Engine. embedder may be nil when cfg.Enabled is
-// false; enabling without an embedder returns an error.
+// New constructs an Engine with just the R3 alignment check. The
+// R7 drift analyzer stays off. embedder may be nil when cfg.Enabled
+// is false; enabling without an embedder returns an error.
 func New(cfg Config, embedder llm.Embedder) (*Engine, error) {
+	return NewWithDrift(cfg, DriftConfig{}, embedder)
+}
+
+// NewWithDrift constructs an Engine with the R3 alignment check
+// AND the R7 rolling-window drift analyzer. drift.Enabled requires
+// cfg.Enabled to be true (drift is derived from alignment scores).
+func NewWithDrift(cfg Config, drift DriftConfig, embedder llm.Embedder) (*Engine, error) {
 	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	if err := drift.Validate(); err != nil {
 		return nil, err
 	}
 	if cfg.Enabled && embedder == nil {
 		return nil, errors.New("intent_alignment: enabled but no embedder configured")
+	}
+	if drift.Enabled && !cfg.Enabled {
+		return nil, errors.New("intent_drift: requires intent_alignment.enabled = true")
 	}
 	if cfg.IntentTTL == 0 {
 		cfg.IntentTTL = time.Hour
@@ -186,6 +212,7 @@ func New(cfg Config, embedder llm.Embedder) (*Engine, error) {
 		intents:  make(map[string]*intentEntry),
 		actions:  newLRUCache(cfg.CacheSize),
 		nowFn:    time.Now,
+		drift:    newAnalyzer(drift),
 	}
 	return e, nil
 }
@@ -236,9 +263,10 @@ func (e *Engine) RegisterIntent(ctx context.Context, taskID, statedIntent string
 	return nil
 }
 
-// Forget removes the intent embedding for the given task. Called
-// from the A2A handler at session_end so long-running processes
-// don't retain per-task state indefinitely.
+// Forget removes the intent embedding AND any drift-analyzer state
+// for the given task. Called from the A2A handler at session_end
+// so long-running processes don't retain per-task state
+// indefinitely.
 func (e *Engine) Forget(taskID string) {
 	if !e.Enabled() {
 		return
@@ -246,6 +274,7 @@ func (e *Engine) Forget(taskID string) {
 	e.mu.Lock()
 	delete(e.intents, taskID)
 	e.mu.Unlock()
+	e.drift.forget(taskID)
 }
 
 // Score computes the alignment between the previously-registered
@@ -279,22 +308,29 @@ func (e *Engine) Score(ctx context.Context, taskID, actionText string) Result {
 			delete(e.intents, taskID)
 		}
 		e.mu.Unlock()
-		return Result{
+		res := Result{
 			Score:    math.NaN(),
 			Decision: DecisionDeny,
 			Reason:   "no stated_intent registered for task (fail-closed)",
 		}
+		// R7: fail-closed observations feed the drift ring too, so
+		// a task with a broken intent capture surfaces as drift
+		// rather than invisible.
+		res.Drift = e.drift.record(taskID, math.NaN())
+		return res
 	}
 	intentVec := entry.embedding
 	e.mu.Unlock()
 
 	actionVec, err := e.embedAction(ctx, actionText)
 	if err != nil {
-		return Result{
+		res := Result{
 			Score:    math.NaN(),
 			Decision: DecisionDeny,
 			Reason:   fmt.Sprintf("embedder unavailable (fail-closed): %v", err),
 		}
+		res.Drift = e.drift.record(taskID, math.NaN())
+		return res
 	}
 
 	sim := cosine(intentVec, actionVec)
@@ -310,6 +346,11 @@ func (e *Engine) Score(ctx context.Context, taskID, actionText string) Result {
 		res.Decision = DecisionAllow
 		res.Reason = fmt.Sprintf("score %.3f above threshold %.3f", sim, e.cfg.Threshold)
 	}
+
+	// R7: feed the score into the rolling-window drift analyzer and
+	// attach any state-transition signal to the result. No-op when
+	// the analyzer is disabled.
+	res.Drift = e.drift.record(taskID, sim)
 	return res
 }
 

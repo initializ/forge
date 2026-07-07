@@ -176,6 +176,54 @@ type SecurityConfig struct {
 	// stated agent intent captured on tasks/send entry. Opt-in;
 	// see docs/security/intent-alignment.md.
 	IntentAlignment IntentAlignmentConfig `yaml:"intent_alignment,omitempty"`
+
+	// IntentDrift configures the R7 rolling-window drift detector
+	// (governance #214). Where R3 (IntentAlignment) is per-action
+	// policy, R7 is longitudinal telemetry — it watches the trend
+	// of alignment scores over the last N tool calls and emits an
+	// `intent_drift` audit event when the mean drops below a
+	// threshold or the sequence trends monotonically downward.
+	// Opt-in; requires IntentAlignment.Enabled (shares the same
+	// embedding + cosine machinery). See
+	// docs/security/intent-alignment.md.
+	IntentDrift IntentDriftConfig `yaml:"intent_drift,omitempty"`
+}
+
+// IntentDriftConfig is the forge.yaml-facing block for R7 drift
+// tracking.
+//
+// The drift signal is audit-only by default (no tool call is
+// denied). To combine drift with hard-deny semantics, tune
+// IntentAlignment.HardThreshold instead — drift is telemetry, not
+// a policy gate.
+type IntentDriftConfig struct {
+	// Enabled turns the drift analyzer on. Requires IntentAlignment
+	// to also be enabled (drift derives from alignment scores).
+	// Default false → no drift analysis, no audit events.
+	Enabled bool `yaml:"enabled,omitempty"`
+
+	// Window is the number of recent alignment scores considered
+	// for the rolling-mean test. Sensible default 5. Must be ≥ 2 —
+	// a window of 1 can't distinguish "trending down" from "just
+	// low."
+	Window int `yaml:"window,omitempty"`
+
+	// DriftThreshold is the mean-score floor. When the rolling
+	// window mean drops strictly below this value, an intent_drift
+	// event fires. Sensible default 0.35 (chosen slightly above
+	// the R3 hard_threshold default 0.3 so drift is a leading
+	// indicator, not a same-event trailing one). Pointer so an
+	// explicit 0 (a meaningful "only flag when the mean goes
+	// negative" floor on cosine's [-1,1] range) survives the
+	// runner's zero-value defaulting.
+	DriftThreshold *float64 `yaml:"drift_threshold,omitempty"`
+
+	// MonotoneN, when non-zero, additionally emits intent_drift on
+	// N-consecutive strictly-decreasing scores even if the mean is
+	// still above DriftThreshold. Catches the "boiling frog"
+	// pattern where each step is small but the cumulative drift is
+	// large. Zero disables the monotone check. Sensible value: 3.
+	MonotoneN int `yaml:"monotone_n,omitempty"`
 }
 
 // IntentAlignmentConfig is the forge.yaml-facing block for the R3

@@ -770,6 +770,39 @@ enterprise raw-capture path.
 `docs/security/audit-logging.md` § Trace cross-link,
 `docs/security/egress-control.md` § OTel collector auto-extension.
 
+### 12.11 Governance framework R1–R9 (#216 umbrella)
+
+Six MUST + three SHOULD requirements from an agent-runtime governance framework. Complete on `main` after #245 / #246 / #247 / #248 land (R4c is the last piece).
+
+| # | Requirement | Type | Where it lives | Related PR |
+|---|---|:-:|---|:-:|
+| R1 | Pre-execution interception | MUST | `BeforeToolExec` hook fires from `Registry.Execute` — every LLM-chosen action emits `tool_exec phase=start` from inside the hook chain. Baseline. | — |
+| R2 | Context accumulation | MUST | `correlation_id` + `task_id` on every event; monotone per-invocation `seq`; `MemoryStore` + `task.History`. Baseline. | — |
+| R3 | Policy w/ intent alignment | MUST | `forge-core/security/intent/`; `security.intent_alignment` in yaml. Real cosine similarity per tool call against the stated intent. Emits `intent_alignment`. Fail-closed on embedder error. | #245 |
+| R4a | MODIFY decision (general) | MUST | Generalized beyond `cli_execute` — every gate can return `DecisionModify`. | #221 |
+| R4b | STEP_UP decision | MUST | `forge-core/security/stepup/`; `security.step_up` in yaml. Missing / weak `acr` → RFC 9470 401 `WWW-Authenticate: Bearer error="step_up_required"`. `executeTask` propagates the typed `*RequiredError` so the REST handler reaches the challenge writer. | #247 |
+| R4c | DEFER decision (resumable) | MUST | `forge-core/security/deferpolicy/`; `security.defer` in yaml. `BeforeToolExec` pauses the executor goroutine; task status flips to `deferred`. `POST /tasks/{id}/decisions` (`approve` / `reject`) resumes. Timeout auto-denies. `sync.Once`-guarded Handle protects the approve-vs-timeout race. Buffered(1) resolution channel — resolver never blocks. | #248 |
+| R5 | Tamper-evident receipts | MUST | `prev_hash = sha256(previous raw JSON line)`, genesis = 64 zeros. `forge audit verify` catches byte-flips, order swaps, dropped events. | #237 |
+| R6 | Cryptographic identity binding | MUST | Ed25519 signature per event over JCS canonical form (RFC 8785). `sigp: "jcs-1"` marker. `GET /.well-known/forge-audit-keys` serves the JWKS. | #237 |
+| R7 | Semantic distance | SHOULD | `forge-core/security/intent/drift.go`; `security.intent_drift` on top of R3. Rolling-window mean-below-threshold + monotone-decrease trip conditions. State-transition dedup (one `entered`, one `recovered` — no per-call flood). | #246 |
+| R8 | OpenTelemetry export | SHOULD | `observability.tracing` in yaml. Real tracer provider; OTLP HTTP/gRPC export. Audit events carry `trace_id` + `span_id` closing the loop between the SIEM channel and the APM channel. Baseline (#108). | — |
+| R9 | Least-privilege credentials | SHOULD | `forge-core/credentials/`; top-level `credentials:` in yaml. Providers: `static`, `sts_assume_role`. Fresh credentials per tool call; injected into subprocess env (`cli_execute`) or outbound headers (`http_request`). `credential_issued` / `credential_revoked` audit events. **No credential material in audit payloads.** | #236 |
+
+**Config off by default.** Every governance block ships disabled — an absent block leaves the hook unregistered and the wire shape unchanged from a pre-governance Forge. Rollout: turn each on independently, warn-only first (`hard_threshold: -1` for R3, `hard_threshold: 0.85` for the deny tier), gather the distribution against your embedder + workload, then tune.
+
+**Live verification.** `github.com/initializ/forge-compliance-suite/e2e/r{1..9}_*` — one test package per requirement, driven with a real OpenAI key against an actual `forge run` subprocess. No mocks in the policy path. See the compliance-suite repo for the reproducer.
+
+**Read**:
+- `docs/security/intent-alignment.md` (R3 + R7)
+- `docs/security/step-up-auth.md` (R4b)
+- `docs/security/defer-decisions.md` (R4c)
+- `docs/security/audit-signing.md` (R6)
+- `docs/security/audit-tamper-evidence.md` (R5)
+- `docs/security/least-privilege-credentials.md` (R9)
+- `docs/security/policy-decisions.md` (five-decision enum reference)
+
+---
+
 ### 12.10 Platform admission hook (#201)
 
 Off by default. Engaged when **both** `FORGE_ADMISSION_URL` and `FORGE_PLATFORM_TOKEN` are set. Sits between auth and the dispatcher; one `GET <FORGE_ADMISSION_URL>?agent_id=<id>` per inbound request that misses the **5 s per-agent cache**, with `Org-Id` / `Workspace-Id` headers sourced from `FORGE_ORG_ID` / `FORGE_WORKSPACE_ID`.
@@ -1080,9 +1113,20 @@ when OTel tracing is enabled (OTel v1 / Phase 4 / #105). Both use
 | `AuditPolicyViolationAtBuildTime` | `policy_violation_at_build_time` | `violation_kind`, `offending_value`, `forge_yaml_field`, `layer`, `source` (FWS-5/6) |
 | `AuditChannelDeniedByPolicy` | `channel_denied_by_policy` | `channel`, `layer`, `source` (FWS-6) |
 | `audit_export_status` | `audit_export_status` | Every 60s when an export sink is configured; per-sink `writes_ok`, `drops_timeout`, `drops_dial`, `connected` (FWS-7) |
+| `AuditIntentAlignment` | `intent_alignment` | R3 (#208) — per `BeforeToolExec` when `security.intent_alignment` enabled; `tool`, `decision` (`allow` / `warn` / `deny`), `score` (cosine ∈ [-1,1] or the string `"NaN"` on fail-closed), `reason`. Never carries the LLM prompt or tool args. |
+| `AuditIntentDrift` | `intent_drift` | R7 (#214) — state transitions of the rolling-window drift analyzer; `tool`, `severity` (`mean_below_threshold` / `monotone_decrease` / `both` / `recovered`), `transition` (`entered` / `recovered`), `mean`, `window`. One per transition — no per-call flood. |
+| `AuditAuthStepUpRequired` | `auth_step_up_required` | R4b (#210) — caller identity missing / carrying weaker `acr` than the tool requires; `tool`, `required_acr`, `presented_acr`, `reason`. REST handler translates into HTTP 401 with RFC 9470 `WWW-Authenticate: Bearer error="step_up_required", acr_values="…"`. |
+| `AuditTaskDeferred` | `task_deferred` | R4c (#211) — executor paused on `BeforeToolExec`; `tool`, `to`, `timeout_ms`, `context` (truncated approver context). Task status flips to `deferred`. |
+| `AuditTaskDeferredDecision` | `task_deferred_decision` | R4c — decision arrived at `POST /tasks/{id}/decisions`; `tool`, `decision` (`approve` / `reject`), `approver`, `note`, `wait_ms`. |
+| `AuditTaskDeferredTimeout` | `task_deferred_timeout` | R4c — timer fired before any decision; `tool`, `timeout_ms`. Tool call auto-denies. |
+| `AuditCredentialIssued` | `credential_issued` | R9 (#215) — JIT injector materialized credentials for a tool call; `provider`, `tool`, `ttl` + provider scope metadata. **Never carries credential material.** |
+| `AuditCredentialRevoked` | `credential_revoked` | R9 — credential revoked or self-expired after tool call; `provider`, `tool`, `revoked` (bool — false for self-expiring providers), `self_expiring` (bool). Emitted for every issued credential so lifecycle stays symmetric. |
+| `AuditCredentialFailed` | `credential_failed` | R9 — could not materialize credentials; `provider`, `tool`, `reason`. Tool call fails closed. |
 
 Every event also carries `schema_version: "1.0"` (FWS-8) and `seq`
-(when emitted inside an invocation scope).
+(when emitted inside an invocation scope). Signing / hash-chaining
+adds `prev_hash`, `kid`, `sigp: "jcs-1"`, `sig` when
+`FORGE_AUDIT_SIGNING_KEY_B64` is set (R5+R6 / #212+#213).
 
 **Read**: `docs/security/audit-logging.md`.
 

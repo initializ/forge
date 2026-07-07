@@ -8,8 +8,8 @@ evaluated piece of content:
 | `allow`   | Content passes through unmodified                          | Every gate, default                                       |
 | `deny`    | Content is rejected — the caller must not admit it         | InputGate, OutputGate, ToolCallGate, ToolOutputGate       |
 | `modify`  | Content is admissible but must be rewritten first          | InputGate (masking), OutputGate (masking), ToolOutputGate (redact) |
-| `step_up` | Reserved for R4b (#210) — additional user interaction     | not yet emitted                                           |
-| `defer`   | Reserved for R4c (#211) — out-of-band lookup required      | not yet emitted                                           |
+| `step_up` | Caller must re-authenticate at a higher assurance level    | BeforeToolExec via `security.step_up.tools` (R4b / #210). HTTP 401 + RFC 9470 `WWW-Authenticate` header — see [step-up-auth.md](step-up-auth.md) |
+| `defer`   | Executor pauses; out-of-band decision resumes or denies    | BeforeToolExec via `security.defer.tools` (R4c / #211). Task status flips to `deferred` until `POST /tasks/{id}/decisions` arrives or the timeout auto-denies — see [defer-decisions.md](defer-decisions.md) |
 
 The `PolicyDecision` type and `PolicyResult` struct live in
 `forge-core/runtime/guardrails.go`. See the interface docstrings on

@@ -3122,6 +3122,23 @@ func (r *Runner) buildSystemPrompt() string {
 // buildSkillCatalog generates a lightweight catalog of binary-backed skills
 // (those without scripts) for the system prompt. Script-backed skills are
 // already registered as first-class tools and don't need catalog entries.
+// skillEntryHasScript reports whether a `## Tool:` entry is backed by a
+// script on disk, mirroring registerSkillTools' lookup. A script-backed
+// entry is registered as a first-class callable tool, so it is excluded
+// from the read_skill catalog's "provides" list.
+func (r *Runner) skillEntryHasScript(skillDir, toolName string) bool {
+	scriptName := strings.ReplaceAll(toolName, "_", "-")
+	if skillDir != "" {
+		if _, err := os.Stat(filepath.Join(r.cfg.WorkDir, "skills", skillDir, "scripts", scriptName+".sh")); err == nil {
+			return true
+		}
+	}
+	if _, err := os.Stat(filepath.Join(r.cfg.WorkDir, "skills", "scripts", scriptName+".sh")); err == nil {
+		return true
+	}
+	return false
+}
+
 func (r *Runner) buildSkillCatalog() string {
 	matches := r.discoverSkillFiles()
 	if len(matches) == 0 {
@@ -3141,50 +3158,95 @@ func (r *Runner) buildSkillCatalog() string {
 			catalogSkillDir = filepath.Base(filepath.Dir(match))
 		}
 
-		// If no ## Tool: entries were parsed but frontmatter has name+description,
-		// create a synthetic entry so the skill appears in the catalog summary.
-		if len(entries) == 0 && meta != nil && meta.Name != "" && meta.Description != "" {
-			entries = []contract.SkillEntry{{
-				Name:        meta.Name,
-				Description: meta.Description,
-				Metadata:    meta,
-			}}
+		// The identifier advertised here MUST be the one the LLM passes
+		// to read_skill, which resolves a skill by its loadable name:
+		// the frontmatter `name` (also what the agent card advertises),
+		// falling back to the skill directory / flat-file name. Listing a
+		// `## Tool:` heading name here instead was the skill-lookup bug —
+		// read_skill("<tool>") 404'd whenever the tool name differed from
+		// the skill's name/directory (e.g. tool "k8s_triage" in skill
+		// "k8s-incident-triage"). One catalog line per skill, not per tool.
+		loadName := ""
+		switch {
+		case meta != nil && meta.Name != "":
+			loadName = meta.Name
+		case catalogSkillDir != "":
+			loadName = catalogSkillDir
+		default:
+			loadName = strings.TrimSuffix(filepath.Base(match), ".md")
 		}
 
-		for _, entry := range entries {
-			// Skip skills that have scripts (already registered as tools)
-			scriptName := strings.ReplaceAll(entry.Name, "_", "-")
-			hasScript := false
-			// Check subdirectory layout: skills/{dir}/scripts/{name}.sh
-			if catalogSkillDir != "" {
-				sp := filepath.Join(r.cfg.WorkDir, "skills", catalogSkillDir, "scripts", scriptName+".sh")
-				if _, err := os.Stat(sp); err == nil {
-					hasScript = true
+		// Description: prefer the frontmatter summary, else the first
+		// parsed tool entry that carries one.
+		desc := ""
+		if meta != nil {
+			desc = meta.Description
+		}
+		if desc == "" {
+			for _, e := range entries {
+				if e.Description != "" {
+					desc = e.Description
+					break
 				}
 			}
-			// Check legacy flat layout: skills/scripts/{name}.sh
-			if !hasScript {
-				sp := filepath.Join(r.cfg.WorkDir, "skills", "scripts", scriptName+".sh")
-				if _, err := os.Stat(sp); err == nil {
-					hasScript = true
+		}
+
+		if loadName == "" || desc == "" {
+			continue
+		}
+
+		// A `## Tool:` entry that is script- or binary-backed is registered
+		// as a first-class callable tool (see registerSkillTools) — the LLM
+		// invokes it directly by name and it must NOT appear here. Everything
+		// else is an instruction-only capability that the LLM reaches by
+		// loading this skill and following its steps. Collect those so the
+		// catalog surfaces WHAT the skill can do (tool selection) while the
+		// line's leading identifier stays the read_skill key (skill loading).
+		runtimeMode := contract.SkillRuntimeScript
+		if meta != nil && meta.Metadata != nil {
+			if forgeMap, ok := meta.Metadata["forge"]; ok {
+				if raw, ok := forgeMap["runtime"]; ok {
+					if s, ok := raw.(string); ok && s != "" {
+						runtimeMode = s
+					}
 				}
 			}
-			if hasScript {
+		}
+		var provides []string
+		usesCLI := false
+		for _, e := range entries {
+			if e.Name == "" {
 				continue
 			}
-
-			if entry.Name != "" && entry.Description != "" {
-				line := fmt.Sprintf("- %s: %s", entry.Name, entry.Description)
-				// Note that skill uses cli_execute without listing specific
-				// binary names — the LLM already sees the allowed enum in the
-				// tool schema, and listing names here leaks internal tooling
-				// when users ask "what skills/tools do you have?"
-				if entry.ForgeReqs != nil && len(entry.ForgeReqs.Bins) > 0 {
-					line += " (uses cli_execute)"
-				}
-				catalogEntries = append(catalogEntries, line)
+			if e.ForgeReqs != nil && len(e.ForgeReqs.Bins) > 0 {
+				usesCLI = true
 			}
+			if runtimeMode == contract.SkillRuntimeBinary || r.skillEntryHasScript(catalogSkillDir, e.Name) {
+				continue // registered as a callable tool; not a read_skill capability
+			}
+			provides = append(provides, e.Name)
 		}
+
+		// A fully script/binary-backed skill (has ## Tool: entries but none
+		// are instruction-only) is already exposed as callable tools — skip
+		// it. A pure-frontmatter skill (no ## Tool: entries) is an
+		// instruction skill and is kept.
+		if len(entries) > 0 && len(provides) == 0 {
+			continue
+		}
+
+		line := fmt.Sprintf("- %s: %s", loadName, desc)
+		if len(provides) > 0 {
+			line += fmt.Sprintf(" [provides: %s]", strings.Join(provides, ", "))
+		}
+		// Note that skill uses cli_execute without listing specific
+		// binary names — the LLM already sees the allowed enum in the
+		// tool schema, and listing names here leaks internal tooling
+		// when users ask "what skills/tools do you have?"
+		if usesCLI {
+			line += " (uses cli_execute)"
+		}
+		catalogEntries = append(catalogEntries, line)
 	}
 
 	if len(catalogEntries) == 0 {
@@ -3193,7 +3255,8 @@ func (r *Runner) buildSkillCatalog() string {
 
 	var b strings.Builder
 	b.WriteString("## Available Skills\n\n")
-	b.WriteString("Use `read_skill` to load full instructions for a skill before using it.\n\n")
+	b.WriteString("To use a skill, call `read_skill` with the skill name (the identifier before the colon) to load its full instructions, then follow them. " +
+		"`provides:` lists the capabilities inside a skill — they are documentation loaded with the skill, not tools you call directly.\n\n")
 	for _, entry := range catalogEntries {
 		b.WriteString(entry)
 		b.WriteString("\n")

@@ -255,6 +255,68 @@ func TestExtractArtifactsNoMatch(t *testing.T) {
 	}
 }
 
+// TestExtractArtifactsTolerant covers the LLM-deviation cases that the
+// old strict quadruple-backtick regex silently dropped — each of these
+// used to leave the preview pane empty.
+func TestExtractArtifactsTolerant(t *testing.T) {
+	cases := []struct {
+		name        string
+		response    string
+		wantSkill   string // substring expected in skillMD ("" = skip)
+		scriptName  string // expected script filename ("" = skip)
+		scriptSubst string // substring expected in that script
+	}{
+		{
+			name:      "triple backticks instead of quadruple",
+			response:  "```skill.md\n---\nname: triple\ndescription: d\n---\n# T\n```",
+			wantSkill: "name: triple",
+		},
+		{
+			name:      "label has trailing whitespace",
+			response:  "````skill.md \n---\nname: trail\ndescription: d\n---\n# T\n````",
+			wantSkill: "name: trail",
+		},
+		{
+			name:        "script label with a space after colon",
+			response:    "````script: fetch-data.sh\n#!/usr/bin/env bash\nset -euo pipefail\necho hi\n````",
+			scriptName:  "fetch-data.sh",
+			scriptSubst: "echo hi",
+		},
+		{
+			name:      "five-backtick opener and closer",
+			response:  "`````skill.md\n---\nname: five\ndescription: d\n---\n# T\n`````",
+			wantSkill: "name: five",
+		},
+		{
+			name:      "language-tagged block with frontmatter (fallback)",
+			response:  "Here you go:\n```yaml\n---\nname: fallback\ndescription: d\n---\n# T\n```",
+			wantSkill: "name: fallback",
+		},
+		{
+			name:      "closing fence with more backticks than opener",
+			response:  "````skill.md\n---\nname: mism\ndescription: d\n---\n# T\n`````",
+			wantSkill: "name: mism",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			skillMD, scripts := extractArtifacts(tc.response)
+			if tc.wantSkill != "" && !contains(skillMD, tc.wantSkill) {
+				t.Errorf("skillMD missing %q; got: %q", tc.wantSkill, skillMD)
+			}
+			if tc.scriptName != "" {
+				got, ok := scripts[tc.scriptName]
+				if !ok {
+					t.Fatalf("expected script %q; got scripts %v", tc.scriptName, scripts)
+				}
+				if !contains(got, tc.scriptSubst) {
+					t.Errorf("script %q missing %q; got: %q", tc.scriptName, tc.scriptSubst, got)
+				}
+			}
+		})
+	}
+}
+
 func TestValidateSkillMDUndeclaredEgressWarning(t *testing.T) {
 	content := `---
 name: my-skill

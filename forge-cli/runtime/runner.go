@@ -421,6 +421,9 @@ func (r *Runner) Run(ctx context.Context) error {
 	// cause the BeforeToolExec hook to pause the executor until a
 	// decision arrives on POST /tasks/{id}/decisions (or the
 	// timeout auto-denies).
+	if err := r.cfg.Config.Security.Defer.Validate(); err != nil {
+		return fmt.Errorf("defer: %w", err)
+	}
 	if r.cfg.Config.Security.Defer.Enabled {
 		r.deferEngine = deferengine.New()
 		r.logger.Info("defer engine wired", map[string]any{

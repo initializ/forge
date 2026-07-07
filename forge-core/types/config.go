@@ -368,6 +368,22 @@ type DeferConfig struct {
 	DefaultTo string `yaml:"default_to,omitempty"`
 }
 
+// Validate returns an error when the config would silently no-op or
+// misroute at runtime. Called at Runner construction so an operator
+// who typos `enabled: true` without declaring any tools fails
+// startup rather than getting a "defer engine wired" log line and
+// zero enforcement. Matches the fail-loud posture of the sibling R4
+// PRs (step_up + intent_alignment).
+func (c DeferConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	if len(c.Tools) == 0 {
+		return fmt.Errorf("security.defer: enabled but no tools declared — either list tools under `defer.tools:` or set `defer.enabled: false`")
+	}
+	return nil
+}
+
 // DeferToolConfig configures deferral for one tool.
 type DeferToolConfig struct {
 	// To identifies the decision target (channel, human, external

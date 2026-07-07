@@ -220,9 +220,12 @@ type TaskStatusStore interface {
 
 // registerDecisionsEndpoint wires POST /tasks/{id}/decisions so
 // external approvers (webhook from Slack, human ops UI) can
-// resolve a pending deferral. Returns 404 for unknown tasks,
-// 409 for tasks not in a deferred state, 200 with the resolution
-// payload on success.
+// resolve a pending deferral. Returns 404 for tasks with no
+// pending deferral (unknown task and not-currently-deferred
+// collapse into the same case — `Peek` can't tell them apart),
+// 409 only for the narrow race where Peek hit but Resolve lost,
+// 400 for malformed bodies or invalid decisions, and 200 with the
+// resolution payload on success.
 func (r *Runner) registerDecisionsEndpoint(srv *server.Server, auditLogger *coreruntime.AuditLogger) {
 	if r.deferEngine == nil {
 		return
@@ -232,8 +235,9 @@ func (r *Runner) registerDecisionsEndpoint(srv *server.Server, auditLogger *core
 
 // makeDecisionsHandler returns the http.HandlerFunc for
 // POST /tasks/{id}/decisions. Extracted from the closure in
-// registerDecisionsEndpoint so `defer_test.go` can exercise
-// status-code paths (404 / 400 / 409 / 200) without spinning up
+// registerDecisionsEndpoint so `defer_test.go` can exercise the
+// status-code paths (400 malformed / 404 no-pending-deferral /
+// 409 Peek-vs-Resolve race / 200 resolved) without spinning up
 // the full a2a server.
 func makeDecisionsHandler(engine *deferengine.Engine) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {

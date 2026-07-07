@@ -106,6 +106,20 @@ Truncated to 512 runes on the audit event to bound sink pressure.
   paths as R3/R4b (REST, JSON-RPC, SSE). The HTTP client's
   connection stays open through the wait; adjust reverse-proxy
   timeouts (~`timeout` + a margin) accordingly.
+
+  **Choose your transport for the approval window.** Synchronous
+  `tasks/send` requires the caller to hold one HTTP request open
+  for the entire `timeout`. That's fine for short (~seconds)
+  approvals in interactive tools, but any window measured in
+  minutes should use `tasks/sendSubscribe` (SSE) or the async
+  A2A envelope so the caller can drop and reconnect. If either
+  the client's read-timeout or the server's write-timeout fires
+  before the approver responds, the ctx cancels — the executor
+  cleans up correctly (Handle deregistered, status restored,
+  audit line for the abandoned wait), but the approval is
+  effectively lost and the operator has to re-drive the task.
+  Rule of thumb: `min(client_read_timeout, server_write_timeout,
+  reverse_proxy_idle_timeout) > defer.timeout + margin`.
 - **Task-status transitions** — the a2a task store flips to
   `deferred` for the duration of the wait; parallel GETs on
   `/tasks/{id}` observe it.

@@ -81,6 +81,16 @@ const (
 	AuditCredentialRevoked = "credential_revoked"
 	AuditCredentialFailed  = "credential_failed"
 
+	// AuditIntentAlignment is emitted per BeforeToolExec when the R3
+	// intent-alignment engine (#208) is enabled. Fields carry:
+	//   - tool     : the tool name being scored
+	//   - score    : cosine similarity ∈ [-1, 1] (or "NaN" on error)
+	//   - decision : "allow" / "warn" / "deny"
+	//   - reason   : short human-readable classification
+	// Payload never carries the LLM prompt or tool args — only the
+	// scored decision. See docs/security/intent-alignment.md.
+	AuditIntentAlignment = "intent_alignment"
+
 	// AuditPolicyLoaded is emitted once at agent startup when a
 	// non-zero platform policy is present. Carries a summary of the
 	// effective policy (sizes of deny lists, max bounds) so audit

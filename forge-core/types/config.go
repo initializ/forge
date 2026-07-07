@@ -170,6 +170,69 @@ type SecurityConfig struct {
 	// directory when not absolute. The `forge build --policy`
 	// flag overrides this field.
 	PolicyPath string `yaml:"policy_path,omitempty"`
+
+	// IntentAlignment configures the R3 intent-alignment check
+	// (governance #208): every tool call is scored against the
+	// stated agent intent captured on tasks/send entry. Opt-in;
+	// see docs/security/intent-alignment.md.
+	IntentAlignment IntentAlignmentConfig `yaml:"intent_alignment,omitempty"`
+}
+
+// IntentAlignmentConfig is the forge.yaml-facing block for the R3
+// intent-alignment check.
+//
+// Defaults ship as "off" — operators explicitly turn it on after
+// picking an embedder provider. When on, an unavailable embedder
+// causes tool calls to fail closed (deny) rather than silently
+// bypass the check.
+//
+// Recommended rollout: start warn-only for a sprint (leave
+// `hard_threshold` at the default 0.3 or lower, tune `threshold`)
+// to observe the score distribution before enabling denies.
+type IntentAlignmentConfig struct {
+	// Enabled turns the check on. Default false → no embedder calls,
+	// no hooks registered, wire shape unchanged.
+	Enabled bool `yaml:"enabled,omitempty"`
+
+	// Provider is the embedder provider name — one of "openai",
+	// "gemini", "ollama". Must produce an embedder via
+	// forge-core/llm/providers.NewEmbedder.
+	Provider string `yaml:"provider,omitempty"`
+
+	// Model is the embedder-model name (e.g. "text-embedding-3-small",
+	// "nomic-embed-text"). Passed through to the provider.
+	Model string `yaml:"model,omitempty"`
+
+	// BaseURL overrides the provider's default endpoint — for
+	// self-hosted OpenAI-compatible gateways or Ollama on a
+	// non-localhost host.
+	BaseURL string `yaml:"base_url,omitempty"`
+
+	// APIKeyEnv names the env var to source the API key from.
+	// Defaults follow the provider: OPENAI_API_KEY / GEMINI_API_KEY.
+	// Empty for Ollama (unauthenticated).
+	APIKeyEnv string `yaml:"api_key_env,omitempty"`
+
+	// Threshold is the soft floor. Scores strictly below produce
+	// WARN. Sensible default 0.5. Pointer so the operator can
+	// distinguish "unset, apply default" from "explicit 0" — 0 is
+	// a meaningful value on the cosine range [-1,1] and used to
+	// silently collide with the zero-value default.
+	Threshold *float64 `yaml:"threshold,omitempty"`
+
+	// HardThreshold is the hard floor. Scores strictly below DENY
+	// the tool call. Sensible default 0.3. Set equal to Threshold
+	// to disable the WARN tier; set to a negative value (e.g. -1)
+	// to run warn-only during the initial rollout — see the
+	// "Recommended rollout" section in docs/security/intent-
+	// alignment.md. Pointer so an explicit 0 is preserved (see
+	// Threshold's comment).
+	HardThreshold *float64 `yaml:"hard_threshold,omitempty"`
+
+	// CacheSize is the max entries in the action-side embedding LRU.
+	// 0 disables the LRU (still caches per-task intent). Default
+	// 1024 when enabled and unspecified.
+	CacheSize int `yaml:"cache_size,omitempty"`
 }
 
 // ObservabilityConfig groups telemetry-related sub-blocks. Today it

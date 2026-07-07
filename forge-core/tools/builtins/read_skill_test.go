@@ -94,6 +94,62 @@ func TestReadSkill_NotFoundListsAvailable(t *testing.T) {
 	}
 }
 
+// TestReadSkill_ListsSkillFiles — loading a skill surfaces its helper
+// scripts (any language) and reference material so the model knows they
+// exist and can read/run them.
+func TestReadSkill_ListsSkillFiles(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, root, "k8s-incident-triage", "k8s-incident-triage", "# body\n")
+	base := filepath.Join(root, "skills", "k8s-incident-triage")
+	for _, f := range []struct{ rel, body string }{
+		{"scripts/triage.py", "print('x')"},
+		{"scripts/collect.sh", "echo x"},
+		{"scripts/render.js", "console.log(1)"},
+		{"reference/runbook.md", "# runbook"},
+		{"reference/slo.yaml", "target: 0.99"},
+	} {
+		p := filepath.Join(base, f.rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(f.body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out := readSkill(t, root, "k8s-incident-triage")
+	for _, want := range []string{
+		"## Skill files",
+		"skills/k8s-incident-triage/scripts/triage.py — python",
+		"skills/k8s-incident-triage/scripts/collect.sh — shell",
+		"skills/k8s-incident-triage/scripts/render.js — javascript",
+		"skills/k8s-incident-triage/reference/runbook.md",
+		"skills/k8s-incident-triage/reference/slo.yaml",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("skill files listing missing %q\nfull:\n%s", want, out)
+		}
+	}
+	// SKILL.md itself must not be listed.
+	if strings.Contains(out, "skills/k8s-incident-triage/SKILL.md") {
+		t.Errorf("SKILL.md should not be listed among skill files:\n%s", out)
+	}
+}
+
+// TestReadSkill_FlatFormatNoFileListing — a flat skills/<name>.md skill
+// has no companion directory, so no file listing is appended.
+func TestReadSkill_FlatFormatNoFileListing(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "skills", "weather.md"), []byte("---\nname: weather\ndescription: d\n---\nbody"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out := readSkill(t, root, "weather"); strings.Contains(out, "## Skill files") {
+		t.Errorf("flat skill should have no file listing: %s", out)
+	}
+}
+
 // TestReadSkill_TraversalRejected keeps the directory-traversal guard.
 func TestReadSkill_TraversalRejected(t *testing.T) {
 	root := t.TempDir()

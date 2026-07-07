@@ -60,53 +60,129 @@ func (t *ReadSkillTool) Execute(_ context.Context, args json.RawMessage) (string
 		return `{"error": "invalid skill name"}`, nil
 	}
 
-	// 1) Fast path: direct filesystem lookup by the requested name and
-	//    its underscore->hyphen variant.
-	if data, ok := t.readByName(input.Name); ok {
-		return string(data), nil
-	}
-
-	// 2) Index path: match the requested name against every skill's
-	//    frontmatter `name` (the loadable identifier the catalog and the
-	//    agent card advertise) and its directory/file name, normalized so
-	//    case and underscore/hyphen differences don't matter. This resolves
-	//    the name even when the skill directory differs from the skill's
-	//    frontmatter name (e.g. tool advertised as "k8s-incident-triage"
-	//    living in a directory of a different name).
-	index, available := t.buildNameIndex()
-	if path, ok := index[normalizeSkillKey(input.Name)]; ok {
-		if data, err := os.ReadFile(path); err == nil { //nolint:gosec // path derived from workDir scan, name sanitized above
-			return string(data), nil
+	// Resolve the SKILL.md path: direct filesystem lookup first, then a
+	// frontmatter-name index so the requested name resolves even when the
+	// skill directory differs from the skill's frontmatter name.
+	path := t.resolvePath(input.Name)
+	if path == "" {
+		// Not found — return the available skill names so the model can
+		// retry with a valid identifier instead of giving up.
+		if _, available := t.buildNameIndex(); len(available) > 0 {
+			list, _ := json.Marshal(available)
+			return fmt.Sprintf(`{"error": "skill %q not found", "available_skills": %s}`, input.Name, list), nil
 		}
+		return fmt.Sprintf(`{"error": "skill %q not found"}`, input.Name), nil
 	}
 
-	// 3) Not found — return the available skill names so the model can
-	//    retry with a valid identifier instead of giving up.
-	if len(available) > 0 {
-		list, _ := json.Marshal(available)
-		return fmt.Sprintf(`{"error": "skill %q not found", "available_skills": %s}`, input.Name, list), nil
+	data, err := os.ReadFile(path) //nolint:gosec // path derived from workDir scan / sanitized name
+	if err != nil {
+		return fmt.Sprintf(`{"error": "skill %q not found"}`, input.Name), nil
 	}
-	return fmt.Sprintf(`{"error": "skill %q not found"}`, input.Name), nil
+	content := string(data)
+
+	// Surface the rest of the skill's directory — helper scripts (shell,
+	// python, javascript, ...), reference material, and additional
+	// markdown all live alongside SKILL.md and reach the running agent
+	// (COPY . . at build time), but are invisible unless listed. The
+	// model can then read or execute them as the skill's steps describe.
+	if footer := t.skillFilesFooter(path); footer != "" {
+		content += "\n\n" + footer
+	}
+	return content, nil
 }
 
-// readByName tries the two on-disk layouts for the given name and its
-// underscore->hyphen variant. Returns (contents, true) on the first hit.
-func (t *ReadSkillTool) readByName(name string) ([]byte, bool) {
+// resolvePath returns the SKILL.md path for the requested name, or "" if
+// no skill resolves. Tries the on-disk layouts (and the underscore->hyphen
+// variant) first, then the normalized frontmatter-name index.
+func (t *ReadSkillTool) resolvePath(name string) string {
 	variants := []string{name}
 	if hyphenated := strings.ReplaceAll(name, "_", "-"); hyphenated != name {
 		variants = append(variants, hyphenated)
 	}
 	for _, n := range variants {
-		// Flat format: skills/{name}.md
-		if data, err := os.ReadFile(filepath.Join(t.workDir, "skills", n+".md")); err == nil { //nolint:gosec // name sanitized by caller
-			return data, true
+		if p := filepath.Join(t.workDir, "skills", n+".md"); fileExists(p) {
+			return p
 		}
-		// Subdirectory format: skills/{name}/SKILL.md
-		if data, err := os.ReadFile(filepath.Join(t.workDir, "skills", n, "SKILL.md")); err == nil { //nolint:gosec // name sanitized by caller
-			return data, true
+		if p := filepath.Join(t.workDir, "skills", n, "SKILL.md"); fileExists(p) {
+			return p
 		}
 	}
-	return nil, false
+	if index, _ := t.buildNameIndex(); index != nil {
+		if p, ok := index[normalizeSkillKey(name)]; ok {
+			return p
+		}
+	}
+	return ""
+}
+
+func fileExists(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && !info.IsDir()
+}
+
+// scriptLang maps a file extension to the interpreter language, for
+// annotating helper scripts in the file listing. Mirrors the languages
+// forge recognizes for tool scripts.
+func scriptLang(ext string) string {
+	switch strings.ToLower(ext) {
+	case ".sh", ".bash":
+		return "shell"
+	case ".py":
+		return "python"
+	case ".js":
+		return "javascript"
+	case ".ts":
+		return "typescript"
+	default:
+		return ""
+	}
+}
+
+// skillFilesFooter lists the other files living in a subdirectory skill's
+// folder (everything except the SKILL.md itself), so the model knows the
+// skill ships helper scripts and reference material it can read or run.
+// Paths are relative to the agent working directory so the model can pass
+// them straight to file tools. Returns "" for flat (single-file) skills
+// or when the folder holds nothing else.
+func (t *ReadSkillTool) skillFilesFooter(skillMdPath string) string {
+	if filepath.Base(skillMdPath) != "SKILL.md" {
+		return "" // flat skills/<name>.md layout has no companion directory
+	}
+	dir := filepath.Dir(skillMdPath)
+	var files []string
+	const maxFiles = 200
+	_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || len(files) >= maxFiles {
+			return nil
+		}
+		if p == skillMdPath {
+			return nil
+		}
+		rel, relErr := filepath.Rel(t.workDir, p)
+		if relErr != nil {
+			rel = p
+		}
+		if lang := scriptLang(filepath.Ext(p)); lang != "" {
+			files = append(files, rel+" — "+lang)
+		} else {
+			files = append(files, rel)
+		}
+		return nil
+	})
+	if len(files) == 0 {
+		return ""
+	}
+	sort.Strings(files)
+	var b strings.Builder
+	b.WriteString("## Skill files\n")
+	b.WriteString("This skill ships the following supporting files (relative to the agent root). ")
+	b.WriteString("Read or execute them via your file/exec tools as the steps above describe:\n")
+	for _, f := range files {
+		b.WriteString("- ")
+		b.WriteString(f)
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 // buildNameIndex scans the skills directory and returns:

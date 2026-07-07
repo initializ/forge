@@ -3123,9 +3123,18 @@ func (r *Runner) buildSystemPrompt() string {
 // (those without scripts) for the system prompt. Script-backed skills are
 // already registered as first-class tools and don't need catalog entries.
 // skillEntryHasScript reports whether a `## Tool:` entry is backed by a
-// script on disk, mirroring registerSkillTools' lookup. A script-backed
-// entry is registered as a first-class callable tool, so it is excluded
-// from the read_skill catalog's "provides" list.
+// script that registerSkillTools actually registers as a first-class
+// callable tool — currently only `scripts/<name>.sh`. Such tools are
+// excluded from the read_skill catalog's "provides" list because the LLM
+// invokes them directly by name.
+//
+// This deliberately mirrors registerSkillTools' `.sh`-only lookup, NOT the
+// full set of script languages. A tool backed by a `.py`/`.js` script is
+// not yet registered as a callable tool, so it stays in "provides" (the
+// LLM reaches it by loading the skill), and read_skill's file listing
+// surfaces the actual script. Keep this in lockstep with
+// registerSkillTools: if it learns to register other script languages,
+// broaden this check at the same time or those tools vanish from both.
 func (r *Runner) skillEntryHasScript(skillDir, toolName string) bool {
 	scriptName := strings.ReplaceAll(toolName, "_", "-")
 	if skillDir != "" {

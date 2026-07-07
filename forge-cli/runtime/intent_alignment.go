@@ -70,20 +70,24 @@ func (r *Runner) buildIntentEngine() (*intent.Engine, error) {
 	}
 	// R7 (#214) drift analyzer — opt-in on top of R3. Requires
 	// alignment to also be enabled; NewWithDrift enforces that.
+	//
+	// drift_threshold is a pointer so an operator can distinguish
+	// "unset, apply default" from "explicit 0" — 0 is a
+	// meaningful floor on cosine's [-1,1] range and used to
+	// silently collide with the zero-value default (0.35).
 	driftCfg := r.cfg.Config.Security.IntentDrift
 	drift := intent.DriftConfig{
-		Enabled:        driftCfg.Enabled,
-		Window:         driftCfg.Window,
-		DriftThreshold: driftCfg.DriftThreshold,
-		MonotoneN:      driftCfg.MonotoneN,
+		Enabled:   driftCfg.Enabled,
+		Window:    driftCfg.Window,
+		MonotoneN: driftCfg.MonotoneN,
 	}
-	if drift.Enabled {
-		if drift.Window == 0 {
-			drift.Window = 5
-		}
-		if drift.DriftThreshold == 0 {
-			drift.DriftThreshold = 0.35
-		}
+	if driftCfg.DriftThreshold != nil {
+		drift.DriftThreshold = *driftCfg.DriftThreshold
+	} else if drift.Enabled {
+		drift.DriftThreshold = 0.35
+	}
+	if drift.Enabled && drift.Window == 0 {
+		drift.Window = 5
 	}
 	return intent.NewWithDrift(intent.Config{
 		Enabled:       true,

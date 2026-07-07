@@ -164,6 +164,18 @@ flags drift when the last `window` scores' mean falls strictly below
 decreasing (the "boiling frog" pattern where each individual step is
 above the R3 threshold but the trend is unmistakably down).
 
+> **`monotone_n` must be ≤ `window`.** The ring buffer holds only
+> `window` scores; if `monotone_n > window` the monotone check has
+> nothing to look at and never fires. Startup rejects the misconfig
+> rather than silently disabling one half of the detector — an
+> operator asked for slow-drift detection and needs to know if they
+> can't get it.
+
+> **`drift_threshold: 0` is preserved.** Since scores live on cosine's
+> `[-1,1]` range, `0` is a meaningful floor (flag only when the mean
+> goes negative). The field is a `*float64` — unset uses the 0.35
+> default, an explicit `0` stays `0`.
+
 `intent_drift` events are **state-transition** — one event fires
 when the task first enters drift, one fires when it recovers.
 Long-drift stretches don't flood the audit stream.

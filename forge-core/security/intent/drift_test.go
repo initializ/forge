@@ -57,6 +57,12 @@ func TestDriftConfig_Validate(t *testing.T) {
 		{"monotone 1 rejected", DriftConfig{Enabled: true, Window: 5, DriftThreshold: 0.3, MonotoneN: 1}, true},
 		{"monotone 0 disables", DriftConfig{Enabled: true, Window: 5, DriftThreshold: 0.3, MonotoneN: 0}, false},
 		{"monotone 3 ok", DriftConfig{Enabled: true, Window: 5, DriftThreshold: 0.3, MonotoneN: 3}, false},
+		// #246 review: monotone_n > window silently disabled the
+		// monotone check because the ring never accumulates enough
+		// scores to satisfy `len(scores) >= n`. Now rejected at
+		// startup so the operator sees the misconfig.
+		{"monotone_n > window rejected", DriftConfig{Enabled: true, Window: 3, DriftThreshold: 0.3, MonotoneN: 5}, true},
+		{"monotone_n == window ok", DriftConfig{Enabled: true, Window: 3, DriftThreshold: 0.3, MonotoneN: 3}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -50,6 +50,16 @@ func (c DriftConfig) Validate() error {
 	if c.MonotoneN < 0 || (c.MonotoneN > 0 && c.MonotoneN < 2) {
 		return fmt.Errorf("intent_drift: monotone_n %d invalid (must be 0 or ≥ 2)", c.MonotoneN)
 	}
+	// The ring holds only Window scores. If MonotoneN > Window,
+	// checkMonotoneDown's `len(scores) < n` guard is permanently
+	// true and the monotone check silently never fires — an
+	// operator would believe they have slow-drift detection while
+	// having none. Reject rather than clamp so the misconfig is
+	// visible at startup.
+	if c.MonotoneN > c.Window {
+		return fmt.Errorf("intent_drift: monotone_n %d > window %d (ring never accumulates enough scores for the monotone check to trip; either raise window or lower monotone_n)",
+			c.MonotoneN, c.Window)
+	}
 	return nil
 }
 

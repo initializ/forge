@@ -212,8 +212,11 @@ type IntentDriftConfig struct {
 	// window mean drops strictly below this value, an intent_drift
 	// event fires. Sensible default 0.35 (chosen slightly above
 	// the R3 hard_threshold default 0.3 so drift is a leading
-	// indicator, not a same-event trailing one).
-	DriftThreshold float64 `yaml:"drift_threshold,omitempty"`
+	// indicator, not a same-event trailing one). Pointer so an
+	// explicit 0 (a meaningful "only flag when the mean goes
+	// negative" floor on cosine's [-1,1] range) survives the
+	// runner's zero-value defaulting.
+	DriftThreshold *float64 `yaml:"drift_threshold,omitempty"`
 
 	// MonotoneN, when non-zero, additionally emits intent_drift on
 	// N-consecutive strictly-decreasing scores even if the mean is

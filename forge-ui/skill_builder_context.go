@@ -177,6 +177,24 @@ Example: k8s-incident-triage uses ` + "`" + `kubectl` + "`" + ` — it only need
 For custom logic, provide executable scripts in a ` + "`" + `scripts/` + "`" + ` directory.
 Tool name maps to script: underscores → hyphens (e.g. ` + "`" + `my_search` + "`" + ` → ` + "`" + `scripts/my-search.sh` + "`" + `).
 
+### Skill-relative references (files & scripts the instructions point to)
+Everything a skill ships lives in its OWN directory and can be referenced by a
+path RELATIVE TO THE SKILL in the instructions — no absolute paths, no ` + "`" + `..` + "`" + `:
+- To have the agent READ a bundled file, write e.g. "read ` + "`" + `reference/runbook.md` + "`" + `";
+  the agent loads it with ` + "`" + `read_skill` + "`" + ` (its ` + "`" + `file` + "`" + ` argument), resolved against the
+  skill directory.
+- To have the agent RUN a bundled helper script, write e.g. "run
+  ` + "`" + `scripts/check.py` + "`" + `"; the agent runs it with ` + "`" + `run_skill_script` + "`" + `, which resolves the
+  path against the skill directory, picks the interpreter by extension
+  (` + "`" + `.sh` + "`" + `→bash, ` + "`" + `.py` + "`" + `→python3, ` + "`" + `.js` + "`" + `→node), and executes it WITH THE SKILL
+  DIRECTORY AS THE WORKING DIRECTORY (so the script's own relative reads
+  resolve). JSON args are passed to the script as its first positional
+  argument (` + "`" + `$1` + "`" + `).
+
+Runnable helper-script languages: shell (` + "`" + `.sh` + "`" + `), Python (` + "`" + `.py` + "`" + `), JavaScript
+(` + "`" + `.js` + "`" + `). Add the interpreter to ` + "`" + `requires.bins` + "`" + ` (` + "`" + `python3` + "`" + ` / ` + "`" + `node` + "`" + `) when the
+skill ships that kind of script. TypeScript must be shipped as compiled ` + "`" + `.js` + "`" + `.
+
 ## Script Decision Logic
 
 Prefer this order:

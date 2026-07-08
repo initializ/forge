@@ -816,6 +816,23 @@ func (r *Runner) Run(ctx context.Context) error {
 				}
 			}
 
+			// run_skill_script (#251): execute a skill's own bundled
+			// helper scripts (shell / python / javascript) by path,
+			// resolved relative to the skill directory and run with that
+			// dir as CWD. Registered independently of cli_execute — a
+			// skill may ship only non-.sh helper scripts. Shares the
+			// egress proxy + skill env passthrough.
+			{
+				var envPass []string
+				if r.derivedCLIConfig != nil {
+					envPass = r.derivedCLIConfig.EnvPassthrough
+				}
+				rss := clitools.NewRunSkillScriptTool(r.cfg.WorkDir, proxyURL, envPass)
+				if regErr := reg.Register(rss); regErr != nil {
+					r.logger.Warn("failed to register run_skill_script", map[string]any{"error": regErr.Error()})
+				}
+			}
+
 			// Discover custom tools in tools/ directory
 			toolsDir := filepath.Join(r.cfg.WorkDir, "tools")
 			discovered := clitools.DiscoverTools(toolsDir)
@@ -3244,11 +3261,15 @@ func (r *Runner) buildSystemPrompt() string {
 //
 // This deliberately mirrors registerSkillTools' `.sh`-only lookup, NOT the
 // full set of script languages. A tool backed by a `.py`/`.js` script is
-// not yet registered as a callable tool, so it stays in "provides" (the
-// LLM reaches it by loading the skill), and read_skill's file listing
-// surfaces the actual script. Keep this in lockstep with
-// registerSkillTools: if it learns to register other script languages,
-// broaden this check at the same time or those tools vanish from both.
+// not a directly-callable registered tool, so it correctly stays in
+// "provides" — and that is now sufficient, not a gap: the LLM reaches it
+// by loading the skill (read_skill's file listing surfaces the script) and
+// runs it with the `run_skill_script` tool, which resolves the path
+// relative to the skill dir and picks the interpreter by extension (#251).
+// So `.sh`/`.py`/`.js` scripts are all runnable; only `.sh` also gets the
+// first-class `## Tool:` registration. Keep this in lockstep with
+// registerSkillTools: if IT ever registers other languages as callable
+// tools, broaden this check at the same time or those tools vanish from both.
 func (r *Runner) skillEntryHasScript(skillDir, toolName string) bool {
 	scriptName := strings.ReplaceAll(toolName, "_", "-")
 	if skillDir != "" {

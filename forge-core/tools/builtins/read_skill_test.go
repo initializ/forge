@@ -35,6 +35,16 @@ func readSkill(t *testing.T, root, name string) string {
 
 func mustJSON(s string) string { b, _ := json.Marshal(s); return string(b) }
 
+func readSkillFile(t *testing.T, root, name, file string) string {
+	t.Helper()
+	out, err := NewReadSkillTool(root).Execute(context.Background(),
+		json.RawMessage(`{"name":`+mustJSON(name)+`,"file":`+mustJSON(file)+`}`))
+	if err != nil {
+		t.Fatalf("Execute(%q,%q): %v", name, file, err)
+	}
+	return out
+}
+
 // TestReadSkill_ResolvesByFrontmatterNameWhenDirDiffers is the core
 // regression for the skill-lookup bug: the loadable name advertised to
 // the LLM (the frontmatter name) must resolve even when the skill
@@ -147,6 +157,65 @@ func TestReadSkill_FlatFormatNoFileListing(t *testing.T) {
 	}
 	if out := readSkill(t, root, "weather"); strings.Contains(out, "## Skill files") {
 		t.Errorf("flat skill should have no file listing: %s", out)
+	}
+}
+
+// TestReadSkill_FileParam reads a file relative to the skill's directory
+// (issue #251) — the "read reference/runbook.md" case.
+func TestReadSkill_FileParam(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, root, "owl", "owl", "# Owl\n")
+	base := filepath.Join(root, "skills", "owl")
+	if err := os.MkdirAll(filepath.Join(base, "reference"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "reference", "runbook.md"), []byte("# Runbook\nsteps"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := readSkillFile(t, root, "owl", "reference/runbook.md")
+	if !strings.Contains(out, "# Runbook") {
+		t.Errorf("expected runbook contents, got: %s", out)
+	}
+	if o := readSkillFile(t, root, "owl", "nope.md"); !strings.Contains(o, "not found") {
+		t.Errorf("expected not-found for missing file, got: %s", o)
+	}
+}
+
+// TestReadSkill_FileParamTraversal rejects file paths escaping the skill dir.
+func TestReadSkill_FileParamTraversal(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, root, "owl", "owl", "# Owl\n")
+	if err := os.WriteFile(filepath.Join(root, "secret.txt"), []byte("LEAK"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"../../secret.txt", "../secret.txt", "/etc/hostname"} {
+		out := readSkillFile(t, root, "owl", bad)
+		if strings.Contains(out, "LEAK") || !strings.Contains(out, "error") {
+			t.Errorf("traversal %q not rejected: %s", bad, out)
+		}
+	}
+}
+
+func TestSkillDirAndSafeJoin(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, root, "kube", "k8s-incident-triage", "# body\n")
+	for _, name := range []string{"kube", "k8s-incident-triage", "k8s_incident_triage"} {
+		dir, ok := SkillDir(root, name)
+		if !ok || filepath.Base(dir) != "kube" {
+			t.Errorf("SkillDir(%q) = %q,%v", name, dir, ok)
+		}
+	}
+	if _, ok := SkillDir(root, "ghost"); ok {
+		t.Error("SkillDir should fail for unknown skill")
+	}
+	dir, _ := SkillDir(root, "kube")
+	if _, err := SafeSkillJoin(dir, "scripts/x.sh"); err != nil {
+		t.Errorf("SafeSkillJoin rejected a legit path: %v", err)
+	}
+	for _, bad := range []string{"../escape", "/abs/path", "a/../../b"} {
+		if _, err := SafeSkillJoin(dir, bad); err == nil {
+			t.Errorf("SafeSkillJoin allowed escape %q", bad)
+		}
 	}
 }
 

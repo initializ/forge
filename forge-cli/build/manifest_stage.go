@@ -57,6 +57,14 @@ func (s *ManifestStage) Execute(ctx context.Context, bc *pipeline.BuildContext) 
 	if len(bc.ToolCategoryCounts) > 0 {
 		manifest["tool_categories"] = bc.ToolCategoryCounts
 	}
+	if bc.Spec.Requirements != nil {
+		if len(bc.Spec.Requirements.EnvRequired) > 0 {
+			manifest["env_required"] = bc.Spec.Requirements.EnvRequired
+		}
+		if len(bc.Spec.Requirements.EnvOptional) > 0 {
+			manifest["env_optional"] = bc.Spec.Requirements.EnvOptional
+		}
+	}
 
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {

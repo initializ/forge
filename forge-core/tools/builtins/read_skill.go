@@ -193,9 +193,14 @@ func SkillDir(workDir, name string) (string, bool) {
 }
 
 // SafeSkillJoin joins a skill-relative path onto the skill directory and
-// confines the result to that directory — rejecting absolute paths and
-// any `..` traversal that would escape the skill. Same posture as
-// read_skill's traversal guard and cli_execute's workdir confinement.
+// confines the result to that directory — rejecting absolute paths, `..`
+// traversal, AND symlinks that resolve outside the skill. The symlink
+// check matters because a skill package ships whatever the author writes
+// (COPY . .): a bundled symlink like `skills/owl/leak -> /etc/shadow`
+// passes a purely-textual guard (no `..`, not absolute) but `os.ReadFile`
+// / the script interpreter would follow it out of the skill dir. Same
+// confinement posture as read_skill's traversal guard and cli_execute's
+// workdir confinement.
 func SafeSkillJoin(skillDir, rel string) (string, error) {
 	if rel == "" {
 		return "", errors.New("path is required")
@@ -204,9 +209,31 @@ func SafeSkillJoin(skillDir, rel string) (string, error) {
 		return "", errors.New("path must be relative to the skill directory")
 	}
 	full := filepath.Join(skillDir, rel)
+	// Textual guard first (cheap; also handles a target that doesn't exist).
 	within, err := filepath.Rel(skillDir, full)
 	if err != nil || within == ".." || strings.HasPrefix(within, ".."+string(filepath.Separator)) {
 		return "", errors.New("path escapes the skill directory")
+	}
+	// Symlink guard: resolve symlinks on both the skill dir and the deepest
+	// existing part of the target, then re-check containment against the
+	// resolved root. Catches a leaf symlink (target exists) and an
+	// intermediate symlinked directory (target's parent exists).
+	root, err := filepath.EvalSymlinks(skillDir)
+	if err != nil {
+		return "", errors.New("resolving skill directory: " + err.Error())
+	}
+	// Anchor to the RESOLVED root so a symlinked temp root (e.g. macOS
+	// /var -> /private/var) doesn't cause a spurious prefix mismatch when
+	// the target doesn't exist yet.
+	resolved := filepath.Join(root, within)
+	if r, e := filepath.EvalSymlinks(full); e == nil {
+		resolved = r
+	} else if r, e := filepath.EvalSymlinks(filepath.Dir(full)); e == nil {
+		resolved = filepath.Join(r, filepath.Base(full))
+	}
+	rw, err := filepath.Rel(root, resolved)
+	if err != nil || rw == ".." || strings.HasPrefix(rw, ".."+string(filepath.Separator)) {
+		return "", errors.New("path escapes the skill directory (symlink)")
 	}
 	return full, nil
 }

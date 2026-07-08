@@ -75,29 +75,34 @@ func (t *RunSkillScriptTool) Execute(ctx context.Context, args json.RawMessage) 
 		return "", fmt.Errorf("parsing run_skill_script input: %w", err)
 	}
 	if input.Skill == "" || input.Path == "" {
-		return `{"error": "skill and path are required"}`, nil
+		return jsonError("skill and path are required"), nil
+	}
+
+	// args, when present, must be a JSON object — it becomes the script's
+	// $1 and the script does json.loads(...) expecting a dict.
+	jsonArgs := "{}"
+	if len(input.Args) > 0 && string(input.Args) != "null" {
+		if trimmed := strings.TrimSpace(string(input.Args)); trimmed == "" || trimmed[0] != '{' {
+			return jsonError("args must be a JSON object"), nil
+		}
+		jsonArgs = string(input.Args)
 	}
 
 	dir, ok := builtins.SkillDir(t.workDir, input.Skill)
 	if !ok {
-		return fmt.Sprintf(`{"error": "skill %q not found"}`, input.Skill), nil
+		return jsonError(fmt.Sprintf("skill %q not found", input.Skill)), nil
 	}
 	full, err := builtins.SafeSkillJoin(dir, input.Path)
 	if err != nil {
-		return `{"error": "invalid path (must stay within the skill directory)"}`, nil
+		return jsonError("invalid path (must stay within the skill directory)"), nil
 	}
 	if fi, statErr := os.Stat(full); statErr != nil || fi.IsDir() {
-		return fmt.Sprintf(`{"error": "script %q not found in skill %q"}`, input.Path, input.Skill), nil
+		return jsonError(fmt.Sprintf("script %q not found in skill %q", input.Path, input.Skill)), nil
 	}
 
 	interp, ierr := interpreterForScript(input.Path)
 	if ierr != nil {
-		return fmt.Sprintf(`{"error": %q}`, ierr.Error()), nil
-	}
-
-	jsonArgs := "{}"
-	if len(input.Args) > 0 && string(input.Args) != "null" {
-		jsonArgs = string(input.Args)
+		return jsonError(ierr.Error()), nil
 	}
 
 	// CWD = the skill dir so `input.Path` (relative) and the script's own
@@ -111,10 +116,27 @@ func (t *RunSkillScriptTool) Execute(ctx context.Context, args json.RawMessage) 
 	}
 	out, runErr := exec.Run(ctx, interp, []string{input.Path, jsonArgs}, nil)
 	if runErr != nil {
-		return fmt.Sprintf(`{"error": %q, "output": %q}`, runErr.Error(), truncate(out, 8192)), nil
+		// Build via json.Marshal, not fmt %q: script output can carry raw
+		// bytes / invalid UTF-8 that %q would emit as \xNN escapes, which
+		// are not valid JSON and break the tool-result parser. Marshal
+		// replaces invalid UTF-8 with U+FFFD and escapes correctly.
+		return jsonObj(map[string]any{"error": runErr.Error(), "output": truncate(out, 8192)}), nil
 	}
 	return out, nil
 }
+
+// jsonObj marshals m to a JSON string, falling back to a static error
+// string if marshaling somehow fails.
+func jsonObj(m map[string]any) string {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return `{"error": "internal: could not encode result"}`
+	}
+	return string(b)
+}
+
+// jsonError builds a well-formed JSON error object for the given message.
+func jsonError(msg string) string { return jsonObj(map[string]any{"error": msg}) }
 
 // interpreterForScript picks the interpreter for a script by extension.
 // TypeScript is intentionally unsupported — `node` can't run raw `.ts`;

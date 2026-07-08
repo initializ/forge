@@ -3,6 +3,7 @@ package builtins
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,14 +32,17 @@ func (t *ReadSkillTool) Category() tools.Category { return tools.CategoryBuiltin
 func (t *ReadSkillTool) Description() string {
 	return "Read the full instructions for an available skill. " +
 		"Pass the skill name exactly as listed under 'Available Skills'. " +
-		"Returns the skill's SKILL.md content with usage details, parameters, and examples."
+		"Returns the skill's SKILL.md content with usage details, parameters, and examples. " +
+		"Pass the optional 'file' argument to read a specific file relative to the skill's directory " +
+		"(e.g. a reference doc the instructions point to) instead of SKILL.md."
 }
 
 func (t *ReadSkillTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"name": {"type": "string", "description": "Skill name exactly as shown in the Available Skills list (e.g. 'k8s-incident-triage')"}
+			"name": {"type": "string", "description": "Skill name exactly as shown in the Available Skills list (e.g. 'k8s-incident-triage')"},
+			"file": {"type": "string", "description": "Optional. A file path RELATIVE TO THE SKILL's directory to read instead of SKILL.md (e.g. 'reference/runbook.md', 'owl.md'). Use for skill instructions like 'read reference/runbook.md'."}
 		},
 		"required": ["name"]
 	}`)
@@ -47,6 +51,7 @@ func (t *ReadSkillTool) InputSchema() json.RawMessage {
 func (t *ReadSkillTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
 	var input struct {
 		Name string `json:"name"`
+		File string `json:"file"`
 	}
 	if err := json.Unmarshal(args, &input); err != nil {
 		return "", fmt.Errorf("parsing read_skill input: %w", err)
@@ -58,6 +63,29 @@ func (t *ReadSkillTool) Execute(_ context.Context, args json.RawMessage) (string
 	// Security: prevent directory traversal.
 	if strings.ContainsAny(input.Name, `/\`) || strings.Contains(input.Name, "..") {
 		return `{"error": "invalid skill name"}`, nil
+	}
+
+	// Skill-relative file read: a SKILL.md may instruct "read
+	// reference/runbook.md" — resolve that path against the skill's own
+	// directory (confined; no escaping) and return its contents.
+	if input.File != "" {
+		dir, ok := SkillDir(t.workDir, input.Name)
+		if !ok {
+			if _, available := t.buildNameIndex(); len(available) > 0 {
+				list, _ := json.Marshal(available)
+				return fmt.Sprintf(`{"error": "skill %q not found", "available_skills": %s}`, input.Name, list), nil
+			}
+			return fmt.Sprintf(`{"error": "skill %q not found"}`, input.Name), nil
+		}
+		full, err := SafeSkillJoin(dir, input.File)
+		if err != nil {
+			return `{"error": "invalid file path (must stay within the skill directory)"}`, nil
+		}
+		data, err := os.ReadFile(full) //nolint:gosec // confined to the skill dir by SafeSkillJoin
+		if err != nil {
+			return fmt.Sprintf(`{"error": "file %q not found in skill %q"}`, input.File, input.Name), nil
+		}
+		return string(data), nil
 	}
 
 	// Resolve the SKILL.md path: direct filesystem lookup first, then a
@@ -118,6 +146,69 @@ func (t *ReadSkillTool) resolvePath(name string) string {
 func fileExists(p string) bool {
 	info, err := os.Stat(p)
 	return err == nil && !info.IsDir()
+}
+
+// SkillDir resolves a skill's loadable name to its on-disk directory
+// (`<workDir>/skills/<dir>`), matching read_skill's resolution: the
+// directory name (and its underscore->hyphen variant) first, then the
+// frontmatter `name` of any subdirectory skill (normalized for case and
+// separator drift). Returns ("", false) for an unknown name or a flat
+// single-file skill (which has no companion directory). Shared with the
+// run_skill_script tool so skill-relative reads and executions resolve
+// the same skill dir.
+func SkillDir(workDir, name string) (string, bool) {
+	if strings.ContainsAny(name, `/\`) || strings.Contains(name, "..") {
+		return "", false
+	}
+	skillsDir := filepath.Join(workDir, "skills")
+	variants := []string{name}
+	if h := strings.ReplaceAll(name, "_", "-"); h != name {
+		variants = append(variants, h)
+	}
+	for _, n := range variants {
+		dir := filepath.Join(skillsDir, n)
+		if fileExists(filepath.Join(dir, "SKILL.md")) {
+			return dir, true
+		}
+	}
+	// Frontmatter-name / normalized match across subdirectory skills.
+	ents, err := os.ReadDir(skillsDir)
+	if err != nil {
+		return "", false
+	}
+	want := normalizeSkillKey(name)
+	for _, e := range ents {
+		if !e.IsDir() {
+			continue
+		}
+		md := filepath.Join(skillsDir, e.Name(), "SKILL.md")
+		if !fileExists(md) {
+			continue
+		}
+		if normalizeSkillKey(e.Name()) == want || normalizeSkillKey(frontmatterName(md)) == want {
+			return filepath.Join(skillsDir, e.Name()), true
+		}
+	}
+	return "", false
+}
+
+// SafeSkillJoin joins a skill-relative path onto the skill directory and
+// confines the result to that directory — rejecting absolute paths and
+// any `..` traversal that would escape the skill. Same posture as
+// read_skill's traversal guard and cli_execute's workdir confinement.
+func SafeSkillJoin(skillDir, rel string) (string, error) {
+	if rel == "" {
+		return "", errors.New("path is required")
+	}
+	if filepath.IsAbs(rel) {
+		return "", errors.New("path must be relative to the skill directory")
+	}
+	full := filepath.Join(skillDir, rel)
+	within, err := filepath.Rel(skillDir, full)
+	if err != nil || within == ".." || strings.HasPrefix(within, ".."+string(filepath.Separator)) {
+		return "", errors.New("path escapes the skill directory")
+	}
+	return full, nil
 }
 
 // scriptLang maps a file extension to the interpreter language, for

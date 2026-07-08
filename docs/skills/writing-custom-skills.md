@@ -46,6 +46,36 @@ For skills **without** scripts (binary-backed skills like `k8s-incident-triage`)
 └─────────────────────────────────────────────────┘
 ```
 
+## Skill-relative files and scripts
+
+A skill's `SKILL.md` can reference other files it ships — reference docs,
+templates, or helper scripts — by a path **relative to the skill's own
+directory** (`skills/<skill>/…`). The whole directory reaches the running
+agent (`COPY . .` at build time), and two builtins resolve those references
+against the skill dir (path-confined — no `..` or absolute escapes):
+
+- **Read a bundled file** — the agent calls `read_skill` with its `file`
+  argument. Write instructions like "read `reference/runbook.md`" and the
+  agent loads `skills/<skill>/reference/runbook.md`.
+- **Run a bundled script** — the agent calls `run_skill_script`. Write "run
+  `scripts/check.py`" and the agent executes `skills/<skill>/scripts/check.py`
+  **with the skill directory as the working directory** (so the script's own
+  relative reads resolve), picking the interpreter by extension:
+
+  | Extension | Interpreter | `requires.bins` |
+  |---|---|---|
+  | `.sh` / `.bash` | `bash` | (built in) |
+  | `.py` | `python3` | add `python3` |
+  | `.js` | `node` | add `node` |
+
+  JSON supplied in the tool's `args` is passed to the script as its first
+  positional argument (`$1`). TypeScript must be shipped as compiled `.js`.
+
+This is distinct from a `## Tool:` entry backed by `scripts/<name>.sh`, which
+is registered as a first-class callable tool the model invokes by name (see
+above). Skill-relative scripts are invoked by path via `run_skill_script` and
+can be any of the three languages.
+
 ## Skill Execution Security
 
 Skill scripts run in a restricted environment via `SkillCommandExecutor`:

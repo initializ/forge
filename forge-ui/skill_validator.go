@@ -202,7 +202,11 @@ func detectUndeclaredEgress(scripts map[string]string, declaredEgress []string) 
 //
 // It is deliberately tolerant of the ways LLMs deviate from the prompt's
 // exact quadruple-backtick format, because a missed extraction leaves the
-// preview pane empty and the user with no way to save. It accepts:
+// preview pane empty and the user with no way to save. Fence-count rules
+// follow CommonMark §4.5 (a closing fence must have at least as many
+// backticks as the opener, and — after trimming whitespace — nothing but
+// backticks), so inner lower-count blocks don't terminate the outer one.
+// It accepts:
 //   - 3-or-more backticks (not strictly 4), with the closing fence needing
 //     at least as many as the opener — so an inner ```json block inside a
 //     ````skill.md block doesn't close it early;
@@ -211,6 +215,12 @@ func detectUndeclaredEgress(scripts map[string]string, declaredEgress []string) 
 //     whose content is clearly a SKILL.md (starts with `---` frontmatter
 //     carrying a `name:` key) — used only if no explicit skill.md fence
 //     was found.
+//
+// Unclosed opener: if a fence never closes, the scanner absorbs the rest
+// of the response as that block's content (up to EOF, trailing prose
+// included). This is intentional — for the user-facing bug, a populated
+// preview beats an empty one — and differs from the old regex, which
+// simply produced nothing on an unclosed fence.
 func extractArtifacts(response string) (skillMD string, scripts map[string]string) {
 	scripts = make(map[string]string)
 

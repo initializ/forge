@@ -297,6 +297,16 @@ func TestExtractArtifactsTolerant(t *testing.T) {
 			response:  "````skill.md\n---\nname: mism\ndescription: d\n---\n# T\n`````",
 			wantSkill: "name: mism",
 		},
+		{
+			// Pins the intentional unclosed-opener behavior (review of
+			// #253): an opener that never closes absorbs the rest of the
+			// response — up to EOF, trailing prose included — rather than
+			// producing nothing (the old regex behavior). A populated
+			// preview beats an empty one for the user-facing bug.
+			name:      "unclosed opener absorbs remaining content",
+			response:  "````skill.md\n---\nname: partial\ndescription: d\n---\n# body\n\ntrailing prose the LLM never closed",
+			wantSkill: "name: partial",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

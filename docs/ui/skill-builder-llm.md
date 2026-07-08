@@ -140,6 +140,43 @@ about where it came from:
 | `openai/gpt-4.1` + **API key not configured (env: OPENAI_API_KEY)** | Config resolved but the named env var is empty in the `forge ui` process. Set it and reload. |
 | **Workspace skill-builder LLM is not configured** | First-run state. Click Configure. |
 
+## How the builder converses
+
+The Skill Builder is a multi-turn chat: the full conversation is replayed
+to the LLM on every turn with the Skill Designer system prompt
+(`forge-ui/skill_builder_context.go`). The prompt enforces an
+**interview-with-convergence** style so the session produces a skill fast
+instead of looping:
+
+- Reads the whole conversation each turn and **never re-asks** an answered
+  question.
+- Asks **at most one** clarifying question per turn, and only when a
+  genuinely blocking unknown remains.
+- Drafts the moment it knows the three essentials — the task + tool(s),
+  the credentials/env, and the command-line tools the scripts invoke —
+  preferring a sensible default (noted in the skill) over another question.
+
+### Custom binaries
+
+A skill's `requires.bins` entry can be a bare name (already in the base
+image) **or** a mapping that also tells the build how to install a binary
+the base image lacks — the builder emits the right one:
+
+- `- {name: ripgrep, apt: ripgrep}` (or `apk:` on the Alpine base)
+- `- {name: mytool, url: "https://…/mytool", dest: /usr/local/bin/mytool, chmod: "0755"}`
+- `- {name: foo, run: ["curl -L https://… | tar xz -C /usr/local/bin"]}`
+
+The builder will ask for a package name or download URL rather than invent
+one.
+
+### What it always gets right
+
+Regardless of the conversation, generated skills keep the Forge runtime
+contract: scripts read their JSON input from `$1` (`INPUT="${1:-}"`), emit
+structured JSON (never raw text), each `## Tool:` section carries an Input
+table + Output schema + request→input examples, and edit mode preserves
+existing `## Tool:` names (renaming breaks wired agents — issue #193).
+
 ## Why split `ui.yaml` and `.env`?
 
 Same trust-boundary reasoning as `forge init`'s `forge.yaml` / `.env`

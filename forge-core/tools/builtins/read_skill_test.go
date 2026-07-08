@@ -219,6 +219,43 @@ func TestSkillDirAndSafeJoin(t *testing.T) {
 	}
 }
 
+// TestSafeSkillJoin_SymlinkEscape pins the #257 security fix: a bundled
+// symlink whose target is outside the skill dir must be rejected even
+// though the textual path (no `..`, not absolute) looks confined.
+func TestSafeSkillJoin_SymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, root, "owl", "owl", "# body\n")
+	dir := filepath.Join(root, "skills", "owl")
+	// A host secret outside the skill dir.
+	secret := filepath.Join(root, "secret.txt")
+	if err := os.WriteFile(secret, []byte("TOPSECRET"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Leaf symlink escaping the skill dir.
+	if err := os.Symlink(secret, filepath.Join(dir, "leak")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	if _, err := SafeSkillJoin(dir, "leak"); err == nil {
+		t.Error("SafeSkillJoin followed a symlink escaping the skill dir")
+	}
+	// Intermediate symlinked directory escaping the skill dir.
+	if err := os.Symlink(root, filepath.Join(dir, "up")); err == nil {
+		if _, err := SafeSkillJoin(dir, "up/secret.txt"); err == nil {
+			t.Error("SafeSkillJoin followed an intermediate symlink escaping the skill dir")
+		}
+	}
+	// A symlink that stays INSIDE the skill dir is fine.
+	inside := filepath.Join(dir, "real.txt")
+	if err := os.WriteFile(inside, []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(inside, filepath.Join(dir, "alias")); err == nil {
+		if _, err := SafeSkillJoin(dir, "alias"); err != nil {
+			t.Errorf("SafeSkillJoin rejected an in-skill symlink: %v", err)
+		}
+	}
+}
+
 // TestReadSkill_TraversalRejected keeps the directory-traversal guard.
 func TestReadSkill_TraversalRejected(t *testing.T) {
 	root := t.TempDir()

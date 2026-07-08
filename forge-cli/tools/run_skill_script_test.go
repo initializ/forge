@@ -118,6 +118,46 @@ func TestRunSkillScript_UnknownSkill(t *testing.T) {
 	}
 }
 
+// TestRunSkillScript_InvalidUTF8OutputIsValidJSON pins the #257 fix: a
+// script that fails while emitting raw / invalid-UTF-8 bytes must still
+// produce a well-formed JSON tool result (built via json.Marshal, not
+// fmt %q which would emit non-JSON \xNN escapes).
+func TestRunSkillScript_InvalidUTF8OutputIsValidJSON(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not installed")
+	}
+	root := t.TempDir()
+	writeSkillScript(t, root, "owl", "SKILL.md", "---\nname: owl\ndescription: d\n---\n")
+	writeSkillScript(t, root, "owl", "scripts/bad.py",
+		"import sys\nsys.stdout.buffer.write(b'\\xff\\xfe not utf8 ')\nsys.stdout.flush()\nsys.exit(1)\n")
+	out := runScript(t, root, "owl", "scripts/bad.py", map[string]any{})
+	var anyJSON map[string]any
+	if err := json.Unmarshal([]byte(out), &anyJSON); err != nil {
+		t.Fatalf("tool result is not valid JSON: %v\nraw: %q", err, out)
+	}
+	if _, hasErr := anyJSON["error"]; !hasErr {
+		t.Errorf("expected an error field on script failure: %v", anyJSON)
+	}
+}
+
+// TestRunSkillScript_ArgsMustBeObject pins the #257 fix: non-object args
+// (string / number / array) are rejected before hitting the script.
+func TestRunSkillScript_ArgsMustBeObject(t *testing.T) {
+	root := t.TempDir()
+	writeSkillScript(t, root, "owl", "SKILL.md", "---\nname: owl\ndescription: d\n---\n")
+	writeSkillScript(t, root, "owl", "scripts/x.sh", "#!/usr/bin/env bash\necho '{}'\n")
+	for _, badArgs := range []string{`"hello"`, `42`, `[1,2]`, `true`} {
+		in := `{"skill":"owl","path":"scripts/x.sh","args":` + badArgs + `}`
+		out, err := NewRunSkillScriptTool(root, "", nil).Execute(context.Background(), json.RawMessage(in))
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if !strings.Contains(out, "args must be a JSON object") {
+			t.Errorf("args=%s not rejected: %s", badArgs, out)
+		}
+	}
+}
+
 func TestInterpreterForScript(t *testing.T) {
 	ok := map[string]string{"a.sh": "bash", "a.bash": "bash", "a.py": "python3", "a.js": "node", "a.mjs": "node"}
 	for path, want := range ok {

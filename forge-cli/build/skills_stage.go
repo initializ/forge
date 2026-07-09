@@ -9,6 +9,7 @@ import (
 	cliskills "github.com/initializ/forge/forge-cli/skills"
 	"github.com/initializ/forge/forge-core/pipeline"
 	"github.com/initializ/forge/forge-skills/contract"
+	skillsparser "github.com/initializ/forge/forge-skills/parser"
 	"github.com/initializ/forge/forge-skills/requirements"
 )
 
@@ -30,11 +31,11 @@ func (s *SkillsStage) Execute(ctx context.Context, bc *pipeline.BuildContext) er
 	// Parse root skills file if it exists
 	var entries []contract.SkillEntry
 	if _, err := os.Stat(skillsPath); err == nil {
-		parsed, _, parseErr := cliskills.ParseFileWithMetadata(skillsPath)
+		parsed, meta, parseErr := cliskills.ParseFileWithMetadata(skillsPath)
 		if parseErr != nil {
 			return fmt.Errorf("parsing skills file: %w", parseErr)
 		}
-		entries = parsed
+		entries = synthesizeInstructional(parsed, meta)
 	}
 
 	// Always scan skills/ subdirectory (skills may exist without root SKILL.md)
@@ -102,12 +103,25 @@ func scanSkillsSubDir(skillsDir string) ([]contract.SkillEntry, error) {
 			continue
 		}
 
-		entries, _, parseErr := cliskills.ParseFileWithMetadata(skillPath)
+		entries, meta, parseErr := cliskills.ParseFileWithMetadata(skillPath)
 		if parseErr != nil {
 			fmt.Fprintf(os.Stderr, "  [skills] warning: parsing %s: %v\n", skillPath, parseErr)
 			continue
 		}
-		allEntries = append(allEntries, entries...)
+		allEntries = append(allEntries, synthesizeInstructional(entries, meta)...)
 	}
 	return allEntries, nil
+}
+
+// synthesizeInstructional handles skills whose SKILL.md carries forge metadata
+// (capabilities, egress_domains, guardrails) but declares no "## Tool:"
+// entries — e.g. a capability-only browser skill. Without this the skill's
+// requirements would be dropped from the build. Mirrors the runtime's
+// validateSkillRequirements handling.
+func synthesizeInstructional(entries []contract.SkillEntry, meta *contract.SkillMetadata) []contract.SkillEntry {
+	if len(entries) > 0 || meta == nil || meta.Metadata["forge"] == nil {
+		return entries
+	}
+	forgeReqs, _, _ := skillsparser.ExtractForgeReqs(meta)
+	return []contract.SkillEntry{{Name: meta.Name, Metadata: meta, ForgeReqs: forgeReqs}}
 }

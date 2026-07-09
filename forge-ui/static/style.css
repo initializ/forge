@@ -1786,6 +1786,11 @@ body {
   border-right: 1px solid var(--border-color);
   height: 100%;
   overflow: hidden;
+  /* Grid items default to min-width: auto, which lets long content (a
+     skill's name/description) force this track wider than its 55% and,
+     because overflow is hidden, clip the row's Edit button off-screen.
+     min-width: 0 makes the track honor its width so children truncate. */
+  min-width: 0;
 }
 
 .skill-builder-right {
@@ -2198,6 +2203,16 @@ body {
   align-items: center;
   gap: 6px;
   font-weight: 600;
+  min-width: 0;
+}
+
+/* Truncate a long skill name too, so it doesn't push the description /
+   Edit button. The <code> is a flex child; min-width:0 lets it shrink. */
+.sb-custom-skill-name code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sb-custom-skill-desc {
@@ -2205,6 +2220,12 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* The Edit button must never be the element that shrinks/clips when the
+   name + description are long. */
+.sb-custom-skill-row .btn {
+  flex-shrink: 0;
 }
 
 .sb-custom-skills-footer {

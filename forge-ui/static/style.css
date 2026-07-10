@@ -1822,6 +1822,28 @@ body {
   background: var(--bg-card);
   border: 1px solid var(--border-color);
   color: var(--text-secondary);
+  /* Flex item in the wrapping .sb-header; without min-width:0 a long
+     model name forces it past the panel width and the name clips under
+     Settings. Lay the children out in a row and truncate the model. */
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* First child is the "provider/model" span — truncate it so a long
+   model name gets an ellipsis instead of clipping. */
+.provider-banner > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* Settings button stays fully visible. */
+.provider-banner .btn {
+  flex-shrink: 0;
 }
 
 .provider-banner-error {
@@ -2172,6 +2194,13 @@ body {
   border: 1px solid var(--border-color);
   border-radius: var(--radius);
   padding: 6px 10px;
+  /* THE fix for the clipped Edit button: this is a flex item in the
+     display:flex .sb-header. With the default min-width:auto its
+     min-content is the full nowrap skill description, so it refuses to
+     shrink and overflows the 55% panel (clipped by overflow:hidden),
+     taking the row's Edit button off-screen. min-width:0 lets it honor
+     its flex-basis so the row's existing ellipsis truncation engages. */
+  min-width: 0;
 }
 
 .sb-custom-skills summary {

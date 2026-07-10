@@ -241,16 +241,6 @@ func collectInteractive(opts *initOptions) error {
 	theme := tui.DetectTheme(themeOverride)
 	styles := tui.NewStyleSet(theme)
 
-	// Load tool info for the tools step
-	allTools := builtins.All()
-	var toolInfos []steps.ToolInfo
-	for _, t := range allTools {
-		toolInfos = append(toolInfos, steps.ToolInfo{
-			Name:        t.Name(),
-			Description: t.Description(),
-		})
-	}
-
 	// Load skill info for the skills step
 	var skillInfos []steps.SkillInfo
 	reg, regErr := local.NewEmbeddedRegistry()
@@ -325,7 +315,7 @@ func collectInteractive(opts *initOptions) error {
 		steps.NewProviderStep(styles, validateKeyFn, oauthFlowFn),
 		steps.NewFallbackStep(styles, validateKeyFn),
 		steps.NewChannelStep(styles),
-		steps.NewToolsStep(styles, toolInfos, validateWebSearchKeyFn),
+		steps.NewWebSearchStep(styles, validateWebSearchKeyFn),
 		steps.NewSkillsStep(styles, skillInfos),
 		steps.NewCompressionStep(styles),
 		steps.NewAuthStep(styles),
@@ -375,7 +365,12 @@ func collectInteractive(opts *initOptions) error {
 		opts.Channels = []string{ctx.Channel}
 	}
 
-	opts.BuiltinTools = ctx.BuiltinTools
+	// Only overwrite from the wizard context when it actually collected
+	// something (e.g. web_search). An empty context must not clobber a
+	// --tools flag set on the command line.
+	if len(ctx.BuiltinTools) > 0 {
+		opts.BuiltinTools = ctx.BuiltinTools
+	}
 	opts.Skills = ctx.Skills
 	opts.Compression = ctx.Compression
 

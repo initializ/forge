@@ -103,6 +103,9 @@ func (m *Manager) allocatorOptions() []chromedp.ExecAllocatorOption {
 		chromedp.ProxyServer(m.cfg.ProxyURL),
 		chromedp.Flag("proxy-bypass-list", "<-loopback>"),
 		chromedp.Flag("disable-gpu", true),
+		// /dev/shm is small or absent in containers and CI runners; without
+		// this Chrome crashes on startup ("chrome failed to start").
+		chromedp.Flag("disable-dev-shm-usage", true),
 		chromedp.Flag("disable-extensions", true),
 		chromedp.Flag("disable-background-networking", true),
 		chromedp.Flag("disable-sync", true),

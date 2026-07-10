@@ -15,16 +15,56 @@ import (
 	"github.com/initializ/forge/forge-core/security"
 )
 
-// requireChromium locates a browser binary or skips the test. Gating is by
-// binary presence (exec.LookPath / os.Stat via ResolveBinary), never GOOS, so
-// these tests run on any machine with Chrome and auto-skip in bare CI.
+var (
+	launchOnce sync.Once
+	launchErr  error
+)
+
+// requireChromium locates a browser binary AND verifies it can actually launch
+// here, skipping otherwise. Presence alone is not enough: CI images often ship
+// a chromium that cannot start in the runner's restricted sandbox
+// ("chrome failed to start"). The launch probe uses the real Manager path
+// (same flags), so it predicts the other tests accurately. Gating is by
+// capability, never GOOS — these tests run wherever a browser truly works and
+// skip where it does not.
 func requireChromium(t *testing.T) string {
 	t.Helper()
 	bin, err := ResolveBinary()
 	if err != nil {
 		t.Skipf("no chromium binary found (set FORGE_BROWSER_BIN); skipping: %v", err)
 	}
+	launchOnce.Do(func() { launchErr = probeBrowserLaunch(bin) })
+	if launchErr != nil {
+		t.Skipf("chromium present but cannot launch in this environment; skipping browser tests: %v", launchErr)
+	}
 	return bin
+}
+
+// probeBrowserLaunch launches a throwaway Manager (real flags) and evaluates a
+// trivial expression. Returns nil only if the browser genuinely started.
+func probeBrowserLaunch(bin string) error {
+	matcher := security.NewDomainMatcher(security.ModeAllowlist, nil)
+	proxy := security.NewEgressProxy(matcher, false)
+	proxyURL, err := proxy.Start(context.Background())
+	if err != nil {
+		return err
+	}
+	defer proxy.Stop() //nolint:errcheck
+
+	dir, err := os.MkdirTemp("", "forge-browser-probe-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir) //nolint:errcheck
+
+	m, err := NewManager(Config{BinaryPath: bin, Headless: true, ProxyURL: proxyURL, WorkDir: dir})
+	if err != nil {
+		return err
+	}
+	defer m.Stop()
+
+	var one int
+	return m.run(20*time.Second, chromedp.Evaluate("1", &one))
 }
 
 // startProxy spins up a real EgressProxy with the given matcher and records

@@ -16,6 +16,13 @@ func TestSkillBuilderPrompt_ConvergenceRules(t *testing.T) {
 		"AT MOST ONE clarifying question",
 		"STOP asking and return the complete SKILL.md",
 		"Prefer a sensible default",
+		// The convergence trigger must count the install recipe as a
+		// first-class criterion, not hide it in a parenthetical — else the
+		// LLM drafts once it has task+creds+tools and invents a plausible
+		// install URL/package for a missing binary (#258 review).
+		"you need FOUR things",
+		"install recipe for every binary the base image lacks",
+		"NEVER draft with an invented package name or download URL",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("convergence prompt missing directive: %q", want)

@@ -93,8 +93,8 @@ github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 h1:5VipnvEpbqr2gA2VbM+nYVbkIF2
 github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0/go.mod h1:Hyl3n6Twe1hvtd9XUXDec4pTvgMSEixRuQKPTMH2bNs=
 github.com/inconshreveable/mousetrap v1.1.0 h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2s0bqwp9tc8=
 github.com/inconshreveable/mousetrap v1.1.0/go.mod h1:vpF70FUmC8bwa3OWnCshd2FqLfsEA9PFc4w1p2J65bw=
-github.com/initializ/ctxzip v0.2.1-0.20260711180052-f4826b930e7c h1:tq68DvodbQccwdLg2Z82v6IYD8SHU8rJoC7iGHDmqqw=
-github.com/initializ/ctxzip v0.2.1-0.20260711180052-f4826b930e7c/go.mod h1:Qs4CpXTEeEOlZwIMPm/qaFPmil+AUIqH7Jg/K81FTmU=
+github.com/initializ/ctxzip v0.2.1-0.20260711202805-6d12127fa2a6 h1:lB+JlWV6c8m4L8nrMZTOG04uRsy58wBiu5M1ZyjN/+Y=
+github.com/initializ/ctxzip v0.2.1-0.20260711202805-6d12127fa2a6/go.mod h1:Qs4CpXTEeEOlZwIMPm/qaFPmil+AUIqH7Jg/K81FTmU=
 github.com/initializ/guardrails v0.12.0 h1:YzScnl+YPihLA1gepjxKjnKH+2EbYmGC4dUtpVRAJ2c=
 github.com/initializ/guardrails v0.12.0/go.mod h1:bDdHx73MF0+O09KqoXmUTTiFG4H7yEVQ0NR6juP1F3Q=
 github.com/josharian/intern v1.0.0 h1:vlS4z54oSdjm0bgjRigI+G1HpF+tI+9rE5LLzOg8HmY=

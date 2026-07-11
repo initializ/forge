@@ -140,7 +140,7 @@ async function fetchSkillBuilderProvider(agentId) {
   return res.json();
 }
 
-async function streamSkillBuilderChat(agentId, messages, { onChunk, onSkillDraft, onError, onDone, signal, mode, editingName }) {
+async function streamSkillBuilderChat(agentId, messages, { onProgress, onMessage, onSkillDraft, onError, onDone, signal, mode, editingName }) {
   const body = { messages };
   if (mode === 'edit' && editingName) {
     body.mode = 'edit';
@@ -179,7 +179,12 @@ async function streamSkillBuilderChat(agentId, messages, { onChunk, onSkillDraft
         const data = line.slice(6);
         try {
           const parsed = JSON.parse(data);
-          if (eventType === 'chunk' && onChunk) onChunk(parsed.content || '');
+          // #252 part 2: the builder now returns a structured {message, skill}
+          // envelope. `progress` is a content-free keepalive during
+          // generation; `message` carries the assistant's chat reply
+          // (delivered once, at completion); `skill_draft` carries the draft.
+          if (eventType === 'progress' && onProgress) onProgress();
+          else if (eventType === 'message' && onMessage) onMessage(parsed.content || '');
           else if (eventType === 'skill_draft' && onSkillDraft) onSkillDraft(parsed);
           else if (eventType === 'error' && onError) onError(parsed.error || 'Unknown error');
           else if (eventType === 'done' && onDone) onDone();
@@ -2640,8 +2645,10 @@ function SkillBuilderPage({ agentId }) {
     setStreaming(true);
     setError(null);
 
-    // Add placeholder assistant message
-    const assistantMsg = { role: 'assistant', content: '' };
+    // Add placeholder assistant message. The response is a structured
+    // {message, skill} envelope delivered at completion (not token-streamed),
+    // so show a "designing" affordance until the message arrives.
+    const assistantMsg = { role: 'assistant', content: '', pending: true };
     setMessages([...newMessages, assistantMsg]);
 
     const abort = new AbortController();
@@ -2652,8 +2659,13 @@ function SkillBuilderPage({ agentId }) {
         signal: abort.signal,
         mode,
         editingName: editingSkillName,
-        onChunk(content) {
-          assistantMsg.content += content;
+        onProgress() {
+          // Content-free keepalive; the pending placeholder stays until the
+          // message arrives. No per-token rendering (the stream is JSON).
+        },
+        onMessage(content) {
+          assistantMsg.content = content;
+          assistantMsg.pending = false;
           setMessages([...newMessages, { ...assistantMsg }]);
         },
         onSkillDraft(draft) {
@@ -2666,7 +2678,12 @@ function SkillBuilderPage({ agentId }) {
           setError(errMsg);
         },
         onDone() {
-          // streaming complete
+          // If the model returned only a skill and no message, clear the
+          // pending state so the placeholder doesn't spin forever.
+          if (assistantMsg.pending) {
+            assistantMsg.pending = false;
+            setMessages([...newMessages, { ...assistantMsg }]);
+          }
         },
       });
     } catch (err) {
@@ -2891,7 +2908,9 @@ function SkillBuilderPage({ agentId }) {
           `}
           ${messages.map((msg, i) => html`
             <div key=${i} class="sb-message sb-message-${msg.role}">
-              <div class="sb-message-content" dangerouslySetInnerHTML=${{ __html: renderMarkdown(msg.content) }} />
+              ${msg.pending && !msg.content
+                ? html`<div class="sb-message-content sb-message-pending"><em>Designing your skill…</em></div>`
+                : html`<div class="sb-message-content" dangerouslySetInnerHTML=${{ __html: renderMarkdown(msg.content) }} />`}
             </div>
           `)}
           ${streaming && html`<div class="sb-typing"><span class="spinner" /> Generating...</div>`}

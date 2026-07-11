@@ -47,9 +47,9 @@ func skillBuilderSystemPrompt(mode skillBuilderMode, existing *existingSkillCont
 		existing.Name)
 	b.WriteString("Rules for edit mode:\n\n")
 	b.WriteString("1. Preserve every `## Tool: <name>` heading exactly as it is now. Renaming a tool is a breaking change for any agent already wired to that tool name — only rename if the user explicitly asks for it.\n")
-	b.WriteString("2. Default to minimal patches. Re-emit the FULL `skill.md` fence so the editor can swap atomically, but call out what changed.\n")
-	b.WriteString("3. After the closing fence, add a `**Changed:**` bullet list summarizing the diff (one line per change).\n")
-	b.WriteString("4. If a helper script needs to be dropped entirely, say so in the **Changed:** list — do NOT re-emit it.\n\n")
+	b.WriteString("2. Default to minimal patches. Still return the FULL updated skill in the `skill.skill_md` field of the JSON envelope so the editor can swap atomically — never a partial diff.\n")
+	b.WriteString("3. Put a `**Changed:**` bullet list (one line per change) in the `message` field summarizing what you altered.\n")
+	b.WriteString("4. To drop a helper script entirely, omit it from `skill.scripts` and note the removal in the **Changed:** list. `skill.scripts` is the complete set of scripts the skill should have after your edit.\n\n")
 	b.WriteString("Current state of the skill being edited:\n\n")
 	b.WriteString("````current-skill.md\n")
 	b.WriteString(strings.TrimRight(existing.SkillMD, "\n"))
@@ -237,31 +237,32 @@ Always justify why a script is needed if you create one.
 - **denied_tools**: List tools the skill must NOT use (e.g. http_request if using cli_execute)
 - **No ` + "`" + `sh -c` + "`" + `**: Never use shell command strings; use proper scripts instead
 
-## Output Format
+## Output Format — STRUCTURED JSON
 
-When you generate skill content, use QUADRUPLE-backtick labeled fences (` + "````" + ` not ` + "```" + `).
-This is critical — inner triple-backtick code blocks (JSON schemas, etc.) must nest safely.
+Every reply you send is a SINGLE JSON object and NOTHING else. No prose before or after, no markdown code fences around it. The object has exactly two fields:
 
-For the SKILL.md content:
-` + "`````" + `
-` + "````" + `skill.md
----
-name: example-skill
-...
----
-# Example Skill
-...
-` + "````" + `
-` + "`````" + `
+` + "```" + `json
+{
+  "message": "<your chat reply to the user: a clarifying question, a note about a default you chose, or a short summary of the skill you just drafted>",
+  "skill": null
+}
+` + "```" + `
 
-For optional scripts (only if needed):
-` + "`````" + `
-` + "````" + `script:my-search.sh
-#!/bin/bash
-set -euo pipefail
-...
-` + "````" + `
-` + "`````" + `
+- ` + "`" + `message` + "`" + ` (string, required) — what the user reads in the chat. While you are still interviewing, this is your ONE clarifying question. When you draft or update a skill, this is a brief summary (and, in edit mode, the **Changed:** bullet list).
+- ` + "`" + `skill` + "`" + ` (object or null) — set to ` + "`" + `null` + "`" + ` on any turn where you are still gathering requirements. The moment the skill is draftable (all four things known), set it to:
+
+` + "```" + `json
+{
+  "skill_md": "<the COMPLETE SKILL.md content: frontmatter + full markdown body>",
+  "scripts": { "my-search.sh": "<complete script content>" }
+}
+` + "```" + `
+
+- ` + "`" + `skill_md` + "`" + ` is the entire SKILL.md as a single string (embedded newlines as ` + "`" + `\n` + "`" + `, embedded quotes escaped — it is a JSON string value). It MUST contain the full frontmatter AND the full markdown body with every required ` + "`" + `## Tool:` + "`" + ` section (Input table, Output JSON schema, Examples table, detection heuristics), Safety Constraints, and Important Notes — exactly as the examples below show.
+- ` + "`" + `scripts` + "`" + ` maps script filename → complete script content. Omit it or use ` + "`" + `{}` + "`" + ` for binary-backed skills with no scripts.
+- Return the FULL skill_md every time you draft or revise — never a diff or a fragment. The editor swaps the whole file atomically.
+
+The two worked examples below show SKILL.md CONTENT. When you respond, that content goes INSIDE the ` + "`" + `skill_md` + "`" + ` string of the JSON envelope — do not wrap your actual reply in backtick fences.
 
 ## Complete Example: Binary-backed Skill (k8s-incident-triage)
 

@@ -152,9 +152,11 @@ instead of looping:
   question.
 - Asks **at most one** clarifying question per turn, and only when a
   genuinely blocking unknown remains.
-- Drafts the moment it knows the three essentials — the task + tool(s),
-  the credentials/env, and the command-line tools the scripts invoke —
-  preferring a sensible default (noted in the skill) over another question.
+- Drafts the moment it knows the four essentials — the task + tool(s), the
+  credentials/env, the command-line tools the scripts invoke, and an install
+  recipe for any binary the base image lacks — preferring a sensible default
+  (noted in the skill) over another question. It will not draft with an
+  invented package name or download URL.
 
 ### Custom binaries
 
@@ -168,6 +170,41 @@ the base image lacks — the builder emits the right one:
 
 The builder will ask for a package name or download URL rather than invent
 one.
+
+### Structured output (`{message, skill}`)
+
+Each turn the builder returns a single JSON envelope, not markdown fences:
+
+```json
+{
+  "message": "<the chat reply: a question, a chosen default, or a draft summary>",
+  "skill": null
+}
+```
+
+`skill` stays `null` while the interview is still converging. The moment the
+skill is draftable it becomes the full artifact:
+
+```json
+{
+  "message": "Here's your skill.",
+  "skill": {
+    "skill_md": "<the complete SKILL.md content>",
+    "scripts": { "my-tool.sh": "<complete script>" }
+  }
+}
+```
+
+The chat handler parses this envelope (`parseSkillEnvelope`), streaming a
+content-free `progress` keepalive during generation and delivering the
+`message` and `skill_draft` at completion — the UI renders `message` in the
+chat and loads `skill_md`/`scripts` into the editor. This replaces the old
+quadruple-backtick fence format, which LLMs frequently mis-nested. A model
+that still emits the legacy fences degrades gracefully: the handler falls
+back to fence extraction so the draft is never silently lost.
+
+In edit mode the full updated skill still comes back in `skill.skill_md`
+(never a partial diff), with the `**Changed:**` summary in `message`.
 
 ### What it always gets right
 

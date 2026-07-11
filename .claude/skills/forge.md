@@ -375,7 +375,14 @@ loop mines context_expand retrievals for keep_patterns candidates
 (`.forge/ctxzip-suggestions.json`; review via `forge compression
 suggestions`). The local file is per-replica and lost on unvolumed pod
 restarts — context_expanded audit events carry the mined candidates so a
-platform can aggregate learning from the stream instead.
+platform can aggregate learning from the stream instead. With
+compression on, tool-INTERNAL output caps relax 16× via a context
+signal (`tools.WithRelaxedLimits`): builtins' 2000-line/50KB truncate,
+`grep_search`'s 50-match default (→500), and the MCP adapter's 64KB
+result cap (bounded 4MB absolute) — so the full output reaches the
+compression hook instead of dying inside the tool. Explicit caller
+args (`max_results`, `limit`) are always honored; `cli_execute`'s 1MB
+cap is unchanged.
 
 **Read**: `docs/core-concepts/memory-system.md`,
 `docs/core-concepts/context-compression.md`.

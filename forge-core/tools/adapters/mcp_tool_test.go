@@ -116,6 +116,44 @@ func TestMCPTool_Execute_Truncation(t *testing.T) {
 	}
 }
 
+// With compression enabled the executor stamps tools.WithRelaxedLimits: the
+// result cap scales 16x (bounded at 4MB absolute) so the full MCP result
+// reaches the compression layer instead of dying at the adapter.
+func TestMCPTool_Execute_RelaxedTruncation(t *testing.T) {
+	t.Parallel()
+	long := strings.Repeat("a", 10_000)
+	c := &mockClient{res: &mcp.CallToolResult{
+		Content: []mcp.ToolContent{{Type: "text", Text: long}},
+	}}
+	a := newAdapter(t, c, func(t *MCPTool) { t.maxResultChars = 1000 })
+
+	relaxed := tools.WithRelaxedLimits(context.Background())
+
+	// 10K > 1000 cap but < 16K relaxed cap → passes whole.
+	got, err := a.Execute(relaxed, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != long {
+		t.Fatalf("relaxed limits should pass 10K through, got %d chars", len(got))
+	}
+
+	// Over even the relaxed cap → still bounded at 16x.
+	c.res = &mcp.CallToolResult{
+		Content: []mcp.ToolContent{{Type: "text", Text: strings.Repeat("b", 20_000)}},
+	}
+	got, err = a.Execute(relaxed, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(got, truncatedSuffix) {
+		t.Fatal("relaxed limits must still bound pathological output")
+	}
+	if len(got) > 16_000 {
+		t.Fatalf("relaxed result %d bytes exceeds 16x cap", len(got))
+	}
+}
+
 func TestMCPTool_Execute_ErrorMapping(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

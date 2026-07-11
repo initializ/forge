@@ -42,7 +42,7 @@ func (t *fileReadTool) InputSchema() json.RawMessage {
 	}`)
 }
 
-func (t *fileReadTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
+func (t *fileReadTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	var input struct {
 		Path   string `json:"path"`
 		Offset int    `json:"offset"`
@@ -63,13 +63,13 @@ func (t *fileReadTool) Execute(_ context.Context, args json.RawMessage) (string,
 	}
 
 	if info.IsDir() {
-		return t.listDirectory(resolved)
+		return t.listDirectory(ctx, resolved)
 	}
 
-	return t.readFile(resolved, input.Offset, input.Limit)
+	return t.readFile(ctx, resolved, input.Offset, input.Limit)
 }
 
-func (t *fileReadTool) readFile(path string, offset, limit int) (string, error) {
+func (t *fileReadTool) readFile(ctx context.Context, path string, offset, limit int) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("reading file: %w", err)
@@ -80,6 +80,9 @@ func (t *fileReadTool) readFile(path string, offset, limit int) (string, error) 
 	}
 	if limit <= 0 {
 		limit = MaxOutputLines
+		if tools.RelaxedLimits(ctx) {
+			limit = RelaxedMaxOutputLines
+		}
 	}
 
 	lines := strings.Split(string(data), "\n")
@@ -103,10 +106,10 @@ func (t *fileReadTool) readFile(path string, offset, limit int) (string, error) 
 		result += fmt.Sprintf("\n... (%d more lines not shown)", totalLines-end)
 	}
 
-	return TruncateOutput(result), nil
+	return TruncateOutputCtx(ctx, result), nil
 }
 
-func (t *fileReadTool) listDirectory(path string) (string, error) {
+func (t *fileReadTool) listDirectory(ctx context.Context, path string) (string, error) {
 	entries, err := os.ReadDir(path)
 	if err != nil {
 		return "", fmt.Errorf("reading directory: %w", err)
@@ -132,5 +135,5 @@ func (t *fileReadTool) listDirectory(path string) (string, error) {
 		return "(empty directory)", nil
 	}
 
-	return TruncateOutput(sb.String()), nil
+	return TruncateOutputCtx(ctx, sb.String()), nil
 }

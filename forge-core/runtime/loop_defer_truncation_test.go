@@ -8,6 +8,7 @@ import (
 
 	"github.com/initializ/forge/forge-core/a2a"
 	"github.com/initializ/forge/forge-core/llm"
+	"github.com/initializ/forge/forge-core/tools"
 )
 
 // deferHarness runs one tool round-trip with DeferToolResultTruncation and
@@ -168,6 +169,58 @@ func TestDeferredTruncation_NeverSplitsMarker(t *testing.T) {
 	}
 	if !strings.Contains(llmSaw, "[OUTPUT TRUNCATED") {
 		t.Fatal("cap should still have fired")
+	}
+}
+
+// With deferToolTruncation set (compression on), the tool-exec context must
+// carry the relaxed-limits stamp so tool-INTERNAL caps (builtins' truncate,
+// grep's 50-match default, the MCP adapter) scale up instead of destroying
+// data before the compression hook sees it.
+func TestDeferredTruncation_StampsRelaxedLimits(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		defer_  bool
+		relaxed bool
+	}{
+		{"defer on stamps relaxed", true, true},
+		{"defer off leaves standard", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			callCount := 0
+			client := &mockLLMClient{chatFunc: func(_ context.Context, _ *llm.ChatRequest) (*llm.ChatResponse, error) {
+				callCount++
+				if callCount == 1 {
+					return &llm.ChatResponse{
+						Message: llm.ChatMessage{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{
+							ID: "c1", Type: "function", Function: llm.FunctionCall{Name: "big", Arguments: `{}`},
+						}}},
+						FinishReason: "tool_calls",
+					}, nil
+				}
+				return &llm.ChatResponse{Message: llm.ChatMessage{Role: llm.RoleAssistant, Content: "done"}, FinishReason: "stop"}, nil
+			}}
+			var sawRelaxed bool
+			toolExec := &mockToolExecutor{
+				executeFunc: func(ctx context.Context, _ string, _ json.RawMessage) (string, error) {
+					sawRelaxed = tools.RelaxedLimits(ctx)
+					return "ok", nil
+				},
+				toolDefs: []llm.ToolDefinition{{Type: "function", Function: llm.FunctionSchema{Name: "big"}}},
+			}
+			exec := NewLLMExecutor(LLMExecutorConfig{
+				Client: client, Tools: toolExec,
+				DeferToolResultTruncation: tc.defer_,
+			})
+			task := &a2a.Task{ID: "t-stamp"}
+			if _, err := exec.Execute(context.Background(), task, &a2a.Message{
+				Role: a2a.MessageRoleUser, Parts: []a2a.Part{a2a.NewTextPart("go")},
+			}); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if sawRelaxed != tc.relaxed {
+				t.Fatalf("tool ctx relaxed = %v, want %v", sawRelaxed, tc.relaxed)
+			}
+		})
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/initializ/forge/forge-core/a2a"
 	"github.com/initializ/forge/forge-core/llm"
 	"github.com/initializ/forge/forge-core/observability"
+	"github.com/initializ/forge/forge-core/tools"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 )
@@ -718,6 +719,13 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 			// args/result content capture under CaptureContent + Redact.
 			toolCtx, toolSpan := Tracer().Start(ctx, "tool."+tc.Function.Name)
 			toolSpan.SetAttributes(attribute.String(observability.AttrForgeToolName, tc.Function.Name))
+			// With compression enabled (deferToolTruncation), relax
+			// tool-internal output caps so the full result reaches the
+			// compression hook instead of being destructively cut inside
+			// the tool. The pre-hook safety ceiling below still bounds it.
+			if e.deferToolTruncation {
+				toolCtx = tools.WithRelaxedLimits(toolCtx)
+			}
 			if e.tracingCfg.CaptureContent && tc.Function.Arguments != "" {
 				toolSpan.SetAttributes(attribute.String(
 					observability.AttrForgeToolArgs,

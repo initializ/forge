@@ -89,11 +89,12 @@ type Config struct {
 // Runtime owns the shared CCR store and produces the hook, client wrapper,
 // and expand tool that plug into the agent loop.
 type Runtime struct {
-	store   *ccr.BoltStore
-	minSize int
-	keep    []string
-	logger  runtime.Logger
-	audit   AuditFunc
+	store    *ccr.BoltStore
+	minSize  int
+	keep     []string
+	logger   runtime.Logger
+	audit    AuditFunc
+	feedback *suggestionStore
 
 	// recent remembers marker hashes this process emitted — for the expand
 	// tool's prefix resolution when the model transcribes a hash imperfectly
@@ -367,11 +368,12 @@ func New(cfg Config) (*Runtime, error) {
 		return nil, fmt.Errorf("compress: opening store: %w", err)
 	}
 	return &Runtime{
-		store:   store,
-		minSize: cfg.MinToolOutputChars,
-		keep:    cfg.KeepPatterns,
-		logger:  cfg.Logger,
-		audit:   cfg.Audit,
+		store:    store,
+		minSize:  cfg.MinToolOutputChars,
+		keep:     cfg.KeepPatterns,
+		logger:   cfg.Logger,
+		audit:    cfg.Audit,
+		feedback: newSuggestionStore(SuggestionsPath(cfg.StorePath)),
 	}, nil
 }
 

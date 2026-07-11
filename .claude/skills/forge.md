@@ -370,7 +370,10 @@ LLM — an `AfterToolExec` hook compresses once at production time, an
 30-min TTL). `compression.keep_patterns` declares domain vocabulary
 that is never dropped; `compression.cache_hints` injects provider
 prompt-cache primitives (anthropic `cache_control`, openai
-`prompt_cache_key`). Fail-open: any error runs uncompressed.
+`prompt_cache_key`). Fail-open: any error runs uncompressed. A learning
+loop mines context_expand retrievals for keep_patterns candidates
+(`.forge/ctxzip-suggestions.json`; review via `forge compression
+suggestions`).
 
 **Read**: `docs/core-concepts/memory-system.md`,
 `docs/core-concepts/context-compression.md`.
@@ -831,6 +834,7 @@ Full reference: `docs/reference/cli-reference.md`.
 | `forge export` | Export `agent.json` for registry upload | |
 | `forge package` | Generate Dockerfile + Kubernetes manifests + `egress_allowlist.json`. `--prod` rejects `dev-open` egress + dev-only tools | `--registry`, `--tag`, `--base`, `--prod` |
 | `forge schedule list \| run \| logs` | Manage cron-backed tasks | |
+| `forge compression suggestions` | keep_patterns candidates mined from context_expand retrievals, with paste-ready yaml | |
 | `forge tool list \| describe` | Enumerate registered tools, show schemas | |
 | `forge channel add \| list \| status \| serve \| disable \| enable` | Channel adapters; disable/enable edit the user policy layer by default; `--system` retargets `/etc/forge/policy.yaml` | `--with`, `--system` |
 | `forge secret set \| get \| list \| delete` | Encrypted secrets | |
@@ -1106,6 +1110,7 @@ when OTel tracing is enabled (OTel v1 / Phase 4 / #105). Both use
 | `EventAgentCardPublished` | `agent_card_published` | Agent Card finalized at startup / hot-reload; `name`, `version`, `protocol_version`, `url`, `skill_count`, `capabilities`, `security_schemes`, `card_size_bytes`, `card_sha256` (FWS-1) |
 | `context_compressed` | `context_compressed` | Context compression shrank content; `seam` (`tool_output` / `request`), `tool`, `tokens_before` / `tokens_after` / `saved_tokens` + running totals (tokenizer estimates) |
 | `context_expanded` | `context_expanded` | Model retrieved offloaded content via `context_expand`; `hash`, `hit`, `bytes` + running totals |
+| `context_pattern_suggested` | `context_pattern_suggested` | Learning loop surfaced a keep_patterns candidate (3+ expansions); `pattern`, `expansions`, `tools` |
 | `AuditInvocationComplete` | `invocation_complete` | A2A invocation closed; `duration_ms`, `input_tokens_total`, `output_tokens_total`, `llm_call_count`, `model`, `provider` (FWS-3); with compression enabled also `compression_saved_tokens_total` (realized wire savings, compounds per history resend), `compression_event_saved_tokens`, `compression_count`, `expansion_count` |
 | `AuditInvocationCancelled` | `invocation_cancelled` | A2A invocation cancelled via `tasks/cancel`; classified `reason` + partial token totals (FWS-4) |
 | `AuditTaskAdmissionDenied` | `task_admission_denied` | Inbound `tasks/send` denied by the platform admission middleware (#201; opt-in via `FORGE_ADMISSION_URL` + `FORGE_PLATFORM_TOKEN`); `reason`, `scope`, `window`, `reset_at`, `cached`. Caller sees HTTP 402 Payment Required. |

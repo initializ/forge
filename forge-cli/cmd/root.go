@@ -34,6 +34,7 @@ func init() {
 	rootCmd.AddCommand(buildCmd)
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(toolCmd)
+	rootCmd.AddCommand(compressionCmd)
 	rootCmd.AddCommand(packageCmd)
 	rootCmd.AddCommand(exportCmd)
 	rootCmd.AddCommand(channelCmd)

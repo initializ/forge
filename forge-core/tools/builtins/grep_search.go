@@ -69,7 +69,7 @@ func (t *grepSearchTool) InputSchema() json.RawMessage {
 	}`)
 }
 
-func (t *grepSearchTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
+func (t *grepSearchTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	var input struct {
 		Pattern    string `json:"pattern"`
 		Path       string `json:"path"`
@@ -94,21 +94,26 @@ func (t *grepSearchTool) Execute(_ context.Context, args json.RawMessage) (strin
 	maxResults := input.MaxResults
 	if maxResults <= 0 {
 		maxResults = 50
+		// With compression on, a low default silently drops the tail of the
+		// results before the compression layer can shrink it losslessly.
+		if tools.RelaxedLimits(ctx) {
+			maxResults = 500
+		}
 	}
 
 	// Try ripgrep first.
 	if rgPath, lookErr := exec.LookPath("rg"); lookErr == nil {
-		result, rgErr := t.searchWithRipgrep(rgPath, searchPath, input.Pattern, input.Include, input.Exclude, input.Context, maxResults)
+		result, rgErr := t.searchWithRipgrep(ctx, rgPath, searchPath, input.Pattern, input.Include, input.Exclude, input.Context, maxResults)
 		if rgErr == nil {
 			return result, nil
 		}
 		// Fall through to Go-based search on ripgrep error.
 	}
 
-	return t.searchWithGo(searchPath, input.Pattern, input.Include, input.Exclude, input.Context, maxResults)
+	return t.searchWithGo(ctx, searchPath, input.Pattern, input.Include, input.Exclude, input.Context, maxResults)
 }
 
-func (t *grepSearchTool) searchWithRipgrep(rgPath, searchPath, pattern, include, exclude string, contextLines, maxResults int) (string, error) {
+func (t *grepSearchTool) searchWithRipgrep(ctx context.Context, rgPath, searchPath, pattern, include, exclude string, contextLines, maxResults int) (string, error) {
 	args := []string{
 		"--no-heading",
 		"--line-number",
@@ -153,10 +158,10 @@ func (t *grepSearchTool) searchWithRipgrep(rgPath, searchPath, pattern, include,
 		result = strings.Join(lines[:maxResults], "\n") + "\n... (more results not shown)"
 	}
 
-	return TruncateOutput(result), nil
+	return TruncateOutputCtx(ctx, result), nil
 }
 
-func (t *grepSearchTool) searchWithGo(searchPath, pattern, include, exclude string, contextLines, maxResults int) (string, error) {
+func (t *grepSearchTool) searchWithGo(ctx context.Context, searchPath, pattern, include, exclude string, contextLines, maxResults int) (string, error) {
 	re, err := regexp.Compile(pattern)
 	if err != nil {
 		return "", fmt.Errorf("invalid regex: %w", err)
@@ -269,7 +274,7 @@ func (t *grepSearchTool) searchWithGo(searchPath, pattern, include, exclude stri
 		return "(no matches found)", nil
 	}
 
-	return TruncateOutput(sb.String()), nil
+	return TruncateOutputCtx(ctx, sb.String()), nil
 }
 
 func (t *grepSearchTool) relativizePaths(output string) string {

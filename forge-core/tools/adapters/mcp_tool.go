@@ -27,6 +27,15 @@ import (
 // this default.
 const defaultMaxResultChars = 64 * 1024 // 64 KiB
 
+// Relaxed-limits scaling (tools.RelaxedLimits — compression enabled):
+// the cap scales 16x, bounded by an absolute ceiling, so the full
+// result reaches the compression layer instead of being destroyed at
+// the adapter. Mirrors the agent loop's pre-hook safety ceiling.
+const (
+	relaxedResultCharsMultiplier = 16
+	relaxedResultCharsAbsolute   = 4 << 20 // 4 MiB
+)
+
 // truncatedSuffix is appended when MCPTool.Execute clips a long result.
 const truncatedSuffix = "\n[truncated]"
 
@@ -154,11 +163,15 @@ func (m *MCPTool) Execute(ctx context.Context, args json.RawMessage) (string, er
 	}
 
 	out := flattenContent(res.Content)
-	if len(out) > m.maxResultChars {
+	maxChars := m.maxResultChars
+	if tools.RelaxedLimits(ctx) {
+		maxChars = min(maxChars*relaxedResultCharsMultiplier, relaxedResultCharsAbsolute)
+	}
+	if len(out) > maxChars {
 		// Subtract suffix length so the FINAL string is at most
-		// m.maxResultChars (review B16 — previously the cap was
+		// maxChars (review B16 — previously the cap was
 		// +len(truncatedSuffix) bytes over the configured limit).
-		cut := m.maxResultChars - len(truncatedSuffix)
+		cut := maxChars - len(truncatedSuffix)
 		if cut < 0 {
 			cut = 0
 		}

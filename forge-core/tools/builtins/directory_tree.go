@@ -37,7 +37,7 @@ func (t *directoryTreeTool) InputSchema() json.RawMessage {
 	}`)
 }
 
-func (t *directoryTreeTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
+func (t *directoryTreeTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	var input struct {
 		Path     string `json:"path"`
 		MaxDepth int    `json:"max_depth"`
@@ -73,7 +73,7 @@ func (t *directoryTreeTool) Execute(_ context.Context, args json.RawMessage) (st
 
 	t.buildTree(&sb, resolved, "", 0, maxDepth)
 
-	return TruncateOutput(sb.String()), nil
+	return TruncateOutputCtx(ctx, sb.String()), nil
 }
 
 func (t *directoryTreeTool) buildTree(sb *strings.Builder, dir, prefix string, depth, maxDepth int) {

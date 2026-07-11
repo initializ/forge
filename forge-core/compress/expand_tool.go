@@ -89,12 +89,21 @@ func (t *expandTool) Execute(ctx context.Context, args json.RawMessage) (string,
 		}
 	}
 	original := entry.Original
-	t.rt.recordExpansion(ctx, hash, ok, len(original))
+	// Feedback flywheel: this expansion means compression dropped something
+	// the model needed. Candidates are mined once and shared between the
+	// context_expanded audit event (fleet-wide, restart-immune aggregation)
+	// and the local suggestions file (single-agent convenience).
+	var candidates []string
 	if ok {
-		// Feedback flywheel: this expansion means compression dropped
-		// something the model needed — mine the retrieved content for
-		// keep_patterns candidates.
-		t.rt.recordExpansionFeedback(ctx, entry.Meta.ToolName, original)
+		candidates = extractCandidates(string(original), t.rt.keep)
+	}
+	eventCandidates := candidates
+	if len(eventCandidates) > maxEventCandidates {
+		eventCandidates = eventCandidates[:maxEventCandidates]
+	}
+	t.rt.recordExpansion(ctx, hash, ok, len(original), entry.Meta.ToolName, eventCandidates)
+	if ok {
+		t.rt.recordExpansionFeedback(ctx, entry.Meta.ToolName, candidates)
 	}
 	if !ok {
 		// A miss is not a dead end — the disk or the original command is the

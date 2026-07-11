@@ -373,7 +373,9 @@ prompt-cache primitives (anthropic `cache_control`, openai
 `prompt_cache_key`). Fail-open: any error runs uncompressed. A learning
 loop mines context_expand retrievals for keep_patterns candidates
 (`.forge/ctxzip-suggestions.json`; review via `forge compression
-suggestions`).
+suggestions`). The local file is per-replica and lost on unvolumed pod
+restarts — context_expanded audit events carry the mined candidates so a
+platform can aggregate learning from the stream instead.
 
 **Read**: `docs/core-concepts/memory-system.md`,
 `docs/core-concepts/context-compression.md`.
@@ -1109,7 +1111,7 @@ when OTel tracing is enabled (OTel v1 / Phase 4 / #105). Both use
 | `EventMCPTokenRefresh` | `mcp_token_refresh` | OAuth 2.1 token refresh result |
 | `EventAgentCardPublished` | `agent_card_published` | Agent Card finalized at startup / hot-reload; `name`, `version`, `protocol_version`, `url`, `skill_count`, `capabilities`, `security_schemes`, `card_size_bytes`, `card_sha256` (FWS-1) |
 | `context_compressed` | `context_compressed` | Context compression shrank content; `seam` (`tool_output` / `request`), `tool`, `tokens_before` / `tokens_after` / `saved_tokens` + running totals (tokenizer estimates) |
-| `context_expanded` | `context_expanded` | Model retrieved offloaded content via `context_expand`; `hash`, `hit`, `bytes` + running totals |
+| `context_expanded` | `context_expanded` | Model retrieved offloaded content via `context_expand`; `hash`, `hit`, `bytes`, producing `tool`, mined `candidates` (≤5, for fleet-wide learning aggregation) + running totals |
 | `context_pattern_suggested` | `context_pattern_suggested` | Learning loop surfaced a keep_patterns candidate (3+ expansions); `pattern`, `expansions`, `tools` |
 | `AuditInvocationComplete` | `invocation_complete` | A2A invocation closed; `duration_ms`, `input_tokens_total`, `output_tokens_total`, `llm_call_count`, `model`, `provider` (FWS-3); with compression enabled also `compression_saved_tokens_total` (realized wire savings, compounds per history resend), `compression_event_saved_tokens`, `compression_count`, `expansion_count` |
 | `AuditInvocationCancelled` | `invocation_cancelled` | A2A invocation cancelled via `tasks/cancel`; classified `reason` + partial token totals (FWS-4) |

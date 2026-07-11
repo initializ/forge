@@ -184,14 +184,29 @@ func (s *UIServer) handleSkillBuilderChat(w http.ResponseWriter, r *http.Request
 		SystemPrompt: systemPrompt,
 		Messages:     req.Messages,
 		OnChunk: func(chunk string) {
+			// Accumulate for the OnDone parse. We deliberately do NOT
+			// forward raw chunks to the chat: the response is now a
+			// structured {message, skill} JSON envelope (#252 part 2), and
+			// streaming raw JSON tokens into the chat bubble would show the
+			// user a half-formed object. A `progress` ping keeps the
+			// connection warm and lets the UI animate a "designing" state
+			// without exposing the JSON.
 			fullResponse.WriteString(chunk)
-			data, _ := json.Marshal(map[string]string{"content": chunk})
-			_, _ = fmt.Fprintf(w, "event: chunk\ndata: %s\n\n", data)
+			_, _ = fmt.Fprint(w, "event: progress\ndata: {}\n\n")
 			flusher.Flush()
 		},
 		OnDone: func(response string) {
-			// Extract artifacts from the full response
-			skillMD, scripts := extractArtifacts(response)
+			// Parse the {message, skill} envelope. Falls back to legacy
+			// fence extraction if the model didn't emit JSON, so an older
+			// model degrades gracefully instead of showing nothing.
+			message, skillMD, scripts, _ := parseSkillEnvelope(response)
+
+			if message != "" {
+				msgData, _ := json.Marshal(map[string]string{"content": message})
+				_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", msgData)
+				flusher.Flush()
+			}
+
 			if skillMD != "" {
 				draftData, _ := json.Marshal(map[string]any{
 					"skill_md": skillMD,

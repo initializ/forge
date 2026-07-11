@@ -49,6 +49,46 @@ func TestSkillBuilderPrompt_InstallRecipes(t *testing.T) {
 	}
 }
 
+// TestSkillBuilderPrompt_StructuredOutput pins the #252 part 2 output
+// contract: the builder must instruct a single {message, skill} JSON
+// envelope (skill:null while interviewing, {skill_md, scripts} once drafted)
+// so the handler consumes JSON instead of fragile fence-parsing.
+func TestSkillBuilderPrompt_StructuredOutput(t *testing.T) {
+	p := skillBuilderSystemPrompt(modeCreate, nil)
+	for _, want := range []string{
+		"STRUCTURED JSON",
+		"SINGLE JSON object",
+		`"message"`,
+		`"skill"`,
+		"skill_md",
+		"scripts",
+		"null",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("structured-output prompt missing: %q", want)
+		}
+	}
+}
+
+// TestSkillBuilderPrompt_EditModeStructuredOutput pins that edit mode routes
+// the updated skill through skill.skill_md and the change summary through the
+// message field (not the old fence + trailing **Changed:** shape).
+func TestSkillBuilderPrompt_EditModeStructuredOutput(t *testing.T) {
+	p := skillBuilderSystemPrompt(modeEdit, &existingSkillContext{
+		Name:    "demo",
+		SkillMD: "---\nname: demo\n---\n## Tool: do_thing\n",
+	})
+	for _, want := range []string{
+		"`skill.skill_md` field",
+		"`message` field",
+		"`skill.scripts`",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("edit-mode structured-output rule missing: %q", want)
+		}
+	}
+}
+
 // TestSkillBuilderPrompt_ForgeCorrectnessRetained guards the Forge-runtime
 // rules that must survive any interview-architecture edit (#252): the $1
 // JSON input contract, structured JSON output, the per-tool section shape

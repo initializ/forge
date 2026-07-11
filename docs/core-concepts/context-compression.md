@@ -14,6 +14,8 @@ Agent tool outputs are dominated by repetition: 149 pods that are `Running` and 
 
 Compression inverts the tradeoff: keep what matters (errors, anomalies, query-relevant rows, boundaries), offload the rest to a local store, and let the model retrieve the original if it turns out to need it.
 
+Content-aware strategies cover the shapes agents actually produce: tables and logs (line selection), JSON arrays and `{"items": [...]}` objects (whole-record selection), runner envelopes (`{"stdout": ...}` recursion), and YAML / `kubectl describe` (indentation-tree folding of boring subtrees like `managedFields` and env lists, each behind its own marker — a crashing container's section is never folded because the error floor protects it).
+
 ## How it works
 
 ```

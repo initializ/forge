@@ -244,7 +244,12 @@ func (r *Runtime) recordCompression(ctx context.Context, seam, tool string, befo
 }
 
 // recordExpansion accumulates retrieval stats and emits AuditEventExpanded.
-func (r *Runtime) recordExpansion(ctx context.Context, hash string, hit bool, bytes int) {
+// tool is the producer of the expanded content; candidates are the top
+// keep-pattern candidates mined from it (capped upstream) — carried on the
+// event so a platform consuming the audit stream can aggregate learning
+// fleet-wide, immune to pod restarts and multi-replica count dilution that
+// limit the local suggestions file.
+func (r *Runtime) recordExpansion(ctx context.Context, hash string, hit bool, bytes int, tool string, candidates []string) {
 	r.mu.Lock()
 	r.totals.Expansions++
 	if !hit {
@@ -262,14 +267,21 @@ func (r *Runtime) recordExpansion(ctx context.Context, hash string, hit bool, by
 	if r.audit == nil {
 		return
 	}
-	r.audit(ctx, AuditEventExpanded, map[string]any{
+	fields := map[string]any{
 		"hash":                   hash,
 		"hit":                    hit,
 		"bytes":                  bytes,
 		"total_saved_tokens":     t.SavedTokens,
 		"total_expansions":       t.Expansions,
 		"total_expansion_misses": t.ExpansionMisses,
-	})
+	}
+	if tool != "" {
+		fields["tool"] = tool
+	}
+	if len(candidates) > 0 {
+		fields["candidates"] = candidates
+	}
+	r.audit(ctx, AuditEventExpanded, fields)
 }
 
 // rememberMarkers records emitted marker hashes with the tokens their

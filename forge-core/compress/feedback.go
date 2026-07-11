@@ -40,6 +40,10 @@ const (
 	// maxCandidatesPerExpansion caps how many tokens one expansion may
 	// contribute, keeping a single giant retrieval from flooding the file.
 	maxCandidatesPerExpansion = 20
+	// maxEventCandidates caps the candidates carried on each
+	// context_expanded audit event (highest-frequency first) — enough for
+	// platform-side counting without bloating the audit stream.
+	maxEventCandidates = 5
 )
 
 // AuditEventPatternSuggested fires once per pattern when it crosses
@@ -250,12 +254,13 @@ func containsStr(list []string, s string) bool {
 }
 
 // recordExpansionFeedback runs the flywheel for one successful expansion:
-// extract → count → surface newly-crossed suggestions via audit + log.
-func (r *Runtime) recordExpansionFeedback(ctx context.Context, tool string, original []byte) {
+// count the pre-mined candidates and surface newly-crossed suggestions via
+// audit + log. Candidates are extracted once by the caller and shared with
+// the context_expanded event.
+func (r *Runtime) recordExpansionFeedback(ctx context.Context, tool string, candidates []string) {
 	if r.feedback == nil {
 		return
 	}
-	candidates := extractCandidates(string(original), r.keep)
 	crossed := r.feedback.record(tool, candidates, time.Now())
 	for _, st := range crossed {
 		r.debugf("keep_patterns suggestion", map[string]any{
@@ -265,7 +270,7 @@ func (r *Runtime) recordExpansionFeedback(ctx context.Context, tool string, orig
 			r.audit(ctx, AuditEventPatternSuggested, map[string]any{
 				"pattern":    st.Pattern,
 				"expansions": st.Expansions,
-				"tools":      strings.Join(st.Tools, ","),
+				"tools":      st.Tools,
 			})
 		}
 	}

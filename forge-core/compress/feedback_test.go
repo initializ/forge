@@ -85,11 +85,20 @@ func TestSuggestionStore_Bounded(t *testing.T) {
 // and crossing the threshold emits context_pattern_suggested exactly once.
 func TestFlywheel_EndToEnd(t *testing.T) {
 	var events []string
+	var expandedCandidates [][]string
 	rt, err := New(Config{
 		StorePath: filepath.Join(t.TempDir(), "ctxzip.db"),
 		Audit: func(_ context.Context, event string, fields map[string]any) {
-			if event == AuditEventPatternSuggested {
+			switch event {
+			case AuditEventPatternSuggested:
 				events = append(events, fmt.Sprintf("%s:%v", fields["pattern"], fields["expansions"]))
+			case AuditEventExpanded:
+				if c, ok := fields["candidates"].([]string); ok {
+					expandedCandidates = append(expandedCandidates, c)
+				}
+				if tool, _ := fields["tool"].(string); tool != "list_nodes" {
+					t.Errorf("context_expanded missing producing tool, got %v", fields["tool"])
+				}
 			}
 		},
 	})
@@ -138,5 +147,20 @@ func TestFlywheel_EndToEnd(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("suggestion missing from snapshot: %+v", rt.Suggestions())
+	}
+
+	// Every context_expanded event carried the mined candidates — the
+	// restart-immune, fleet-aggregatable channel (a platform can rebuild
+	// counting from the audit stream alone).
+	if len(expandedCandidates) != 3 {
+		t.Fatalf("want candidates on all 3 expansion events, got %d", len(expandedCandidates))
+	}
+	for i, c := range expandedCandidates {
+		if len(c) == 0 || len(c) > maxEventCandidates {
+			t.Fatalf("event %d candidates out of bounds: %v", i, c)
+		}
+		if !containsStr(c, "NodeAffinityMismatch") {
+			t.Fatalf("event %d candidates missing the domain token: %v", i, c)
+		}
 	}
 }

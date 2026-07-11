@@ -113,6 +113,15 @@ forge compression suggestions
 
 renders the accumulated candidates with a paste-ready `keep_patterns` block. Suggestions are advisory: a token retrieved often is evidence, not proof — review before adopting. The file is bounded (512 entries, lowest-count evicted) and failures are swallowed (the flywheel never affects compression itself).
 
+### Persistence and containers
+
+The suggestions file lives next to the CCR store (`.forge/ctxzip-suggestions.json`, following `store_path`). In a container without a volume, **a pod restart loses the local counting state** — and in a multi-replica Deployment each replica counts independently, so fleet-wide repetition may never cross any single pod's threshold. Two answers, use either or both:
+
+- **Volume**: point `store_path` at a mounted path (per-replica — the store is single-writer). An `emptyDir` survives container crash-restarts; a per-replica PVC survives rescheduling too.
+- **Audit stream (recommended for fleets)**: every `context_expanded` event carries the producing `tool` and the top mined `candidates`, and threshold crossings emit `context_pattern_suggested` — so a platform consuming the audit export can **rebuild counting fleet-wide from the stream alone**, immune to restarts and replica dilution. The local file is a single-agent convenience, not the source of truth.
+
+The CCR store itself needs no such care: originals expire after `ttl` anyway, and a post-restart marker miss tells the model to re-run the producing tool.
+
 ## Failure posture
 
 Fail-open, always: if the store cannot be opened, a compressor errors, or "compression" would grow a message, the original content is used unchanged. Error tool results are never compressed. An expired retrieval is not a dead end — the model is told to re-run the tool that produced the output.

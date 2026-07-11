@@ -103,6 +103,16 @@ Savings are first-class audit events, not log noise — see [Audit Logging](../s
 
 Token figures are tokenizer estimates (directionally accurate); billed truth remains `llm_call.input_tokens`. A surgical session that produced only small outputs correctly reports `compression_count: 0` — compression is insurance against bulk, not a tax on every call.
 
+## The learning loop
+
+Every `context_expand` retrieval is a signal: compression dropped something a model needed. At expansion time the runtime mines the retrieved content for domain-state tokens (CamelCase / ALLCAPS words like `SchedulingGated` or `QUOTA_EXCEEDED`) that are **not** already protected by the error floor or your `keep_patterns`, and counts them across expansions in `.forge/ctxzip-suggestions.json`. A token retrieved in three distinct expansions is surfaced once — a `context_pattern_suggested` audit event plus a log line — and:
+
+```bash
+forge compression suggestions
+```
+
+renders the accumulated candidates with a paste-ready `keep_patterns` block. Suggestions are advisory: a token retrieved often is evidence, not proof — review before adopting. The file is bounded (512 entries, lowest-count evicted) and failures are swallowed (the flywheel never affects compression itself).
+
 ## Failure posture
 
 Fail-open, always: if the store cannot be opened, a compressor errors, or "compression" would grow a message, the original content is used unchanged. Error tool results are never compressed. An expired retrieval is not a dead end — the model is told to re-run the tool that produced the output.

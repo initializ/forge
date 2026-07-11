@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/initializ/ctxzip"
-
 	"github.com/initializ/forge/forge-core/tools"
 )
 
@@ -81,16 +79,23 @@ func (t *expandTool) Execute(ctx context.Context, args json.RawMessage) (string,
 		return "", fmt.Errorf("hash is required")
 	}
 
-	original, ok := ctxzip.Unzip(t.rt.store, hash)
+	entry, ok := t.rt.store.Get(hash)
 	if !ok {
 		// Models sometimes transcribe a marker hash imperfectly (truncated
 		// hex). If the given value uniquely prefixes a hash this process
 		// emitted, resolve and retry before declaring a miss.
 		if full := t.rt.resolvePrefix(hash); full != "" {
-			original, ok = ctxzip.Unzip(t.rt.store, full)
+			entry, ok = t.rt.store.Get(full)
 		}
 	}
+	original := entry.Original
 	t.rt.recordExpansion(ctx, hash, ok, len(original))
+	if ok {
+		// Feedback flywheel: this expansion means compression dropped
+		// something the model needed — mine the retrieved content for
+		// keep_patterns candidates.
+		t.rt.recordExpansionFeedback(ctx, entry.Meta.ToolName, original)
+	}
 	if !ok {
 		// A miss is not a dead end — the disk or the original command is the
 		// source of truth. Say so instead of returning a bare error.

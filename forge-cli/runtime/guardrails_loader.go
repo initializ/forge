@@ -163,6 +163,13 @@ func BuildGuardrailChecker(
 		sg = DefaultStructuredGuardrails()
 	}
 
+	// Platform guardrails overlay (#284): a workspace/user/system operator
+	// can FURTHER RESTRICT the agent's guardrails — force detections/gates
+	// on, raise actions, lower thresholds, union rule/denylist/blocked-skill
+	// sets. It can never loosen. Applied to whichever config we resolved
+	// (file or defaults) so the tightening is universal.
+	sg = applyPlatformGuardrailsOverlay(sg, logger)
+
 	engine, err := NewFileGuardrailEngine(sg, enforce, logger)
 	if err != nil {
 		logger.Warn("failed to create file guardrail engine, using noop", map[string]any{

@@ -108,7 +108,7 @@ Emits land as:
 }
 ```
 
-**1:1 join with the guardrails library's MongoDB audit.** When `FORGE_GUARDRAILS_DB` is set, the library writes its own audit records into a `GuardrailAuditEvent` collection in MongoDB carrying the same `entity_id` + `entity_type` columns. The values are sourced from the same env vars / forge.yaml so consumers reading both streams can join `forge.entity_id == library.entity_id AND forge.entity_type == library.entity_type` without translation. Forge only runs `entity_type: "agent"` today; the library supports `agent` / `workflow` / `assistant` as future-compatible values.
+**Entity identity.** Each event carries `entity_id` + `entity_type`, sourced from `FORGE_AGENT_ID` / `cfg.AgentID` at startup. These match the field names + values the guardrails library uses (`EntityType` constants: `agent` / `workflow` / `assistant`). Forge only runs `entity_type: "agent"` today; the other values are future-compatible.
 
 Entity identity has no per-request override — agent identity is fixed at process startup. The tenancy layer above (`org_id` / `workspace_id`) covers the multi-tenant routing case.
 

@@ -33,7 +33,7 @@ Each field is resolved independently. A request that overrides only `X-Forge-Org
 
 Entity identity has **no per-request header layer** — entity is fixed at process startup. If a deployment needs per-request entity routing, the tenancy layer above already covers that (an agent serving multiple workspaces). Agent identity is the process, by definition.
 
-`entity_type` and `entity_id` match the field names + values the guardrails library writes to its MongoDB `GuardrailAuditEvent` collection (see `EntityType` constants: `agent` / `workflow` / `assistant`). When `FORGE_GUARDRAILS_DB` is set, both streams carry the same `(entity_id, entity_type)` pair and consumers join them 1:1 without translation. Forge only runs agents today, so the value is always `"agent"`; future entity types are an additive value change, not a schema change.
+`entity_type` and `entity_id` match the field names + values the guardrails library uses (see `EntityType` constants: `agent` / `workflow` / `assistant`). Forge only runs agents today, so the value is always `"agent"`; future entity types are an additive value change, not a schema change.
 
 ## Static tenancy (one agent per workspace)
 

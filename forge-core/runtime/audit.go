@@ -401,10 +401,9 @@ type AuditEvent struct {
 	//
 	// Field names + values match the guardrails library's BasePayload
 	// vocabulary (EntityID, EntityType — "agent" / "workflow" /
-	// "assistant"), so the Forge NDJSON stream and the library's
-	// MongoDB GuardrailAuditEvent collection share columns 1:1 and
-	// can be joined without a translation table. EntityType is
-	// hardcoded to "agent" today since Forge only runs agents;
+	// "assistant") so the Forge NDJSON stream lines up with the
+	// library's own vocabulary without a translation table. EntityType
+	// is hardcoded to "agent" today since Forge only runs agents;
 	// future entity types are an additive value change, not a schema
 	// change.
 	//
@@ -509,10 +508,9 @@ type AuditLogger struct {
 	// Static entity stamp, installed once at agent startup via
 	// WithEntity(). Populated from FORGE_AGENT_ID / cfg.AgentID
 	// in the CLI runner with entityType hardcoded to "agent".
-	// Every emit stamps these so SIEM consumers can join the Forge
-	// NDJSON stream against the guardrails library's MongoDB
-	// GuardrailAuditEvent collection on (entity_id, entity_type)
-	// without translation. See issue #164.
+	// Every emit stamps these so SIEM consumers have a stable
+	// (entity_id, entity_type) identity on each Forge NDJSON event.
+	// See issue #164.
 	tenantEntityID   string
 	tenantEntityType string
 }

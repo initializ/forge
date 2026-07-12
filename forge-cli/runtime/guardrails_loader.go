@@ -82,8 +82,12 @@ func BuildGuardrailChecker(
 	// can FURTHER RESTRICT the agent's guardrails — force detections/gates
 	// on, raise actions, lower thresholds, union rule/denylist/blocked-skill
 	// sets. It can never loosen. Applied to whichever config we resolved
-	// (file or defaults) so the tightening is universal.
-	sg = applyPlatformGuardrailsOverlay(sg, logger)
+	// (file or defaults) so the tightening is universal. Fail-closed: a
+	// malformed overlay aborts startup rather than dropping the mandate.
+	sg, err := applyPlatformGuardrailsOverlay(sg, logger)
+	if err != nil {
+		return nil, fmt.Errorf("platform guardrails overlay: %w", err)
+	}
 
 	engine, err := NewFileGuardrailEngine(sg, enforce, logger)
 	if err != nil {

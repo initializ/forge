@@ -1,10 +1,54 @@
 package runtime
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/initializ/guardrails/models"
 )
+
+// TestMerge_EveryChangeIsRecorded pins review finding #3: whenever the
+// overlay actually changes the effective config, at least one tightening is
+// recorded — so the "tightened nothing" log can never be misleading. Covers
+// the sections that were previously mutated silently (moderation, pii
+// categories, nsfw threshold, urlFilter action, skillConstraints action).
+func TestMerge_EveryChangeIsRecorded(t *testing.T) {
+	cases := map[string]struct{ agent, platform *models.StructuredGuardrails }{
+		"moderation.action": {
+			agent:    &models.StructuredGuardrails{Moderation: &models.ModerationConfig{Enabled: true, Action: "warn"}},
+			platform: &models.StructuredGuardrails{Moderation: &models.ModerationConfig{Enabled: true, Action: "block"}},
+		},
+		"pii.category": {
+			agent: &models.StructuredGuardrails{PII: &models.PIIConfig{Enabled: true, Action: "mask",
+				Categories: map[string]models.PIICategoryConfig{"email": {Enabled: false, Action: "warn"}}}},
+			platform: &models.StructuredGuardrails{PII: &models.PIIConfig{Enabled: true, Action: "mask",
+				Categories: map[string]models.PIICategoryConfig{"email": {Enabled: true, Action: "block"}}}},
+		},
+		"nsfw.threshold": {
+			agent:    &models.StructuredGuardrails{NSFWText: &models.NSFWTextConfig{Enabled: true, ConfidenceThreshold: 0.8, Action: "block"}},
+			platform: &models.StructuredGuardrails{NSFWText: &models.NSFWTextConfig{Enabled: true, ConfidenceThreshold: 0.3, Action: "block"}},
+		},
+		"urlFilter.action": {
+			agent:    &models.StructuredGuardrails{URLFilter: &models.URLFilterConfig{Enabled: true, Action: "warn", Denylist: []string{"x.com"}}},
+			platform: &models.StructuredGuardrails{URLFilter: &models.URLFilterConfig{Action: "block"}},
+		},
+		"skillConstraints.action": {
+			agent:    &models.StructuredGuardrails{SkillConstraints: &models.SkillConstraintsConfig{Enabled: true, Action: "warn"}},
+			platform: &models.StructuredGuardrails{SkillConstraints: &models.SkillConstraintsConfig{Action: "block"}},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			effective, tt := MergeGuardrails(tc.agent, tc.platform)
+			if reflect.DeepEqual(tc.agent, effective) {
+				t.Skip("overlay produced no change for this case")
+			}
+			if len(tt) == 0 {
+				t.Errorf("effective config changed but no tightening was recorded (misleading audit log)")
+			}
+		})
+	}
+}
 
 func thr(enabled bool, threshold float64, action string) *models.ThresholdConfig {
 	return &models.ThresholdConfig{Enabled: enabled, ConfidenceThreshold: threshold, Action: action}

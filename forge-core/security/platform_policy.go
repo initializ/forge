@@ -74,6 +74,22 @@ type PlatformPolicy struct {
 	// injection. Not consumed by the runtime in v1; the field is on
 	// the schema so operators write one policy document, not two.
 	DeniedChannels []string `yaml:"denied_channels,omitempty" json:"denied_channels,omitempty"`
+
+	// Guardrails is the platform guardrails OVERLAY (#284) — a
+	// most-restrictive layer merged over the agent's guardrails.json. It
+	// uses the exact same schema as guardrails.json
+	// (guardrails.StructuredGuardrails: pii / security / customRules /
+	// gateConfig / …), authored here in YAML with the same camelCase
+	// field names.
+	//
+	// It is held as a raw subtree (map[string]any) rather than the typed
+	// struct so forge-core stays free of a dependency on the external
+	// guardrails module — forge-cli bridges this YAML subtree into the
+	// typed StructuredGuardrails (YAML → JSON → struct) and applies the
+	// one-way tighten merge. The platform can only tighten (force
+	// detections/gates on, raise actions, lower thresholds, union
+	// rule/denylist/blocked-skill sets); it can never loosen.
+	Guardrails map[string]any `yaml:"guardrails,omitempty" json:"guardrails,omitempty"`
 }
 
 // ModelMatcher identifies one forbidden model. Both fields are
@@ -102,7 +118,8 @@ func (p PlatformPolicy) IsZero() bool {
 		len(p.ForbiddenModels) == 0 &&
 		p.MaxEgressAllowlistSize == 0 &&
 		p.MaxToolCount == 0 &&
-		len(p.DeniedChannels) == 0
+		len(p.DeniedChannels) == 0 &&
+		len(p.Guardrails) == 0
 }
 
 // LoadPlatformPolicy reads + parses a platform policy file from disk.

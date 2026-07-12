@@ -4,36 +4,27 @@ description: "Configurable content filtering, PII detection, and jailbreak prote
 order: 7
 ---
 
-The guardrail engine validates inbound and outbound messages against configurable policy rules using the [`github.com/initializ/guardrails`](https://github.com/initializ/guardrails) library (pinned at `v0.12.0` in `forge-cli/go.mod`). Both the file-mode `guardrails.json` schema and the MongoDB-mode `AgentConfig` documents share the same shape — `models.StructuredGuardrails` from that library's [`models/config.go`](https://github.com/initializ/guardrails/blob/v0.12.0/models/config.go). The library's `models` package is the authoritative type definition; this page mirrors it for the fields most operators reach for, but field-level additions in newer library versions will surface there first.
+The guardrail engine validates inbound and outbound messages against configurable policy rules using the [`github.com/initializ/guardrails`](https://github.com/initializ/guardrails) library (pinned at `v0.12.0` in `forge-cli/go.mod`). The agent's config is a `guardrails.json` file whose shape is `models.StructuredGuardrails` from that library's [`models/config.go`](https://github.com/initializ/guardrails/blob/v0.12.0/models/config.go). The library's `models` package is the authoritative type definition; this page mirrors it for the fields most operators reach for, but field-level additions in newer library versions will surface there first.
 
 ## Architecture
 
-Guardrails are implemented as a `GuardrailChecker` interface in forge-core, with the concrete engine in forge-cli wrapping the external guardrails library. Two operational modes are supported:
-
-| Mode | Config Source | Use Case |
-|------|--------------|----------|
-| **File mode** (default) | `guardrails.json` in project root | Local development, standalone deployments |
-| **DB mode** | MongoDB (`AgentConfig` collection) | Platform deployments with centralized config + audit |
+Guardrails are implemented as a `GuardrailChecker` interface in forge-core, with the concrete engine in forge-cli wrapping the external guardrails library. The agent authors a `guardrails.json`; a platform operator can further **tighten** it with an overlay (never loosen). See [Platform guardrails overlay](#platform-guardrails-overlay).
 
 ### Source precedence
 
-`BuildGuardrailChecker` (`forge-cli/runtime/guardrails_loader.go`) resolves the active config in this exact order at every `forge run`. The first row whose trigger matches is the one that loads — there is no merging across rows.
+`BuildGuardrailChecker` (`forge-cli/runtime/guardrails_loader.go`) resolves the effective config at every `forge run`:
 
-| # | Trigger | Outcome | What happens to lower-priority sources |
-|---|---|---|---|
-| 1 | `FORGE_GUARDRAILS_DB` set **and** MongoDB connect + ping succeed | **DB mode** — config loaded per-request from the `AgentConfig` collection in the `Initializ` database, keyed by `(FORGE_AGENT_ID, FORGE_ORG_ID)`. Audit records written back to MongoDB (`EnableAudit: true`). | `guardrails.json` is ignored at runtime even if present in the image. |
-| 2 | `FORGE_GUARDRAILS_DB` set **but** connect or ping fails (3-second timeout) | Default: warns `failed to connect guardrails DB, falling back to file` and continues to row 3. With `FORGE_GUARDRAILS_DB_REQUIRED=true`: logs an Error and returns a non-nil startup error — the agent refuses to serve. See [Fail-loud mode](#fail-loud-mode). | Falls through (default) / no fallback (REQUIRED). |
-| 3 | `guardrails.json` exists at `<workDir>/<cfg.GuardrailsPath \|\| "guardrails.json">` and parses | **File mode** — config is the parsed `StructuredGuardrails`. | Built-in defaults discarded. |
-| 4 | File missing, unreadable, or invalid JSON | **Built-in defaults** — bundled PII (email/phone/SSN/credit-card) + jailbreak/prompt-injection/command-injection detection + 11 secret-pattern regexes (see [Default Secret Patterns](#default-secret-patterns)). | N/A — this is the floor. |
-| 5 | Engine construction itself errors (after picking 3 or 4) | Warns `failed to create file guardrail engine, using noop` and installs a `NoopGuardrailChecker`. | No checks run; messages pass through unmodified. |
+| # | Trigger | Outcome |
+|---|---|---|
+| 1 | `guardrails.json` exists at `<workDir>/<cfg.GuardrailsPath \|\| "guardrails.json">` and parses | Config is the parsed `StructuredGuardrails`. |
+| 2 | File missing, unreadable, or invalid JSON | **Built-in defaults** — bundled PII (email/phone/SSN/credit-card) + jailbreak/prompt-injection/command-injection detection + 11 secret-pattern regexes (see [Default Secret Patterns](#default-secret-patterns)). This is the floor. |
+| 3 | (always, after 1 or 2) **Platform guardrails overlay** is merged over the result — see [Platform guardrails overlay](#platform-guardrails-overlay). It can only tighten. |
+| 4 | Engine construction itself errors | Warns `failed to create file guardrail engine, using noop` and installs a `NoopGuardrailChecker` — no checks run, messages pass through unmodified. |
 
-Notable consequences of the order:
+Notable:
 
-- **MongoDB mode bypasses `guardrails.json` entirely** — the file still gets baked into `/app/guardrails.json` by the build, but the runner never opens it when `FORGE_GUARDRAILS_DB` is set. You can flip an agent between modes at runtime by setting / unsetting the env var without rebuilding.
-- **DB failure is non-fatal by default.** A misconfigured URI or transient network issue drops to file mode with a warning, not a hard exit. Set `FORGE_GUARDRAILS_DB_REQUIRED=true` to flip this — recommended for production. See [Fail-loud mode](#fail-loud-mode).
-- **DB mode requires `FORGE_ORG_ID`** to scope the `AgentConfig` lookup. Forgetting to set it usually surfaces as the library returning no config and decisions defaulting through; check that org ID is populated alongside the URI.
-- **`cfg.GuardrailsPath`** in `forge.yaml` overrides the default `"guardrails.json"` filename for file mode only — it has no effect in DB mode.
-- **Audit sinks differ.** DB mode writes via the library's `EnableAudit` path into MongoDB. File mode emits Forge's normal `guardrail_check` audit events through the configured audit sinks (see [Audit Events](#audit-events)).
+- **`cfg.GuardrailsPath`** in `forge.yaml` overrides the default `"guardrails.json"` filename.
+- The engine emits Forge's normal `guardrail_check` audit events through the configured audit sinks (see [Audit Events](#audit-events)).
 
 ## Built-in Evaluators
 
@@ -345,80 +336,61 @@ See [Gate Configuration](#gate-configuration) above. Field types are all `bool` 
 
 - The `forge init` template generates a `guardrails.json` containing only the `pii`, `security`, `customRules`, and `gateConfig` blocks. The other blocks (`moderation`, `urlFilter`, `approvalGates`, `nsfwText`, `hallucination`, `skillConstraints`) are not bootstrapped but are accepted at runtime — add them by hand if you need them.
 - All blocks are pointer-typed in the library struct. Omitting a key in JSON is equivalent to disabling that evaluator; setting an empty object `{}` with `enabled: false` is functionally the same but uses one extra parse cycle.
-- camelCase JSON keys are the contract — the BSON tags happen to be identical so a `StructuredGuardrails` document round-trips between MongoDB and `guardrails.json` without translation.
+- camelCase JSON keys are the contract — they match the library's struct tags exactly.
 - For evaluator semantics, regex flag handling, and the full action vocabulary, see the library's [`models/config.go`](https://github.com/initializ/guardrails/blob/v0.12.0/models/config.go).
 
-## DB Mode (Platform Deployments)
+## Platform guardrails overlay
 
-When `FORGE_GUARDRAILS_DB` is set to a MongoDB connection URI, the engine loads guardrails config from the `AgentConfig` collection and enables audit logging.
+A platform operator can **further restrict** an agent's `guardrails.json` without editing it — the same one-way ratchet the [platform policy](platform-policy.md) applies to tools / egress / models / channels. The overlay can force detections and gates on, raise actions, lower thresholds, and add rules; it can **never loosen** what the agent declared.
 
-```bash
-export FORGE_GUARDRAILS_DB="mongodb://localhost:27017"
-export FORGE_AGENT_ID="my-agent"
-export FORGE_ORG_ID="my-org"
-forge run
+The overlay is authored inside the platform `policy.yaml` under a `guardrails:` key, using the **same schema** as `guardrails.json` (the camelCase `StructuredGuardrails` fields), just in YAML:
+
+```yaml
+# policy.yaml (system / user / workspace layer — see platform-policy.md)
+denied_tools:
+  - http_request
+guardrails:
+  gateConfig:
+    outputGate: true          # force the output gate on
+  security:
+    commandInjection:
+      enabled: true
+      confidenceThreshold: 15  # lower = more sensitive
+      action: block            # raise warn/mask -> block
+  customRules:
+    rules:
+      - id: platform_secret
+        name: Internal token
+        type: regex
+        constraint: hard
+        pattern: "intz-[a-f0-9]{16}"
+        action: block
 ```
 
-The library queries `AgentConfig` with `{agent_id, org_id}` to load the `StructuredGuardrails` config.
+It is loaded from all three policy layers (system → user → workspace) and folded together most-restrictively, then merged over the agent config.
 
-| Environment Variable | Default | Description |
-|---|---|---|
-| `FORGE_GUARDRAILS_DB` | unset | MongoDB connection URI. Setting this activates DB mode. |
-| `FORGE_GUARDRAILS_DB_REQUIRED` | `false` | When `true`, an unreachable DB at startup makes the agent refuse to serve instead of silently downgrading. **Recommended for production.** See [Fail-loud mode](#fail-loud-mode). |
-| `FORGE_AGENT_ID` | from `forge.yaml` `agent_id` | Agent identifier the library uses to look up the `AgentConfig` document. |
-| `FORGE_ORG_ID` | unset | Organization identifier scoping the lookup. |
+### Merge semantics (tighten only)
 
-### Why DB mode is strictly more dangerous than file mode
-
-This is the most common operator footgun in the guardrails subsystem and deserves an explicit callout.
-
-The runtime selection is mutually exclusive (see the [resolution ladder](#source-precedence) above) — there is no merging. When `FORGE_GUARDRAILS_DB` is set:
-
-- The operator's MongoDB `AgentConfig` document is the **only** source of policy.
-- The built-in `DefaultStructuredGuardrails` (11 vendor-secret patterns, PII config, jailbreak / prompt-injection / command-injection thresholds) is **NOT** applied. It is only a fallback in file mode when `guardrails.json` is absent.
-- Any `guardrails.json` checked into the repo is **silently ignored** at runtime. Repo readers see the file and assume it's active; it isn't.
-
-The consequence: a DB-mode deploy with an empty or incomplete `AgentConfig` document is **strictly less protective** than a file-mode deploy with no file at all. A clean default deploy gets the built-in baseline; a DB-mode deploy that forgot to seed PII detection or didn't load the secret-pattern rules has no baseline at all.
-
-Operators MUST seed `AgentConfig` with the equivalent of `DefaultStructuredGuardrails`. Forge ships a CLI helper that produces ready-to-pipe JSON:
-
-```bash
-forge guardrails seed-defaults > defaults.json
-# load into MongoDB, e.g.:
-mongoimport --uri "$FORGE_GUARDRAILS_DB" \
-  --db Initializ --collection AgentConfig \
-  --file <(jq --arg id "$FORGE_AGENT_ID" '. + {agent_id:$id}' defaults.json)
-```
-
-After seeding, validate coverage:
-
-```bash
-forge guardrails validate-db
-```
-
-The validator connects to `FORGE_GUARDRAILS_DB`, fetches the agent's document, and reports on baseline coverage. Warnings surface when fewer than 5 secret-pattern rules are present, PII config is missing, or core gates are disabled — the common signs of an incomplete seed. Exits non-zero when no document exists at all, so CI / deployment hooks can fail the rollout.
-
-### Fail-loud mode
-
-When DB mode is security-critical (the platform deploy default), set `FORGE_GUARDRAILS_DB_REQUIRED=true`. The agent's startup behavior on an unreachable Mongo flips:
-
-| `FORGE_GUARDRAILS_DB_REQUIRED` | DB unreachable at startup |
+| Field | Rule |
 |---|---|
-| unset / `false` | Logs a warning, falls through to file mode (current default — back-compat). |
-| `true` | Logs an error, returns a non-nil error from runner startup, the agent process exits non-zero. |
+| `gateConfig.*` | boolean OR — a gate can be forced on, never off |
+| detections (`pii`, `security.*`, `nsfwText`, `moderation`, `hallucination`) | force-enable; take the **most-severe action** (`warn` < `mask` < `block`); take the **lower** (stricter) threshold |
+| `customRules.rules`, `security.customPatterns`, hard/soft constraints | **union** — platform rules are added; agent rules are never removed |
+| `urlFilter` | **union** denylist; **intersect** allowlist; force-enable |
+| `approvalGates` | **union** |
+| `skillConstraints` | **union** `blockedSkills`; **intersect** `allowedSkills` |
 
-The fail-loud posture matches the FWS-7 audit-sink and security-policy expectations: a misconfigured Mongo URI or a transient Mongo outage at startup MUST NOT silently downgrade protection. Platform deployments running guardrails under DB mode should set this in the deployment manifest by default; one-off `FORGE_GUARDRAILS_DB=mongodb://...` dev usage without the flag keeps the warn-and-fallback behavior.
+Every tightening the overlay applies is logged at startup (`guardrails: platform overlay tightened agent guardrails`) with the changed fields and the contributing layer, so operators can see exactly what the overlay changed. A malformed overlay (or an unknown field — strict parsing) fails loudly rather than silently dropping intended tightening.
 
-A startup warning also fires (exactly once) when both `FORGE_GUARDRAILS_DB` is set AND a `guardrails.json` is present in the workdir, pointing at the specific file being ignored. Remove the file or unset the env var to avoid drift.
+### `seed-defaults` helper
 
-### Helper subcommands
+`forge guardrails seed-defaults` prints `DefaultStructuredGuardrails` as JSON to scaffold a `guardrails.json`:
 
-| Command | Purpose |
-|---|---|
-| `forge guardrails seed-defaults` | Print `DefaultStructuredGuardrails` as JSON suitable for MongoDB seeding. Round-trips through `models.StructuredGuardrails` so the output is library-consumable verbatim. |
-| `forge guardrails validate-db` | Connect to `FORGE_GUARDRAILS_DB`, fetch the agent's `AgentConfig`, and report on baseline coverage (PII config, security thresholds, secret-pattern rule count, gate enablement). Exits non-zero on missing document. |
+```bash
+forge guardrails seed-defaults > guardrails.json
+```
 
-Both commands honor the `FORGE_GUARDRAILS_DB` / `FORGE_AGENT_ID` env vars and accept `--mongo-uri` / `--agent-id` flag overrides for ad-hoc invocations.
+The output round-trips through `models.StructuredGuardrails` and covers the 11 vendor-secret patterns, PII config, and jailbreak / prompt-injection / command-injection thresholds.
 
 ## Runtime
 
@@ -654,13 +626,8 @@ agent ever see PII?" should treat a `decision=blocked` row as the
 only one that can carry plain-text PII through the stream, and gate
 their export pipeline accordingly.
 
-### Mode-specific behavior
-
-- **File mode** — every event flows through the Forge audit pipeline.
-- **DB mode** — the guardrails library also writes audit records to
-  MongoDB when `EnableAudit` is set. Forge still emits the
-  `guardrail_check` event on its own audit sinks so SIEM consumers
-  reading the export socket see parity regardless of mode.
+Every guardrail decision flows through the Forge audit pipeline as a
+`guardrail_check` event on the configured audit sinks.
 
 See [Security Overview](overview.md) for the full security architecture
 and [Audit Logging](audit-logging.md) for the sink stack and schema

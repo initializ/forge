@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/initializ/guardrails"
 	"github.com/initializ/guardrails/models"
@@ -12,8 +11,6 @@ import (
 	"github.com/initializ/forge/forge-core/a2a"
 	"github.com/initializ/forge/forge-core/observability"
 	coreruntime "github.com/initializ/forge/forge-core/runtime"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 // Result-string constants for the guardrail_check audit event. Operators
@@ -30,9 +27,9 @@ const (
 )
 
 // LibraryGuardrailEngine implements coreruntime.GuardrailChecker using
-// the github.com/initializ/guardrails library. It supports two modes:
-//   - File mode: uses StructuredGuardrails loaded from guardrails.json
-//   - DB mode: loads config from MongoDB (set via FORGE_GUARDRAILS_DB env)
+// the github.com/initializ/guardrails library. Config is a
+// StructuredGuardrails loaded from guardrails.json (optionally tightened by
+// the platform guardrails overlay — see #284).
 //
 // On every mask / block / warn decision the engine emits a
 // guardrail_check audit event through auditLogger (when wired). The
@@ -44,7 +41,6 @@ type LibraryGuardrailEngine struct {
 	manager       *guardrails.GuardrailManager
 	structured    *models.StructuredGuardrails
 	enforce       bool
-	useDB         bool
 	agentID       string
 	orgID         string
 	configVersion int64
@@ -71,48 +67,6 @@ func NewFileGuardrailEngine(sg *models.StructuredGuardrails, enforce bool, logge
 		structured: sg,
 		enforce:    enforce,
 		logger:     logger,
-	}, nil
-}
-
-// NewDBGuardrailEngine creates a guardrail engine backed by MongoDB.
-// Config is loaded from the AgentConfig collection; audit logging is enabled.
-//
-// Connect timeout is 3s. Long enough to absorb DNS jitter and a slow
-// TLS handshake on a healthy cluster, short enough that a
-// misconfigured URI or a downed Mongo surfaces during startup rather
-// than holding up the agent process. Issue #166: shorter timeout
-// also makes the fail-loud REQUIRED-mode path surface in seconds,
-// not tens of seconds.
-func NewDBGuardrailEngine(mongoURI, agentID, orgID string, enforce bool, logger coreruntime.Logger) (*LibraryGuardrailEngine, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
-	if err != nil {
-		return nil, fmt.Errorf("connecting to guardrails DB: %w", err)
-	}
-
-	// Verify connectivity
-	if err := client.Ping(ctx, nil); err != nil {
-		return nil, fmt.Errorf("pinging guardrails DB: %w", err)
-	}
-
-	mgr, err := guardrails.NewGuardrailManager(guardrails.Config{
-		MongoClient:  client,
-		DatabaseName: "Initializ",
-		EnableAudit:  true,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("creating guardrail manager with DB: %w", err)
-	}
-
-	return &LibraryGuardrailEngine{
-		manager: mgr,
-		enforce: enforce,
-		useDB:   true,
-		agentID: agentID,
-		orgID:   orgID,
-		logger:  logger,
 	}, nil
 }
 
@@ -144,12 +98,9 @@ func (e *LibraryGuardrailEngine) WithTracing(cfg observability.TracingConfig) *L
 	return e
 }
 
-// structuredIfFileMode returns the StructuredGuardrails pointer only in file
-// mode. In DB mode the library loads config from MongoDB automatically.
-func (e *LibraryGuardrailEngine) structuredIfFileMode() *models.StructuredGuardrails {
-	if e.useDB {
-		return nil
-	}
+// structuredConfig returns the StructuredGuardrails the library evaluates
+// each gate against.
+func (e *LibraryGuardrailEngine) structuredConfig() *models.StructuredGuardrails {
 	return e.structured
 }
 
@@ -184,7 +135,7 @@ func (e *LibraryGuardrailEngine) CheckInbound(ctx context.Context, msg *a2a.Mess
 		EntityID:             e.agentID,
 		OrgID:                e.orgID,
 		EntityType:           guardrails.EntityTypeAgent,
-		StructuredGuardrails: e.structuredIfFileMode(),
+		StructuredGuardrails: e.structuredConfig(),
 		ConfigVersion:        e.configVersion,
 	})
 	if err != nil {
@@ -279,7 +230,7 @@ func (e *LibraryGuardrailEngine) checkOneOutboundPart(ctx context.Context, msg *
 		EntityID:             e.agentID,
 		OrgID:                e.orgID,
 		EntityType:           guardrails.EntityTypeAgent,
-		StructuredGuardrails: e.structuredIfFileMode(),
+		StructuredGuardrails: e.structuredConfig(),
 		ConfigVersion:        e.configVersion,
 	})
 	if err != nil {
@@ -337,7 +288,7 @@ func (e *LibraryGuardrailEngine) CheckToolCall(ctx context.Context, toolName, ar
 		EntityID:             e.agentID,
 		OrgID:                e.orgID,
 		EntityType:           guardrails.EntityTypeAgent,
-		StructuredGuardrails: e.structuredIfFileMode(),
+		StructuredGuardrails: e.structuredConfig(),
 		ConfigVersion:        e.configVersion,
 	})
 	if err != nil {
@@ -402,7 +353,7 @@ func (e *LibraryGuardrailEngine) CheckToolOutput(ctx context.Context, toolName, 
 		EntityID:             e.agentID,
 		OrgID:                e.orgID,
 		EntityType:           guardrails.EntityTypeAgent,
-		StructuredGuardrails: e.structuredIfFileMode(),
+		StructuredGuardrails: e.structuredConfig(),
 		ConfigVersion:        e.configVersion,
 		Metadata:             map[string]interface{}{"tool_name": toolName},
 	})
@@ -467,7 +418,7 @@ func (e *LibraryGuardrailEngine) CheckContext(ctx context.Context, content strin
 		EntityID:             e.agentID,
 		OrgID:                e.orgID,
 		EntityType:           guardrails.EntityTypeAgent,
-		StructuredGuardrails: e.structuredIfFileMode(),
+		StructuredGuardrails: e.structuredConfig(),
 		ConfigVersion:        e.configVersion,
 	})
 	if err != nil {
@@ -527,7 +478,7 @@ func (e *LibraryGuardrailEngine) CheckStream(ctx context.Context, chunk string) 
 		EntityID:             e.agentID,
 		OrgID:                e.orgID,
 		EntityType:           guardrails.EntityTypeAgent,
-		StructuredGuardrails: e.structuredIfFileMode(),
+		StructuredGuardrails: e.structuredConfig(),
 		ConfigVersion:        e.configVersion,
 	})
 	if err != nil {

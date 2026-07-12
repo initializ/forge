@@ -27,9 +27,8 @@ order: 3
 | `FORGE_CORS_ORIGINS` | Comma-separated CORS allowed origins for A2A server |
 | `FORGE_AUTH_URL` | External auth provider URL for token validation |
 | `FORGE_AUTH_ORG_ID` | Organization ID sent to external auth provider |
-| `FORGE_GUARDRAILS_DB` | MongoDB URI for DB-backed guardrails config + audit |
-| `FORGE_AGENT_ID` | Agent identifier for DB guardrails (falls back to `agent_id` in YAML) |
-| `FORGE_ORG_ID` | Organization identifier for DB guardrails |
+| `FORGE_AGENT_ID` | Agent identifier for audit entity identity (falls back to `agent_id` in YAML) |
+| `FORGE_ORG_ID` | Organization identifier for tenancy stamping / audit |
 | `FORGE_PASSPHRASE` | Passphrase for encrypted secrets file |
 
 ## Audit

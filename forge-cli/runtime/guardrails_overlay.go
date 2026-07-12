@@ -44,7 +44,9 @@ func LoadPlatformGuardrailsOverlay() (*models.StructuredGuardrails, []string, er
 				layers[i].Source, layers[i].Path, err)
 		}
 		// Fold onto the accumulator. MergeGuardrails is a most-restrictive
-		// union, so layer order doesn't affect the combined result.
+		// union; the effective strictness is order-independent, though a few
+		// first-writer-wins fallbacks (urlFilter/hallucination Mode when
+		// unset, rule-ID dedupe) resolve to whichever layer set them first.
 		combined, _ = MergeGuardrails(combined, ov)
 		sources = append(sources, layers[i].Source)
 	}
@@ -75,21 +77,27 @@ func overlayFromRawYAML(raw map[string]any) (*models.StructuredGuardrails, error
 }
 
 // applyPlatformGuardrailsOverlay merges the platform overlay (if any) over
-// the agent's guardrails and logs every tightening for audit visibility.
-// Returns the effective guardrails to hand to the engine. On a malformed
-// overlay it logs and returns the agent's guardrails unchanged — the overlay
-// is additive protection; a broken overlay must not crash an otherwise-valid
-// agent, but the operator is told loudly.
-func applyPlatformGuardrailsOverlay(agent *models.StructuredGuardrails, logger coreruntime.Logger) *models.StructuredGuardrails {
+// the agent's guardrails and logs every tightening for visibility. Returns
+// the effective guardrails to hand to the engine.
+//
+// FAIL-CLOSED: a malformed overlay is a hard error, not a warning. A platform
+// guardrails overlay is an operator mandate in the same class as the egress /
+// tool / model denies enforced by platform_policy_enforce.go — those refuse
+// to start on conflict, and a typo'd `guardrails:` block that strict-decoding
+// rejects must likewise abort rather than silently drop the intended
+// tightening (which would start the agent LESS protected than the operator
+// mandated). The caller (BuildGuardrailChecker) propagates the error so the
+// runner exits non-zero.
+func applyPlatformGuardrailsOverlay(agent *models.StructuredGuardrails, logger coreruntime.Logger) (*models.StructuredGuardrails, error) {
 	overlay, sources, err := LoadPlatformGuardrailsOverlay()
 	if err != nil {
-		logger.Error("guardrails: platform overlay failed to load; agent guardrails used unchanged", map[string]any{
+		logger.Error("guardrails: platform overlay failed to load; refusing to start", map[string]any{
 			"error": err.Error(),
 		})
-		return agent
+		return nil, err
 	}
 	if overlay == nil {
-		return agent
+		return agent, nil
 	}
 
 	effective, tightenings := MergeGuardrails(agent, overlay)
@@ -99,7 +107,7 @@ func applyPlatformGuardrailsOverlay(agent *models.StructuredGuardrails, logger c
 		logger.Info("guardrails: platform overlay loaded but tightened nothing (agent already at least as strict)", map[string]any{
 			"layers": sources,
 		})
-		return effective
+		return effective, nil
 	}
 
 	changes := make([]string, 0, len(tightenings))
@@ -110,5 +118,5 @@ func applyPlatformGuardrailsOverlay(agent *models.StructuredGuardrails, logger c
 		"layers":  sources,
 		"changes": changes,
 	})
-	return effective
+	return effective, nil
 }

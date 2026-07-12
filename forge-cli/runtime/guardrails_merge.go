@@ -38,12 +38,20 @@ var actionSeverity = map[string]int{
 // moreSevereAction returns whichever action is stricter. When only one is
 // set, that one wins. Never returns a less-severe action than `agent`, which
 // is what enforces the never-loosen invariant for actions.
+//
+// If the agent's action is UNRECOGNIZED (severity 0 — e.g. a newer library
+// added a stricter action string this build doesn't know), the agent's
+// action is kept: we can't prove the platform's is stricter, and replacing
+// an unknown-but-possibly-stricter action would risk a loosen.
 func moreSevereAction(agent, platform string) string {
 	if platform == "" {
 		return agent
 	}
 	if agent == "" {
 		return platform
+	}
+	if actionSeverity[agent] == 0 {
+		return agent // unknown agent action — never downgrade it
 	}
 	if actionSeverity[platform] > actionSeverity[agent] {
 		return platform
@@ -52,9 +60,14 @@ func moreSevereAction(agent, platform string) string {
 }
 
 // stricterThreshold returns the more-sensitive (LOWER) of two confidence
-// thresholds, treating a non-positive value as "unset". A detector fires
-// when confidence >= threshold, so a lower threshold fires more often =
-// stricter. The platform can lower a threshold but never raise it.
+// thresholds. A detector fires when confidence >= threshold, so a lower
+// threshold fires more often = stricter; the platform can lower a threshold
+// but never raise it.
+//
+// A non-positive value is treated as a SENTINEL for "unset", not a real
+// threshold — so a platform `0` cannot lower an agent's `50`. An agent that
+// genuinely wants maximum sensitivity should enable the detector with a
+// small positive threshold rather than relying on `0`.
 func stricterThreshold(agent, platform float64) float64 {
 	switch {
 	case platform <= 0:
@@ -81,6 +94,10 @@ func MergeGuardrails(agent, platform *models.StructuredGuardrails) (*models.Stru
 	if platform == nil {
 		return result, nil
 	}
+	// Deep-copy the overlay too, so appended rules / patterns / categories in
+	// the result never share inner slices with the caller's platform input
+	// (exact "never aliases inputs" contract).
+	platform = cloneGuardrails(platform)
 	var tt []GuardrailTightening
 	add := func(field, change string) { tt = append(tt, GuardrailTightening{Field: field, Change: change}) }
 
@@ -140,8 +157,14 @@ func mergePII(agent, platform *models.PIIConfig, add func(string, string)) *mode
 			agent.Categories[name] = pc
 			continue
 		}
+		if pc.Enabled && !ac.Enabled {
+			add("pii.categories."+name+".enabled", "enabled")
+		}
+		if na := moreSevereAction(ac.Action, pc.Action); na != ac.Action {
+			add("pii.categories."+name+".action", ac.Action+" -> "+na)
+			ac.Action = na
+		}
 		ac.Enabled = ac.Enabled || pc.Enabled
-		ac.Action = moreSevereAction(ac.Action, pc.Action)
 		agent.Categories[name] = ac
 	}
 	return agent
@@ -155,7 +178,10 @@ func mergeModeration(agent, platform *models.ModerationConfig, add func(string, 
 		add("moderation.enabled", "enabled")
 	}
 	agent.Enabled = agent.Enabled || platform.Enabled
-	agent.Action = moreSevereAction(agent.Action, platform.Action)
+	if na := moreSevereAction(agent.Action, platform.Action); na != agent.Action {
+		add("moderation.action", agent.Action+" -> "+na)
+		agent.Action = na
+	}
 	if agent.Categories == nil {
 		agent.Categories = map[string]models.ModerationCategoryConfig{}
 	}
@@ -166,9 +192,18 @@ func mergeModeration(agent, platform *models.ModerationConfig, add func(string, 
 			add("moderation.categories."+name, "added")
 			continue
 		}
+		if pc.Enabled && !ac.Enabled {
+			add("moderation.categories."+name+".enabled", "enabled")
+		}
+		if na := moreSevereAction(ac.Action, pc.Action); na != ac.Action {
+			add("moderation.categories."+name+".action", ac.Action+" -> "+na)
+			ac.Action = na
+		}
+		if nt := stricterThreshold(ac.Threshold, pc.Threshold); nt != ac.Threshold {
+			add("moderation.categories."+name+".threshold", fmt.Sprintf("%g -> %g", ac.Threshold, nt))
+			ac.Threshold = nt
+		}
 		ac.Enabled = ac.Enabled || pc.Enabled
-		ac.Action = moreSevereAction(ac.Action, pc.Action)
-		ac.Threshold = stricterThreshold(ac.Threshold, pc.Threshold)
 		agent.Categories[name] = ac
 	}
 	return agent
@@ -234,7 +269,10 @@ func mergeURLFilter(agent, platform *models.URLFilterConfig, add func(string, st
 		add("urlFilter.enabled", "enabled")
 	}
 	agent.Enabled = agent.Enabled || platform.Enabled
-	agent.Action = moreSevereAction(agent.Action, platform.Action)
+	if na := moreSevereAction(agent.Action, platform.Action); na != agent.Action {
+		add("urlFilter.action", agent.Action+" -> "+na)
+		agent.Action = na
+	}
 
 	if n := unionInto(&agent.Denylist, platform.Denylist); n > 0 {
 		add("urlFilter.denylist", fmt.Sprintf("+%d domain(s)", n))
@@ -242,6 +280,12 @@ func mergeURLFilter(agent, platform *models.URLFilterConfig, add func(string, st
 	// Allowlist intersection tightens (fewer URLs pass). Only intersect when
 	// the platform actually declares an allowlist — an empty platform
 	// allowlist means "no opinion", not "deny everything".
+	//
+	// CAVEAT (#287): when agent and platform allowlists are DISJOINT the
+	// intersection is empty-but-non-nil. Whether the guardrails library reads
+	// that as "deny all" (correct ratchet) or "no filtering" (a loosen) under
+	// the active Mode is unverified. Until #287 pins it, operators should
+	// ensure overlapping allowlists.
 	if len(platform.Allowlist) > 0 && len(agent.Allowlist) > 0 {
 		before := len(agent.Allowlist)
 		agent.Allowlist = intersectStrings(agent.Allowlist, platform.Allowlist)
@@ -255,7 +299,10 @@ func mergeURLFilter(agent, platform *models.URLFilterConfig, add func(string, st
 	// When both lists are populated, "both" mode is the only one that
 	// enforces the union of constraints.
 	if len(agent.Allowlist) > 0 && len(agent.Denylist) > 0 {
-		agent.Mode = "both"
+		if agent.Mode != "both" {
+			add("urlFilter.mode", agent.Mode+" -> both")
+			agent.Mode = "both"
+		}
 	} else if agent.Mode == "" {
 		agent.Mode = platform.Mode
 	}
@@ -325,7 +372,10 @@ func mergeNSFW(agent, platform *models.NSFWTextConfig, add func(string, string))
 		add("nsfwText.enabled", "enabled")
 	}
 	agent.Enabled = agent.Enabled || platform.Enabled
-	agent.ConfidenceThreshold = stricterThreshold(agent.ConfidenceThreshold, platform.ConfidenceThreshold)
+	if nt := stricterThreshold(agent.ConfidenceThreshold, platform.ConfidenceThreshold); nt != agent.ConfidenceThreshold {
+		add("nsfwText.confidenceThreshold", fmt.Sprintf("%g -> %g", agent.ConfidenceThreshold, nt))
+		agent.ConfidenceThreshold = nt
+	}
 	if na := moreSevereAction(agent.Action, platform.Action); na != agent.Action {
 		add("nsfwText.action", agent.Action+" -> "+na)
 		agent.Action = na
@@ -352,7 +402,8 @@ func mergeHallucination(agent, platform *models.HallucinationConfig, add func(st
 		add("hallucination.minSourceCount", fmt.Sprintf("%d -> %d", agent.MinSourceCount, platform.MinSourceCount))
 		agent.MinSourceCount = platform.MinSourceCount
 	}
-	if agent.Mode == "" {
+	if agent.Mode == "" && platform.Mode != "" {
+		add("hallucination.mode", "set "+platform.Mode)
 		agent.Mode = platform.Mode
 	}
 	return agent
@@ -366,7 +417,10 @@ func mergeSkillConstraints(agent, platform *models.SkillConstraintsConfig, add f
 		add("skillConstraints.enabled", "enabled")
 	}
 	agent.Enabled = agent.Enabled || platform.Enabled
-	agent.Action = moreSevereAction(agent.Action, platform.Action)
+	if na := moreSevereAction(agent.Action, platform.Action); na != agent.Action {
+		add("skillConstraints.action", agent.Action+" -> "+na)
+		agent.Action = na
+	}
 	if n := unionInto(&agent.BlockedSkills, platform.BlockedSkills); n > 0 {
 		add("skillConstraints.blockedSkills", fmt.Sprintf("+%d", n))
 	}

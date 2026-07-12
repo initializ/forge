@@ -65,6 +65,76 @@ guardrails:
 	}
 }
 
+// TestBuildGuardrailChecker_MalformedOverlay_FailsClosed pins finding #1
+// from the #285 review: a typo'd `guardrails:` block (rejected by strict
+// decode) must ABORT startup, not silently drop the operator's mandate.
+func TestBuildGuardrailChecker_MalformedOverlay_FailsClosed(t *testing.T) {
+	dir := isolateLayers(t)
+	policyPath := filepath.Join(dir, "policy.yaml")
+	if err := os.WriteFile(policyPath, []byte(`
+guardrails:
+  gateConfig:
+    outptGate: true
+`), 0o600); err != nil { // typo: outptGate
+		t.Fatal(err)
+	}
+	t.Setenv("FORGE_PLATFORM_POLICY", policyPath)
+
+	logger := &captureLogger{}
+	checker, err := BuildGuardrailChecker(nil, dir, false, logger, nil,
+		GuardrailAuditConfig{}, observability.TracingConfig{})
+	if err == nil {
+		t.Fatalf("expected a startup error on malformed overlay; got checker=%v", checker)
+	}
+	if checker != nil {
+		t.Errorf("fail-closed must return a nil checker; got %T", checker)
+	}
+	if len(logger.errors) == 0 {
+		t.Errorf("expected an Error log line; got infos=%v warns=%v", logger.infos, logger.warns)
+	}
+}
+
+// TestLoadPlatformGuardrailsOverlay_FoldsUserAndWorkspace confirms multiple
+// layers combine (user ~/.forge/policy.yaml + workspace FORGE_PLATFORM_POLICY).
+func TestLoadPlatformGuardrailsOverlay_FoldsUserAndWorkspace(t *testing.T) {
+	dir := isolateLayers(t)
+
+	userDir := filepath.Join(dir, ".forge")
+	if err := os.MkdirAll(userDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userDir, "policy.yaml"), []byte(`
+guardrails:
+  gateConfig:
+    inputGate: true
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wsPath := filepath.Join(dir, "ws-policy.yaml")
+	if err := os.WriteFile(wsPath, []byte(`
+guardrails:
+  gateConfig:
+    outputGate: true
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FORGE_PLATFORM_POLICY", wsPath)
+
+	overlay, sources, err := LoadPlatformGuardrailsOverlay()
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if overlay == nil || overlay.GateConfig == nil {
+		t.Fatal("expected a folded overlay with gateConfig")
+	}
+	if !overlay.GateConfig.InputGate || !overlay.GateConfig.OutputGate {
+		t.Errorf("both layers should contribute gates; got %+v", overlay.GateConfig)
+	}
+	if len(sources) != 2 {
+		t.Errorf("expected 2 contributing layers, got %v", sources)
+	}
+}
+
 func anyContains(lines []string, substr string) bool {
 	for _, l := range lines {
 		if strings.Contains(l, substr) {

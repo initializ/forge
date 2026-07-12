@@ -115,3 +115,40 @@ denied_channels:
 # A policy can prevent this without naming every domain individually.
 max_egress_allowlist_size: 50
 max_tool_count: 100
+
+# Guardrails overlay (#284). A TIGHTEN-ONLY layer merged over the agent's
+# guardrails.json — it can force detections/gates on, raise actions, lower
+# thresholds, and union rule/denylist/blocked-skill sets, but NEVER loosen.
+# Uses the SAME schema as guardrails.json (the camelCase StructuredGuardrails
+# fields), authored here in YAML. Folded most-restrictively across layers; a
+# malformed block fails startup (fail-closed). Omit the whole key when the
+# platform imposes no extra guardrails.
+#
+# Casing note: the capability fields above are snake_case; the guardrails
+# block below is camelCase to mirror guardrails.json field-for-field.
+#
+# Example use case: a workspace forces the output gate on and raises
+# command-injection detection to hard-block regardless of what each agent's
+# own guardrails.json declares.
+#
+# See docs/security/guardrails.md#platform-guardrails-overlay for per-field
+# semantics and docs/security/platform-policy.md#guardrails-overlay for the
+# full annotated example.
+guardrails:
+  gateConfig:
+    outputGate: true
+    toolCallGate: true
+  security:
+    commandInjection:
+      enabled: true
+      confidenceThreshold: 15   # 0-100, lower = stricter
+      action: block             # warn | mask | block
+  customRules:
+    rules:
+      - id: block-internal-token
+        name: Internal service token
+        type: regex
+        constraint: hard
+        pattern: "intz-[a-f0-9]{16}"
+        action: block
+        gates: [output, tool_call]

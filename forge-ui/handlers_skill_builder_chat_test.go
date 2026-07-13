@@ -19,13 +19,13 @@ type sseEvent struct {
 
 func parseSSE(body string) []sseEvent {
 	var out []sseEvent
-	for _, frame := range strings.Split(body, "\n\n") {
+	for frame := range strings.SplitSeq(body, "\n\n") {
 		frame = strings.TrimSpace(frame)
 		if frame == "" {
 			continue
 		}
 		var ev sseEvent
-		for _, line := range strings.Split(frame, "\n") {
+		for line := range strings.SplitSeq(frame, "\n") {
 			if v, ok := strings.CutPrefix(line, "event: "); ok {
 				ev.event = v
 			} else if v, ok := strings.CutPrefix(line, "data: "); ok {

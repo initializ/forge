@@ -86,6 +86,11 @@ func (s *ReviewStep) Title() string { return "Review & Generate" }
 func (s *ReviewStep) Icon() string  { return "🚀" }
 
 func (s *ReviewStep) Init() tea.Cmd {
+	// Review is the terminal step (confirming it quits the wizard), so it is
+	// not normally re-entered via BACK — but reset `complete` anyway to honor
+	// the uniform re-entry contract (#264 review). `prepared` is left intact
+	// so the rendered summary survives.
+	s.complete = false
 	return nil
 }
 

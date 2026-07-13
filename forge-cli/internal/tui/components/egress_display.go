@@ -32,8 +32,7 @@ func NewEgressDisplay(domains []EgressDomain, primaryStyle, dimStyle, borderStyl
 	kbd := NewKbdHint(kbdKeyStyle, kbdDescStyle)
 	kbd.Bindings = []KeyBinding{
 		{Key: "⏎", Desc: "accept"},
-		{Key: "backspace", Desc: "back"},
-		{Key: "esc", Desc: "quit"},
+		{Key: "esc", Desc: "back"},
 	}
 
 	return EgressDisplay{

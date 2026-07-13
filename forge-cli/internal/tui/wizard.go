@@ -144,7 +144,20 @@ func (w WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return w, nil
 
 	case tea.KeyMsg:
-		if msg.String() == "ctrl+c" || msg.String() == "esc" {
+		if msg.String() == "ctrl+c" {
+			w.err = fmt.Errorf("wizard cancelled")
+			return w, tea.Quit
+		}
+		// esc is global back-navigation: return to the previous step (re-Init
+		// so it starts fresh). Handled at the wizard level so it works from
+		// EVERY step regardless of the step's own sub-phase or text inputs —
+		// esc is never an editing key, so intercepting it here is safe. On
+		// the first step there's nowhere to go back to, so esc cancels.
+		if msg.String() == "esc" {
+			if w.current > 0 {
+				w.current--
+				return w, w.steps[w.current].Init()
+			}
 			w.err = fmt.Errorf("wizard cancelled")
 			return w, tea.Quit
 		}

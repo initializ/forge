@@ -143,6 +143,12 @@ func (s *ProviderStep) Title() string { return "Model Provider" }
 func (s *ProviderStep) Icon() string  { return "🤖" }
 
 func (s *ProviderStep) Init() tea.Cmd {
+	// Init also runs on BACK navigation into this step. Reset to the initial
+	// phase so a completed step doesn't short-circuit Update (which begins
+	// with `if s.complete`) and strand the wizard. Re-entry contract —
+	// SkillsStep/CompressionStep precedent (#264 review).
+	s.complete = false
+	s.phase = providerSelectPhase
 	return s.selector.Init()
 }
 

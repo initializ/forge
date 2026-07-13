@@ -84,6 +84,12 @@ func (s *WebSearchStep) Title() string { return "Web Search" }
 func (s *WebSearchStep) Icon() string  { return "🔍" }
 
 func (s *WebSearchStep) Init() tea.Cmd {
+	// Reset on (re-)entry so BACK navigation restarts at the provider choice
+	// instead of short-circuiting on a stale `s.complete`. Re-entry contract
+	// — SkillsStep/CompressionStep precedent (#264 review).
+	s.complete = false
+	s.validating = false
+	s.phase = webSearchChoosePhase
 	return s.choose.Init()
 }
 
@@ -246,6 +252,17 @@ func (s *WebSearchStep) Summary() string {
 }
 
 func (s *WebSearchStep) Apply(ctx *tui.WizardContext) {
+	// Apply must write CURRENT state, not accumulate. Back-navigation makes
+	// redo reachable: choosing a provider + key, then going back and picking
+	// "No web search", must not leave the stale key / provider in the context
+	// (they'd land in the generated .env for a tool the user dropped). Clear
+	// the keys this step exclusively owns first, then re-write the current
+	// selection. See #264 review.
+	delete(ctx.EnvVars, "WEB_SEARCH_PROVIDER")
+	delete(ctx.EnvVars, "TAVILY_API_KEY")
+	delete(ctx.EnvVars, "PERPLEXITY_API_KEY")
+	ctx.BuiltinTools = removeStr(ctx.BuiltinTools, "web_search")
+
 	if s.provider == "" {
 		return
 	}
@@ -256,4 +273,16 @@ func (s *WebSearchStep) Apply(ctx *tui.WizardContext) {
 	if s.key != "" && s.keyName != "" {
 		ctx.EnvVars[s.keyName] = s.key
 	}
+}
+
+// removeStr returns slice with all occurrences of val removed, preserving
+// order. Used so Apply can rewrite BuiltinTools idempotently on redo.
+func removeStr(slice []string, val string) []string {
+	out := slice[:0:0]
+	for _, s := range slice {
+		if s != val {
+			out = append(out, s)
+		}
+	}
+	return out
 }

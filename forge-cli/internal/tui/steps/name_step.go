@@ -60,6 +60,9 @@ func (s *NameStep) Init() tea.Cmd {
 		s.name = s.prefill
 		return func() tea.Msg { return tui.StepCompleteMsg{} }
 	}
+	// Reset on BACK navigation so the completed step doesn't short-circuit
+	// Update and strand the wizard. Re-entry contract (#264 review).
+	s.complete = false
 	return s.input.Init()
 }
 

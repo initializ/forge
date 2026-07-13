@@ -57,6 +57,17 @@ func (s *FallbackStep) Title() string { return "Fallback Providers" }
 func (s *FallbackStep) Icon() string  { return "🔄" }
 
 func (s *FallbackStep) Init() tea.Cmd {
+	// Reset on (re-)entry. Prepare() resets these too, but the wizard only
+	// calls Prepare on FORWARD advance — BACK navigation calls Init() alone,
+	// so without this a completed step short-circuits Update and strands the
+	// wizard. Re-entry contract (#264 review).
+	s.complete = false
+	s.validating = false
+	s.phase = fallbackAskPhase
+	s.selected = nil
+	s.collected = nil
+	s.keyIndex = 0
+
 	// Build the "Add fallback providers?" selector
 	items := []components.SingleSelectItem{
 		{Label: "No", Value: "no", Description: "Use only the primary provider", Icon: "⏭️"},

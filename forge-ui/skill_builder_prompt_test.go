@@ -3,6 +3,8 @@ package forgeui
 import (
 	"strings"
 	"testing"
+
+	"github.com/initializ/forge/forge-core/tools/builtins"
 )
 
 // TestSkillBuilderPrompt_ConvergenceRules pins the interview/convergence
@@ -196,6 +198,20 @@ func TestSkillBuilderPrompt_BuiltinOnlySkillNeedsNoToolSection(t *testing.T) {
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("built-in-only relaxation missing: %q", want)
+		}
+	}
+}
+
+// TestSkillBuilderPrompt_ListsEveryDefaultBuiltin pins the prompt's built-in
+// list against builtins.All() so it can't drift: a new default builtin added
+// upstream that the prompt doesn't advertise recreates a softer #270 ("the
+// builder doesn't know tool X exists"). This test caught the original
+// file_create omission.
+func TestSkillBuilderPrompt_ListsEveryDefaultBuiltin(t *testing.T) {
+	p := skillBuilderSystemPrompt(modeCreate, nil)
+	for _, tool := range builtins.All() {
+		if !strings.Contains(p, "`"+tool.Name()+"`") {
+			t.Errorf("prompt does not advertise always-registered builtin %q (add it to the Built-in Tools list)", tool.Name())
 		}
 	}
 }

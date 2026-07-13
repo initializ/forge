@@ -3453,6 +3453,14 @@ func (r *Runner) buildSkillCatalog() string {
 	// matches the request is ignored (the model answers from its defaults and
 	// the user has to say "use the skill"). The final sentence guards against
 	// over-routing: fall back to defaults only when nothing matches.
+	//
+	// The "authoritative over your general behavior" phrasing intentionally
+	// escalates skill-content authority. This is bounded and consistent with
+	// the trust model: skills are operator-installed (not user-supplied), the
+	// pre-existing preamble already said "follow them", and guardrails still
+	// gate all five gates regardless of what a skill body says. Prompt-
+	// injection-via-skill-content audits should treat this escalation as
+	// deliberate, not an oversight.
 	b.WriteString("Before answering any request from your own knowledge or default behavior, FIRST check whether it matches one of the skill descriptions below. If a skill matches, call `read_skill` to load it and follow its instructions instead of answering directly — skills exist precisely to override your defaults for these cases, and a loaded skill's instructions are authoritative over your general behavior. Only answer from your own defaults when NO skill matches the request.\n\n")
 	b.WriteString("To use a skill, call `read_skill` with the skill name (the identifier before the colon) to load its full instructions, then follow them. " +
 		"`provides:` lists the capabilities inside a skill — they are documentation loaded with the skill, not tools you call directly.\n\n")

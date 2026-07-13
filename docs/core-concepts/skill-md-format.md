@@ -64,6 +64,8 @@ Installed skills are advertised to the agent in an `## Available Skills` catalog
 - A **trigger-rich `description`** (above) — the only signal the agent matches on before loading the skill.
 - The runtime **routing directive** in the catalog preamble, which tells the agent to prefer a matching skill over its own default behavior (and to fall back to defaults only when nothing matches, so unrelated requests aren't over-routed).
 
+Note that `description` serves **two audiences**: the internal routing catalog above, and the public A2A Agent Card (`skills[]`, FWS-1), where it projects verbatim. Trigger-rich phrasing reads slightly like a routing rule to an external caller, but is generally more informative than a bare capability label — this dual use is deliberate. If the two audiences ever need to diverge, a dedicated `triggers:` field is the escape hatch.
+
 The `metadata.forge.requires` block declares runtime dependencies:
 
 - **`bins`** — Binary dependencies that must be in `$PATH` at runtime. Each entry is either a scalar name (matched against the embedded registry) or a mapping with its own install method (`url:`, `run:`, `apt:`, `apk:`). See [Binary Dependencies](binary-dependencies.md) for the resolution pipeline, install methods, and the four ways to add a binary.

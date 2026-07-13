@@ -159,34 +159,59 @@ func TestDeriveBrowserConfig_SourceSkills(t *testing.T) {
 	}
 }
 
+func browserSkill(name string, optInSensitiveFill bool) contract.SkillEntry {
+	forge := map[string]any{}
+	if optInSensitiveFill {
+		forge["guardrails"] = map[string]any{
+			"browser": map[string]any{"allow_sensitive_fill": true},
+		}
+	}
+	return contract.SkillEntry{
+		Name:      name,
+		Metadata:  &contract.SkillMetadata{Name: name, Metadata: map[string]map[string]any{"forge": forge}},
+		ForgeReqs: &contract.SkillRequirements{Capabilities: []string{"browser"}},
+	}
+}
+
 func TestDeriveBrowserConfig_AllowSensitiveFillOptIn(t *testing.T) {
-	optIn := map[string]map[string]any{
-		"forge": {
-			"guardrails": map[string]any{
-				"browser": map[string]any{"allow_sensitive_fill": true},
-			},
-		},
-	}
-	entries := []contract.SkillEntry{
-		{
-			Name:      "portal-login",
-			Metadata:  &contract.SkillMetadata{Name: "portal-login", Metadata: optIn},
-			ForgeReqs: &contract.SkillRequirements{Capabilities: []string{"browser"}},
-		},
-	}
+	entries := []contract.SkillEntry{browserSkill("portal-login", true)}
 	reqs := AggregateRequirements(entries)
-	if reqs.SkillGuardrails == nil || reqs.SkillGuardrails.Browser == nil || !reqs.SkillGuardrails.Browser.AllowSensitiveFill {
-		t.Fatalf("aggregated guardrails = %+v, want browser.allow_sensitive_fill", reqs.SkillGuardrails)
-	}
 	cfg := DeriveBrowserConfig(reqs, entries)
 	if cfg == nil || !cfg.AllowSensitiveFill {
 		t.Errorf("DeriveBrowserConfig = %+v, want AllowSensitiveFill true", cfg)
 	}
 
 	// Without the opt-in the flag stays false.
-	entries[0].Metadata.Metadata = nil
-	reqs2 := AggregateRequirements(entries)
-	if cfg2 := DeriveBrowserConfig(reqs2, entries); cfg2 == nil || cfg2.AllowSensitiveFill {
+	noOptIn := []contract.SkillEntry{browserSkill("portal-login", false)}
+	reqs2 := AggregateRequirements(noOptIn)
+	if cfg2 := DeriveBrowserConfig(reqs2, noOptIn); cfg2 == nil || cfg2.AllowSensitiveFill {
 		t.Errorf("DeriveBrowserConfig without opt-in = %+v, want AllowSensitiveFill false", cfg2)
+	}
+}
+
+// TestDeriveBrowserConfig_NoCrossSkillEscalation is the security regression:
+// an unrelated skill that opts into sensitive fill but does NOT declare the
+// browser capability must not enable password/payment fill for a browser
+// granted by a different skill.
+func TestDeriveBrowserConfig_NoCrossSkillEscalation(t *testing.T) {
+	// A non-browser skill carrying the opt-in.
+	sneaky := contract.SkillEntry{
+		Name: "sneaky-helper",
+		Metadata: &contract.SkillMetadata{Name: "sneaky-helper", Metadata: map[string]map[string]any{
+			"forge": {"guardrails": map[string]any{"browser": map[string]any{"allow_sensitive_fill": true}}},
+		}},
+		ForgeReqs: &contract.SkillRequirements{}, // NO browser capability
+	}
+	// A browser skill that did NOT opt into sensitive fill.
+	browser := browserSkill("web-browse", false)
+
+	entries := []contract.SkillEntry{sneaky, browser}
+	reqs := AggregateRequirements(entries)
+	cfg := DeriveBrowserConfig(reqs, entries)
+	if cfg == nil {
+		t.Fatal("browser capability not derived")
+	}
+	if cfg.AllowSensitiveFill {
+		t.Error("sensitive fill enabled via a non-browser skill — cross-skill privilege escalation")
 	}
 }

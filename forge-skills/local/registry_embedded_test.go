@@ -26,10 +26,11 @@ func TestEmbeddedRegistry_DiscoverAll(t *testing.T) {
 
 	// Verify all expected skills are present
 	expectedSkills := map[string]struct {
-		displayName string
-		hasEnv      bool
-		hasBins     bool
-		hasEgress   bool
+		displayName   string
+		hasEnv        bool
+		hasBins       bool
+		hasEgress     bool
+		hasCapability bool
 	}{
 		"code-agent":            {displayName: "Code Agent", hasEnv: false, hasBins: false, hasEgress: false},
 		"code-plan":             {displayName: "Code Plan", hasEnv: false, hasBins: true, hasEgress: true},
@@ -46,7 +47,9 @@ func TestEmbeddedRegistry_DiscoverAll(t *testing.T) {
 		"k8s-pod-rightsizer":    {displayName: "K8s Pod Rightsizer", hasEnv: false, hasBins: true, hasEgress: false},
 		"k8s-cost-visibility":   {displayName: "K8s Cost Visibility", hasEnv: false, hasBins: true, hasEgress: true},
 		"linear":                {displayName: "Linear", hasEnv: true, hasBins: true, hasEgress: true},
-		"web-browse":            {displayName: "Web Browse", hasEnv: false, hasBins: false, hasEgress: true},
+		// web-browse ships with an empty egress_domains (operator must add
+		// hosts before use), so hasEgress is false and hasCapability is true.
+		"web-browse": {displayName: "Web Browse", hasEnv: false, hasBins: false, hasEgress: false, hasCapability: true},
 	}
 
 	for _, s := range skills {
@@ -69,6 +72,12 @@ func TestEmbeddedRegistry_DiscoverAll(t *testing.T) {
 		}
 		if exp.hasEgress && len(s.EgressDomains) == 0 {
 			t.Errorf("skill %q: expected EgressDomains", s.Name)
+		}
+		if exp.hasCapability && len(s.Capabilities) == 0 {
+			t.Errorf("skill %q: expected Capabilities", s.Name)
+		}
+		if !exp.hasCapability && len(s.Capabilities) > 0 {
+			t.Errorf("skill %q: unexpected Capabilities %v", s.Name, s.Capabilities)
 		}
 	}
 }
@@ -399,9 +408,10 @@ func TestEmbeddedRegistry_LoadContent(t *testing.T) {
 			t.Errorf("LoadContent(%q) returned empty content", s.Name)
 		}
 		// Capability skills (e.g. requires.capabilities: [browser]) are
-		// instructional: they teach the LLM to drive runtime-registered
-		// tools and declare no '## Tool:' script entries of their own.
-		if strings.Contains(string(content), "capabilities:") {
+		// instructional: they teach the LLM to drive runtime-registered tools
+		// and declare no '## Tool:' script entries of their own. Decide from
+		// the parsed descriptor, not a substring of the raw content.
+		if len(s.Capabilities) > 0 {
 			continue
 		}
 		if !strings.Contains(string(content), "## Tool:") {

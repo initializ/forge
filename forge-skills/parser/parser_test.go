@@ -797,3 +797,41 @@ func TestExtractForgeMeta_NoForgeNamespace(t *testing.T) {
 		t.Errorf("ExtractForgeMeta(no forge ns) = %+v, want nil", got)
 	}
 }
+
+func TestParse_RejectsUnknownCapability(t *testing.T) {
+	input := `---
+name: typo-skill
+description: has a typo in capabilities
+metadata:
+  forge:
+    requires:
+      capabilities:
+        - browsr
+---
+Instructional body.
+`
+	_, _, err := ParseWithMetadata(strings.NewReader(input))
+	if err == nil {
+		t.Fatal("expected an error for unknown capability 'browsr', got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown capability") || !strings.Contains(err.Error(), "browsr") {
+		t.Errorf("error = %q, want it to name the unknown capability", err)
+	}
+}
+
+func TestParse_AcceptsKnownCapability(t *testing.T) {
+	input := `---
+name: web-browse
+description: valid browser capability
+metadata:
+  forge:
+    requires:
+      capabilities:
+        - browser
+---
+Instructional body.
+`
+	if _, _, err := ParseWithMetadata(strings.NewReader(input)); err != nil {
+		t.Errorf("known capability 'browser' rejected: %v", err)
+	}
+}

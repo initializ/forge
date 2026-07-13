@@ -14,8 +14,18 @@ metadata:
     requires:
       capabilities:
         - browser
-    egress_domains:
-      - "$BROWSE_ALLOWED_DOMAIN"
+    # egress_domains is intentionally empty: this reference skill ships with
+    # no allowlisted hosts. Add the exact domains this agent may browse before
+    # use — e.g.
+    #   egress_domains:
+    #     - docs.example.com
+    #     - "*.example.com"
+    #     - "$BROWSE_HOSTS"   # $VAR / ${VAR} are expanded from the agent env
+    #                         # (comma-separated for multiple); an unset var
+    #                         # resolves to nothing, not a literal entry.
+    # Until at least one host resolves, every navigation is egress-blocked
+    # (deny-by-default), and `forge package --prod` rejects an open egress
+    # policy.
     trust_hints:
       network: true
       filesystem: none
@@ -83,6 +93,8 @@ page text.
 - Indices reset whenever the page changes. Always drive from the most recent
   digest.
 - The browser keeps no cookies or profile between runs.
-- Set `$BROWSE_ALLOWED_DOMAIN` (or replace it with a literal curated list) to
-  the sites this agent may reach; production builds reject an open egress
-  policy.
+- Before using this skill, add the hostnames this agent may reach to
+  `egress_domains` in the frontmatter above (real domains, wildcards, or
+  `$VAR`/`${VAR}` references expanded from the agent env). It ships empty, so
+  every navigation is blocked until at least one host resolves; production
+  builds also reject an open egress policy.

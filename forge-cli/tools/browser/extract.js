@@ -6,7 +6,7 @@
 // function expression, not a standalone script.
 function (mode, selector) {
 	function clean(s) {
-		return (s || '').replace(/[ \t ]+/g, ' ').replace(/\s*\n\s*/g, '\n').trim();
+		return (s || '').replace(/[ \t\u00A0]+/g, ' ').replace(/\s*\n\s*/g, '\n').trim();
 	}
 
 	if (mode === 'links') {

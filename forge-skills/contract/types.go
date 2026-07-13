@@ -8,23 +8,24 @@ import (
 
 // SkillDescriptor describes a skill available in a registry.
 type SkillDescriptor struct {
-	Name          string
-	DisplayName   string
-	Description   string
-	Category      string
-	Tags          []string
-	Icon          string
-	RequiredEnv   []string
-	OneOfEnv      []string
-	OptionalEnv   []string
-	RequiredBins  []string
-	EgressDomains []string
-	DeniedTools   []string
-	Capabilities  []string    // runtime capabilities from requires.capabilities (e.g. "browser")
-	TrustHints    *TrustHints // author-declared behavior hints (analyzer consistency checks)
-	HasDenyOutput bool        // whether guardrails.deny_output declares at least one pattern
-	TimeoutHint   int         // suggested timeout in seconds (0 = use default)
-	Provenance    *Provenance `json:"provenance,omitempty"`
+	Name               string
+	DisplayName        string
+	Description        string
+	Category           string
+	Tags               []string
+	Icon               string
+	RequiredEnv        []string
+	OneOfEnv           []string
+	OptionalEnv        []string
+	RequiredBins       []string
+	EgressDomains      []string
+	DeniedTools        []string
+	Capabilities       []string    // runtime capabilities from requires.capabilities (e.g. "browser")
+	TrustHints         *TrustHints // author-declared behavior hints (analyzer consistency checks)
+	HasDenyOutput      bool        // whether guardrails.deny_output declares at least one pattern
+	AllowSensitiveFill bool        // whether guardrails.browser.allow_sensitive_fill opts into password/payment fill
+	TimeoutHint        int         // suggested timeout in seconds (0 = use default)
+	Provenance         *Provenance `json:"provenance,omitempty"`
 }
 
 // SkillEntry represents a single tool/skill parsed from a SKILL.md file.
@@ -184,6 +185,17 @@ type SkillRequirements struct {
 // CapabilityBrowser gates registration of the browser_* tool family: a
 // proxied headless Chromium the LLM drives via indexed page digests.
 const CapabilityBrowser = "browser"
+
+// knownCapabilities is the set of runtime capabilities the runner can provide.
+// A skill declaring anything outside this set is rejected at parse time — an
+// unknown capability (usually a typo) would otherwise silently register no
+// tools and install no dependency, with zero diagnostics.
+var knownCapabilities = map[string]bool{
+	CapabilityBrowser: true,
+}
+
+// IsKnownCapability reports whether name is a capability the runner recognizes.
+func IsKnownCapability(name string) bool { return knownCapabilities[name] }
 
 // EnvRequirements declares environment variable requirements at different levels.
 type EnvRequirements struct {

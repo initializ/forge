@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -799,9 +800,9 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 			// output and produce a human-readable response, not forward raw
 			// JSON/digests. Attaching their output as a file causes the LLM
 			// to say "see attached" instead of writing a report.
-			if part := fileArtifactFromToolResult(tc.Function.Name, result); part != nil {
+			if part := fileArtifactFromToolResult(ctx, tc.Function.Name, result); part != nil {
 				largeToolOutputs = append(largeToolOutputs, *part)
-			} else if !isIntermediateOutputTool(tc.Function.Name) && len(result) > largeToolOutputThreshold {
+			} else if !isIntermediateOutputTool(tc.Function.Name) && !artifactEmittingTools[tc.Function.Name] && len(result) > largeToolOutputThreshold {
 				name, mime := detectFileType(result, tc.Function.Name)
 				largeToolOutputs = append(largeToolOutputs, a2a.Part{
 					Kind: a2a.PartKindFile,
@@ -959,17 +960,38 @@ func a2aMessagesEqual(a, b a2a.Message) bool {
 
 // artifactEmittingTools name the tools whose result JSON describes a file to
 // attach as a channel artifact. file_create carries the bytes inline in
-// `content`; browser_screenshot writes to disk and carries only `path`, so
-// image bytes never enter the LLM conversation.
+// `content`; browser_screenshot writes a PNG to disk under the agent files
+// directory and carries only `path`, so image bytes never enter the LLM
+// conversation.
 var artifactEmittingTools = map[string]bool{
 	"file_create":        true,
+	"browser_screenshot": true,
+}
+
+// browserToolNames is the exact browser tool family. Matching by this set,
+// rather than a "browser_" prefix, avoids suppressing large-output
+// auto-attach for an unrelated (future or skill-defined) tool that merely
+// starts with "browser_".
+var browserToolNames = map[string]bool{
+	"browser_navigate":   true,
+	"browser_state":      true,
+	"browser_click":      true,
+	"browser_fill":       true,
+	"browser_extract":    true,
 	"browser_screenshot": true,
 }
 
 // fileArtifactFromToolResult parses an artifact-emitting tool's result into a
 // file part. Returns nil for other tools or unparseable results (the
 // confirmation text still reaches the LLM either way).
-func fileArtifactFromToolResult(toolName, result string) *a2a.Part {
+//
+// file_create carries bytes inline. browser_screenshot names a PNG on disk
+// whose path MUST resolve inside the agent files directory: dispatch here is
+// by tool *name*, so a name-only read would let a skill-defined tool named
+// "browser_screenshot" (a name the parser accepts) return an arbitrary
+// absolute path and exfiltrate any file to a channel — a primitive
+// file_create's inline bytes never had. The confinement check closes that.
+func fileArtifactFromToolResult(ctx context.Context, toolName, result string) *a2a.Part {
 	if !artifactEmittingTools[toolName] {
 		return nil
 	}
@@ -982,17 +1004,25 @@ func fileArtifactFromToolResult(toolName, result string) *a2a.Part {
 	if err := json.Unmarshal([]byte(result), &fc); err != nil || fc.Filename == "" {
 		return nil
 	}
-	data := []byte(fc.Content)
-	if len(data) == 0 && fc.Path != "" {
-		fileBytes, err := os.ReadFile(fc.Path)
+
+	var data []byte
+	if toolName == "file_create" {
+		// Historical behavior: inline bytes only, attached even when empty.
+		data = []byte(fc.Content)
+	} else {
+		// Disk-backed artifact (browser_screenshot): read only from within
+		// the agent files directory.
+		path, ok := confinedFilesPath(ctx, fc.Path)
+		if !ok {
+			return nil
+		}
+		b, err := os.ReadFile(path)
 		if err != nil {
 			return nil
 		}
-		data = fileBytes
+		data = b
 	}
-	if len(data) == 0 {
-		return nil
-	}
+
 	return &a2a.Part{
 		Kind: a2a.PartKindFile,
 		File: &a2a.FileContent{
@@ -1003,12 +1033,35 @@ func fileArtifactFromToolResult(toolName, result string) *a2a.Part {
 	}
 }
 
+// confinedFilesPath resolves p and returns it only when it lies inside the
+// agent files directory carried on ctx. An empty files dir or a path that
+// escapes it (via .. or absolute divergence) is rejected.
+func confinedFilesPath(ctx context.Context, p string) (string, bool) {
+	dir := FilesDirFromContext(ctx)
+	if dir == "" || p == "" {
+		return "", false
+	}
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", false
+	}
+	absPath, err := filepath.Abs(p)
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(absDir, absPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return absPath, true
+}
+
 // isIntermediateOutputTool reports whether a tool's output is an intermediate
 // observation the LLM should analyze rather than a deliverable to auto-attach
 // when large. cli_execute output is raw command JSON; browser_* outputs are
 // page digests/extracts.
 func isIntermediateOutputTool(toolName string) bool {
-	return toolName == "cli_execute" || strings.HasPrefix(toolName, "browser_")
+	return toolName == "cli_execute" || browserToolNames[toolName]
 }
 
 // detectFileType inspects tool output content and returns an appropriate

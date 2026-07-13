@@ -120,6 +120,7 @@ func ScanWithRoot(fsys fs.FS, rootPath string) ([]contract.SkillDescriptor, erro
 					}
 					sd.TrustHints = fm.TrustHints
 					sd.HasDenyOutput = fm.Guardrails != nil && len(fm.Guardrails.DenyOutput) > 0
+					sd.AllowSensitiveFill = fm.Guardrails != nil && fm.Guardrails.Browser != nil && fm.Guardrails.Browser.AllowSensitiveFill
 				}
 			}
 

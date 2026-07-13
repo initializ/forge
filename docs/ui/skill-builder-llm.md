@@ -158,6 +158,35 @@ instead of looping:
   (noted in the skill) over another question. It will not draft with an
   invented package name or download URL.
 
+### Built-in tool awareness (issue #270)
+
+The prompt lists Forge's always-registered built-in tools and tells the
+builder to **prefer them** over a custom tool or tool-less prose:
+
+- `datetime_now`, `web_search`, `http_request`, `json_parse`, `csv_parse`,
+  `math_calculate`, `uuid_generate`, and the scheduler family
+  (`schedule_set` / `schedule_list` / `schedule_delete` / `schedule_history`).
+- A skill USES a built-in by instructing the agent to call it **by name** —
+  no `## Tool:` section, no script, no `requires.bins`. Those are only for
+  *custom* tools the skill provides. A built-in-only skill (e.g. "reply with
+  the current Brisbane time in German" → call `datetime_now`) has no
+  `## Tool:` section at all, and the builder no longer scaffolds a redundant
+  `brisbane_time` tool.
+- There is **no "conversational only" path** for anything needing live data
+  (time, live web, an API, a calculation): the agent can't know it without a
+  tool call, so a tool-less skill would only hallucinate. The builder must
+  wire the built-in.
+- **Role separation:** the builder AUTHORS a `SKILL.md` — it never performs
+  the requested behavior in chat and never fabricates tool output (e.g.
+  inventing a specific time). The skill goes in the `skill` field, not a
+  role-played `message`.
+- **Scheduling (gated):** for time/event-oriented skills (recurrence,
+  reminders, monitoring, digests) the builder proactively asks once whether
+  the task should run on a schedule and, if so, wires `schedule_set` with the
+  parsed cadence — writing "runs daily" in prose schedules nothing. It does
+  not ask for skills with no temporal dimension. An explicit scheduling
+  request is always honored.
+
 ### Custom binaries
 
 A skill's `requires.bins` entry can be a bare name (already in the base

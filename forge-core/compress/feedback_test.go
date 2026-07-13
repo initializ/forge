@@ -43,22 +43,22 @@ func TestSuggestionStore_ThresholdAndPersistence(t *testing.T) {
 	s := newSuggestionStore(path)
 	now := time.Unix(1000, 0)
 
-	// Two expansions: below threshold, nothing crossed.
-	if crossed := s.record("kubectl", []string{"DiskPressure"}, now); len(crossed) != 0 {
+	// Two expansions (distinct content hashes): below threshold.
+	if crossed := s.record("kubectl", "hash-a", []string{"DiskPressure"}, now); len(crossed) != 0 {
 		t.Fatalf("crossed too early: %v", crossed)
 	}
-	if crossed := s.record("kubectl", []string{"DiskPressure"}, now); len(crossed) != 0 {
+	if crossed := s.record("kubectl", "hash-b", []string{"DiskPressure"}, now); len(crossed) != 0 {
 		t.Fatalf("crossed too early: %v", crossed)
 	}
-	// Third expansion crosses — surfaced exactly once.
-	crossed := s.record("helm", []string{"DiskPressure"}, now)
+	// Third distinct expansion crosses — surfaced exactly once.
+	crossed := s.record("helm", "hash-c", []string{"DiskPressure"}, now)
 	if len(crossed) != 1 || crossed[0].Pattern != "DiskPressure" || crossed[0].Expansions != 3 {
 		t.Fatalf("threshold crossing wrong: %+v", crossed)
 	}
 	if len(crossed[0].Tools) != 2 {
 		t.Fatalf("tools not accumulated: %v", crossed[0].Tools)
 	}
-	if again := s.record("kubectl", []string{"DiskPressure"}, now); len(again) != 0 {
+	if again := s.record("kubectl", "hash-d", []string{"DiskPressure"}, now); len(again) != 0 {
 		t.Fatalf("suggestion surfaced twice: %v", again)
 	}
 
@@ -74,10 +74,44 @@ func TestSuggestionStore_Bounded(t *testing.T) {
 	s := newSuggestionStore(filepath.Join(t.TempDir(), SuggestionsFileName))
 	now := time.Unix(1000, 0)
 	for i := 0; i < maxTrackedPatterns+30; i++ {
-		s.record("t", []string{fmt.Sprintf("TokenNumber%dX", i)}, now.Add(time.Duration(i)*time.Second))
+		s.record("t", fmt.Sprintf("hash-%d", i), []string{fmt.Sprintf("TokenNumber%dX", i)}, now.Add(time.Duration(i)*time.Second))
 	}
 	if n := len(s.Snapshot()); n > maxTrackedPatterns {
 		t.Fatalf("store grew past cap: %d", n)
+	}
+}
+
+// Re-expanding the SAME content must not accumulate toward the threshold:
+// "distinct expansions" means distinct content hashes, so one hot marker
+// retrieved repeatedly (retries, re-reads across turns) cannot generate a
+// suggestion by itself.
+func TestSuggestionStore_SameHashCountsOnce(t *testing.T) {
+	s := newSuggestionStore(filepath.Join(t.TempDir(), SuggestionsFileName))
+	now := time.Unix(1000, 0)
+
+	for i := 0; i < suggestThreshold+2; i++ {
+		if crossed := s.record("kubectl", "same-hash", []string{"SchedulingGated"}, now); len(crossed) != 0 {
+			t.Fatalf("repeat retrieval of one hash crossed the threshold: %v", crossed)
+		}
+	}
+	snap := s.Snapshot()
+	if len(snap) != 1 || snap[0].Expansions != 1 {
+		t.Fatalf("same-hash repeats should count once, got %+v", snap)
+	}
+
+	// Distinct hashes still accumulate to a suggestion.
+	s.record("kubectl", "other-1", []string{"SchedulingGated"}, now)
+	crossed := s.record("kubectl", "other-2", []string{"SchedulingGated"}, now)
+	if len(crossed) != 1 || crossed[0].Expansions != suggestThreshold {
+		t.Fatalf("distinct hashes should cross at %d: %+v", suggestThreshold, crossed)
+	}
+
+	// An empty hash (no content identity available) is never deduped.
+	s2 := newSuggestionStore(filepath.Join(t.TempDir(), SuggestionsFileName))
+	s2.record("t", "", []string{"NodeAffinityMismatch"}, now)
+	s2.record("t", "", []string{"NodeAffinityMismatch"}, now)
+	if snap := s2.Snapshot(); len(snap) != 1 || snap[0].Expansions != 2 {
+		t.Fatalf("empty hash should not dedup: %+v", snap)
 	}
 }
 

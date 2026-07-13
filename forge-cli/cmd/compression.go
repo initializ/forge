@@ -49,6 +49,10 @@ func compressionSuggestionsRun(cmd *cobra.Command, args []string) error {
 	}
 	path := compress.SuggestionsPath(storePath)
 
+	// Read the suggestions file directly instead of constructing a
+	// compress.Runtime and calling Suggestions(): a Runtime would open the
+	// bbolt store, contending for the exclusive file lock a running agent
+	// holds. The sort below intentionally mirrors suggestionStore.Snapshot.
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {

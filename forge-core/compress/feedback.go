@@ -44,6 +44,12 @@ const (
 	// context_expanded audit event (highest-frequency first) — enough for
 	// platform-side counting without bloating the audit stream.
 	maxEventCandidates = 5
+	// maxCountedHashes bounds the in-memory set of content hashes already
+	// counted toward suggestions, so re-expanding the same marker (retries,
+	// re-reads across turns) cannot cross suggestThreshold from a single
+	// piece of content. In-memory only: a restart resets it, which at worst
+	// double-counts one expansion per hash — advisory data, acceptable.
+	maxCountedHashes = 512
 )
 
 // AuditEventPatternSuggested fires once per pattern when it crosses
@@ -56,7 +62,8 @@ type PatternStat struct {
 	// in keep_patterns).
 	Pattern string `json:"pattern"`
 	// Expansions counts DISTINCT expansion events whose retrieved content
-	// contained the token — not occurrences within one retrieval.
+	// contained the token — not occurrences within one retrieval, and not
+	// repeat retrievals of the same content hash.
 	Expansions int       `json:"expansions"`
 	Tools      []string  `json:"tools,omitempty"`
 	Suggested  bool      `json:"suggested"`
@@ -71,6 +78,12 @@ type suggestionStore struct {
 	mu     sync.Mutex
 	loaded bool
 	data   map[string]*PatternStat // key: lowercase token
+
+	// countedHashes tracks which content hashes have already contributed an
+	// expansion, FIFO-bounded by countedOrder. Not persisted (see
+	// maxCountedHashes).
+	countedHashes map[string]struct{}
+	countedOrder  []string
 }
 
 func newSuggestionStore(path string) *suggestionStore {
@@ -98,6 +111,11 @@ func extractCandidates(content string, keepPatterns []string) []string {
 		if crush.IsErrorLike(lower) {
 			continue // already floor-kept
 		}
+		// keep_patterns semantics mirror ctxzip's mustKeep/matchesAny:
+		// case-insensitive LITERAL substrings, not regexes. A token
+		// containing a configured pattern is protected during compression,
+		// so it cannot be why the model expanded — exclude it here with the
+		// exact same matching rule to keep the two in lockstep.
 		already := false
 		for _, kp := range keepPatterns {
 			if strings.Contains(lower, strings.ToLower(kp)) {
@@ -135,13 +153,31 @@ func extractCandidates(content string, keepPatterns []string) []string {
 
 // record bumps counts for one expansion's candidates and returns the stats
 // that just crossed the suggestion threshold (each surfaced exactly once).
-func (s *suggestionStore) record(tool string, candidates []string, now time.Time) []*PatternStat {
+// hash identifies the retrieved content: expansions of an already-counted
+// hash are skipped entirely, so "N distinct expansions" means N distinct
+// pieces of content, not one hot marker retrieved N times.
+func (s *suggestionStore) record(tool, hash string, candidates []string, now time.Time) []*PatternStat {
 	if len(candidates) == 0 {
 		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.load()
+
+	if hash != "" {
+		if _, dup := s.countedHashes[hash]; dup {
+			return nil
+		}
+		if s.countedHashes == nil {
+			s.countedHashes = make(map[string]struct{})
+		}
+		s.countedHashes[hash] = struct{}{}
+		s.countedOrder = append(s.countedOrder, hash)
+		if len(s.countedOrder) > maxCountedHashes {
+			delete(s.countedHashes, s.countedOrder[0])
+			s.countedOrder = s.countedOrder[1:]
+		}
+	}
 
 	var crossed []*PatternStat
 	for _, c := range candidates {
@@ -232,16 +268,26 @@ func (s *suggestionStore) evictOne() {
 	var victim string
 	var vst *PatternStat
 	for k, st := range s.data {
-		if vst == nil ||
-			(st.Suggested == vst.Suggested && (st.Expansions < vst.Expansions ||
-				(st.Expansions == vst.Expansions && st.LastSeen.Before(vst.LastSeen)))) ||
-			(!st.Suggested && vst.Suggested) {
+		if vst == nil || worseVictim(st, vst) {
 			victim, vst = k, st
 		}
 	}
 	if victim != "" {
 		delete(s.data, victim)
 	}
+}
+
+// worseVictim reports whether a is a better eviction candidate than b, in
+// precedence order: unsuggested before suggested, then fewer expansions,
+// then older last-seen.
+func worseVictim(a, b *PatternStat) bool {
+	if a.Suggested != b.Suggested {
+		return !a.Suggested
+	}
+	if a.Expansions != b.Expansions {
+		return a.Expansions < b.Expansions
+	}
+	return a.LastSeen.Before(b.LastSeen)
 }
 
 func containsStr(list []string, s string) bool {
@@ -256,12 +302,13 @@ func containsStr(list []string, s string) bool {
 // recordExpansionFeedback runs the flywheel for one successful expansion:
 // count the pre-mined candidates and surface newly-crossed suggestions via
 // audit + log. Candidates are extracted once by the caller and shared with
-// the context_expanded event.
-func (r *Runtime) recordExpansionFeedback(ctx context.Context, tool string, candidates []string) {
+// the context_expanded event. hash is the resolved content hash, used to
+// skip repeat retrievals of the same content.
+func (r *Runtime) recordExpansionFeedback(ctx context.Context, tool, hash string, candidates []string) {
 	if r.feedback == nil {
 		return
 	}
-	crossed := r.feedback.record(tool, candidates, time.Now())
+	crossed := r.feedback.record(tool, hash, candidates, time.Now())
 	for _, st := range crossed {
 		r.debugf("keep_patterns suggestion", map[string]any{
 			"pattern": st.Pattern, "expansions": st.Expansions, "tools": st.Tools,

@@ -365,12 +365,13 @@ func collectInteractive(opts *initOptions) error {
 		opts.Channels = []string{ctx.Channel}
 	}
 
-	// Only overwrite from the wizard context when it actually collected
-	// something (e.g. web_search). An empty context must not clobber a
-	// --tools flag set on the command line.
-	if len(ctx.BuiltinTools) > 0 {
-		opts.BuiltinTools = ctx.BuiltinTools
-	}
+	// MERGE the wizard's builtin-tool selection into any --tools flag rather
+	// than overwriting it. The wizard only records web_search today; a bare
+	// overwrite would drop the flag's other entries from both forge.yaml and
+	// the init_egress DefaultToolDomains derivation whenever the user picked a
+	// provider. Merge + dedupe covers all three paths (flag+skip, flag+
+	// provider, no-flag+provider). See #263 review.
+	opts.BuiltinTools = mergeBuiltinTools(opts.BuiltinTools, ctx.BuiltinTools)
 	opts.Skills = ctx.Skills
 	opts.Compression = ctx.Compression
 
@@ -1410,6 +1411,27 @@ func containsStr(slice []string, val string) bool {
 		}
 	}
 	return false
+}
+
+// mergeBuiltinTools returns the union of a --tools flag value and the wizard's
+// recorded builtin-tool selection, preserving first-seen order and dropping
+// duplicates and empty entries. Merging (not overwriting) keeps a flag entry
+// like http_request when the wizard also records web_search — both must reach
+// forge.yaml and the init_egress domain derivation. See #263 review.
+func mergeBuiltinTools(flag, fromWizard []string) []string {
+	seen := make(map[string]struct{}, len(flag)+len(fromWizard))
+	out := make([]string, 0, len(flag)+len(fromWizard))
+	for _, name := range append(append([]string{}, flag...), fromWizard...) {
+		if name == "" {
+			continue
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
 }
 
 // runOAuthFlow executes the OAuth browser flow for a provider and returns the access token.

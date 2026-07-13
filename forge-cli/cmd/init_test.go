@@ -951,3 +951,35 @@ func writeTempFile(t *testing.T, name, content string) string {
 	}
 	return path
 }
+
+// TestMergeBuiltinTools pins the three paths the #263 review called out:
+// a --tools flag merges with the wizard's web_search selection instead of
+// being clobbered, empties are dropped, and duplicates are deduped.
+func TestMergeBuiltinTools(t *testing.T) {
+	cases := []struct {
+		name       string
+		flag       []string
+		fromWizard []string
+		want       []string
+	}{
+		{"flag+skip (wizard records nothing)", []string{"http_request"}, nil, []string{"http_request"}},
+		{"flag+provider (must not clobber the flag)", []string{"http_request"}, []string{"web_search"}, []string{"http_request", "web_search"}},
+		{"no-flag+provider", nil, []string{"web_search"}, []string{"web_search"}},
+		{"dedupe overlap", []string{"web_search", "http_request"}, []string{"web_search"}, []string{"web_search", "http_request"}},
+		{"drops empties", []string{"", "http_request"}, []string{""}, []string{"http_request"}},
+		{"both empty", nil, nil, []string{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mergeBuiltinTools(tc.flag, tc.fromWizard)
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Fatalf("got %v, want %v (order matters)", got, tc.want)
+				}
+			}
+		})
+	}
+}

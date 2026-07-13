@@ -44,10 +44,22 @@ type WebSearchStep struct {
 
 // NewWebSearchStep creates a new web search configuration step.
 func NewWebSearchStep(styles *tui.StyleSet, validateFn ValidateWebSearchKeyFunc) *WebSearchStep {
+	// Annotate a provider whose key is already in the environment so the user
+	// knows selecting it will silently adopt that key (and picking the other
+	// provider forgoes an already-available key). See #263 review.
+	tavilyLabel := "Tavily (Recommended)"
+	if os.Getenv("TAVILY_API_KEY") != "" {
+		tavilyLabel += " · key detected in env"
+	}
+	perplexityLabel := "Perplexity"
+	if os.Getenv("PERPLEXITY_API_KEY") != "" {
+		perplexityLabel += " · key detected in env"
+	}
+
 	choose := components.NewSingleSelect(
 		[]components.SingleSelectItem{
-			{Label: "Tavily (Recommended)", Value: "tavily", Description: "LLM-optimized search with structured results", Icon: "🔍"},
-			{Label: "Perplexity", Value: "perplexity", Description: "AI-powered search with citations", Icon: "🌐"},
+			{Label: tavilyLabel, Value: "tavily", Description: "LLM-optimized search with structured results", Icon: "🔍"},
+			{Label: perplexityLabel, Value: "perplexity", Description: "AI-powered search with citations", Icon: "🌐"},
 			{Label: "No web search", Value: "", Description: "Skip — agents have no live web access", Icon: "🚫"},
 		},
 		styles.Theme.Accent,

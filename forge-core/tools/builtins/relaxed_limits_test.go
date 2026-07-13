@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -103,6 +105,59 @@ func TestGrepSearch_RelaxedDefaultMaxResults(t *testing.T) {
 	}
 	if got := strings.Count(capped, "needle"); got > 10 {
 		t.Fatalf("explicit max_results ignored under relaxed limits: %d matches", got)
+	}
+}
+
+// http_request previously cut response bodies at 1MB via a bare
+// LimitReader — silently, mid-JSON. The cap now reports "truncated": true
+// and relaxes to 4MB when compression is on.
+func TestHTTPRequest_BodyCapHonestAndRelaxed(t *testing.T) {
+	payload := strings.Repeat("x", httpBodyLimitBytes+512)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer srv.Close()
+
+	h := &httpRequestTool{}
+	args, _ := json.Marshal(map[string]string{"method": "GET", "url": srv.URL})
+
+	var out struct {
+		Body      string `json:"body"`
+		Truncated bool   `json:"truncated"`
+	}
+
+	// Standard: cut at 1MB, honestly flagged.
+	raw, err := h.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		t.Fatal(err)
+	}
+	if !out.Truncated {
+		t.Fatal("over-limit body must set truncated=true")
+	}
+	if len(out.Body) != httpBodyLimitBytes {
+		t.Fatalf("body cut at %d, want %d", len(out.Body), httpBodyLimitBytes)
+	}
+
+	// Relaxed: same body passes whole, no flag.
+	raw, err = h.Execute(tools.WithRelaxedLimits(context.Background()), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out = struct {
+		Body      string `json:"body"`
+		Truncated bool   `json:"truncated"`
+	}{}
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Truncated {
+		t.Fatal("relaxed limits should pass a 1MB+512B body whole")
+	}
+	if len(out.Body) != len(payload) {
+		t.Fatalf("relaxed body %d bytes, want %d", len(out.Body), len(payload))
 	}
 }
 

@@ -378,11 +378,13 @@ restarts — context_expanded audit events carry the mined candidates so a
 platform can aggregate learning from the stream instead. With
 compression on, tool-INTERNAL output caps relax 16× via a context
 signal (`tools.WithRelaxedLimits`): builtins' 2000-line/50KB truncate,
-`grep_search`'s 50-match default (→500), and the MCP adapter's 64KB
-result cap (bounded 4MB absolute) — so the full output reaches the
-compression hook instead of dying inside the tool. Explicit caller
-args (`max_results`, `limit`) are always honored; `cli_execute`'s 1MB
-cap is unchanged.
+`grep_search`'s 50-match default (→500), `http_request`'s 1MB body cap
+(→4MB, and over-limit bodies now report `"truncated": true` in both
+modes), and the MCP adapter's 64KB result cap (bounded 4MB absolute) —
+so the full output reaches the compression hook instead of dying inside
+the tool. Explicit caller args (`max_results`, `limit`) are always
+honored; `cli_execute`'s 1MB cap is unchanged (already honest via
+`truncated: true`).
 
 **Read**: `docs/core-concepts/memory-system.md`,
 `docs/core-concepts/context-compression.md`.

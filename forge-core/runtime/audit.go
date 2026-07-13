@@ -1142,6 +1142,20 @@ func CorrelationIDFromContext(ctx context.Context) string {
 	return ""
 }
 
+// EnsureCorrelationID returns a context guaranteed to carry a correlation
+// ID (the per-invocation identifier). If one is already present — e.g.
+// minted at request INGRESS before the auth chain ran — it is preserved, so
+// pre-admission events (auth_verify/auth_fail) and the task events that
+// follow in the same request share one invocation id. Only when none exists
+// (a background path such as a schedule fire, or a direct test invocation) is
+// a fresh one generated. Mirrors EnsureSequenceCounter; issue #278.
+func EnsureCorrelationID(ctx context.Context) context.Context {
+	if CorrelationIDFromContext(ctx) != "" {
+		return ctx
+	}
+	return WithCorrelationID(ctx, GenerateID())
+}
+
 // WithTaskID stores a task ID in the context.
 func WithTaskID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, taskIDKey{}, id)

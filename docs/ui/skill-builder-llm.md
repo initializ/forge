@@ -164,8 +164,10 @@ The prompt lists Forge's always-registered built-in tools and tells the
 builder to **prefer them** over a custom tool or tool-less prose:
 
 - `datetime_now`, `web_search`, `http_request`, `json_parse`, `csv_parse`,
-  `math_calculate`, `uuid_generate`, and the scheduler family
+  `math_calculate`, `uuid_generate`, `file_create`, and the scheduler family
   (`schedule_set` / `schedule_list` / `schedule_delete` / `schedule_history`).
+  A prompt test pins this list against `builtins.All()` so it can't drift as
+  new default built-ins ship.
 - A skill USES a built-in by instructing the agent to call it **by name** —
   no `## Tool:` section, no script, no `requires.bins`. Those are only for
   *custom* tools the skill provides. A built-in-only skill (e.g. "reply with
@@ -185,7 +187,10 @@ builder to **prefer them** over a custom tool or tool-less prose:
   the task should run on a schedule and, if so, wires `schedule_set` with the
   parsed cadence — writing "runs daily" in prose schedules nothing. It does
   not ask for skills with no temporal dimension. An explicit scheduling
-  request is always honored.
+  request is always honored. **Kubernetes caveat:** dynamic `schedule_set`
+  calls are gated by `scheduler.kubernetes.allow_dynamic` (off by default), so
+  a scheduling skill won't self-register on a default K8s deploy unless the
+  operator enables it or declares the schedule in `forge.yaml`.
 
 ### Custom binaries
 

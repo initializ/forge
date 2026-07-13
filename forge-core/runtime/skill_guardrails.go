@@ -216,13 +216,59 @@ func applyOutputPolicy(content string, filters []compiledOutputFilter, logger Lo
 
 // canonicalizeToolInput returns the string against which deny_commands
 // patterns are matched. For cli_execute this reconstructs the shell
-// command line ("binary args..."); for any other tool the raw JSON is
-// used so operators can author payload-shape patterns.
+// command line ("binary args..."); for any other tool the match target is
+// the raw JSON PLUS the decoded string scalar values it contains.
+//
+// Including the decoded values closes a JSON-escape evasion (#238 review):
+// in raw JSON a tab is the two-char sequence `\t`, a newline `\n`, a space
+// ` ` — so `{"cmd":"kubectl\tdelete pod"}`, which the downstream tool
+// decodes and runs as `kubectl<TAB>delete`, would NOT match a
+// whitespace-sensitive pattern like `kubectl\s+delete` against the raw JSON
+// alone (`\s` never sees a real whitespace byte). json.Unmarshal resolves
+// those escapes, so the decoded values carry real whitespace and the pattern
+// fires. Raw JSON is still included so payload-shape patterns (matching keys
+// / structure) keep working; matching EITHER blocks, which is the safe
+// direction for a deny control. cli_execute is unaffected — its target is
+// the already-unescaped reconstructed command line.
 func canonicalizeToolInput(toolName, toolInput string) string {
 	if toolName == "cli_execute" {
 		return extractCommandLine(toolInput)
 	}
-	return toolInput
+	decoded := decodeJSONStringValues(toolInput)
+	if decoded == "" {
+		return toolInput
+	}
+	return toolInput + "\n" + decoded
+}
+
+// decodeJSONStringValues parses toolInput as JSON and returns every string
+// scalar value it contains (recursively, values only — not keys), joined by
+// newlines. json.Unmarshal resolves JSON escapes, so the result carries the
+// real bytes the downstream tool will act on. Returns "" when toolInput is
+// not valid JSON (the caller then matches the raw input as-is).
+func decodeJSONStringValues(toolInput string) string {
+	var v any
+	if err := json.Unmarshal([]byte(toolInput), &v); err != nil {
+		return ""
+	}
+	var out []string
+	var walk func(any)
+	walk = func(x any) {
+		switch t := x.(type) {
+		case string:
+			out = append(out, t)
+		case []any:
+			for _, e := range t {
+				walk(e)
+			}
+		case map[string]any:
+			for _, e := range t {
+				walk(e)
+			}
+		}
+	}
+	walk(v)
+	return strings.Join(out, "\n")
 }
 
 // CheckUserInput validates a user message against deny_prompts patterns.

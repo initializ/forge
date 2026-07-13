@@ -35,6 +35,18 @@ func TestPlatformCommandGuard_MatchTargets(t *testing.T) {
 			t.Errorf("kubectl get should not match kubectl delete; got %+v", m)
 		}
 	})
+
+	// #238 review: a JSON-escaped separator (\t here) must NOT let a call
+	// slip past a whitespace-sensitive pattern for a non-cli_execute tool.
+	// The downstream tool decodes "kubectl\tdelete" to a real TAB, so the
+	// guard must match against the decoded value, not just the raw JSON.
+	t.Run("json-escape evasion is caught", func(t *testing.T) {
+		// The Go string below contains the two-char JSON escape \t (backslash-t),
+		// i.e. what an attacker would put on the wire.
+		if m := g.Match("mcp__k8s__run", `{"cmd":"kubectl\tdelete pod foo"}`); m == nil {
+			t.Error("JSON-escaped whitespace evaded the pattern; decoded values must be matched")
+		}
+	})
 }
 
 // TestPlatformCommandGuard_FailsClosedOnInvalidRegex is the AC guard: an

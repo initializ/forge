@@ -116,6 +116,44 @@ func TestPlatformDeniedCommand_BlocksAcrossSkills(t *testing.T) {
 	}
 }
 
+// TestPlatformDeniedCommand_ComposesWithSkillGuardrails pins the AC that a
+// skill's own deny_commands cannot relax a platform pattern (union-of-deny):
+// with BOTH hooks registered and a skill config that does NOT deny kubectl,
+// the platform pattern still blocks the call.
+func TestPlatformDeniedCommand_ComposesWithSkillGuardrails(t *testing.T) {
+	// Skill guardrails that deny something unrelated — permissive w.r.t. kubectl.
+	sg := coreruntime.NewSkillGuardrailEngine(&agentspec.SkillGuardrailRules{
+		DenyCommands: []agentspec.CommandFilter{{Pattern: `secret-scanner`}},
+	}, true, nopLogger{})
+
+	layers := []security.PolicyLayer{
+		{Source: "system", Path: "/etc/forge/policy.yaml", Policy: security.PlatformPolicy{
+			DeniedCommandPatterns: []agentspec.CommandFilter{
+				{Pattern: `kubectl\s+delete`, Message: "destructive kubectl blocked by org policy"},
+			},
+		}},
+	}
+
+	var buf bytes.Buffer
+	al := coreruntime.NewAuditLogger(&buf)
+	r := &Runner{cfg: RunnerConfig{}, platformCommandGuard: buildGuard(t, layers)}
+	hooks := coreruntime.NewHookRegistry()
+	r.registerSkillGuardrailHooks(hooks, sg)      // skill hook: does NOT block kubectl
+	r.registerPlatformCommandGuardHook(hooks, al) // platform hook: DOES block
+
+	err := hooks.Fire(coreruntime.WithCorrelationID(context.Background(), "corr-c"),
+		coreruntime.BeforeToolExec, &coreruntime.HookContext{
+			ToolName:  "cli_execute",
+			ToolInput: `{"binary":"kubectl","args":["delete","pod","foo"]}`,
+		})
+	if err == nil {
+		t.Fatal("platform pattern must block even though the skill guardrail permits kubectl")
+	}
+	if !strings.Contains(err.Error(), "org policy") {
+		t.Errorf("expected the platform block message, got %q", err)
+	}
+}
+
 // TestPlatformDeniedCommand_InvalidRegexFailsClosed is the issue's second
 // conformance test: a bad pattern in any layer aborts guard construction
 // (which the runner surfaces as a startup error) rather than silently

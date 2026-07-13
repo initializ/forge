@@ -1327,7 +1327,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		Host:            r.cfg.Host,
 		ShutdownTimeout: r.cfg.ShutdownTimeout,
 		AgentCard:       card,
-		AuthMiddleware:  installSequenceCounterMiddleware(authThenAdmission),
+		AuthMiddleware:  installIngressContextMiddleware(authThenAdmission),
 		AllowedOrigins:  corsOrigins,
 		RateLimit:       rateLimit,
 	})
@@ -1462,9 +1462,12 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 		// accumulator lets the AfterLLMCall hook fold each call's
 		// tokens/duration into running totals for the invocation_complete
 		// audit event emitted before this handler returns.
-		correlationID := coreruntime.GenerateID()
+		// Adopt the correlation ID minted at ingress (before auth) so this
+		// task's events share the invocation id already carried by
+		// auth_verify; only generate a fresh one if none is present (#278).
+		ctx = coreruntime.EnsureCorrelationID(ctx)
+		correlationID := coreruntime.CorrelationIDFromContext(ctx)
 		ctx = security.WithEgressClient(ctx, egressClient)
-		ctx = coreruntime.WithCorrelationID(ctx, correlationID)
 		ctx = coreruntime.WithTaskID(ctx, params.ID)
 		// FWS-8: per-invocation sequence counter so every audit event
 		// emitted on behalf of this request carries a monotonically
@@ -1689,9 +1692,11 @@ func (r *Runner) executeTask(
 	egressClient *http.Client,
 	auditLogger *coreruntime.AuditLogger,
 ) (*a2a.Task, coreruntime.LLMUsageSnapshot, error) {
-	correlationID := coreruntime.GenerateID()
+	// Adopt the ingress-minted correlation ID so task events share the
+	// invocation id auth_verify already carries (#278); generate if absent.
+	ctx = coreruntime.EnsureCorrelationID(ctx)
+	correlationID := coreruntime.CorrelationIDFromContext(ctx)
 	ctx = security.WithEgressClient(ctx, egressClient)
-	ctx = coreruntime.WithCorrelationID(ctx, correlationID)
 	ctx = coreruntime.WithTaskID(ctx, params.ID)
 	// FWS-8: per-invocation sequence counter (see issue #91 / FWS-8).
 	// EnsureSequenceCounter reuses the counter the auth middleware
@@ -1997,9 +2002,11 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 			Message: body.Task.Message,
 		}
 
-		correlationID := coreruntime.GenerateID()
-		ctx := security.WithEgressClient(req.Context(), egressClient)
-		ctx = coreruntime.WithCorrelationID(ctx, correlationID)
+		// Adopt the ingress-minted correlation ID so task events share the
+		// invocation id auth_verify already carries (#278); generate if absent.
+		ctx := coreruntime.EnsureCorrelationID(req.Context())
+		correlationID := coreruntime.CorrelationIDFromContext(ctx)
+		ctx = security.WithEgressClient(ctx, egressClient)
 		ctx = coreruntime.WithTaskID(ctx, params.ID)
 		// FWS-8: per-invocation sequence counter so every audit event
 		// emitted on behalf of this request carries a monotonically
@@ -2932,14 +2939,15 @@ func makeAuthAuditCallback(auditLogger *coreruntime.AuditLogger) func(*http.Requ
 
 		// Failure → auth_fail with reason code.
 		auditLogger.EmitFromContext(req.Context(), coreruntime.AuditEvent{
-			Event:            coreruntime.EventAuthFail,
-			CorrelationID:    correlationID,
-			WorkflowID:       wc.WorkflowID,
-			StageID:          wc.StageID,
-			StepID:           wc.StepID,
-			InvocationCaller: wc.InvocationCaller,
-			OrgID:            tc.OrgID,
-			WorkspaceID:      tc.WorkspaceID,
+			Event:               coreruntime.EventAuthFail,
+			CorrelationID:       correlationID,
+			WorkflowID:          wc.WorkflowID,
+			WorkflowExecutionID: wc.WorkflowExecutionID, // #278: attribute a failed auth to its workflow run
+			StageID:             wc.StageID,
+			StepID:              wc.StepID,
+			InvocationCaller:    wc.InvocationCaller,
+			OrgID:               tc.OrgID,
+			WorkspaceID:         tc.WorkspaceID,
 			Fields: map[string]any{
 				"reason":      authFailReason(err),
 				"token_kind":  tokenKind,
@@ -4284,6 +4292,9 @@ func (l *lazyScheduleReloader) Reload(ctx context.Context) {
 func (r *Runner) makeScheduleDispatcher(executor coreruntime.AgentExecutor, egressClient *http.Client, auditLogger *coreruntime.AuditLogger) scheduler.TaskDispatcher {
 	return func(ctx context.Context, sched scheduler.Schedule) error {
 		taskID := fmt.Sprintf("sched-%s-%d", sched.ID, time.Now().Unix())
+		// A schedule fire is a background invocation with no HTTP ingress and
+		// no auth, so it mints its own correlation id (nothing upstream to
+		// adopt — unlike the request-driven paths, see #278).
 		correlationID := coreruntime.GenerateID()
 
 		// Set up context with security and tracing.

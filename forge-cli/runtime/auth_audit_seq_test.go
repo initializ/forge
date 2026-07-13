@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,7 +16,7 @@ import (
 
 // TestAuthAudit_SeqStampedWhenCounterInstalled is the #174 regression
 // pin: when the request's ctx carries a SequenceCounter (as it does
-// after installSequenceCounterMiddleware wraps the auth chain),
+// after installIngressContextMiddleware wraps the auth chain),
 // makeAuthAuditCallback's emit picks the counter up via
 // EmitFromContext and stamps seq=1 on auth_verify.
 //
@@ -76,7 +77,7 @@ func TestSequenceCounterMiddleware_InstallsCounterBeforeNext(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	wrapped := installSequenceCounterMiddleware(passthroughAuth)(terminal)
+	wrapped := installIngressContextMiddleware(passthroughAuth)(terminal)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()
@@ -123,5 +124,71 @@ func TestEnsureSequenceCounter_InstallsFresh(t *testing.T) {
 	}
 	if next := coreruntime.NextSequence(ctx); next != 1 {
 		t.Errorf("fresh counter's first NextSequence = %d, want 1", next)
+	}
+}
+
+// TestAuthAudit_CarriesIngressCorrelationID pins the #278 durable fix: when
+// the correlation id is minted at ingress (before auth) and placed on ctx,
+// auth_verify carries it — so it shares the invocation id of the task events
+// that follow it in the same request.
+func TestAuthAudit_CarriesIngressCorrelationID(t *testing.T) {
+	var buf bytes.Buffer
+	cb := makeAuthAuditCallback(coreruntime.NewAuditLogger(&buf))
+
+	req := httptest.NewRequest(http.MethodPost, "/tasks", nil)
+	req = req.WithContext(coreruntime.WithCorrelationID(req.Context(), "inv-123"))
+
+	cb(req, &auth.Identity{UserID: "alice", Source: "oidc"}, nil, "jwt")
+
+	var ev coreruntime.AuditEvent
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &ev); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if ev.CorrelationID != "inv-123" {
+		t.Errorf("auth_verify correlation_id = %q, want inv-123 (shared with the invocation)", ev.CorrelationID)
+	}
+}
+
+// TestAuthAudit_FailCarriesWorkflowExecutionID pins the #278 immediate fix:
+// a failed auth on a request carrying the execution header is attributable to
+// that workflow run (previously auth_fail omitted workflow_execution_id).
+func TestAuthAudit_FailCarriesWorkflowExecutionID(t *testing.T) {
+	var buf bytes.Buffer
+	cb := makeAuthAuditCallback(coreruntime.NewAuditLogger(&buf))
+
+	req := httptest.NewRequest(http.MethodPost, "/tasks", nil)
+	req.Header.Set(coreruntime.HeaderWorkflowExecutionID, "exec-run-9")
+
+	cb(req, nil, errors.New("token rejected"), "jwt") // err != nil, id == nil → auth_fail
+
+	var ev coreruntime.AuditEvent
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &ev); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if ev.Event != coreruntime.EventAuthFail {
+		t.Fatalf("Event = %q, want auth_fail", ev.Event)
+	}
+	if ev.WorkflowExecutionID != "exec-run-9" {
+		t.Errorf("auth_fail workflow_execution_id = %q, want exec-run-9 (attributable to its run)", ev.WorkflowExecutionID)
+	}
+}
+
+// TestIngressMiddleware_InstallsCorrelationIDBeforeNext confirms the wrapper
+// mints the correlation id (not just the seq counter) before the auth chain,
+// so pre-admission auth events can carry it.
+func TestIngressMiddleware_InstallsCorrelationIDBeforeNext(t *testing.T) {
+	passthroughAuth := func(next http.Handler) http.Handler { return next }
+	var seen string
+	terminal := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = coreruntime.CorrelationIDFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})
+	wrapped := installIngressContextMiddleware(passthroughAuth)(terminal)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	wrapped.ServeHTTP(httptest.NewRecorder(), req)
+
+	if seen == "" {
+		t.Error("ingress middleware should install a correlation id on ctx before next")
 	}
 }

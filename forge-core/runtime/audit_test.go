@@ -133,3 +133,23 @@ func TestGenerateID(t *testing.T) {
 		t.Errorf("two GenerateID calls should produce different values: %q", id1)
 	}
 }
+
+// TestEnsureCorrelationID_ReusesExisting pins the #278 invariant: an id
+// already on ctx (minted at ingress before auth) must be preserved so auth
+// and task events share it.
+func TestEnsureCorrelationID_ReusesExisting(t *testing.T) {
+	ctx := WithCorrelationID(context.Background(), "ingress-abc")
+	got := CorrelationIDFromContext(EnsureCorrelationID(ctx))
+	if got != "ingress-abc" {
+		t.Errorf("EnsureCorrelationID replaced an existing id; got %q, want ingress-abc", got)
+	}
+}
+
+// TestEnsureCorrelationID_InstallsFresh covers the background path (schedule
+// fire / --no-auth / direct test): with no id on ctx, one is generated.
+func TestEnsureCorrelationID_InstallsFresh(t *testing.T) {
+	got := CorrelationIDFromContext(EnsureCorrelationID(context.Background()))
+	if got == "" {
+		t.Error("EnsureCorrelationID on empty ctx should install a fresh id")
+	}
+}

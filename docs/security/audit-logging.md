@@ -26,8 +26,8 @@ All runtime security events are emitted as structured NDJSON to stderr with corr
 | `context_compressed` | [Context compression](../core-concepts/context-compression.md) shrank content before it reached the LLM. Carries `fields.seam` (`tool_output` from the AfterToolExec hook / `request` from the client wrapper), `fields.tool`, `tokens_before` / `tokens_after` / `saved_tokens`, plus running totals `total_saved_tokens` / `total_compressions` / `total_expansions` so any single event shows the cumulative picture. Token figures are tokenizer estimates; billed truth stays in `llm_call.input_tokens`. |
 | `context_expanded` | The model retrieved offloaded content via the `context_expand` tool. Carries `fields.hash`, `hit` (`false` = expired/evicted), `bytes`, the producing `tool`, `candidates` (top keep-pattern tokens mined from the retrieved content, ≤5 — lets a platform consuming the audit stream aggregate [learning](../core-concepts/context-compression.md#the-learning-loop) fleet-wide, immune to pod restarts), and the same running totals — expansions are the cost side auditors net against savings. |
 | `context_pattern_suggested` | The [compression learning loop](../core-concepts/context-compression.md#the-learning-loop) surfaced a `keep_patterns` candidate: a domain-state token retrieved via `context_expand` in 3+ distinct expansions that the keep floor does not already protect. Fired once per pattern. Carries `fields.pattern`, `expansions`, `tools` (array). Review via `forge compression suggestions`. |
-| `auth_verify` | Inbound request authenticated successfully (with `provider`, `user_id`, `org_id`, `token_kind`) |
-| `auth_fail` | Inbound request rejected (with `reason`, `token_kind`) |
+| `auth_verify` | Inbound request authenticated successfully (with `provider`, `user_id`, `org_id`, `token_kind`). Carries the invocation `correlation_id` (minted at ingress, before auth — see below) and, for orchestrator-dispatched calls, `workflow_execution_id` — so it groups with the task events that follow it in the same request. |
+| `auth_fail` | Inbound request rejected (with `reason`, `token_kind`). No `task_id` (none is ever created), but carries `workflow_execution_id` when the request had the execution header — so a rejected request is still attributable to its workflow run (#278). |
 | `agent_card_published` | Agent Card finalized at startup or hot-reload (with `name`, `version`, `protocol_version`, `url`, `skill_count`, `capabilities`, `security_schemes`, `card_size_bytes`, `card_sha256`). See [Agent Card reference](../reference/a2a-agent-card.md). |
 | `policy_loaded` | One per non-empty policy layer at startup (system / user / workspace). Carries `fields.layer`, `source` (file path), deny-list size counts, and max bounds. See [Platform Policy](platform-policy.md). |
 | `policy_violation_at_build_time` | One per violation when `forge.yaml` conflicts with any policy layer. Agent refuses to start. Carries `fields.violation_kind` / `offending_value` / `forge_yaml_field` plus `layer` + `source` identifying the enforcing file. See [Platform Policy](platform-policy.md). |
@@ -505,20 +505,30 @@ start their own counters. Events emitted outside any invocation scope
 (`policy_loaded`, `agent_card_published`, `audit_export_status`) omit
 `seq` entirely.
 
-#### Counter installation order
+#### Counter + correlation-id installation order
 
-The per-invocation `SequenceCounter` is installed on `r.Context()` by
-`installSequenceCounterMiddleware`, which wraps the auth middleware so
-the counter is already on context before the auth chain runs. This
-puts `auth_verify` / `auth_fail` first in the sequence (`seq=1`) and
-keeps the rest of the per-invocation events (`session_start`,
-`guardrail_check`, `llm_call`, `tool_exec`, `invocation_complete`,
-etc.) gap-free under the same `(correlation_id, task_id)` group. The
-runner's request entry calls `coreruntime.EnsureSequenceCounter` —
-which reuses the wrapper-installed counter when present and installs a
-fresh one on the `--no-auth` path, so no embedder configuration loses
-seq stamping. Pinned by `TestAuthAudit_SeqStampedWhenCounterInstalled`
-and `TestEnsureSequenceCounter_ReusesExisting` (issue #174).
+Both the per-invocation `SequenceCounter` **and** the `correlation_id`
+are installed on `r.Context()` at ingress by
+`installIngressContextMiddleware`, which wraps the auth middleware so
+both are on context before the auth chain runs. This puts
+`auth_verify` / `auth_fail` first in the sequence (`seq=1`) **and**
+gives them the same `correlation_id` the task events will carry — so
+the entire invocation, auth event included, is one gap-free,
+single-id timeline under the `(correlation_id, task_id)` group.
+
+Minting the `correlation_id` at ingress rather than at task creation is
+the key change from issue #278: auth runs before a task exists, so
+before this the pre-admission auth events had no invocation id and fell
+into an "unattributed" bucket in per-invocation views. Emission order is
+preserved (auth genuinely precedes admission — no backfilling).
+
+The runner's request entry calls `coreruntime.EnsureSequenceCounter`
+and `coreruntime.EnsureCorrelationID` — each reuses the ingress-installed
+value when present and installs a fresh one on the `--no-auth` path (and
+schedule fires, which have no ingress), so no path loses seq or
+correlation stamping. Pinned by `TestAuthAudit_SeqStampedWhenCounterInstalled`,
+`TestAuthAudit_CarriesIngressCorrelationID`, and the `Ensure*_ReusesExisting`
+tests (issues #174, #278).
 
 #### Emit invariant
 

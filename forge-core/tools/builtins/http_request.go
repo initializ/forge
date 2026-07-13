@@ -33,6 +33,16 @@ func (t *httpRequestTool) WithCredentialInjector(inj *credentials.Injector) *htt
 	return t
 }
 
+const (
+	// httpBodyLimitBytes caps a response body. With compression enabled
+	// (tools.RelaxedLimits) the cap scales to the same 4MB absolute the
+	// MCP adapter and the loop's safety ceiling use, so a big list-API
+	// response reaches the compression layer instead of being cut
+	// mid-JSON inside the tool.
+	httpBodyLimitBytes        = 1 << 20 // 1 MiB
+	httpBodyLimitBytesRelaxed = 4 << 20 // 4 MiB
+)
+
 type httpRequestInput struct {
 	Method  string            `json:"method"`
 	URL     string            `json:"url"`
@@ -114,15 +124,30 @@ func (t *httpRequestTool) Execute(ctx context.Context, args json.RawMessage) (st
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1MB limit
+	// Read one byte past the cap so an over-limit body is detected and
+	// reported via "truncated" instead of silently returning a partial
+	// body (previously a bare LimitReader cut mid-JSON with no signal).
+	limit := int64(httpBodyLimitBytes)
+	if tools.RelaxedLimits(ctx) {
+		limit = httpBodyLimitBytesRelaxed
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return "", fmt.Errorf("reading response: %w", err)
+	}
+	truncated := false
+	if int64(len(body)) > limit {
+		body = body[:limit]
+		truncated = true
 	}
 
 	result := map[string]any{
 		"status":      resp.StatusCode,
 		"status_text": resp.Status,
 		"body":        string(body),
+	}
+	if truncated {
+		result["truncated"] = true
 	}
 	data, _ := json.Marshal(result)
 	return string(data), nil

@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/gowebpki/jcs v1.0.1
-	github.com/initializ/ctxzip v0.2.1-0.20260711202805-6d12127fa2a6
+	github.com/initializ/ctxzip v0.3.0
 	github.com/initializ/forge/forge-skills v0.0.0
 	github.com/xeipuuv/gojsonschema v1.2.0
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.59.0

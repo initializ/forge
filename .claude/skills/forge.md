@@ -788,7 +788,7 @@ Six MUST + three SHOULD requirements from an agent-runtime governance framework.
 | R8 | OpenTelemetry export | SHOULD | `observability.tracing` in yaml. Real tracer provider; OTLP HTTP/gRPC export. Audit events carry `trace_id` + `span_id` closing the loop between the SIEM channel and the APM channel. Baseline (#108). | — |
 | R9 | Least-privilege credentials | SHOULD | `forge-core/credentials/`; top-level `credentials:` in yaml. Providers: `static`, `sts_assume_role`. Fresh credentials per tool call; injected into subprocess env (`cli_execute`) or outbound headers (`http_request`). `credential_issued` / `credential_revoked` audit events. **No credential material in audit payloads.** | #236 |
 
-**Config off by default.** Every governance block ships disabled — an absent block leaves the hook unregistered and the wire shape unchanged from a pre-governance Forge. Rollout: turn each on independently, warn-only first (`hard_threshold: -1` for R3, `hard_threshold: 0.85` for the deny tier), gather the distribution against your embedder + workload, then tune.
+**Config off by default.** Every governance block ships disabled — an absent block leaves the hook unregistered and the wire shape unchanged from a pre-governance Forge. Rollout: turn each on independently, warn-only first (`hard_threshold: -1`), gather the score distribution against your embedder + workload, then set `hard_threshold` a bit **below** the observed floor of your normal traffic (typically ~0.2–0.3; the default is `0.3`). `hard_threshold` is "score below → deny", so a high value like `0.85` would deny almost all legitimate calls — aligned actions cluster well above it (0.6–0.9 on OpenAI `text-embedding-3-small`).
 
 **Live verification.** `github.com/initializ/forge-compliance-suite/e2e/r{1..9}_*` — one test package per requirement, driven with a real OpenAI key against an actual `forge run` subprocess. No mocks in the policy path. See the compliance-suite repo for the reproducer.
 
@@ -1124,9 +1124,10 @@ when OTel tracing is enabled (OTel v1 / Phase 4 / #105). Both use
 | `AuditCredentialFailed` | `credential_failed` | R9 — could not materialize credentials; `provider`, `tool`, `reason`. Tool call fails closed. |
 
 Every event also carries `schema_version: "1.0"` (FWS-8) and `seq`
-(when emitted inside an invocation scope). Signing / hash-chaining
-adds `prev_hash`, `kid`, `sigp: "jcs-1"`, `sig` when
-`FORGE_AUDIT_SIGNING_KEY_B64` is set (R5+R6 / #212+#213).
+(when emitted inside an invocation scope). Hash-chaining stamps
+`prev_hash` on **every** event unconditionally (R5 / #212). When
+`FORGE_AUDIT_SIGNING_KEY_B64` is set, signing additionally adds `kid`,
+`sigp: "jcs-1"`, and `sig` (R6 / #213).
 
 **Read**: `docs/security/audit-logging.md`.
 

@@ -339,7 +339,7 @@ security:
     hard_threshold: 0.3      # *float64: score below → deny; use -1 for warn-only
     cache_size: 1024
 
-  # R7 (#214) — see docs/security/intent-alignment.md#drift-tracking
+  # R7 (#214) — see docs/security/intent-alignment.md#drift-tracking-governance-r7--214
   intent_drift:
     enabled: true
     window: 5                # last N scores in the rolling window
@@ -372,6 +372,23 @@ security:
 | `step_up.*` | off | Governance R4b — per-tool `acr` requirement enforced from the caller's authenticated identity. Startup rejects `enabled: true` with an empty `tools` map. Missing acr → RFC 9470 401 challenge (`WWW-Authenticate: Bearer error="step_up_required", acr_values="<value>"`). |
 | `defer.*` | off | Governance R4c — per-tool pause-and-resume. When a listed tool is invoked, the executor blocks on `POST /tasks/{id}/decisions`. Startup rejects `enabled: true` with an empty `tools` map. Timeout auto-denies. The pause blocks the caller's HTTP request for up to `timeout`; long-window approvals should use `tasks/sendSubscribe` (SSE). |
 
-Every sub-block ships **off by default** — an absent block leaves the corresponding hook unregistered and the wire shape unchanged from a pre-governance Forge deployment. The runtime credential-scoping block (`credentials:` — governance R9) is a top-level field, not nested under `security:`; see [Least-privilege credentials](../security/least-privilege-credentials.md).
+Every sub-block ships **off by default** — an absent block leaves the corresponding hook unregistered and the wire shape unchanged from a pre-governance Forge deployment.
+
+The runtime credential-scoping block (`credentials:` — governance R9) is a **top-level** field, not nested under `security:`. Each entry binds a JIT credential provider to a tool (and optionally a specific `binary` for `cli_execute`):
+
+```yaml
+# R9 (#215) — see docs/security/least-privilege-credentials.md
+credentials:
+  - tool: cli_execute
+    binary: aws                    # scope to a specific binary (cli_execute only)
+    provider: sts_assume_role      # static | sts_assume_role | …
+    spec:
+      role_arn: arn:aws:iam::123456789012:role/forge-skill-read
+      external_id: skill-alpha
+      session_name: forge-agent-jit
+      duration: 15m                # short-lived; revoked after the call
+```
+
+Credentials are materialized fresh per tool call and injected in-tool at `Execute` (headers for HTTP tools, env for `cli_execute`) — see [Least-privilege credentials](../security/least-privilege-credentials.md).
 
 The same SecurityPolicy schema is consumed by `forge skills audit --policy`, so a single committed `security-policy.yaml` can gate both interactive audits and `forge build` runs. See [Skills CLI / Security Audit](../skills/skills-cli.md#security-audit) for the policy YAML reference, scoring overrides, and audit output shape.

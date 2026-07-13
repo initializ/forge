@@ -121,9 +121,9 @@ These events are logged via `slog` at Info level and can be consumed by external
 
 The runner automatically registers progress hooks that emit real-time status updates during tool execution. Progress events include the tool name, phase (`tool_start` / `tool_end`), and a human-readable status message. These events are streamed to clients via SSE when using the A2A HTTP server, enabling live progress indicators in web and chat UIs.
 
-## Governance hooks (R3 / R4b / R4c / R9)
+## Governance hooks (R3 / R7 / R4b / R4c / R9)
 
-Forge's governance framework layers its policy engines on top of the hook system. All four are OPT-IN through `forge.yaml`; when the corresponding block is absent the hooks are not registered and the wire shape stays unchanged.
+Forge's governance framework layers its policy engines on top of the hook system. All are OPT-IN through `forge.yaml`; when the corresponding block is absent the engine is not wired and the wire shape stays unchanged. Most are `BeforeToolExec` hooks; R7 folds into the R3 hook, and R9 is not a hook at all (see its row).
 
 | Hook | Config block | Fires at | Fail behavior |
 |---|---|---|---|
@@ -131,7 +131,7 @@ Forge's governance framework layers its policy engines on top of the hook system
 | Intent drift (R7) | `security.intent_drift` (requires R3) | Same `BeforeToolExec` — folded into the R3 hook's Score call | Telemetry only; never changes the decision. Emits `intent_drift` on state transitions. |
 | Step-up (R4b) | `security.step_up` | `BeforeToolExec` | Missing / weak `acr` claim → returns `*stepup.RequiredError` → REST handler emits HTTP 401 + RFC 9470 `WWW-Authenticate` challenge. Emits `auth_step_up_required`. See [step-up-auth.md](../security/step-up-auth.md). |
 | Defer (R4c) | `security.defer` | `BeforeToolExec` | Blocks the executor goroutine on a decision channel; task status flips to `deferred`. On approve → resumes and runs. On reject / timeout → error → tool body never runs. Emits `task_deferred` / `task_deferred_decision` / `task_deferred_timeout`. See [defer-decisions.md](../security/defer-decisions.md). |
-| JIT credentials (R9) | top-level `credentials:` | Wraps `BeforeToolExec` (issue) + `AfterToolExec` (revoke) | Fresh credentials materialized per tool call; injected into the outbound request (headers for HTTP tools, env for `cli_execute`). Emits `credential_issued` / `credential_revoked` / `credential_failed`. **Credential material never appears in audit event payloads.** See [least-privilege-credentials.md](../security/least-privilege-credentials.md). |
+| JIT credentials (R9) | top-level `credentials:` | In-tool at `Execute` — **not a registered hook**. The injector is wired onto `cli_execute` / `http_request` via `WithCredentialInjector`; `Materialize` runs inside the tool's `Execute`, and the credential is revoked via a deferred `Close`. | Fresh credentials materialized per tool call; injected into the outbound request (headers for HTTP tools, env for `cli_execute`). Emits `credential_issued` / `credential_revoked` / `credential_failed`. **Credential material never appears in audit event payloads.** See [least-privilege-credentials.md](../security/least-privilege-credentials.md). |
 
 Order: the governance hooks register AFTER guardrail hooks so a caller whose input is already guardrail-denied doesn't see the step-up challenge or the defer wait unnecessarily. Within the governance hooks themselves the order is R3 → R4b → R4c → R9 as reflected in the audit stream ordering.
 

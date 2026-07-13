@@ -160,6 +160,7 @@ type Runner struct {
 	stepUpEngine         *stepup.Engine                    // R4b (#210) step-up authorization engine; nil when disabled
 	deferEngine          *deferengine.Engine               // R4c (#211) deferred-authorization engine; nil when disabled
 	taskStore            *a2a.TaskStore                    // shared task store, populated once srv is built; read by defer hook when it fires
+	platformCommandGuard *coreruntime.PlatformCommandGuard // #238 (ASI02) operator-authored command deny, applied to every tool call; empty when no layer declares denied_command_patterns
 }
 
 // NewRunner creates a Runner from the given config.
@@ -507,6 +508,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			"denied_tools_count":     len(layer.Policy.DeniedTools),
 			"forbidden_models_count": len(layer.Policy.ForbiddenModels),
 			"denied_channels_count":  len(layer.Policy.DeniedChannels),
+			"denied_command_count":   len(layer.Policy.DeniedCommandPatterns),
 			"max_egress_allowlist":   layer.Policy.MaxEgressAllowlistSize,
 			"max_tool_count":         layer.Policy.MaxToolCount,
 		})
@@ -526,6 +528,21 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 		return fmt.Errorf("%s", security.FormatViolations(violations))
 	}
+
+	// #238 (ASI02) — compile the operator-authored command-deny patterns
+	// into a runtime guard. This is the FIRST platform-policy field enforced
+	// per-invocation rather than once at startup: the tool is NOT stripped
+	// (that's denied_tools); instead every tool call is matched against these
+	// patterns at BeforeToolExec. Compile here so an invalid regex in any
+	// layer fails closed at startup — same loud-fail posture as the other
+	// policy checks above, but the block itself fires as a runtime event.
+	platformCmdGuard, cmdGuardErr := coreruntime.NewPlatformCommandGuard(
+		toPlatformCommandSpecs(security.EffectiveDeniedCommandPatterns(platformLayers)),
+	)
+	if cmdGuardErr != nil {
+		return fmt.Errorf("platform policy: %w", cmdGuardErr)
+	}
+	r.platformCommandGuard = platformCmdGuard
 
 	// 4b. Resolve egress config and start proxy (if not in container)
 	var egressClient *http.Client
@@ -1059,6 +1076,15 @@ func (r *Runner) Run(ctx context.Context) error {
 						sg := coreruntime.NewSkillGuardrailEngine(sgRules, r.cfg.EnforceGuardrails, r.logger)
 						r.registerSkillGuardrailHooks(hooks, sg)
 					}
+
+					// #238 (ASI02) — operator-authored platform command
+					// deny, applied to EVERY tool call regardless of the
+					// active skill. Registered alongside (not instead of)
+					// skill deny_commands: both are independent BeforeToolExec
+					// deny hooks, so the composition is union-of-deny — a
+					// skill cannot relax an operator pattern. No-op when no
+					// layer declares denied_command_patterns.
+					r.registerPlatformCommandGuardHook(hooks, auditLogger)
 
 					// Reversible context compression (ctxzip). The hook is
 					// registered AFTER guardrail/redaction hooks so it
@@ -2573,6 +2599,71 @@ func (r *Runner) registerSkillGuardrailHooks(hooks *coreruntime.HookRegistry, sg
 			hctx.Response.Message.Content = replaced
 		}
 		return nil
+	})
+}
+
+// toPlatformCommandSpecs bridges the security-package deny patterns (pure
+// data, layer-attributed) into the coreruntime spec the guard compiles.
+// Two parallel types keep forge-core/security free of a compiled-regex
+// dependency and forge-core/runtime free of a security import (#238).
+func toPlatformCommandSpecs(patterns []security.DeniedCommandPattern) []coreruntime.PlatformCommandSpec {
+	if len(patterns) == 0 {
+		return nil
+	}
+	specs := make([]coreruntime.PlatformCommandSpec, 0, len(patterns))
+	for _, p := range patterns {
+		specs = append(specs, coreruntime.PlatformCommandSpec{
+			Pattern:     p.Pattern,
+			Message:     p.Message,
+			LayerSource: p.LayerSource,
+			LayerPath:   p.LayerPath,
+		})
+	}
+	return specs
+}
+
+// registerPlatformCommandGuardHook wires the operator-authored command
+// denylist (#238) onto BeforeToolExec. It fires for EVERY tool call
+// regardless of the active skill. A match blocks the call AND emits a
+// runtime guardrail_check audit event tagged source: platform with the
+// offending pattern, operator message, and first-denying layer — closing
+// the observability gap where skill deny_commands are silent in the audit
+// stream. No-op when no layer declared denied_command_patterns.
+func (r *Runner) registerPlatformCommandGuardHook(hooks *coreruntime.HookRegistry, auditLogger *coreruntime.AuditLogger) {
+	if r.platformCommandGuard.Empty() {
+		return
+	}
+	hooks.Register(coreruntime.BeforeToolExec, func(ctx context.Context, hctx *coreruntime.HookContext) error {
+		m := r.platformCommandGuard.Match(hctx.ToolName, hctx.ToolInput)
+		if m == nil {
+			return nil
+		}
+		msg := m.Message
+		if msg == "" {
+			msg = "command blocked by platform policy"
+		}
+		if auditLogger != nil {
+			fields := map[string]any{
+				"gate":      "tool_call",
+				"decision":  "blocked",
+				"guardrail": "platform_command_deny",
+				"source":    "platform",
+				"pattern":   m.Pattern,
+				"layer":     m.LayerSource,
+				"tool":      hctx.ToolName,
+			}
+			if m.LayerPath != "" {
+				fields["policy_source"] = m.LayerPath
+			}
+			if m.Message != "" {
+				fields["message"] = m.Message
+			}
+			auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
+				Event:  coreruntime.AuditGuardrail,
+				Fields: fields,
+			})
+		}
+		return fmt.Errorf("platform policy: %s", msg)
 	})
 }
 

@@ -106,6 +106,22 @@ forbidden_models:
 denied_channels:
   - telegram
 
+# Operator-authored, argument-level command denylist (#238 / ASI02).
+# Applies to EVERY tool call by ANY skill — the org-wide "keep cli_execute
+# but ban these commands" control. UNLIKE every field above (enforced once
+# at startup), this is matched PER INVOCATION at BeforeToolExec: the tool is
+# NOT stripped; only matching calls are blocked. Match target mirrors skill
+# SKILL.md deny_commands — cli_execute → reconstructed command line; any
+# other tool → raw tool-input JSON. Unioned across layers; a skill's own
+# deny_commands cannot relax an operator pattern. Invalid regex fails closed
+# (aborts startup). A block emits a runtime guardrail_check audit event with
+# source: platform. Each entry is {pattern, message?}.
+denied_command_patterns:
+  - pattern: 'kubectl\s+delete'
+    message: "destructive kubectl blocked by org policy"
+  - pattern: 'git\s+push\s+--force'
+  - pattern: 'rm\s+-rf'
+
 # Defense against allowlist bloat. Hard caps on what forge.yaml may
 # declare. Zero (or omitted) means no cap. When multiple layers set a
 # non-zero cap, the smallest wins ("most restrictive across layers").

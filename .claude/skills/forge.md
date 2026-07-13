@@ -576,8 +576,9 @@ Three independent files, same schema:
 | **workspace** | path at `FORGE_PLATFORM_POLICY` | Operator (Initializ Command, GitOps tooling); `forge package` wires this env into the generated Deployment |
 
 Fields: `denied_egress_domains`, `denied_tools`, `forbidden_models`
-(provider+name pairs), `denied_channels`, `max_egress_allowlist_size`,
-`max_tool_count`.
+(provider+name pairs), `denied_channels`, `denied_command_patterns`
+(#238), `max_egress_allowlist_size`, `max_tool_count`, `guardrails`
+(tighten-only overlay, #284).
 
 Resolution:
 
@@ -590,7 +591,25 @@ Channel deny is non-fatal (the adapter is skipped + a
 `channel_denied_by_policy` event fires). Egress / tool / model
 violations are hard errors — `policy_violation_at_build_time` event +
 the runner returns a multi-line error from `NewRunner` naming the
-deciding layer + path. `forge.yaml` does **not** have a per-agent
+deciding layer + path.
+
+**`denied_command_patterns` (#238 / ASI02)** is the one field enforced
+**per-invocation**, not at startup. Operator-authored argument-level
+command deny (`[]agentspec.CommandFilter` — `{pattern, message?}`)
+applied to **every tool call by any skill**: matched at `BeforeToolExec`
+with the same match target as skill `deny_commands` (`cli_execute` →
+reconstructed command line; other tools → raw tool-input JSON, via
+`canonicalizeToolInput`). The tool is NOT stripped (that's
+`denied_tools`); only matching calls are blocked. Patterns compile at
+startup → invalid regex **fails closed** (aborts startup). A block emits
+a runtime `guardrail_check` event tagged `source: platform` +
+`guardrail: platform_command_deny` + pattern/layer/message (closing the
+gap where skill `deny_commands` are silent in audit). Union-of-deny with
+skill `deny_commands` — a skill cannot relax an operator pattern.
+`forge-core/security` resolves the unioned patterns
+(`EffectiveDeniedCommandPatterns`); `forge-core/runtime`
+(`PlatformCommandGuard`) compiles + matches; `forge-cli` bridges + wires
+the `BeforeToolExec` hook (`registerPlatformCommandGuardHook`). `forge.yaml` does **not** have a per-agent
 `disabled_channels` field — channel disable is laptop or workspace
 level, never declaration.
 

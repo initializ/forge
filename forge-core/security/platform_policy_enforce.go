@@ -222,6 +222,50 @@ func EffectiveDeniedTools(forgeDenied []string, layers []PolicyLayer) []string {
 	return out
 }
 
+// DeniedCommandPattern is one operator-authored command-deny pattern
+// resolved from the layer stack, carrying its originating layer for
+// runtime audit attribution (#238). Regex compilation happens at the
+// enforcement site (forge-core/runtime), keeping this package free of a
+// compiled-regex dependency in the policy schema.
+type DeniedCommandPattern struct {
+	Pattern     string
+	Message     string
+	LayerSource string // "system" / "user" / "workspace"
+	LayerPath   string
+}
+
+// EffectiveDeniedCommandPatterns returns the union of every layer's
+// denied_command_patterns in load order (system → user → workspace),
+// deduped by pattern string. The FIRST layer to declare a pattern owns
+// the attribution — so an audit block reports the broadest-scope layer
+// that forbade the command, matching operator mental model (a corporate
+// system policy "wins" the attribution over a workspace repeat).
+func EffectiveDeniedCommandPatterns(layers []PolicyLayer) []DeniedCommandPattern {
+	if len(layers) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var out []DeniedCommandPattern
+	for _, l := range layers {
+		for _, f := range l.Policy.DeniedCommandPatterns {
+			if f.Pattern == "" {
+				continue
+			}
+			if _, dup := seen[f.Pattern]; dup {
+				continue
+			}
+			seen[f.Pattern] = struct{}{}
+			out = append(out, DeniedCommandPattern{
+				Pattern:     f.Pattern,
+				Message:     f.Message,
+				LayerSource: l.Source,
+				LayerPath:   l.Path,
+			})
+		}
+	}
+	return out
+}
+
 // EffectiveToolCount returns how many tools the agent would register
 // after every layer's deny strip. Used by the bound check above and
 // the runner's startup log.

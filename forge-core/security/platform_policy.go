@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/initializ/forge/forge-core/agentspec"
 	"gopkg.in/yaml.v3"
 )
 
@@ -75,6 +76,30 @@ type PlatformPolicy struct {
 	// the schema so operators write one policy document, not two.
 	DeniedChannels []string `yaml:"denied_channels,omitempty" json:"denied_channels,omitempty"`
 
+	// DeniedCommandPatterns is an operator-authored, argument-level
+	// command denylist applied to EVERY tool call by ANY skill the agent
+	// uses (#238 / ASI02). It gives operators org-wide "keep cli_execute
+	// but ban `rm -rf` / `git push --force` / `kubectl delete`" control
+	// that today only skill authors can express via SKILL.md deny_commands.
+	//
+	// UNIQUE among PlatformPolicy fields: every other field is enforced
+	// ONCE at startup (registry strip / allowlist diff / refuse-to-start).
+	// This one is enforced PER INVOCATION — matched at BeforeToolExec on
+	// each call's arguments with the same match target as skill
+	// deny_commands (cli_execute → reconstructed command line; any other
+	// tool → raw tool-input JSON). The tool is NOT stripped; only matching
+	// calls are blocked, and a block emits a runtime guardrail_check audit
+	// event tagged source: platform with first-denying-layer attribution.
+	//
+	// Unioned across layers like the other deny lists; a skill's own
+	// deny_commands cannot relax an operator pattern (compose =
+	// most-restrictive-wins). Patterns are compiled at startup and an
+	// invalid regex fails closed (aborts startup), matching the loud-fail
+	// posture of the other policy fields. Reuses agentspec.CommandFilter so
+	// operators and skill authors author patterns identically and attach an
+	// optional custom deny message.
+	DeniedCommandPatterns []agentspec.CommandFilter `yaml:"denied_command_patterns,omitempty" json:"denied_command_patterns,omitempty"`
+
 	// Guardrails is the platform guardrails OVERLAY (#284) — a
 	// most-restrictive layer merged over the agent's guardrails.json. It
 	// uses the exact same schema as guardrails.json
@@ -119,6 +144,7 @@ func (p PlatformPolicy) IsZero() bool {
 		p.MaxEgressAllowlistSize == 0 &&
 		p.MaxToolCount == 0 &&
 		len(p.DeniedChannels) == 0 &&
+		len(p.DeniedCommandPatterns) == 0 &&
 		len(p.Guardrails) == 0
 }
 

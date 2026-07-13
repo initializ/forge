@@ -249,6 +249,53 @@ func TestHTTPSink_Posts_Event(t *testing.T) {
 	}
 }
 
+// 6b. httpSink health is a live level: a 2xx sets connected=1 and every
+// failure path clears it to 0, so the #280 connected-flip edge fires on an
+// HTTP endpoint outage (previously connected stayed sticky at its last
+// success and an outage was invisible until the next keepalive).
+func TestHTTPSink_ErrorPathsClearConnected(t *testing.T) {
+	var status atomic.Int64
+	status.Store(http.StatusAccepted)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(int(status.Load()))
+	}))
+
+	s := NewHTTPSink(srv.URL, 200*time.Millisecond)
+	defer func() { _ = s.Close(context.Background()) }()
+	write := func() {
+		if err := s.Write(context.Background(), []byte(`{}`+"\n")); err != nil {
+			t.Fatalf("Write returned err: %v", err)
+		}
+	}
+
+	// 2xx → healthy.
+	write()
+	if s.Stats()["connected"] != 1 {
+		t.Fatalf("after a 2xx, connected = %d, want 1", s.Stats()["connected"])
+	}
+
+	// non-2xx → the outage must flip the edge to 0, not stay stuck at 1.
+	status.Store(http.StatusInternalServerError)
+	write()
+	if s.Stats()["connected"] != 0 {
+		t.Errorf("after a non-2xx, connected = %d, want 0", s.Stats()["connected"])
+	}
+
+	// recovery → back to 1 (the 0→1 edge the heartbeat reports as recovery).
+	status.Store(http.StatusAccepted)
+	write()
+	if s.Stats()["connected"] != 1 {
+		t.Errorf("after recovery, connected = %d, want 1", s.Stats()["connected"])
+	}
+
+	// transport error (endpoint gone) → 0, mirroring the socket sink.
+	srv.Close()
+	write()
+	if s.Stats()["connected"] != 0 {
+		t.Errorf("after a transport error, connected = %d, want 0", s.Stats()["connected"])
+	}
+}
+
 // 7. Multi-sink fan-out: stderr + socket configured; one Emit reaches
 // both sinks.
 func TestAuditLogger_FanOut_AllSinksReceive(t *testing.T) {

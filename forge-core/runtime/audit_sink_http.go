@@ -68,6 +68,14 @@ func (s *httpSink) Stats() map[string]int64 { return s.stats.snapshot() }
 // dial-class drop (the receiver rejected it; we won't queue). Network
 // timeouts count as timeout drops. Like socketSink, returns nil in
 // every transient case so the fan-out loop continues.
+//
+// `connected` tracks live health as a level: a 2xx sets it to 1, and
+// EVERY failure path (request build / transport error / timeout /
+// non-2xx) stores 0. This mirrors socketSink's dropConnLocked() so the
+// audit_export_status heartbeat's connected-flip edge (#280) fires on an
+// HTTP endpoint outage too — without this, a failure after any prior
+// success would leave `connected` stuck at 1 and stay invisible until
+// the next keepalive.
 func (s *httpSink) Write(ctx context.Context, eventBytes []byte) error {
 	s.mu.Lock()
 	if s.closed {
@@ -82,6 +90,7 @@ func (s *httpSink) Write(ctx context.Context, eventBytes []byte) error {
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, s.endpoint, bytes.NewReader(eventBytes))
 	if err != nil {
 		s.stats.dropsDial.Add(1)
+		s.stats.connected.Store(0)
 		return nil
 	}
 	req.Header.Set("Content-Type", "application/x-ndjson")
@@ -93,6 +102,7 @@ func (s *httpSink) Write(ctx context.Context, eventBytes []byte) error {
 		} else {
 			s.stats.dropsDial.Add(1)
 		}
+		s.stats.connected.Store(0)
 		return nil
 	}
 	// Drain + close so the connection can be re-used by the transport.
@@ -101,6 +111,7 @@ func (s *httpSink) Write(ctx context.Context, eventBytes []byte) error {
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		s.stats.dropsDial.Add(1)
+		s.stats.connected.Store(0)
 		return nil
 	}
 	s.stats.writesOK.Add(1)

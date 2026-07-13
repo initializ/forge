@@ -126,3 +126,76 @@ func TestSkillBuilderPrompt_EditModePreservesToolNames(t *testing.T) {
 		t.Error("edit mode should still carry the convergence rules (base prompt)")
 	}
 }
+
+// TestSkillBuilderPrompt_BuiltinAwareness pins issue #270: the builder must
+// advertise Forge's registered built-ins and prefer them over a custom tool
+// or a tool-less behavior. Without this it invents redundant tools (e.g.
+// brisbane_time) or offers a hallucinating "conversational only" path.
+func TestSkillBuilderPrompt_BuiltinAwareness(t *testing.T) {
+	p := skillBuilderSystemPrompt(modeCreate, nil)
+	for _, want := range []string{
+		"Built-in Tools",                         // the section exists
+		"`datetime_now`",                         // time built-in advertised
+		"`web_search`",                           // live web built-in
+		"`http_request`",                         // API built-in
+		"`schedule_set`",                         // scheduler built-in
+		"`brisbane_time`",                        // the exact anti-example (don't duplicate a built-in)
+		"Prefer a built-in",                      // the prefer-built-in rule
+		"NO valid \"conversational only\" skill", // no tool-less path for live data
+		"never state a time from your own knowledge",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("builtin-awareness prompt missing: %q", want)
+		}
+	}
+}
+
+// TestSkillBuilderPrompt_RoleSeparation pins the #270 role-separation rule:
+// the builder AUTHORS a SKILL.md and must never role-play the behavior or
+// fabricate tool output.
+func TestSkillBuilderPrompt_RoleSeparation(t *testing.T) {
+	p := skillBuilderSystemPrompt(modeCreate, nil)
+	for _, want := range []string{
+		"You AUTHOR a SKILL.md",
+		"NEVER fabricate tool output",
+		"not to run it",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("role-separation prompt missing: %q", want)
+		}
+	}
+}
+
+// TestSkillBuilderPrompt_SchedulingGated pins the #270 scheduling rules:
+// recognize scheduling intent and wire schedule_set, and proactively ask only
+// for time/event-oriented skills.
+func TestSkillBuilderPrompt_SchedulingGated(t *testing.T) {
+	p := skillBuilderSystemPrompt(modeCreate, nil)
+	for _, want := range []string{
+		"Scheduling (gated)",
+		"schedule_set",
+		"time- or event-oriented",
+		"do NOT ask", // gated: silent for non-temporal skills
+		"schedules NOTHING",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("scheduling prompt missing: %q", want)
+		}
+	}
+}
+
+// TestSkillBuilderPrompt_BuiltinOnlySkillNeedsNoToolSection pins that the
+// prompt relaxes the `## Tool:` requirement for built-in-only skills (the
+// time example has no custom tool), so the builder doesn't scaffold a bogus
+// `## Tool: datetime_now`.
+func TestSkillBuilderPrompt_BuiltinOnlySkillNeedsNoToolSection(t *testing.T) {
+	p := skillBuilderSystemPrompt(modeCreate, nil)
+	for _, want := range []string{
+		"required only for CUSTOM tools",
+		"has NO `## Tool:` sections",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("built-in-only relaxation missing: %q", want)
+		}
+	}
+}

@@ -85,7 +85,12 @@ func (t *expandTool) Execute(ctx context.Context, args json.RawMessage) (string,
 		// hex). If the given value uniquely prefixes a hash this process
 		// emitted, resolve and retry before declaring a miss.
 		if full := t.rt.resolvePrefix(hash); full != "" {
-			entry, ok = t.rt.store.Get(full)
+			if entry, ok = t.rt.store.Get(full); ok {
+				// Feedback dedup keys on the canonical hash, so a prefix
+				// retrieval and a full-hash retrieval of the same content
+				// count once.
+				hash = full
+			}
 		}
 	}
 	original := entry.Original
@@ -103,7 +108,7 @@ func (t *expandTool) Execute(ctx context.Context, args json.RawMessage) (string,
 	}
 	t.rt.recordExpansion(ctx, hash, ok, len(original), entry.Meta.ToolName, eventCandidates)
 	if ok {
-		t.rt.recordExpansionFeedback(ctx, entry.Meta.ToolName, candidates)
+		t.rt.recordExpansionFeedback(ctx, entry.Meta.ToolName, hash, candidates)
 	}
 	if !ok {
 		// A miss is not a dead end — the disk or the original command is the

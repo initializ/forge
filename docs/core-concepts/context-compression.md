@@ -107,7 +107,7 @@ Token figures are tokenizer estimates (directionally accurate); billed truth rem
 
 ## The learning loop
 
-Every `context_expand` retrieval is a signal: compression dropped something a model needed. At expansion time the runtime mines the retrieved content for domain-state tokens (CamelCase / ALLCAPS words like `SchedulingGated` or `QUOTA_EXCEEDED`) that are **not** already protected by the error floor or your `keep_patterns`, and counts them across expansions in `.forge/ctxzip-suggestions.json`. A token retrieved in three distinct expansions is surfaced once — a `context_pattern_suggested` audit event plus a log line — and:
+Every `context_expand` retrieval is a signal: compression dropped something a model needed. At expansion time the runtime mines the retrieved content for domain-state tokens (CamelCase / ALLCAPS words like `SchedulingGated` or `QUOTA_EXCEEDED`) that are **not** already protected by the error floor or your `keep_patterns`, and counts them across expansions in `.forge/ctxzip-suggestions.json`. A token retrieved in three distinct expansions — distinct content, not the same marker retrieved three times — is surfaced once — a `context_pattern_suggested` audit event plus a log line — and:
 
 ```bash
 forge compression suggestions

@@ -76,3 +76,17 @@ denied_command_patterns:
 		t.Errorf("first pattern decoded wrong: %+v", p.DeniedCommandPatterns[0])
 	}
 }
+
+// TestParsePlatformPolicy_InvalidCommandRegexFailsLint pins that the standalone
+// lint path (ParsePlatformPolicy → Validate, used by `forge validate
+// --platform-policy`) rejects an invalid denied_command_patterns regex BEFORE
+// deploy — not only at runtime guard-build (#238; found manually testing the
+// binary). Also rejects an empty pattern.
+func TestParsePlatformPolicy_InvalidCommandRegexFailsLint(t *testing.T) {
+	if _, err := ParsePlatformPolicy([]byte("denied_command_patterns:\n  - pattern: '(unclosed'\n")); err == nil {
+		t.Error("expected an invalid-regex error from the lint path")
+	}
+	if _, err := ParsePlatformPolicy([]byte("denied_command_patterns:\n  - message: 'no pattern'\n")); err == nil {
+		t.Error("expected an empty-pattern error from the lint path")
+	}
+}

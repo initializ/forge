@@ -3,6 +3,7 @@ package security
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/initializ/forge/forge-core/agentspec"
@@ -218,6 +219,19 @@ func (p PlatformPolicy) Validate() error {
 	}
 	if p.MaxToolCount < 0 {
 		return fmt.Errorf("max_tool_count must be >= 0, got %d", p.MaxToolCount)
+	}
+	// denied_command_patterns must compile (#238). Validating here — not only
+	// in the runtime guard — means `forge validate --platform-policy` fails
+	// closed on a bad regex BEFORE deploy, so an operator linting a policy for
+	// a ConfigMap catches the typo instead of the agent CrashLooping on
+	// startup in-cluster.
+	for i, f := range p.DeniedCommandPatterns {
+		if f.Pattern == "" {
+			return fmt.Errorf("denied_command_patterns[%d]: pattern is required", i)
+		}
+		if _, err := regexp.Compile(f.Pattern); err != nil {
+			return fmt.Errorf("denied_command_patterns[%d]: invalid regex %q: %w", i, f.Pattern, err)
+		}
 	}
 	return nil
 }

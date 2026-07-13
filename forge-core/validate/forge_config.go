@@ -3,12 +3,29 @@ package validate
 import (
 	"fmt"
 	"regexp"
+	"strings"
 
+	"github.com/initializ/forge/forge-core/llm"
 	"github.com/initializ/forge/forge-core/scheduler"
 	"github.com/initializ/forge/forge-core/types"
 )
 
 var kebabCasePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+
+// knownModelAuthSchemes is the accepted set for model.auth_scheme (outbound
+// LLM auth). "" / x_api_key / bearer all resolve to the provider-native
+// header; aws_sigv4 (#202) and apikey_header (#302) are the active schemes.
+var knownModelAuthSchemes = map[string]bool{
+	"":                         true,
+	"x_api_key":                true,
+	"bearer":                   true,
+	llm.AuthSchemeAWSSigV4:     true,
+	llm.AuthSchemeAPIKeyHeader: true,
+}
+
+// nativeAuthHeaders are the provider-native auth headers apikey_header must
+// not overwrite (case-insensitive).
+var nativeAuthHeaders = map[string]bool{"authorization": true, "x-api-key": true}
 
 var (
 	agentIDPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
@@ -70,6 +87,30 @@ func ValidateForgeConfig(cfg *types.ForgeConfig) *ValidationResult {
 
 	if cfg.Model.OrganizationID != "" && cfg.Model.Provider != "" && cfg.Model.Provider != "openai" {
 		r.Warnings = append(r.Warnings, fmt.Sprintf("model.organization_id is set but provider is %q (only used by openai)", cfg.Model.Provider))
+	}
+
+	// model.auth_scheme validation (#202 / #302). An unrecognized value
+	// silently degrades to native-headers-only — reproducing the exact 401
+	// the apikey_header scheme exists to fix — so reject it here.
+	if s := cfg.Model.AuthScheme; !knownModelAuthSchemes[s] {
+		r.Errors = append(r.Errors, fmt.Sprintf("model.auth_scheme %q is not recognized (known: x_api_key, bearer, aws_sigv4, apikey_header)", s))
+	}
+	// Only the openai and anthropic clients honor auth_scheme; warn if it's
+	// set on a provider that will silently ignore it.
+	if s := cfg.Model.AuthScheme; (s == llm.AuthSchemeAWSSigV4 || s == llm.AuthSchemeAPIKeyHeader) &&
+		cfg.Model.Provider != "" && cfg.Model.Provider != "openai" && cfg.Model.Provider != "anthropic" {
+		r.Warnings = append(r.Warnings, fmt.Sprintf("model.auth_scheme %q only affects the openai and anthropic clients; provider %q ignores it", s, cfg.Model.Provider))
+	}
+	// apikey_header's custom header must not collide with a native auth
+	// header, or it would overwrite the provider's Bearer / x-api-key with
+	// the raw key — breaking auth in a maximally confusing way (#303 review).
+	if cfg.Model.AuthScheme == llm.AuthSchemeAPIKeyHeader && cfg.Model.AuthHeaderName != "" &&
+		nativeAuthHeaders[strings.ToLower(cfg.Model.AuthHeaderName)] {
+		r.Errors = append(r.Errors, fmt.Sprintf("model.auth_header_name %q collides with a native auth header; choose a distinct gateway header (e.g. apikey, x-gateway-key)", cfg.Model.AuthHeaderName))
+	}
+	// auth_header_name only applies to apikey_header.
+	if cfg.Model.AuthHeaderName != "" && cfg.Model.AuthScheme != llm.AuthSchemeAPIKeyHeader {
+		r.Warnings = append(r.Warnings, `model.auth_header_name is set but auth_scheme is not "apikey_header"; it will be ignored`)
 	}
 
 	if cfg.Framework != "" && !knownFrameworks[cfg.Framework] {

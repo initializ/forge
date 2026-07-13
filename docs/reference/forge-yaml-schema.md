@@ -46,7 +46,9 @@ model:
 # API key in the auth_header_name header (default "apikey") IN ADDITION to
 # the provider-native header, so a gateway whose auth plugin reads a fixed
 # header — e.g. Kong AI Gateway key-auth — authenticates the request.
-# Additive, so safe against non-gateway endpoints. Issue #302.
+# Additive, so safe against non-gateway endpoints. auth_scheme applies to
+# the PRIMARY model only — fallbacks authenticate with their provider-native
+# header. Issue #302.
 
 tools:
   - name: "web_search"

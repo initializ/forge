@@ -2,6 +2,7 @@ package providers
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/initializ/forge/forge-core/llm"
 )
@@ -23,6 +24,14 @@ func setGatewayAPIKeyHeader(req *http.Request, authScheme, headerName, apiKey st
 	}
 	if headerName == "" {
 		headerName = llm.DefaultAPIKeyHeaderName
+	}
+	// Defense-in-depth: never clobber a native auth header with the raw key.
+	// `forge validate` rejects such a config, but guard the programmatic
+	// path too so a misconfigured ClientConfig can't silently overwrite the
+	// provider's Bearer / x-api-key (#303 review).
+	switch strings.ToLower(headerName) {
+	case "authorization", "x-api-key":
+		return
 	}
 	req.Header.Set(headerName, apiKey)
 }

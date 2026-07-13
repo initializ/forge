@@ -156,7 +156,9 @@ model:
   # auth_header_name: x-gateway-key                # optional; default: apikey
 ```
 
-The key comes from the usual `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` env var. Issue #302.
+The key comes from the usual `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` env var. `auth_scheme` applies to the **primary model only** — a fallback routed through the same gateway authenticates with its provider-native header. `forge validate` rejects an unrecognized `auth_scheme` and an `auth_header_name` that collides with a native auth header (`Authorization` / `x-api-key`), so a typo surfaces as a config error rather than the silent 401 this scheme exists to fix. Issue #302.
+
+> **Kong operators:** `key-auth` defaults to `hide_credentials: false`, which forwards the `apikey` header **upstream** — the credential then transits in a header that conventional redaction tooling (which knows `Authorization` / `x-api-key`) won't scrub. Set `hide_credentials: true` on the Kong plugin so it strips the key before proxying. (Forge's own trace redactor matches key values by shape, so opt-in content capture is already covered.)
 
 ### Fallback Chains
 

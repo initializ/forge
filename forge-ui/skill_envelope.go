@@ -41,18 +41,35 @@ type skillPayload struct {
 func parseSkillEnvelope(response string) (message, skillMD string, scripts map[string]string, structured bool) {
 	scripts = make(map[string]string)
 
-	if jsonStr := extractJSONObject(response); jsonStr != "" {
-		var env skillEnvelope
-		if err := json.Unmarshal([]byte(jsonStr), &env); err == nil && looksLikeEnvelope(jsonStr) {
-			message = strings.TrimSpace(env.Message)
-			if env.Skill != nil {
-				skillMD = strings.TrimSpace(env.Skill.SkillMD)
-				if env.Skill.Scripts != nil {
-					scripts = env.Skill.Scripts
-				}
-			}
-			return message, skillMD, scripts, true
+	// Try EVERY balanced {...} candidate in order, not just the first. A model
+	// may precede the real envelope with prose that itself contains JSON —
+	// tool-output examples are JSON in this domain — so the first object isn't
+	// necessarily the envelope. Iterate until one both parses AND carries the
+	// envelope keys; only then commit to the structured path. This closes two
+	// silent-draft-loss holes (#276 review): an incidental `{"message":"ok"}`
+	// in prose hijacking the parse, and a valid envelope after a brace-bearing
+	// preamble being abandoned to the legacy path.
+	for from := 0; from < len(response); {
+		cand, end := jsonObjectAt(response, from)
+		if cand == "" {
+			break
 		}
+		from = end
+		if !looksLikeEnvelope(cand) {
+			continue
+		}
+		var env skillEnvelope
+		if err := json.Unmarshal([]byte(cand), &env); err != nil {
+			continue
+		}
+		message = strings.TrimSpace(env.Message)
+		if env.Skill != nil {
+			skillMD = strings.TrimSpace(env.Skill.SkillMD)
+			if env.Skill.Scripts != nil {
+				scripts = env.Skill.Scripts
+			}
+		}
+		return message, skillMD, scripts, true
 	}
 
 	// Legacy fallback: recover artifacts from fenced output and show the
@@ -61,28 +78,37 @@ func parseSkillEnvelope(response string) (message, skillMD string, scripts map[s
 	return strings.TrimSpace(response), skillMD, scripts, false
 }
 
-// looksLikeEnvelope guards against a false-positive structured parse when
-// the model emits some *other* JSON object (e.g. a bare tool-output sample)
-// that happens to unmarshal into skillEnvelope with all-zero fields. We
-// require the literal "message" or "skill" key to be present.
+// looksLikeEnvelope guards against a false-positive structured parse on some
+// OTHER JSON object in the response. It requires BOTH the "message" and
+// "skill" keys — the prompt mandates exactly those two fields, so a real
+// envelope always carries both (even while interviewing, `skill` is present
+// as null). Requiring only one would let an incidental `{"message":"ok"}` in
+// prose hijack the parse and drop a fenced draft (#276 review).
 func looksLikeEnvelope(jsonStr string) bool {
-	return strings.Contains(jsonStr, `"message"`) || strings.Contains(jsonStr, `"skill"`)
+	return strings.Contains(jsonStr, `"message"`) && strings.Contains(jsonStr, `"skill"`)
 }
 
-// extractJSONObject returns the outermost JSON object in s, tolerating the
-// common ways an LLM wraps it: a leading ```json fence, surrounding prose,
-// or a clean bare object. Returns "" when no braces are found.
-//
-// It scans for the first '{' and the matching '}' by brace depth while
-// skipping over string literals (so a '}' inside a JSON string value —
-// very likely in an embedded SKILL.md — doesn't terminate the object
-// early). This is what makes the {skill_md: "...markdown with { }..."}
-// payload parse reliably.
+// extractJSONObject returns the FIRST balanced {...} object in s, or "".
+// Retained for callers/tests that only need the first object;
+// parseSkillEnvelope iterates all candidates via jsonObjectAt.
 func extractJSONObject(s string) string {
-	start := strings.IndexByte(s, '{')
-	if start < 0 {
-		return ""
+	obj, _ := jsonObjectAt(s, 0)
+	return obj
+}
+
+// jsonObjectAt finds the next balanced {...} object at or after `from`,
+// tolerating a leading ```json fence or surrounding prose. It scans by brace
+// depth while skipping string literals (so a '}' inside a JSON string — very
+// likely in an embedded SKILL.md — doesn't terminate the object early).
+// Returns the object substring and the index just past it, so the caller can
+// resume scanning for the next candidate. Returns ("", len(s)) when no
+// complete object remains at/after `from`.
+func jsonObjectAt(s string, from int) (string, int) {
+	rel := strings.IndexByte(s[from:], '{')
+	if rel < 0 {
+		return "", len(s)
 	}
+	start := from + rel
 	depth := 0
 	inString := false
 	escaped := false
@@ -107,9 +133,9 @@ func extractJSONObject(s string) string {
 		case '}':
 			depth--
 			if depth == 0 {
-				return s[start : i+1]
+				return s[start : i+1], i + 1
 			}
 		}
 	}
-	return ""
+	return "", len(s) // unbalanced — no complete object
 }

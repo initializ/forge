@@ -2678,10 +2678,15 @@ function SkillBuilderPage({ agentId }) {
           setError(errMsg);
         },
         onDone() {
-          // If the model returned only a skill and no message, clear the
-          // pending state so the placeholder doesn't spin forever.
+          // Clear pending so the "designing" placeholder doesn't spin forever
+          // when the model returned only a skill (or nothing) with no message.
           if (assistantMsg.pending) {
             assistantMsg.pending = false;
+            // Empty model response with no draft loaded: show a placeholder
+            // rather than a blank bubble (#276 review).
+            if (!assistantMsg.content) {
+              assistantMsg.content = '_(no response)_';
+            }
             setMessages([...newMessages, { ...assistantMsg }]);
           }
         },

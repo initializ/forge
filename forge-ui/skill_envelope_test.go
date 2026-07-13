@@ -134,6 +134,39 @@ func TestParseSkillEnvelope_BracePreambleFindsEnvelope(t *testing.T) {
 	}
 }
 
+// TestParseSkillEnvelope_WrapperObjectReachesInnerEnvelope (#276 re-review
+// hardening): a wrapper like {"response": {…real envelope…}} passes the
+// both-keys substring guard but unmarshals to a zero-value envelope. The
+// parser must reject the zero-value and descend to the nested real envelope
+// rather than committing an empty structured result.
+func TestParseSkillEnvelope_WrapperObjectReachesInnerEnvelope(t *testing.T) {
+	resp := `{"response": {"message": "Here you go.", "skill": {"skill_md": "---\nname: demo\n---\n", "scripts": {}}}}`
+	msg, skillMD, _, structured := parseSkillEnvelope(resp)
+	if !structured {
+		t.Fatal("nested real envelope should be found (structured)")
+	}
+	if msg != "Here you go." {
+		t.Errorf("message = %q, want the inner envelope's message", msg)
+	}
+	if !strings.Contains(skillMD, "name: demo") {
+		t.Errorf("inner skill_md not extracted: %q", skillMD)
+	}
+}
+
+// TestParseSkillEnvelope_ZeroValueWrapperNoInnerFallsBack — a wrapper whose
+// inner object is NOT an envelope must fall back to legacy, not commit an
+// empty structured result.
+func TestParseSkillEnvelope_ZeroValueWrapperNoInnerFallsBack(t *testing.T) {
+	resp := "prefix {\"response\": {\"foo\": 1}} suffix\n````skill.md\n---\nname: fb\n---\n````\n"
+	_, skillMD, _, structured := parseSkillEnvelope(resp)
+	if structured {
+		t.Fatal("a non-envelope wrapper must not parse as structured")
+	}
+	if !strings.Contains(skillMD, "name: fb") {
+		t.Errorf("legacy fence draft lost: %q", skillMD)
+	}
+}
+
 // TestParseSkillEnvelope_InterviewingBothKeys — an interviewing turn carries
 // both keys with skill:null and must parse structured (both-keys guard must
 // not reject the legitimate null-skill case).

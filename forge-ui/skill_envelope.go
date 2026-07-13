@@ -50,16 +50,31 @@ func parseSkillEnvelope(response string) (message, skillMD string, scripts map[s
 	// in prose hijacking the parse, and a valid envelope after a brace-bearing
 	// preamble being abandoned to the legacy path.
 	for from := 0; from < len(response); {
-		cand, end := jsonObjectAt(response, from)
+		cand, start := jsonObjectAt(response, from)
 		if cand == "" {
 			break
 		}
-		from = end
+		// On any rejection, advance to just past this candidate's opening `{`
+		// (not past the whole object), so a real envelope NESTED inside a
+		// wrapper — e.g. `{"response": {"message":…, "skill":…}}` — is still
+		// reachable on the next iteration (#276 review hardening).
+		next := start + 1
 		if !looksLikeEnvelope(cand) {
+			from = next
 			continue
 		}
 		var env skillEnvelope
 		if err := json.Unmarshal([]byte(cand), &env); err != nil {
+			from = next
+			continue
+		}
+		// Reject a zero-value "envelope": a wrapper like
+		// `{"response": {...}}` contains both key substrings and unmarshals
+		// cleanly (unknown top-level field ignored) but yields no message and
+		// no skill. Skip it so the inner real envelope (or the legacy
+		// fallback) wins instead of committing an empty structured result.
+		if env.Message == "" && env.Skill == nil {
+			from = next
 			continue
 		}
 		message = strings.TrimSpace(env.Message)
@@ -100,15 +115,16 @@ func extractJSONObject(s string) string {
 // tolerating a leading ```json fence or surrounding prose. It scans by brace
 // depth while skipping string literals (so a '}' inside a JSON string — very
 // likely in an embedded SKILL.md — doesn't terminate the object early).
-// Returns the object substring and the index just past it, so the caller can
-// resume scanning for the next candidate. Returns ("", len(s)) when no
-// complete object remains at/after `from`.
-func jsonObjectAt(s string, from int) (string, int) {
+// Returns the object substring and the index of its opening '{', so the
+// caller can resume scanning just past it (start+1) to reach nested
+// candidates. Returns ("", -1) when no complete object remains at/after
+// `from`.
+func jsonObjectAt(s string, from int) (obj string, start int) {
 	rel := strings.IndexByte(s[from:], '{')
 	if rel < 0 {
-		return "", len(s)
+		return "", -1
 	}
-	start := from + rel
+	start = from + rel
 	depth := 0
 	inString := false
 	escaped := false
@@ -133,9 +149,9 @@ func jsonObjectAt(s string, from int) (string, int) {
 		case '}':
 			depth--
 			if depth == 0 {
-				return s[start : i+1], i + 1
+				return s[start : i+1], start
 			}
 		}
 	}
-	return "", len(s) // unbalanced — no complete object
+	return "", -1 // unbalanced — no complete object
 }

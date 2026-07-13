@@ -398,7 +398,7 @@ visible from t=0.
 | `writes_ok` | Events successfully delivered to this sink |
 | `drops_timeout` | Events dropped because the per-event Write missed its deadline (slow / unresponsive peer) |
 | `drops_dial` | Events dropped because the connection was down (sidecar offline or in backoff window) |
-| `connected` | `1` when a working connection is held, `0` otherwise. Sticky `0` for fire-and-forget sinks (writerSink) |
+| `connected` | Live health level: `1` when the last write succeeded, `0` after any failure. Both network sinks maintain it — the UDS sink clears it on dial/timeout/write error, and the HTTP sink clears it on request-build / transport / timeout / non-2xx (#280) — which is what the hybrid cadence's `connected`-flip edge relies on. Sticky `0` for fire-and-forget sinks (writerSink), which never hold a connection |
 
 ### Why a separate path from OTel
 

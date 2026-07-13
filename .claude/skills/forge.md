@@ -36,7 +36,7 @@ repo.
 15. [How to create an agent](#15-how-to-create-an-agent)
 16. [How to create a skill](#16-how-to-create-a-skill)
 17. [Audit event reference](#17-audit-event-reference)
-18. [Workstream recap — FWS-1 through FWS-10](#18-workstream-recap--fws-1-through-fws-10)
+18. [Workstream recap — FWS-1 through FWS-10 + OTel v1](#18-workstream-recap--fws-1-through-fws-10--otel-v1)
 19. [Docs map](#19-docs-map)
 20. [Recipes — common questions](#20-recipes--common-questions)
 
@@ -642,7 +642,7 @@ intentionally have no `seq`.
 |---|---|---|
 | stderr (NDJSON) | yes | The safety net — container log collectors capture it by default |
 | Unix Domain Socket | when `--audit-socket` / `FORGE_AUDIT_SOCKET` | Lazy reconnect, 50ms per-write timeout, exponential backoff 100ms → 5s cap, drop on timeout |
-| Localhost HTTP | when `--audit-http-endpoint` / `FORGE_AUDIT_HTTP_ENDPOINT` (socket wins when both set) | Same fire-and-forget discipline |
+| Localhost HTTP | when `--audit-http-endpoint` / `FORGE_AUDIT_HTTP_ENDPOINT` (socket wins when both set) | Same fire-and-forget discipline; `connected` is a live level (1 on 2xx, 0 on any failure) so the #280 flip edge fires for it too |
 
 Events are byte-identical across sinks. An `audit_export_status` event
 carries per-sink `writes_ok` / `drops_timeout` / `drops_dial` /
@@ -1170,7 +1170,7 @@ Every event also carries `schema_version: "1.0"` (FWS-8) and `seq`
 | **FWS-4** | #88 | Cancellation signal handling — `tasks/cancel` actually cancels via `context.CancelCauseFunc`; `invocation_cancelled` audit event with classified reason + partial token counts | `docs/security/audit-logging.md` § Cancellation |
 | **FWS-5** | #89 | Platform policy enforcement at runtime — workspace-level deploy-time bounds (egress / tools / models / sizes); `forge package` policy-ready manifests | `docs/security/platform-policy.md` |
 | **FWS-6** | #90 | Three-layer platform policy + channel scope — system / user / workspace layers compose by union + most-restrictive; `denied_channels` first-class; `forge channel disable/enable` edits the user layer | `docs/security/platform-policy.md` |
-| **FWS-7** | #95 | Audit event export capability — Unix Domain Socket sink + HTTP localhost fallback; fire-and-forget; `audit_export_status` periodic per-sink health | `docs/security/audit-logging.md` § Audit Event Export |
+| **FWS-7** | #95 | Audit event export capability — Unix Domain Socket sink + HTTP localhost fallback; fire-and-forget; `audit_export_status` hybrid-cadence per-sink health (#280) | `docs/security/audit-logging.md` § Audit Event Export |
 | **FWS-8** | #91 | Hardened audit emission — `schema_version` + monotonic `seq` per invocation; default metadata-only invariant pinned by regression test; opt-in `AuditPayloadCapture` with per-field byte caps. Follow-ups: #173 (PR closed the seq gap on `tool_exec` / `session_end` — 3 sites switched from plain `Emit` to `EmitFromContext`) and #174 (PR moved the `SequenceCounter` installation upstream of the auth middleware via a wrapper + `EnsureSequenceCounter` so `auth_verify` / `auth_fail` land seq=1). #175 tracks a follow-up lint to catch future `Emit`-instead-of-`EmitFromContext` drift. | `docs/security/audit-logging.md` § Schema contract / § Sequence numbers |
 | **FWS-9** | #100 | Ops logger output stream separation — stdout for `JSONLogger`, stderr stays for audit NDJSON | `docs/security/audit-logging.md` § Streams |
 | **FWS-10** | #110 | Rate-limit configurability + orchestration-friendly defaults + cancel exemption — `server.rate_limit:` yaml block + CLI flags + env; `tasks/cancel` exempt from the write bucket by default | `docs/reference/forge-yaml-schema.md` § `server.rate_limit` |

@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"github.com/initializ/forge/forge-skills/contract"
+	"github.com/initializ/forge/forge-skills/parser"
 )
 
 // deniedShells lists shell interpreters that must never appear in the
@@ -77,6 +78,7 @@ func DeriveBrowserConfig(reqs *contract.AggregatedRequirements, entries []contra
 	}
 
 	var sources []string
+	var allowSensitiveFill bool
 	seen := make(map[string]bool)
 	for _, e := range entries {
 		if e.ForgeReqs == nil || !slices.Contains(e.ForgeReqs.Capabilities, contract.CapabilityBrowser) {
@@ -96,16 +98,31 @@ func DeriveBrowserConfig(reqs *contract.AggregatedRequirements, entries []contra
 			seen[name] = true
 			sources = append(sources, name)
 		}
-	}
 
-	allowSensitiveFill := reqs.SkillGuardrails != nil &&
-		reqs.SkillGuardrails.Browser != nil &&
-		reqs.SkillGuardrails.Browser.AllowSensitiveFill
+		// Honor the sensitive-fill opt-in ONLY from a skill that itself
+		// declares the browser capability. Reading the aggregated guardrails
+		// instead would let any unrelated skill (never granted the browser)
+		// enable password/payment filling for a browser a different skill
+		// opted into — cross-skill privilege escalation.
+		if EntryAllowsSensitiveFill(e) {
+			allowSensitiveFill = true
+		}
+	}
 
 	return &contract.DerivedBrowserConfig{
 		SourceSkills:       sources,
 		AllowSensitiveFill: allowSensitiveFill,
 	}
+}
+
+// EntryAllowsSensitiveFill reports whether a single skill entry declares
+// guardrails.browser.allow_sensitive_fill in its forge metadata.
+func EntryAllowsSensitiveFill(e contract.SkillEntry) bool {
+	fm := parser.ExtractForgeMeta(e.Metadata)
+	return fm != nil &&
+		fm.Guardrails != nil &&
+		fm.Guardrails.Browser != nil &&
+		fm.Guardrails.Browser.AllowSensitiveFill
 }
 
 // MergeCLIConfig merges derived config with explicit forge.yaml config.

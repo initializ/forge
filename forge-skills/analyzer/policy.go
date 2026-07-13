@@ -189,6 +189,7 @@ func entryToDescriptor(entry *contract.SkillEntry) *contract.SkillDescriptor {
 			sd.Capabilities = fm.Requires.Capabilities
 		}
 		sd.HasDenyOutput = fm.Guardrails != nil && len(fm.Guardrails.DenyOutput) > 0
+		sd.AllowSensitiveFill = fm.Guardrails != nil && fm.Guardrails.Browser != nil && fm.Guardrails.Browser.AllowSensitiveFill
 	}
 	return sd
 }

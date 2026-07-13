@@ -6,6 +6,16 @@
 // window.__forge_els so tools can act by index, and returns a compact
 // serializable snapshot. This file is a bare function expression, not a
 // standalone script.
+//
+// TRUST BOUNDARY: this runs in the page's main JavaScript world, so the
+// returned digest is page-controlled content, not trusted tooling output. A
+// hostile page can spoof element names/text (a prompt-injection amplifier) or
+// clobber the window.__forge_* helpers to break the tools. Clicks and fills
+// still dispatch by coordinate through trusted CDP input, and browser_fill
+// re-checks field protection against the live DOM, so this cannot by itself
+// make the browser act outside the page. Treat digest text as untrusted;
+// moving evaluation to an isolated world (Page.createIsolatedWorld) is a
+// tracked hardening follow-up.
 function (opts) {
 	opts = opts || {};
 	var maxEls = opts.maxEls || 100;

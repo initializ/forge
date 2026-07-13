@@ -77,3 +77,44 @@ Teaches the agent to drive the browser tools.
 		t.Errorf("chromium not injected for instructional browser skill; manifest = %+v", m.Requirements)
 	}
 }
+
+// TestSkillsStage_EgressOnlyInstructionalSkill pins that an instructional
+// skill declaring only egress_domains (no bins/env/capabilities) still stores
+// its aggregated requirements, so downstream stages (e.g. the egress
+// allowlist) receive its domains. Sibling of the capability-only case.
+func TestSkillsStage_EgressOnlyInstructionalSkill(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "skills", "status-watch")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skill := `---
+name: status-watch
+description: Watch a status page
+metadata:
+  forge:
+    egress_domains:
+      - status.example.com
+---
+Instructional: fetch the status page and summarize.
+`
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skill), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	bc := &pipeline.BuildContext{
+		Opts:   pipeline.PipelineOptions{WorkDir: dir},
+		Config: &types.ForgeConfig{},
+		Spec:   &agentspec.AgentSpec{},
+	}
+	if err := (&SkillsStage{}).Execute(context.Background(), bc); err != nil {
+		t.Fatalf("SkillsStage: %v", err)
+	}
+	reqs, ok := bc.SkillRequirements.(*contract.AggregatedRequirements)
+	if !ok || reqs == nil {
+		t.Fatal("SkillRequirements not stored for an egress-only instructional skill")
+	}
+	if len(reqs.EgressDomains) != 1 || reqs.EgressDomains[0] != "status.example.com" {
+		t.Errorf("EgressDomains = %v, want [status.example.com]", reqs.EgressDomains)
+	}
+}

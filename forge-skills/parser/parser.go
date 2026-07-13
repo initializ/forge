@@ -119,6 +119,9 @@ func ParseWithMetadata(r io.Reader) ([]contract.SkillEntry, *contract.SkillMetad
 	var egressDomains []string
 	if meta != nil {
 		forgeReqs, egressDomains, _ = ExtractForgeReqs(meta)
+		if err := validateCapabilities(forgeReqs); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	bodyStr := strings.TrimSpace(string(body))
@@ -184,6 +187,23 @@ func extractFrontmatter(content []byte) ([]byte, []byte, bool) {
 	}
 
 	return fm, body, true
+}
+
+// validateCapabilities rejects requires.capabilities entries the runner does
+// not recognize. An unknown capability is almost always a typo (e.g.
+// "browsr"); without this it parses fine, derives nothing, installs no
+// dependency, and scores a bland +3 — the browser-agent-without-a-browser
+// failure the capability plumbing exists to prevent, with no diagnostic.
+func validateCapabilities(reqs *contract.SkillRequirements) error {
+	if reqs == nil {
+		return nil
+	}
+	for _, c := range reqs.Capabilities {
+		if !contract.IsKnownCapability(c) {
+			return fmt.Errorf("unknown capability %q in requires.capabilities (known: %s)", c, contract.CapabilityBrowser)
+		}
+	}
+	return nil
 }
 
 // validateCategoryAndTags normalizes and validates the category and tags on a SkillMetadata.

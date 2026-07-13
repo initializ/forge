@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/initializ/forge/forge-skills/contract"
+	"github.com/initializ/forge/forge-skills/parser"
 )
 
 // Well-known trusted domains that receive lower risk scores.
@@ -79,6 +80,7 @@ func AnalyzeSkillDescriptor(sd *contract.SkillDescriptor, hasScript bool, policy
 	factors = append(factors, scoreEgress(sd.EgressDomains, policy)...)
 	factors = append(factors, scoreBinaries(sd.RequiredBins, policy)...)
 	factors = append(factors, scoreCapabilities(sd.Capabilities)...)
+	factors = append(factors, scoreSensitiveFill(sd.AllowSensitiveFill)...)
 	factors = append(factors, scoreEnv(sd.RequiredEnv, sd.OneOfEnv, sd.OptionalEnv, policy)...)
 	if hasScript {
 		factors = append(factors, scoreScript()...)
@@ -130,10 +132,15 @@ func AnalyzeSkillEntry(entry *contract.SkillEntry, hasScript bool, policy Securi
 	if entry.ForgeReqs != nil {
 		capabilities = entry.ForgeReqs.Capabilities
 	}
+	allowSensitiveFill := false
+	if fm := parser.ExtractForgeMeta(entry.Metadata); fm != nil && fm.Guardrails != nil && fm.Guardrails.Browser != nil {
+		allowSensitiveFill = fm.Guardrails.Browser.AllowSensitiveFill
+	}
 
 	factors = append(factors, scoreEgress(egressDomains, policy)...)
 	factors = append(factors, scoreBinaries(bins, policy)...)
 	factors = append(factors, scoreCapabilities(capabilities)...)
+	factors = append(factors, scoreSensitiveFill(allowSensitiveFill)...)
 	factors = append(factors, scoreEnv(reqEnv, oneOfEnv, optEnv, policy)...)
 	if hasScript {
 		factors = append(factors, scoreScript()...)
@@ -308,6 +315,17 @@ func scoreCapabilities(caps []string) []RiskFactor {
 		}
 	}
 	return factors
+}
+
+func scoreSensitiveFill(allow bool) []RiskFactor {
+	if !allow {
+		return nil
+	}
+	return []RiskFactor{{
+		Category:    "capability",
+		Description: "browser sensitive-fill opt-in (allows password/payment field entry)",
+		Points:      10,
+	}}
 }
 
 func scoreScript() []RiskFactor {

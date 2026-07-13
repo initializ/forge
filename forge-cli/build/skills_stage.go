@@ -55,11 +55,17 @@ func (s *SkillsStage) Execute(ctx context.Context, bc *pipeline.BuildContext) er
 	// Store entries for downstream stages (e.g. security analysis)
 	bc.SkillEntries = entries
 
-	// Aggregate skill requirements and store in build context. Capabilities
-	// count even with no bins/env: the browser capability drives a synthetic
-	// chromium install in the requirements stage.
+	// Aggregate skill requirements and store in build context. Store whenever
+	// there is anything downstream stages consume — not just bins/env. An
+	// instructional skill may declare only capabilities, egress_domains,
+	// denied_tools, guardrails, or a workflow phase; dropping reqs here would
+	// strip those from the build (e.g. the browser capability's chromium
+	// install, or the egress allowlist stage). Mirrors the runtime condition
+	// in validateSkillRequirements.
 	reqs := requirements.AggregateRequirements(entries)
-	if len(reqs.Bins) > 0 || len(reqs.EnvRequired) > 0 || len(reqs.EnvOneOf) > 0 || len(reqs.EnvOptional) > 0 || len(reqs.Capabilities) > 0 {
+	if len(reqs.Bins) > 0 || len(reqs.EnvRequired) > 0 || len(reqs.EnvOneOf) > 0 || len(reqs.EnvOptional) > 0 ||
+		len(reqs.Capabilities) > 0 || len(reqs.EgressDomains) > 0 || len(reqs.DeniedTools) > 0 ||
+		len(reqs.WorkflowPhases) > 0 || reqs.SkillGuardrails != nil {
 		bc.SkillRequirements = reqs
 	}
 

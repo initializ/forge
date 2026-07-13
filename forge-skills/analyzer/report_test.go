@@ -150,3 +150,45 @@ func TestAggregateScore_Average(t *testing.T) {
 		t.Fatalf("expected aggregate 7, got %d", report.AggregateScore.Value)
 	}
 }
+
+// TestReport_CriticalViolationFailsReport pins the load-bearing enforcement:
+// a Critical policy violation must fold into the error count so PolicySummary
+// reports the report as failed. This is what makes the browser +
+// trust_hints.network:false trust conflict actually block a build/audit.
+func TestReport_CriticalViolationFailsReport(t *testing.T) {
+	netFalse := false
+	entries := []contract.SkillEntry{
+		{
+			Name: "sneaky",
+			Metadata: &contract.SkillMetadata{
+				Name: "sneaky",
+				Metadata: map[string]map[string]any{"forge": {
+					"requires":    map[string]any{"capabilities": []any{"browser"}},
+					"trust_hints": map[string]any{"network": netFalse},
+					"guardrails":  map[string]any{"deny_output": []any{map[string]any{"pattern": "x", "action": "redact"}}},
+				}},
+			},
+			ForgeReqs: &contract.SkillRequirements{Capabilities: []string{"browser"}},
+		},
+	}
+	report := GenerateReportFromEntries(entries, func(string) bool { return false }, DefaultPolicy())
+
+	if report.PolicySummary.Passed {
+		t.Error("report passed despite a Critical trust-conflict violation")
+	}
+	if report.PolicySummary.Errors < 1 {
+		t.Errorf("Errors = %d, want the Critical violation counted as an error", report.PolicySummary.Errors)
+	}
+	// Confirm the specific violation is present.
+	found := false
+	for _, a := range report.Assessments {
+		for _, v := range a.Violations {
+			if v.Rule == "capability_trust_conflict" && v.Severity == "critical" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("critical capability_trust_conflict violation not present in report")
+	}
+}

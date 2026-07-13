@@ -232,3 +232,22 @@ func TestAPIKeyHeaderScheme_NoopOffPath(t *testing.T) {
 		t.Errorf("empty APIKey should not set an apikey header: %q", got)
 	}
 }
+
+// TestAPIKeyHeaderScheme_NeverClobbersNativeHeader is the defense-in-depth
+// guard (#303 review): even if a ClientConfig sets auth_header_name to a
+// native auth header (which `forge validate` rejects), the helper must NOT
+// overwrite the provider's Bearer token with the raw key.
+func TestAPIKeyHeaderScheme_NeverClobbersNativeHeader(t *testing.T) {
+	c := NewOpenAIClient(llm.ClientConfig{
+		APIKey:         "sk-test",
+		Model:          "gpt-test",
+		AuthScheme:     llm.AuthSchemeAPIKeyHeader,
+		AuthHeaderName: "authorization", // lowercase — must still be caught
+	})
+	req, _ := http.NewRequest(http.MethodPost, "https://kong.example/v1/chat/completions", nil)
+	c.setHeaders(req)
+
+	if got := req.Header.Get("Authorization"); got != "Bearer sk-test" {
+		t.Errorf("native Authorization was clobbered by the gateway header: %q", got)
+	}
+}

@@ -1,6 +1,7 @@
 package validate
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/initializ/forge/forge-core/types"
@@ -30,6 +31,69 @@ func TestValidateForgeConfig_Valid(t *testing.T) {
 	if len(r.Warnings) != 0 {
 		t.Fatalf("expected no warnings, got: %v", r.Warnings)
 	}
+}
+
+func hasSubstr(ss []string, sub string) bool {
+	for _, s := range ss {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestValidateForgeConfig_AuthScheme covers the #303-review validation:
+// unknown scheme → error; apikey_header is accepted; a custom header
+// colliding with a native auth header → error; auth_scheme on an
+// unsupported provider and a stray auth_header_name → warnings.
+func TestValidateForgeConfig_AuthScheme(t *testing.T) {
+	t.Run("apikey_header is valid", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Model.AuthScheme = "apikey_header"
+		cfg.Model.AuthHeaderName = "x-gateway-key"
+		r := ValidateForgeConfig(cfg)
+		if !r.IsValid() {
+			t.Fatalf("expected valid, got errors: %v", r.Errors)
+		}
+	})
+
+	t.Run("unknown scheme errors", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Model.AuthScheme = "apikey_headr" // typo
+		r := ValidateForgeConfig(cfg)
+		if r.IsValid() || !hasSubstr(r.Errors, "auth_scheme") {
+			t.Fatalf("expected an auth_scheme error, got errors=%v", r.Errors)
+		}
+	})
+
+	t.Run("header collision errors", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Model.AuthScheme = "apikey_header"
+		cfg.Model.AuthHeaderName = "Authorization" // case-insensitive collision
+		r := ValidateForgeConfig(cfg)
+		if r.IsValid() || !hasSubstr(r.Errors, "collides with a native auth header") {
+			t.Fatalf("expected a collision error, got errors=%v", r.Errors)
+		}
+	})
+
+	t.Run("scheme on unsupported provider warns", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Model.Provider = "gemini"
+		cfg.Model.AuthScheme = "apikey_header"
+		r := ValidateForgeConfig(cfg)
+		if !r.IsValid() || !hasSubstr(r.Warnings, "only affects the openai and anthropic clients") {
+			t.Fatalf("expected a provider warning and no error; errors=%v warnings=%v", r.Errors, r.Warnings)
+		}
+	})
+
+	t.Run("stray auth_header_name warns", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Model.AuthHeaderName = "apikey" // no apikey_header scheme
+		r := ValidateForgeConfig(cfg)
+		if !r.IsValid() || !hasSubstr(r.Warnings, "auth_header_name is set but auth_scheme") {
+			t.Fatalf("expected a stray-header warning and no error; errors=%v warnings=%v", r.Errors, r.Warnings)
+		}
+	})
 }
 
 func TestValidateForgeConfig_InvalidAgentID(t *testing.T) {

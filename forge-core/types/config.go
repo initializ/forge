@@ -845,6 +845,13 @@ type ModelFallback struct {
 	BaseURL string `yaml:"base_url,omitempty"`
 
 	OrganizationID string `yaml:"organization_id,omitempty"`
+
+	// NOTE: AuthScheme / AuthHeaderName / AWSRegion are intentionally
+	// absent — auth_scheme (#202 aws_sigv4, #302 apikey_header) applies to
+	// the PRIMARY model only. A fallback routed through the same gateway
+	// authenticates with its provider-native header. Adding per-fallback
+	// scheme fields is tracked as a follow-up (the FORGE_MODEL_FALLBACKS
+	// env source would need a parallel encoding).
 }
 
 // ToolRef is a lightweight reference to a tool in forge.yaml.

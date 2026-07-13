@@ -126,7 +126,7 @@ category: ops                          # Optional: sre, research, ops, developer
 tags:                                  # Optional: discovery keywords (lowercase kebab-case)
   - example
   - automation
-description: One-line description      # Required: what this skill does
+description: One-line description      # Required: what it does AND when it fires (triggers) — see "Trigger-rich description" below
 metadata:
   forge:
     requires:
@@ -154,6 +154,15 @@ Each entry in ` + "`" + `requires.bins` + "`" + ` is EITHER a bare name (already
 - Custom steps: ` + "`" + `- {name: foo, run: ["curl -L https://… | tar xz -C /usr/local/bin"]}` + "`" + `.
 
 Only add an install recipe for a binary that is NOT already available. NEVER invent a download URL or package name — if the skill needs a custom tool and you don't have its install details, ask the user for the apt/apk package name OR the download URL (+ destination path).
+
+### Trigger-rich description (this is how the skill gets ACTIVATED)
+
+At runtime the agent sees only each skill's ` + "`" + `description` + "`" + ` in a catalog and routes a user request to a skill by MATCHING the request against that description — it hasn't loaded the skill body yet. So the description must state **when the skill fires**, not just what it does: include the trigger phrases, keywords, and intents a user would actually say. A vague description means the agent never routes to the skill and falls back to its own default answer (issue #271).
+
+- Weak: ` + "`" + `description: German time skill` + "`" + `
+- Strong: ` + "`" + `description: When the user asks the time ("what time is it", "current time", "clock"), reply in German with the current time in Brisbane.` + "`" + `
+
+Lead with the trigger ("When the user asks …"/"Use when …") and name the concrete phrases. Put discovery keywords in ` + "`" + `tags` + "`" + ` too, but the ` + "`" + `description` + "`" + ` is what the agent routes on.
 
 ### 2. Markdown Body
 
@@ -292,7 +301,7 @@ The whole skill is instructions to call a built-in — no custom tool, no ` + "`
 ---
 name: german-brisbane-time
 category: ops
-description: When asked the time, reply in German with the current time in Brisbane, Australia.
+description: When the user asks the time ("what time is it", "current time", "clock"), reply in German with the current time in Brisbane, Australia.
 ---
 
 # German Brisbane Time

@@ -191,6 +191,12 @@ builder to **prefer them** over a custom tool or tool-less prose:
   calls are gated by `scheduler.kubernetes.allow_dynamic` (off by default), so
   a scheduling skill won't self-register on a default K8s deploy unless the
   operator enables it or declares the schedule in `forge.yaml`.
+- **Trigger-rich descriptions (issue #271):** the builder writes a
+  `description` that states *when the skill fires* — the phrases and intents a
+  user would say — not just what it does, because the agent routes to a skill
+  by matching a request against its catalog `description` before loading it. A
+  vague description means the agent never routes to the skill and answers from
+  its own defaults. See [skill activation / routing](../core-concepts/skill-md-format.md#skill-activation--routing).
 
 ### Custom binaries
 

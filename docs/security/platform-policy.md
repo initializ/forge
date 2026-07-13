@@ -97,6 +97,11 @@ forbidden_models:
 denied_channels:
   - telegram              # registry name, case-sensitive
 
+denied_command_patterns:  # per-invocation, applies to EVERY tool call (#238)
+  - pattern: 'kubectl\s+delete'
+    message: "destructive kubectl blocked by org policy"
+  - pattern: 'git\s+push\s+--force'
+
 max_egress_allowlist_size: 50   # 0 (or omitted) = no cap
 max_tool_count: 100             # 0 (or omitted) = no cap
 
@@ -115,6 +120,7 @@ Decoding is strict — unknown fields are rejected so operator typos (`deinied_e
 | `denied_tools` | Union across all layers with `forge.yaml`'s denied tools (typically from the derived CLI config). User-selected builtins survive `forge.yaml` denies but NOT policy denies — policy outranks per-agent declaration. |
 | `forbidden_models` | Applied to the primary model AND every fallback. Both `provider` and `name` are required to prevent loose patterns like "any anthropic model" that would silently let a new model in. |
 | `denied_channels` | Per-layer channel deny list. Each entry is a channel adapter name (`slack`, `telegram`, `msteams`). At runtime: `forge run --with` skips denied channels (one `channel_denied_by_policy` audit event per skip); `forge channel serve` refuses to start outright when its target is denied. Match is case-sensitive. |
+| `denied_command_patterns` | Operator-authored, argument-level command denylist applied to **every tool call by any skill** (#238 / ASI02). Each entry is `{pattern, message?}` (`agentspec.CommandFilter`, same type as SKILL.md `deny_commands`). **The one field enforced per-invocation, not once at startup:** the tool is NOT stripped — every call is matched at `BeforeToolExec` with the same match target as skill `deny_commands` (`cli_execute` → reconstructed command line; any other tool → raw tool-input JSON). Unioned across layers (first layer owns attribution); a skill's own `deny_commands` cannot relax an operator pattern (union-of-deny). Patterns compile at startup — an invalid regex **fails closed** (aborts startup). A block emits a runtime `guardrail_check` audit event tagged `source: platform`. See [Runtime command denial](#runtime-command-denial). |
 | `max_egress_allowlist_size` | Cap on the declared count (not the policy-filtered count). Defense against allowlist bloat. Smallest non-zero value across layers wins. |
 | `max_tool_count` | Cap on the **effective** tool count (after policy strip). Stripping a denied tool must NOT cause a spurious bound violation. Smallest non-zero value across layers wins. |
 | `guardrails` | Tighten-only overlay merged over the agent's `guardrails.json`. Same schema as that file (camelCase `StructuredGuardrails`), so a `guardrails:` block here can force detections/gates on, raise actions, lower thresholds, and union rule/denylist/blocked-skill sets — never loosen. Folded most-restrictively across layers. A malformed block **fails startup** (fail-closed). See [Guardrails overlay](#guardrails-overlay). |
@@ -245,6 +251,33 @@ Every section is optional — omit any block (or the whole `guardrails:` key) an
 
 > **Allowlist caveat:** if the platform's `urlFilter.allowlist` / `skillConstraints.allowedSkills` is **disjoint** from the agent's, the intersection is empty; whether that reads as "deny all" or "no filtering" is being pinned in issue #287. Until then, keep platform allowlists overlapping with the agent's.
 
+## Runtime command denial
+
+`denied_command_patterns` (#238 / ASI02) is the first platform-policy field enforced **per invocation** rather than once at startup. It gives operators org-wide, argument-level command control — "keep `cli_execute`, but ban `rm -rf` / `git push --force` / `kubectl delete` across every skill" — that previously only skill authors could express via SKILL.md `deny_commands`.
+
+How it differs from the other fields:
+
+| Aspect | Startup-enforced fields (`denied_tools`, …) | `denied_command_patterns` |
+|---|---|---|
+| When | Once, at load | Every tool call, at `BeforeToolExec` |
+| Mechanism | Registry strip / allowlist diff / refuse-to-start | Regex match against the call's arguments |
+| Tool availability | Tool removed entirely | Tool stays; only matching calls are blocked |
+| On block | Build-time `policy_violation_at_build_time` | Runtime `guardrail_check` (`source: platform`) per call |
+
+- **Match target** is identical to skill `deny_commands`, so operators and skill authors author patterns the same way: `cli_execute` → the reconstructed command line (`kubectl delete pod foo`), any other tool → the raw tool-input JSON. A pattern therefore fires for MCP, `http_request`, and custom tools too, not just `cli_execute`.
+- **Union-of-deny across layers**, first-declaring layer owns audit attribution. A skill's own `deny_commands` composes as an additional independent deny — it can never relax an operator pattern (both are `BeforeToolExec` deny hooks; either match blocks).
+- **Fail-closed at startup:** patterns compile when the policy loads; an invalid regex in any layer aborts startup with a layer-attributed error — never a silent skip.
+- **Observability:** a block emits a `guardrail_check` audit event carrying `source: platform`, `pattern`, the operator `message` (if any), `layer`, and `policy_source` — closing the gap where skill `deny_commands` are silent in the audit stream.
+
+```yaml
+# any layer (system / user / workspace)
+denied_command_patterns:
+  - pattern: 'kubectl\s+delete'
+    message: "destructive kubectl blocked by org policy"
+  - pattern: 'git\s+push\s+--force'
+  - pattern: 'rm\s+-rf'
+```
+
 ## Conflict semantics
 
 When `forge.yaml` declares an egress / tool / model / size value any layer forbids, the runner:
@@ -281,11 +314,14 @@ Three events fire from this subsystem; all go through `AuditLogger.Emit` (no req
     "denied_tools_count": 1,
     "forbidden_models_count": 1,
     "denied_channels_count": 1,
+    "denied_command_count": 2,
     "max_egress_allowlist": 50,
     "max_tool_count": 100
   }
 }
 ```
+
+A `denied_command_patterns` block adds a fourth event class: when a call matches at runtime, a **`guardrail_check`** event fires with `fields.source: "platform"`, `fields.pattern`, `fields.layer`, `fields.policy_source`, `fields.tool`, and the operator `fields.message` (if set). Unlike the startup events above, this one flows through `EmitFromContext`, so it carries the invocation's `correlation_id` / `task_id` / sequence.
 
 **`policy_violation_at_build_time`** — one event per violation when `forge.yaml` conflicts with any layer's policy. Emitted before the runner aborts, so the audit pipeline captures the violation even though the agent never serves traffic:
 

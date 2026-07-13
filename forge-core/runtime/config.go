@@ -97,6 +97,13 @@ func ResolveModelConfig(cfg *types.ForgeConfig, envVars map[string]string, provi
 	if cfg.Model.AWSRegion != "" {
 		mc.Client.AWSRegion = cfg.Model.AWSRegion
 	}
+	// Issue #302 — the apikey_header scheme's optional custom header name
+	// (e.g. a gateway with non-default key_names). Only meaningful when
+	// AuthScheme == "apikey_header"; carried unconditionally so the client
+	// owns the default-name fallback.
+	if cfg.Model.AuthHeaderName != "" {
+		mc.Client.AuthHeaderName = cfg.Model.AuthHeaderName
+	}
 	// AWS_REGION env safety-net for the SigV4 path. Mirrors the
 	// OPENAI_BASE_URL / ANTHROPIC_BASE_URL env pattern above — lets
 	// an operator override the region per-deploy without touching

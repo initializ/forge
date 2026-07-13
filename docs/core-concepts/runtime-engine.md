@@ -41,7 +41,7 @@ Forge supports multiple LLM providers with automatic fallback:
 | `anthropic` | `claude-sonnet-4-20250514` | API key |
 | `gemini` | `gemini-2.5-flash` | API key |
 | `ollama` | `llama3` | None (local) |
-| Custom URL | Configurable | API key (OpenAI or Anthropic shape); or AWS SigV4 via `auth_scheme: aws_sigv4` for Bedrock |
+| Custom URL | Configurable | API key (OpenAI or Anthropic shape); AWS SigV4 via `auth_scheme: aws_sigv4` for Bedrock; or a gateway key header via `auth_scheme: apikey_header` (e.g. Kong `key-auth`) |
 
 ### Configuration
 
@@ -140,6 +140,23 @@ model:
 Credentials come from the standard AWS env chain: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, optional `AWS_SESSION_TOKEN`. The signer matches the inbound-auth posture (forge-core/auth/providers/aws_sigv4) — same stdlib-only crypto, no aws-sdk-go-v2 dependency. Issue #202 Phase 2.
 
 Today this is a passthrough — Forge speaks the wire format the endpoint exposes and signs the request. Native Bedrock URL/body rewriting (`POST /model/<id>/invoke` with the event-stream framing) is tracked separately under issue #205; today operators front Bedrock with a compat proxy (e.g. litellm) when calling models that don't expose the OpenAI or Anthropic shape.
+
+### API-gateway key header (`apikey_header`)
+
+Some API gateways authenticate with a fixed header name rather than the provider-native scheme. Kong AI Gateway's `key-auth` plugin, for example, reads the consumer key from an `apikey` header and ignores `Authorization` / `x-api-key`, so an agent pointed at a Kong-fronted `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` otherwise fails every LLM call with `401 {"message":"No API key found in request"}`.
+
+`model.auth_scheme: apikey_header` sends the API key in the gateway header **in addition to** the provider-native header — additive, so it stays safe against non-gateway endpoints (the gateway consumes `apikey`; Kong's ai-proxy replaces/injects the upstream provider header). The header name defaults to `apikey` (Kong `key-auth`'s default `key_names`) and is overridable via `auth_header_name` for gateways with custom key names:
+
+```yaml
+model:
+  provider: openai                                 # or anthropic — symmetric
+  name: gpt-4o
+  base_url: https://kong-gateway.internal/openai
+  auth_scheme: apikey_header
+  # auth_header_name: x-gateway-key                # optional; default: apikey
+```
+
+The key comes from the usual `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` env var. Issue #302.
 
 ### Fallback Chains
 

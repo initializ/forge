@@ -197,6 +197,32 @@ func TestResolveModelConfig_OrgIDFromYAML(t *testing.T) {
 	}
 }
 
+// TestResolveModelConfig_APIKeyHeaderSchemeCarriesOver pins the #302 mapping:
+// auth_scheme + auth_header_name on the forge.yaml ModelRef flow onto the
+// client config so the provider client can emit the gateway header.
+func TestResolveModelConfig_APIKeyHeaderSchemeCarriesOver(t *testing.T) {
+	cfg := &types.ForgeConfig{
+		Model: types.ModelRef{
+			Provider:       "openai",
+			Name:           "gpt-5.4",
+			AuthScheme:     "apikey_header",
+			AuthHeaderName: "x-gateway-key",
+		},
+	}
+	envVars := map[string]string{"OPENAI_API_KEY": "sk-test"}
+
+	mc := ResolveModelConfig(cfg, envVars, "")
+	if mc == nil {
+		t.Fatal("expected non-nil ModelConfig")
+	}
+	if mc.Client.AuthScheme != "apikey_header" {
+		t.Errorf("AuthScheme = %q, want apikey_header", mc.Client.AuthScheme)
+	}
+	if mc.Client.AuthHeaderName != "x-gateway-key" {
+		t.Errorf("AuthHeaderName = %q, want x-gateway-key", mc.Client.AuthHeaderName)
+	}
+}
+
 func TestResolveModelConfig_OrgIDEnvOverridesYAML(t *testing.T) {
 	cfg := &types.ForgeConfig{
 		Model: types.ModelRef{

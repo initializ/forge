@@ -32,7 +32,7 @@ All runtime security events are emitted as structured NDJSON to stderr with corr
 | `policy_loaded` | One per non-empty policy layer at startup (system / user / workspace). Carries `fields.layer`, `source` (file path), deny-list size counts, and max bounds. See [Platform Policy](platform-policy.md). |
 | `policy_violation_at_build_time` | One per violation when `forge.yaml` conflicts with any policy layer. Agent refuses to start. Carries `fields.violation_kind` / `offending_value` / `forge_yaml_field` plus `layer` + `source` identifying the enforcing file. See [Platform Policy](platform-policy.md). |
 | `channel_denied_by_policy` | One per channel adapter skipped at startup because a policy layer's `denied_channels` list names it. Non-fatal; the agent runs with the remaining channels. Carries `fields.channel`, `layer` (`system` / `user` / `workspace`), and `source` (file path). See [Platform Policy — Channels](platform-policy.md#channels). |
-| `audit_export_status` | One event every 60s when an export sink is configured. Carries `fields.sinks[]`, one entry per registered sink with `name`, `writes_ok`, `drops_timeout`, `drops_dial`, `connected`. Operators tail the audit stream to confirm export health. See [Audit Event Export (FWS-7)](#audit-event-export-fws-7). |
+| `audit_export_status` | Per-sink export-health heartbeat, emitted on a **hybrid** cadence (#280): immediately when a sink's `connected` flag flips and otherwise as a slow keepalive (15 min by default, `AUDIT_STATUS_KEEPALIVE_INTERVAL` overrides, read at startup). Carries `fields.reason` (`state_change` \| `keepalive`) and `fields.sinks[]`, one entry per sink with `name`, `writes_ok`, `drops_timeout`, `drops_dial`, `connected`. The `drops_*` counters ride in the payload but deliberately don't drive the edge (they self-amplify during an outage — see [Sink health](#sink-health-audit_export_status)). Operators tail the stream to confirm export health; a missing keepalive past the interval is itself alertable. See [Audit Event Export (FWS-7)](#audit-event-export-fws-7). |
 | `intent_alignment` | Emitted per `BeforeToolExec` when `security.intent_alignment` is enabled (R3 / #208). Carries `fields.tool`, `fields.decision` (`allow` / `warn` / `deny`), `fields.score` (cosine similarity ∈ [-1,1] as a float, or the string `"NaN"` on fail-closed paths), and `fields.reason`. Payload never carries the LLM prompt or tool args — only the scored decision. See [Intent Alignment](intent-alignment.md). |
 | `intent_drift` | Emitted on state transitions of the R7 rolling-window drift analyzer (R7 / #214). Carries `fields.tool`, `fields.severity` (`mean_below_threshold` / `monotone_decrease` / `both` / `recovered`), `fields.transition` (`entered` / `recovered`), `fields.mean` (rolling window mean at trip time), and `fields.window` (configured window size). One event on entry, one on recovery — never per-call flooded across a long drift stretch. See [Intent Alignment — Drift tracking](intent-alignment.md). |
 | `auth_step_up_required` | Emitted when the R4b step-up hook refuses a tool call because the caller's identity lacks the required `acr` claim (R4b / #210). Carries `fields.tool`, `fields.required_acr`, `fields.presented_acr` (empty when no acr was presented), `fields.reason`. The REST handler translates this into HTTP 401 with an RFC 9470 `WWW-Authenticate: Bearer error="step_up_required", acr_values="<value>"` challenge. See [Step-up Authorization](step-up-auth.md). |
@@ -345,15 +345,46 @@ wins.
 
 ### Sink health: `audit_export_status`
 
-Every 60 seconds the runtime emits one `audit_export_status` event
-carrying per-sink counters. The event flows through the same fan-out
-so operators tail the audit stream itself to confirm export health.
+The runtime emits `audit_export_status` events carrying per-sink
+counters. The event flows through the same fan-out so operators tail
+the audit stream itself to confirm export health.
+
+**Hybrid cadence (#280).** Emitting once a minute produced ~1,440
+near-identical "still fine" rows per agent per day, which dominated the
+audit collection at fleet scale. The runtime instead:
+
+- polls sink health frequently (`AuditExportStatusPollInterval`, 15s) and
+  emits **immediately** when a sink's `connected` flag flips (a dial
+  failure holds it at 0; a write timeout disconnects the sink, so both
+  failure modes read 0 on the next poll) — so a failure surfaces within
+  one poll interval; and
+- otherwise emits a slow **keepalive** so liveness stays provable. The
+  keepalive interval defaults to 15 minutes and is overridable via the
+  `AUDIT_STATUS_KEEPALIVE_INTERVAL` env var (a Go duration, e.g. `"5m"`,
+  `"1h"`), read once at process start — a deploy-time knob, not
+  live-tunable. A missing keepalive past the interval is itself alertable.
+
+The edge signal is `connected` — a **level** the sink maintains — and
+deliberately **not** the cumulative `drops_*` counters: the status event
+flows through every sink including a failing one, so its own write bumps
+that sink's drop counter, and on an idle agent the status emits are the
+only writes. Diffing drops would therefore self-amplify — one emit per
+poll for the whole outage. The `drops_*` counters still ride in every
+event's `sinks[]` payload for anyone tracking totals; they just don't
+drive the edge.
+
+Steady-state volume drops from ~1,440/day to a handful. Every event
+carries `fields.reason` — `state_change` (a `connected` flip) or
+`keepalive` (still alive) — so consumers can distinguish the two. A
+keepalive baseline is emitted at startup so a healthy pipeline is
+visible from t=0.
 
 ```json
 {
   "ts": "2026-06-06T18:30:00Z",
   "event": "audit_export_status",
   "fields": {
+    "reason": "state_change",
     "sinks": [
       {"name": "stderr",      "writes_ok": 4137, "drops_timeout": 0, "drops_dial": 0, "connected": 0},
       {"name": "unix-socket", "writes_ok": 4135, "drops_timeout": 0, "drops_dial": 2, "connected": 1}

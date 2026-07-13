@@ -171,8 +171,10 @@ The path of a single A2A invocation:
 
 The runner also installs `agent_card_published` (startup + hot-reload,
 FWS-1), `policy_loaded` per non-empty layer (FWS-5/6),
-`audit_export_status` every 60s when an export sink is configured
-(FWS-7).
+`audit_export_status` on a hybrid cadence when an export sink is
+configured — immediately on a sink `connected` flip, else a slow
+keepalive (15m default, `AUDIT_STATUS_KEEPALIVE_INTERVAL`) (FWS-7,
+#280).
 
 **Read**: `docs/core-concepts/runtime-engine.md`,
 `docs/core-concepts/hooks.md`, `forge-cli/runtime/runner.go`.
@@ -642,10 +644,16 @@ intentionally have no `seq`.
 | Unix Domain Socket | when `--audit-socket` / `FORGE_AUDIT_SOCKET` | Lazy reconnect, 50ms per-write timeout, exponential backoff 100ms → 5s cap, drop on timeout |
 | Localhost HTTP | when `--audit-http-endpoint` / `FORGE_AUDIT_HTTP_ENDPOINT` (socket wins when both set) | Same fire-and-forget discipline |
 
-Events are byte-identical across sinks. A periodic
-`audit_export_status` event (every 60s) carries per-sink
-`writes_ok` / `drops_timeout` / `drops_dial` / `connected` so
-operators tail the audit stream itself to confirm export health.
+Events are byte-identical across sinks. An `audit_export_status` event
+carries per-sink `writes_ok` / `drops_timeout` / `drops_dial` /
+`connected` so operators tail the audit stream itself to confirm export
+health. It fires on a **hybrid cadence** (#280): immediately when a
+sink's `connected` flag flips, else a slow keepalive (15m default,
+`AUDIT_STATUS_KEEPALIVE_INTERVAL`, read at startup). The edge is the
+`connected` level, not the cumulative `drops_*` counters — the status
+event's own write to a failing sink bumps those counters, so diffing
+them would self-amplify one emit per poll for the whole outage. Every
+emit carries `fields.reason` (`state_change` | `keepalive`).
 
 **Streams** (FWS-9):
 
@@ -1131,7 +1139,7 @@ when OTel tracing is enabled (OTel v1 / Phase 4 / #105). Both use
 | `AuditPolicyLoaded` | `policy_loaded` | One per non-empty policy layer at startup; `layer`, `source`, per-list size counters (FWS-5/6) |
 | `AuditPolicyViolationAtBuildTime` | `policy_violation_at_build_time` | `violation_kind`, `offending_value`, `forge_yaml_field`, `layer`, `source` (FWS-5/6) |
 | `AuditChannelDeniedByPolicy` | `channel_denied_by_policy` | `channel`, `layer`, `source` (FWS-6) |
-| `audit_export_status` | `audit_export_status` | Every 60s when an export sink is configured; per-sink `writes_ok`, `drops_timeout`, `drops_dial`, `connected` (FWS-7) |
+| `audit_export_status` | `audit_export_status` | Hybrid cadence when an export sink is configured — immediately on a sink `connected` flip, else a slow keepalive (15m default, `AUDIT_STATUS_KEEPALIVE_INTERVAL`); `fields.reason` (`state_change` \| `keepalive`) + per-sink `writes_ok`, `drops_timeout`, `drops_dial`, `connected` (FWS-7, #280) |
 | `AuditIntentAlignment` | `intent_alignment` | R3 (#208) — per `BeforeToolExec` when `security.intent_alignment` enabled; `tool`, `decision` (`allow` / `warn` / `deny`), `score` (cosine ∈ [-1,1] or the string `"NaN"` on fail-closed), `reason`. Never carries the LLM prompt or tool args. |
 | `AuditIntentDrift` | `intent_drift` | R7 (#214) — state transitions of the rolling-window drift analyzer; `tool`, `severity` (`mean_below_threshold` / `monotone_decrease` / `both` / `recovered`), `transition` (`entered` / `recovered`), `mean`, `window`. One per transition — no per-call flood. |
 | `AuditAuthStepUpRequired` | `auth_step_up_required` | R4b (#210) — caller identity missing / carrying weaker `acr` than the tool requires; `tool`, `required_acr`, `presented_acr`, `reason`. REST handler translates into HTTP 401 with RFC 9470 `WWW-Authenticate: Bearer error="step_up_required", acr_values="…"`. |

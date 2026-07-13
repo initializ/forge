@@ -264,7 +264,7 @@ How it differs from the other fields:
 | Tool availability | Tool removed entirely | Tool stays; only matching calls are blocked |
 | On block | Build-time `policy_violation_at_build_time` | Runtime `guardrail_check` (`source: platform`) per call |
 
-- **Match target** is identical to skill `deny_commands`, so operators and skill authors author patterns the same way: `cli_execute` → the reconstructed command line (`kubectl delete pod foo`), any other tool → the raw tool-input JSON. A pattern therefore fires for MCP, `http_request`, and custom tools too, not just `cli_execute`.
+- **Match target** is identical to skill `deny_commands`, so operators and skill authors author patterns the same way: `cli_execute` → the reconstructed command line (`kubectl delete pod foo`), any other tool → the raw tool-input JSON **plus its decoded string values**. A pattern therefore fires for MCP, `http_request`, and custom tools too, not just `cli_execute`. The decoded values are included so a JSON-escaped separator can't hide a command from a whitespace-sensitive pattern — `{"cmd":"kubectl\tdelete pod"}` (which the tool runs as `kubectl<TAB>delete`) still matches `kubectl\s+delete`, closing a prompt-injection evasion where the attacker controls the argument content.
 - **Union-of-deny across layers**, first-declaring layer owns audit attribution. A skill's own `deny_commands` composes as an additional independent deny — it can never relax an operator pattern (both are `BeforeToolExec` deny hooks; either match blocks).
 - **Fail-closed at startup:** patterns compile when the policy loads; an invalid regex in any layer aborts startup with a layer-attributed error — never a silent skip.
 - **Observability:** a block emits a `guardrail_check` audit event carrying `source: platform`, `pattern`, the operator `message` (if any), `layer`, and `policy_source` — closing the gap where skill `deny_commands` are silent in the audit stream.
@@ -277,6 +277,15 @@ denied_command_patterns:
   - pattern: 'git\s+push\s+--force'
   - pattern: 'rm\s+-rf'
 ```
+
+### Authoring patterns safely
+
+Command patterns are a scalpel for dangerous *invocations of allowed binaries*, not a hammer for banning binaries. A few rules keep them from degrading into friction:
+
+- **Never use bare substrings.** `rm` matches `terraform`, `confirm`, `performance`; and because the non-`cli_execute` match target is the entire argument content, a bare `delete` blocks `kubectl get pod delete-me`, a `file_read` of `delete_test.go`, or any code the agent writes containing the word. The failure mode is a retry loop (the model sees the block and rephrases), not a clean stop. Anchor and qualify instead: `kubectl\s+delete`, `git\s+push\s+--force`, `(^|\s)rm\s+-rf\b`.
+- **Ban binaries at the binary layer, not with patterns.** To forbid a binary outright, use `cli_execute`'s `allowed_binaries` (deny-by-default) or `denied_tools` — patterns are for gating specific sub-commands of binaries the agent is otherwise allowed to run.
+- **Always set `message`.** It turns a block from a silent retry-loop into a redirect that steers the model to the sanctioned alternative.
+- **Trial in a workspace layer first.** Ship a new pattern to the narrowest layer, watch the `guardrail_check` (`source: platform`) events for false positives, then promote it to the system layer once it's clean.
 
 ## Conflict semantics
 

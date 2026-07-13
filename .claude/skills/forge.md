@@ -598,8 +598,10 @@ deciding layer + path.
 command deny (`[]agentspec.CommandFilter` — `{pattern, message?}`)
 applied to **every tool call by any skill**: matched at `BeforeToolExec`
 with the same match target as skill `deny_commands` (`cli_execute` →
-reconstructed command line; other tools → raw tool-input JSON, via
-`canonicalizeToolInput`). The tool is NOT stripped (that's
+reconstructed command line; other tools → raw tool-input JSON **plus its
+decoded string values**, via `canonicalizeToolInput` — decoding closes a
+JSON-escape evasion where `{"cmd":"kubectl\tdelete"}` would otherwise
+dodge `kubectl\s+delete`; the fix hardens skill `deny_commands` too). The tool is NOT stripped (that's
 `denied_tools`); only matching calls are blocked. Patterns compile at
 startup → invalid regex **fails closed** (aborts startup). A block emits
 a runtime `guardrail_check` event tagged `source: platform` +
@@ -609,9 +611,10 @@ skill `deny_commands` — a skill cannot relax an operator pattern.
 `forge-core/security` resolves the unioned patterns
 (`EffectiveDeniedCommandPatterns`); `forge-core/runtime`
 (`PlatformCommandGuard`) compiles + matches; `forge-cli` bridges + wires
-the `BeforeToolExec` hook (`registerPlatformCommandGuardHook`). `forge.yaml` does **not** have a per-agent
-`disabled_channels` field — channel disable is laptop or workspace
-level, never declaration.
+the `BeforeToolExec` hook (`registerPlatformCommandGuardHook`).
+
+`forge.yaml` does **not** have a per-agent `disabled_channels` field —
+channel disable is laptop or workspace level, never declaration.
 
 **Read**: `docs/security/platform-policy.md`,
 `examples/platform-policy.yaml`.

@@ -125,10 +125,11 @@ The path of a single A2A invocation:
 1. Inbound HTTP request → POST / with JSON-RPC envelope
    forge-cli/server/a2a_server.go:handleJSONRPC
 2. Middleware chain (outermost → innermost):
-     installSequenceCounterMiddleware                — installs the
-       per-request SequenceCounter on r.Context()
-       BEFORE the auth chain runs so auth_verify /
-       auth_fail land seq=1 (FWS-8, fix #174)
+     installIngressContextMiddleware                 — installs the
+       per-request SequenceCounter AND correlation_id
+       on r.Context() BEFORE the auth chain runs, so
+       auth_verify / auth_fail land seq=1 (FWS-8, #174)
+       and carry the invocation correlation_id (#278)
      auth (forge-core/auth/middleware.go)            — verifies bearer;
        OnAuth callback emits via EmitFromContext so
        seq + trace_id + workflow tags are stamped
@@ -140,7 +141,9 @@ The path of a single A2A invocation:
      tasks/get    → returns stored task state
      tasks/list   → returns the task index
 4. Request entry (forge-cli/runtime/runner.go):
-     correlation_id generated
+     correlation_id adopted from ingress via EnsureCorrelationID
+       (reuses the id auth_verify already carries; generates
+       one only on the --no-auth path)                     — #278
      task_id from params.ID
      EnsureSequenceCounter reuses the auth-installed counter
        (or installs a fresh one on the --no-auth path)     — FWS-8

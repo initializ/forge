@@ -192,3 +192,49 @@ func TestIngressMiddleware_InstallsCorrelationIDBeforeNext(t *testing.T) {
 		t.Error("ingress middleware should install a correlation id on ctx before next")
 	}
 }
+
+// TestAuthAndTask_ShareIngressCorrelationID pins the literal #278 acceptance
+// criterion: auth_verify.correlation_id == the id the task path adopts. It
+// composes the REAL pieces — installIngressContextMiddleware (mints the id
+// before auth), the real makeAuthAuditCallback (emits auth_verify from ctx),
+// and the real EnsureCorrelationID (the adopt the runner's request entry does)
+// — through one HTTP request, so a future middleware-reordering that broke the
+// shared id would fail here even though the per-link unit tests stay green.
+//
+// (A fuller e2e through the live runner + FWS-7 audit export socket is a
+// heavier harness; this pins the equality on the exact functions involved.)
+func TestAuthAndTask_ShareIngressCorrelationID(t *testing.T) {
+	var buf bytes.Buffer
+	authCB := makeAuthAuditCallback(coreruntime.NewAuditLogger(&buf))
+
+	// authMW simulates the auth middleware boundary: invoke the OnAuth
+	// callback (emits auth_verify) then delegate to the handler.
+	authMW := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			authCB(r, &auth.Identity{UserID: "alice", Source: "oidc"}, nil, "jwt")
+			next.ServeHTTP(w, r)
+		})
+	}
+	// terminal simulates the runner's request entry adopting the ingress id.
+	var taskID string
+	terminal := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		taskID = coreruntime.CorrelationIDFromContext(coreruntime.EnsureCorrelationID(r.Context()))
+	})
+
+	installIngressContextMiddleware(authMW)(terminal).
+		ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/tasks", nil))
+
+	var ev coreruntime.AuditEvent
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &ev); err != nil {
+		t.Fatalf("unmarshal auth event: %v", err)
+	}
+	if ev.Event != coreruntime.EventAuthVerify {
+		t.Fatalf("Event = %q, want auth_verify", ev.Event)
+	}
+	if ev.CorrelationID == "" {
+		t.Fatal("auth_verify carried no correlation_id")
+	}
+	if ev.CorrelationID != taskID {
+		t.Errorf("acceptance: auth_verify.correlation_id (%q) must equal the task's adopted id (%q)", ev.CorrelationID, taskID)
+	}
+}

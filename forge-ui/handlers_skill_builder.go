@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/initializ/forge/forge-skills/parser"
 	"github.com/initializ/forge/forge-ui/uiconfig"
@@ -177,6 +178,7 @@ func (s *UIServer) handleSkillBuilderChat(w http.ResponseWriter, r *http.Request
 	systemPrompt := skillBuilderSystemPrompt(mode, existing)
 
 	var fullResponse strings.Builder
+	var lastProgress time.Time
 
 	err = s.cfg.LLMStreamFunc(r.Context(), LLMStreamOptions{
 		LLM:          llm,
@@ -191,9 +193,16 @@ func (s *UIServer) handleSkillBuilderChat(w http.ResponseWriter, r *http.Request
 			// user a half-formed object. A `progress` ping keeps the
 			// connection warm and lets the UI animate a "designing" state
 			// without exposing the JSON.
+			//
+			// Throttle the pings to ~2/sec: one SSE write+flush per token
+			// would be hundreds of events for a 10-20KB draft. The UI only
+			// needs a periodic keepalive, not a per-token signal (#276 review).
 			fullResponse.WriteString(chunk)
-			_, _ = fmt.Fprint(w, "event: progress\ndata: {}\n\n")
-			flusher.Flush()
+			if now := time.Now(); now.Sub(lastProgress) >= 500*time.Millisecond {
+				lastProgress = now
+				_, _ = fmt.Fprint(w, "event: progress\ndata: {}\n\n")
+				flusher.Flush()
+			}
 		},
 		OnDone: func(response string) {
 			// Parse the {message, skill} envelope. Falls back to legacy

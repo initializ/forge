@@ -98,3 +98,52 @@ func TestExtractJSONObject_None(t *testing.T) {
 		t.Errorf("expected empty, got %q", got)
 	}
 }
+
+// TestParseSkillEnvelope_IncidentalJSONDoesNotHijack (#276 review finding 1):
+// a legacy-format response whose prose contains an incidental JSON sample
+// (with only a "message" key) must NOT be mistaken for the envelope — the
+// fenced draft must still be recovered via the legacy path.
+func TestParseSkillEnvelope_IncidentalJSONDoesNotHijack(t *testing.T) {
+	resp := "The tool returns {\"message\": \"ok\"} on success. Here's the skill:\n" +
+		"````skill.md\n---\nname: real-skill\n---\n# Real\n````\n"
+	msg, skillMD, _, structured := parseSkillEnvelope(resp)
+	if structured {
+		t.Fatalf("incidental {\"message\":\"ok\"} must not be treated as the envelope; msg=%q", msg)
+	}
+	if !strings.Contains(skillMD, "name: real-skill") {
+		t.Errorf("fenced draft was lost; skillMD=%q", skillMD)
+	}
+}
+
+// TestParseSkillEnvelope_BracePreambleFindsEnvelope (#276 review finding 2):
+// a valid envelope preceded by brace-bearing prose (or a small JSON sample)
+// must be found by iterating candidates — not abandoned to the legacy path
+// (which would show the raw JSON as the message).
+func TestParseSkillEnvelope_BracePreambleFindsEnvelope(t *testing.T) {
+	resp := "Sure — for parsing {json} data, here you go: " +
+		`{"message": "Here is your skill.", "skill": {"skill_md": "---\nname: demo\n---\n# Demo\n", "scripts": {}}}`
+	msg, skillMD, _, structured := parseSkillEnvelope(resp)
+	if !structured {
+		t.Fatal("valid envelope after brace-bearing preamble should parse as structured")
+	}
+	if msg != "Here is your skill." {
+		t.Errorf("message = %q", msg)
+	}
+	if !strings.Contains(skillMD, "name: demo") {
+		t.Errorf("skill_md not extracted: %q", skillMD)
+	}
+}
+
+// TestParseSkillEnvelope_InterviewingBothKeys — an interviewing turn carries
+// both keys with skill:null and must parse structured (both-keys guard must
+// not reject the legitimate null-skill case).
+func TestParseSkillEnvelope_InterviewingBothKeys(t *testing.T) {
+	resp := `{"message": "What credential?", "skill": null}`
+	msg, skillMD, _, structured := parseSkillEnvelope(resp)
+	if !structured {
+		t.Fatal("interviewing envelope (skill:null) must parse structured")
+	}
+	if msg != "What credential?" || skillMD != "" {
+		t.Errorf("msg=%q skillMD=%q", msg, skillMD)
+	}
+}

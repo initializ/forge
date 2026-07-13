@@ -469,38 +469,199 @@ func TestNewAuditLoggerFromConfig_EmptyIsStderrOnly(t *testing.T) {
 
 // audit_export_status fires on every tick; one event per registered
 // sink in the fields.sinks array.
-func TestStartAuditExportStatus_EmitsPerSinkReport(t *testing.T) {
-	prev := AuditExportStatusInterval
-	AuditExportStatusInterval = 25 * time.Millisecond
-	defer func() { AuditExportStatusInterval = prev }()
-
-	var buf bytes.Buffer
-	logger := &AuditLogger{
-		sinks:   []Sink{newWriterSink(&buf, "buf-status")},
-		logOnce: map[string]bool{},
-	}
-	stop := StartAuditExportStatus(context.Background(), logger)
-	time.Sleep(80 * time.Millisecond) // expect 2-3 ticks
-	stop()
-
-	// Parse all lines; find the status events.
-	dec := json.NewDecoder(strings.NewReader(buf.String()))
-	var found int
+// collectStatusEvents drains a buffer of NDJSON and returns the
+// audit_export_status events.
+func collectStatusEvents(t *testing.T, s string) []AuditEvent {
+	t.Helper()
+	dec := json.NewDecoder(strings.NewReader(s))
+	var out []AuditEvent
 	for dec.More() {
 		var evt AuditEvent
 		if err := dec.Decode(&evt); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
 		if evt.Event == AuditExportStatus {
-			found++
-			sinks, ok := evt.Fields["sinks"].([]any)
-			if !ok || len(sinks) != 1 {
-				t.Errorf("status event fields.sinks = %v", evt.Fields["sinks"])
-			}
+			out = append(out, evt)
 		}
 	}
-	if found < 2 {
-		t.Errorf("got %d audit_export_status events, want >= 2", found)
+	return out
+}
+
+// TestStartAuditExportStatus_EmitsPerSinkReport pins the baseline shape: an
+// initial keepalive is emitted at startup carrying one sinks[] entry per sink
+// with a reason tag (#280).
+func TestStartAuditExportStatus_EmitsPerSinkReport(t *testing.T) {
+	var buf bytes.Buffer
+	logger := &AuditLogger{
+		sinks:   []Sink{newWriterSink(&buf, "buf-status")},
+		logOnce: map[string]bool{},
+	}
+	stop := StartAuditExportStatus(context.Background(), logger)
+	time.Sleep(30 * time.Millisecond) // enough for the startup emit
+	stop()
+
+	evts := collectStatusEvents(t, buf.String())
+	if len(evts) < 1 {
+		t.Fatalf("expected at least the startup keepalive, got %d", len(evts))
+	}
+	e := evts[0]
+	if e.Fields["reason"] != auditStatusReasonKeepalive {
+		t.Errorf("startup emit reason = %v, want keepalive", e.Fields["reason"])
+	}
+	sinks, ok := e.Fields["sinks"].([]any)
+	if !ok || len(sinks) != 1 {
+		t.Errorf("status event fields.sinks = %v", e.Fields["sinks"])
+	}
+}
+
+// TestStartAuditExportStatus_SlowKeepalive pins the #280 volume fix: with a
+// healthy (unchanging) sink, a LONG keepalive means only the startup emit
+// appears — no per-poll heartbeat spam.
+func TestStartAuditExportStatus_SlowKeepalive(t *testing.T) {
+	prevPoll := AuditExportStatusPollInterval
+	prevKA := AuditExportStatusKeepaliveInterval
+	AuditExportStatusPollInterval = 5 * time.Millisecond
+	AuditExportStatusKeepaliveInterval = time.Hour // effectively never in this test
+	defer func() {
+		AuditExportStatusPollInterval = prevPoll
+		AuditExportStatusKeepaliveInterval = prevKA
+	}()
+
+	var buf bytes.Buffer
+	logger := &AuditLogger{sinks: []Sink{newWriterSink(&buf, "buf-status")}, logOnce: map[string]bool{}}
+	stop := StartAuditExportStatus(context.Background(), logger)
+	time.Sleep(60 * time.Millisecond) // ~12 polls, no state change
+	stop()
+
+	if n := len(collectStatusEvents(t, buf.String())); n != 1 {
+		t.Errorf("healthy steady state should emit only the startup keepalive; got %d events", n)
+	}
+}
+
+// TestStartAuditExportStatus_EmitsOnConnectedFlip pins the integrity half: a
+// sink whose `connected` flag flips triggers an immediate state_change emit
+// even under a long keepalive. `connected` is the edge signal (#280 review) —
+// both a 1→0 failure and a 0→1 recovery must fire.
+func TestStartAuditExportStatus_EmitsOnConnectedFlip(t *testing.T) {
+	prevPoll := AuditExportStatusPollInterval
+	prevKA := AuditExportStatusKeepaliveInterval
+	AuditExportStatusPollInterval = 5 * time.Millisecond
+	AuditExportStatusKeepaliveInterval = time.Hour
+	defer func() {
+		AuditExportStatusPollInterval = prevPoll
+		AuditExportStatusKeepaliveInterval = prevKA
+	}()
+
+	var buf bytes.Buffer
+	sink := newFakeStatSink("flaky") // starts connected
+	// The fakeStatSink drives the state change; a writer sink captures the
+	// emitted status events into buf (fakeStatSink discards writes).
+	logger := &AuditLogger{sinks: []Sink{sink, newWriterSink(&buf, "buf")}, logOnce: map[string]bool{}}
+	stop := StartAuditExportStatus(context.Background(), logger)
+	time.Sleep(20 * time.Millisecond) // startup emit + a few clean polls
+	sink.setConnected(0)              // fail: 1 -> 0
+	time.Sleep(20 * time.Millisecond) // a poll observes the failure
+	sink.setConnected(1)              // recover: 0 -> 1
+	time.Sleep(20 * time.Millisecond) // a poll observes the recovery
+	stop()
+
+	reasons := statusReasons(collectStatusEvents(t, buf.String()))
+	var stateChanges int
+	for _, r := range reasons {
+		if r == auditStatusReasonStateChange {
+			stateChanges++
+		}
+	}
+	if stateChanges < 2 {
+		t.Errorf("both the 1->0 failure and 0->1 recovery must emit state_change; got %d in %v", stateChanges, reasons)
+	}
+}
+
+// TestStartAuditExportStatus_PersistentOutageDoesNotAmplify is the #280-review
+// regression guard: during a SUSTAINED outage the status event must not
+// self-amplify. Because every emit writes to the failing sink (bumping its
+// drop counter), a drop-delta edge would re-fire every poll — one event per
+// poll for the whole outage. With `connected` as the edge, a down sink settles
+// after a single 1→0 transition, so the emit count stays bounded no matter how
+// many poll windows elapse.
+func TestStartAuditExportStatus_PersistentOutageDoesNotAmplify(t *testing.T) {
+	prevPoll := AuditExportStatusPollInterval
+	prevKA := AuditExportStatusKeepaliveInterval
+	AuditExportStatusPollInterval = 2 * time.Millisecond
+	AuditExportStatusKeepaliveInterval = time.Hour
+	defer func() {
+		AuditExportStatusPollInterval = prevPoll
+		AuditExportStatusKeepaliveInterval = prevKA
+	}()
+
+	var buf bytes.Buffer
+	sink := newFakeStatSink("down")
+	sink.downOnWrite = true // first write drops the connection; every write bumps drops
+	logger := &AuditLogger{sinks: []Sink{sink, newWriterSink(&buf, "buf")}, logOnce: map[string]bool{}}
+	stop := StartAuditExportStatus(context.Background(), logger)
+	time.Sleep(80 * time.Millisecond) // ~40 poll windows of continuous dropping
+	stop()
+
+	// A drop-delta edge would emit ~40 times here; `connected` gives exactly
+	// the startup keepalive + one 1→0 state_change. Bound generously to stay
+	// robust against scheduler jitter while still catching amplification.
+	evts := collectStatusEvents(t, buf.String())
+	if len(evts) > 3 {
+		t.Errorf("sustained outage self-amplified: %d status events across ~40 polls (reasons %v)", len(evts), statusReasons(evts))
+	}
+	var stateChanges int
+	for _, e := range evts {
+		if e.Fields["reason"] == auditStatusReasonStateChange {
+			stateChanges++
+		}
+	}
+	if stateChanges != 1 {
+		t.Errorf("a settled outage must produce exactly one state_change; got %d in %v", stateChanges, statusReasons(evts))
+	}
+}
+
+func statusReasons(evts []AuditEvent) []any {
+	out := make([]any, 0, len(evts))
+	for _, e := range evts {
+		out = append(out, e.Fields["reason"])
+	}
+	return out
+}
+
+// fakeStatSink is a Sink whose health we can mutate to simulate transitions.
+// Writes are discarded. `connected` starts at 1 (use newFakeStatSink); tests
+// flip it via setConnected. When downOnWrite is set, every write drops the
+// connection and bumps the drop counter — this reproduces the outage
+// self-feed the status heartbeat must not amplify (#280 review).
+type fakeStatSink struct {
+	name        string
+	connected   atomic.Int64
+	drops       atomic.Int64
+	downOnWrite bool
+}
+
+func newFakeStatSink(name string) *fakeStatSink {
+	f := &fakeStatSink{name: name}
+	f.connected.Store(1)
+	return f
+}
+
+func (f *fakeStatSink) Name() string { return f.name }
+func (f *fakeStatSink) Write(context.Context, []byte) error {
+	if f.downOnWrite {
+		f.connected.Store(0)
+		f.drops.Add(1)
+	}
+	return nil
+}
+func (f *fakeStatSink) Close(context.Context) error { return nil }
+func (f *fakeStatSink) setConnected(v int64)        { f.connected.Store(v) }
+func (f *fakeStatSink) Stats() map[string]int64 {
+	return map[string]int64{
+		"connected":     f.connected.Load(),
+		"drops_dial":    f.drops.Load(),
+		"drops_timeout": 0,
+		"writes_ok":     0,
 	}
 }
 
@@ -508,3 +669,20 @@ func TestStartAuditExportStatus_EmitsPerSinkReport(t *testing.T) {
 // "windows". Uses the gort alias so this file can sit in package
 // runtime without name collisions. UDS tests skip on Windows.
 func runtimeGOOS_isWindows() bool { return gort.GOOS == "windows" }
+
+// TestResolveKeepaliveInterval_EnvOverride pins the AUDIT_STATUS_KEEPALIVE_INTERVAL
+// override and the fall-back-on-garbage behavior (#280).
+func TestResolveKeepaliveInterval_EnvOverride(t *testing.T) {
+	prev := AuditExportStatusKeepaliveInterval
+	AuditExportStatusKeepaliveInterval = 15 * time.Minute
+	defer func() { AuditExportStatusKeepaliveInterval = prev }()
+
+	t.Setenv(EnvAuditStatusKeepaliveInterval, "3m")
+	if got := resolveKeepaliveInterval(); got != 3*time.Minute {
+		t.Errorf("env override = %v, want 3m", got)
+	}
+	t.Setenv(EnvAuditStatusKeepaliveInterval, "not-a-duration")
+	if got := resolveKeepaliveInterval(); got != AuditExportStatusKeepaliveInterval {
+		t.Errorf("invalid env should fall back to the package default; got %v", got)
+	}
+}

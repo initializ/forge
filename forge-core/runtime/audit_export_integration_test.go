@@ -84,7 +84,7 @@ func TestAuditExport_EndToEnd(t *testing.T) {
 		Model: "gpt-4o", Provider: "openai", Duration: 250 * time.Millisecond,
 		Usage: LLMUsage{InputTokens: 120, OutputTokens: 45},
 	})
-	emitAuditExportStatus(logger)
+	emitAuditExportStatus(logger, auditStatusReasonKeepalive)
 
 	// Receive on the UDS side and assert per-event parity with the
 	// stderr-side capture.

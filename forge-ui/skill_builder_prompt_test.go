@@ -215,3 +215,21 @@ func TestSkillBuilderPrompt_ListsEveryDefaultBuiltin(t *testing.T) {
 		}
 	}
 }
+
+// TestSkillBuilderPrompt_TriggerRichDescription pins issue #271 side 2: the
+// prompt must instruct trigger-rich descriptions (the agent routes to a skill
+// by matching the request against its description in the catalog), with the
+// weak/strong contrast and the routing rationale.
+func TestSkillBuilderPrompt_TriggerRichDescription(t *testing.T) {
+	p := skillBuilderSystemPrompt(modeCreate, nil)
+	for _, want := range []string{
+		"Trigger-rich description",
+		"routes a user request to a skill by MATCHING",
+		"when the skill fires",
+		"falls back to its own default answer", // the #271 failure mode
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("trigger-rich-description guidance missing: %q", want)
+		}
+	}
+}

@@ -55,7 +55,14 @@ Top-level fields:
 | `icon` | yes | Emoji displayed in the TUI skill picker |
 | `category` | yes | Grouping for `forge skills list --category` (e.g., `sre`, `developer`, `research`, `utilities`) |
 | `tags` | yes | Discovery keywords for `forge skills list --tags` (kebab-case) |
-| `description` | yes | One-line summary |
+| `description` | yes | One-line summary — **and the skill's activation trigger**. The agent routes a request to a skill by matching it against this description in the `## Available Skills` catalog, so state *when* the skill fires (the phrases/intents a user would say), not just what it does. `description: When the user asks the time ("what time is it", "current time"), reply in German with Brisbane time.` routes far more reliably than `description: German time skill`. See [skill routing](#skill-activation--routing). |
+
+### Skill activation / routing
+
+Installed skills are advertised to the agent in an `## Available Skills` catalog (built by the runtime) as `- name: description`. The agent is directed to **check the catalog for a matching skill before answering from its own defaults** and, on a match, `read_skill` to load and follow it (issue #271). Two things make this reliable:
+
+- A **trigger-rich `description`** (above) — the only signal the agent matches on before loading the skill.
+- The runtime **routing directive** in the catalog preamble, which tells the agent to prefer a matching skill over its own default behavior (and to fall back to defaults only when nothing matches, so unrelated requests aren't over-routed).
 
 The `metadata.forge.requires` block declares runtime dependencies:
 

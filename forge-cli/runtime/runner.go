@@ -3447,6 +3447,13 @@ func (r *Runner) buildSkillCatalog() string {
 
 	var b strings.Builder
 	b.WriteString("## Available Skills\n\n")
+	// Routing directive (issue #271): the catalog alone is inert — the model
+	// defaults to its own behavior unless explicitly told to consult the
+	// catalog FIRST. Without this, an installed skill whose description
+	// matches the request is ignored (the model answers from its defaults and
+	// the user has to say "use the skill"). The final sentence guards against
+	// over-routing: fall back to defaults only when nothing matches.
+	b.WriteString("Before answering any request from your own knowledge or default behavior, FIRST check whether it matches one of the skill descriptions below. If a skill matches, call `read_skill` to load it and follow its instructions instead of answering directly — skills exist precisely to override your defaults for these cases, and a loaded skill's instructions are authoritative over your general behavior. Only answer from your own defaults when NO skill matches the request.\n\n")
 	b.WriteString("To use a skill, call `read_skill` with the skill name (the identifier before the colon) to load its full instructions, then follow them. " +
 		"`provides:` lists the capabilities inside a skill — they are documentation loaded with the skill, not tools you call directly.\n\n")
 	for _, entry := range catalogEntries {

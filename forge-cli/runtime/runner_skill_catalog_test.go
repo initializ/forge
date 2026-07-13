@@ -92,3 +92,30 @@ func TestSkillCatalog_NameIsReadSkillResolvable(t *testing.T) {
 }
 
 func mustQuote(s string) string { b, _ := json.Marshal(s); return string(b) }
+
+// TestSkillCatalog_HasRoutingDirective pins issue #271: the catalog preamble
+// must tell the model to check for a matching skill BEFORE answering from its
+// own defaults — the catalog is inert without it (an installed skill whose
+// description matches gets ignored). Also pins the no-over-routing guard.
+func TestSkillCatalog_HasRoutingDirective(t *testing.T) {
+	root := t.TempDir()
+	writeCatalogSkill(t, root, "german-brisbane-time", "german-brisbane-time", "brisbane_time")
+
+	r := &Runner{cfg: RunnerConfig{WorkDir: root, Config: &types.ForgeConfig{AgentID: "test"}}}
+	cat := r.buildSkillCatalog()
+
+	for _, want := range []string{
+		"Before answering",                                         // routing happens first
+		"check whether it matches",                                 // match against catalog
+		"instead of answering directly",                            // override defaults
+		"Only answer from your own defaults when NO skill matches", // no over-routing
+	} {
+		if !strings.Contains(cat, want) {
+			t.Errorf("catalog preamble missing routing directive %q; got:\n%s", want, cat)
+		}
+	}
+	// The mechanical read_skill instruction must still be present.
+	if !strings.Contains(cat, "call `read_skill`") {
+		t.Errorf("catalog should still explain how to load a skill; got:\n%s", cat)
+	}
+}

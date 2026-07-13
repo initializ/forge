@@ -145,3 +145,90 @@ func TestOpenAIClient_OrgIDStillSetUnderSigV4(t *testing.T) {
 		t.Errorf("OpenAI-Organization dropped under aws_sigv4: %q", got)
 	}
 }
+
+// --- issue #302: apikey_header gateway scheme -----------------------------
+
+// TestAnthropicClient_APIKeyHeaderSendsBothHeaders is the #302 invariant on
+// the Anthropic side: apikey_header is ADDITIVE — the native x-api-key still
+// rides (Kong's ai-proxy replaces/injects the upstream provider header) AND
+// the gateway's `apikey` header carries the key so Kong key-auth admits the
+// request.
+func TestAnthropicClient_APIKeyHeaderSendsBothHeaders(t *testing.T) {
+	c := NewAnthropicClient(llm.ClientConfig{
+		APIKey:     "sk-ant-test",
+		Model:      "claude-test",
+		AuthScheme: llm.AuthSchemeAPIKeyHeader,
+	})
+	req, _ := http.NewRequest(http.MethodPost, "https://kong.example/v1/messages", nil)
+	c.setHeaders(req)
+
+	if got := req.Header.Get("x-api-key"); got != "sk-ant-test" {
+		t.Errorf("apikey_header dropped native x-api-key: %q", got)
+	}
+	if got := req.Header.Get("apikey"); got != "sk-ant-test" {
+		t.Errorf("apikey_header did not set the gateway apikey header: %q", got)
+	}
+	if got := req.Header.Get("anthropic-version"); got != "2023-06-01" {
+		t.Errorf("anthropic-version dropped under apikey_header: %q", got)
+	}
+}
+
+// TestOpenAIClient_APIKeyHeaderSendsBothHeaders mirrors the above for OpenAI:
+// Authorization: Bearer still rides alongside the gateway apikey header.
+func TestOpenAIClient_APIKeyHeaderSendsBothHeaders(t *testing.T) {
+	c := NewOpenAIClient(llm.ClientConfig{
+		APIKey:     "sk-test",
+		Model:      "gpt-test",
+		AuthScheme: llm.AuthSchemeAPIKeyHeader,
+	})
+	req, _ := http.NewRequest(http.MethodPost, "https://kong.example/v1/chat/completions", nil)
+	c.setHeaders(req)
+
+	if got := req.Header.Get("Authorization"); got != "Bearer sk-test" {
+		t.Errorf("apikey_header dropped native Authorization: %q", got)
+	}
+	if got := req.Header.Get("apikey"); got != "sk-test" {
+		t.Errorf("apikey_header did not set the gateway apikey header: %q", got)
+	}
+}
+
+// TestAPIKeyHeaderScheme_CustomHeaderName pins the auth_header_name override
+// for gateways with non-default key_names (#302).
+func TestAPIKeyHeaderScheme_CustomHeaderName(t *testing.T) {
+	c := NewOpenAIClient(llm.ClientConfig{
+		APIKey:         "sk-test",
+		Model:          "gpt-test",
+		AuthScheme:     llm.AuthSchemeAPIKeyHeader,
+		AuthHeaderName: "x-gateway-key",
+	})
+	req, _ := http.NewRequest(http.MethodPost, "https://kong.example/v1/chat/completions", nil)
+	c.setHeaders(req)
+
+	if got := req.Header.Get("x-gateway-key"); got != "sk-test" {
+		t.Errorf("custom auth_header_name not honored: %q", got)
+	}
+	if got := req.Header.Get("apikey"); got != "" {
+		t.Errorf("default apikey header should not be set when a custom name is given: %q", got)
+	}
+}
+
+// TestAPIKeyHeaderScheme_NoopOffPath confirms the scheme is inert everywhere
+// it should be: the default (unset) scheme never emits the gateway header,
+// and an empty APIKey emits nothing even under apikey_header.
+func TestAPIKeyHeaderScheme_NoopOffPath(t *testing.T) {
+	// Default scheme → no apikey header.
+	def := NewOpenAIClient(llm.ClientConfig{APIKey: "sk-test", Model: "gpt-test"})
+	req, _ := http.NewRequest(http.MethodPost, "https://api.openai.com/v1/chat/completions", nil)
+	def.setHeaders(req)
+	if got := req.Header.Get("apikey"); got != "" {
+		t.Errorf("default scheme leaked an apikey header: %q", got)
+	}
+
+	// apikey_header but empty key → nothing to send.
+	empty := NewOpenAIClient(llm.ClientConfig{Model: "gpt-test", AuthScheme: llm.AuthSchemeAPIKeyHeader})
+	req2, _ := http.NewRequest(http.MethodPost, "https://kong.example/v1/chat/completions", nil)
+	empty.setHeaders(req2)
+	if got := req2.Header.Get("apikey"); got != "" {
+		t.Errorf("empty APIKey should not set an apikey header: %q", got)
+	}
+}

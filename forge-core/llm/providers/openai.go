@@ -20,13 +20,14 @@ import (
 // OpenAIClient implements llm.Client for the OpenAI Chat Completions API.
 // Also works with Azure OpenAI and any OpenAI-compatible endpoint.
 type OpenAIClient struct {
-	apiKey        string
-	baseURL       string
-	model         string
-	orgID         string
-	authScheme    string
-	promptCaching bool
-	client        *http.Client
+	apiKey         string
+	baseURL        string
+	model          string
+	orgID          string
+	authScheme     string
+	authHeaderName string
+	promptCaching  bool
+	client         *http.Client
 }
 
 // NewOpenAIClient creates a new OpenAI client.
@@ -50,17 +51,18 @@ func NewOpenAIClient(cfg llm.ClientConfig) *OpenAIClient {
 		timeout = 120 * time.Second
 	}
 	httpClient := &http.Client{Timeout: timeout}
-	if cfg.AuthScheme == "aws_sigv4" {
+	if cfg.AuthScheme == llm.AuthSchemeAWSSigV4 {
 		httpClient.Transport = newBedrockSigningTransport(cfg.AWSRegion, http.DefaultTransport)
 	}
 	return &OpenAIClient{
-		apiKey:        cfg.APIKey,
-		baseURL:       strings.TrimRight(baseURL, "/"),
-		model:         cfg.Model,
-		orgID:         cfg.OrgID,
-		authScheme:    cfg.AuthScheme,
-		promptCaching: cfg.PromptCaching,
-		client:        httpClient,
+		apiKey:         cfg.APIKey,
+		baseURL:        strings.TrimRight(baseURL, "/"),
+		model:          cfg.Model,
+		orgID:          cfg.OrgID,
+		authScheme:     cfg.AuthScheme,
+		authHeaderName: cfg.AuthHeaderName,
+		promptCaching:  cfg.PromptCaching,
+		client:         httpClient,
 	}
 }
 
@@ -134,12 +136,13 @@ func (c *OpenAIClient) setHeaders(req *http.Request) {
 	// When AuthScheme=aws_sigv4 the SigV4 transport will stamp the
 	// Authorization header itself; don't pre-populate a Bearer token
 	// that would be replaced and confuse trace logs. Issue #202 Phase 2.
-	if c.apiKey != "" && c.authScheme != "aws_sigv4" {
+	if c.apiKey != "" && c.authScheme != llm.AuthSchemeAWSSigV4 {
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 	if c.orgID != "" {
 		req.Header.Set("OpenAI-Organization", c.orgID)
 	}
+	setGatewayAPIKeyHeader(req, c.authScheme, c.authHeaderName, c.apiKey)
 }
 
 // openaiRequest is the OpenAI-specific request format.

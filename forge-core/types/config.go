@@ -806,6 +806,12 @@ type ModelRef struct {
 	//	                environment (AWS_ACCESS_KEY_ID / _SECRET_ /
 	//	                _SESSION_TOKEN) plus the AWSRegion field
 	//	                below. APIKey is ignored on this path.
+	//	"apikey_header" — sends APIKey in the AuthHeaderName header
+	//	                (default "apikey") IN ADDITION TO the
+	//	                provider-native header. For API gateways whose
+	//	                auth plugin reads a fixed header — e.g. Kong AI
+	//	                Gateway key-auth. Additive, so safe against
+	//	                non-gateway endpoints. Issue #302.
 	//
 	// Unset for the vast majority of deployments — the default
 	// behavior matches the pre-#202 contract byte-for-byte.
@@ -816,6 +822,12 @@ type ModelRef struct {
 	// not parse the region out of the BaseURL because Bedrock URLs
 	// often go through customer-side proxies that re-write the host.
 	AWSRegion string `yaml:"aws_region,omitempty"`
+
+	// AuthHeaderName overrides the header used by the "apikey_header"
+	// scheme (issue #302). Empty → "apikey" (Kong key-auth's default
+	// key_names). Set it for a gateway with custom key_names, e.g.
+	// "x-gateway-key". Ignored for every other AuthScheme.
+	AuthHeaderName string `yaml:"auth_header_name,omitempty"`
 
 	Version        string          `yaml:"version,omitempty"`
 	OrganizationID string          `yaml:"organization_id,omitempty"`

@@ -20,8 +20,9 @@ model:
   name: "gpt-4o"                    # Model name
   base_url: ""                      # Override the provider's default API host (issue #139)
   organization_id: "org-xxx"        # OpenAI Organization ID (enterprise, optional)
-  auth_scheme: ""                   # "" (default) / "x_api_key" / "bearer" / "aws_sigv4" — issue #202
+  auth_scheme: ""                   # "" (default) / "x_api_key" / "bearer" / "aws_sigv4" (#202) / "apikey_header" (#302)
   aws_region: ""                    # Required when auth_scheme: aws_sigv4 — issue #202
+  auth_header_name: ""              # apikey_header custom header name; default "apikey" — issue #302
   fallbacks:                        # Fallback providers (optional)
     - provider: "anthropic"
       name: "claude-sonnet-4-20250514"
@@ -40,6 +41,12 @@ model:
 # credentials (AWS_ACCESS_KEY_ID / _SECRET_ACCESS_KEY / _SESSION_TOKEN
 # env) for outbound LLM calls — works against any SigV4-fronted endpoint
 # that speaks OpenAI or Anthropic wire format. Issue #202 Phase 2.
+
+# API gateways with fixed key headers: auth_scheme: apikey_header sends the
+# API key in the auth_header_name header (default "apikey") IN ADDITION to
+# the provider-native header, so a gateway whose auth plugin reads a fixed
+# header — e.g. Kong AI Gateway key-auth — authenticates the request.
+# Additive, so safe against non-gateway endpoints. Issue #302.
 
 tools:
   - name: "web_search"

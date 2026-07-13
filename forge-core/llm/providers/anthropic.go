@@ -16,12 +16,13 @@ import (
 
 // AnthropicClient implements llm.Client for the Anthropic Messages API.
 type AnthropicClient struct {
-	apiKey        string
-	baseURL       string
-	model         string
-	authScheme    string
-	promptCaching bool
-	client        *http.Client
+	apiKey         string
+	baseURL        string
+	model          string
+	authScheme     string
+	authHeaderName string
+	promptCaching  bool
+	client         *http.Client
 }
 
 // NewAnthropicClient creates a new Anthropic client.
@@ -48,16 +49,17 @@ func NewAnthropicClient(cfg llm.ClientConfig) *AnthropicClient {
 		timeout = 120 * time.Second
 	}
 	httpClient := &http.Client{Timeout: timeout}
-	if cfg.AuthScheme == "aws_sigv4" {
+	if cfg.AuthScheme == llm.AuthSchemeAWSSigV4 {
 		httpClient.Transport = newBedrockSigningTransport(cfg.AWSRegion, http.DefaultTransport)
 	}
 	return &AnthropicClient{
-		apiKey:        cfg.APIKey,
-		baseURL:       strings.TrimRight(baseURL, "/"),
-		model:         cfg.Model,
-		authScheme:    cfg.AuthScheme,
-		promptCaching: cfg.PromptCaching,
-		client:        httpClient,
+		apiKey:         cfg.APIKey,
+		baseURL:        strings.TrimRight(baseURL, "/"),
+		model:          cfg.Model,
+		authScheme:     cfg.AuthScheme,
+		authHeaderName: cfg.AuthHeaderName,
+		promptCaching:  cfg.PromptCaching,
+		client:         httpClient,
 	}
 }
 
@@ -154,9 +156,10 @@ func (c *AnthropicClient) setHeaders(req *http.Request) {
 	// validated upstream and because it would be included in the
 	// SigV4 signed-headers set and complicate proxy debugging.
 	// Issue #202 Phase 2.
-	if c.authScheme != "aws_sigv4" {
+	if c.authScheme != llm.AuthSchemeAWSSigV4 {
 		req.Header.Set("x-api-key", c.apiKey)
 	}
+	setGatewayAPIKeyHeader(req, c.authScheme, c.authHeaderName, c.apiKey)
 }
 
 // Anthropic-specific request types.

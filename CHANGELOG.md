@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## v0.17.0 — 2026-07-13
+
+Implements **AARM (Autonomous Action Runtime Management)** — the R-series
+runtime agent-governance controls (R3 intent alignment, R4a–R4c
+guardrails / step-up / defer, R5/R6 audit hash chain + Ed25519 signing,
+R7 intent drift, R9 JIT credentials) — plus reversible context
+compression (ctxzip), an opt-in headless-browser tool family, a
+pluggable remote session store, and a platform guardrails overlay. Full
+notes: https://github.com/initializ/forge/releases/tag/v0.17.0
+
+The entries below accumulated since the last CHANGELOG rollover; a few
+also shipped in v0.16.0 (their rollover was missed) — the authoritative
+per-version scope lives in the GitHub Release notes.
+
 ### Changed (potentially breaking)
 
 - **Guardrail MODIFY / DENY now apply to every tool, not just

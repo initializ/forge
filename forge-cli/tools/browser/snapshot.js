@@ -15,7 +15,7 @@
 // re-checks field protection against the live DOM, so this cannot by itself
 // make the browser act outside the page. Treat digest text as untrusted;
 // moving evaluation to an isolated world (Page.createIsolatedWorld) is a
-// tracked hardening follow-up.
+// tracked hardening follow-up (initializ/forge#290).
 function (opts) {
 	opts = opts || {};
 	var maxEls = opts.maxEls || 100;

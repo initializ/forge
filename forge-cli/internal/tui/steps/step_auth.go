@@ -137,7 +137,14 @@ func NewAuthStep(styles *tui.StyleSet) *AuthStep {
 func (s *AuthStep) Title() string { return "Authentication" }
 func (s *AuthStep) Icon() string  { return "🔐" }
 
-func (s *AuthStep) Init() tea.Cmd { return s.selector.Init() }
+func (s *AuthStep) Init() tea.Cmd {
+	// Reset on (re-)entry so BACK navigation restarts at the provider choice
+	// instead of short-circuiting on a stale `s.complete`. Re-entry contract
+	// (#264 review).
+	s.complete = false
+	s.phase = authSelectPhase
+	return s.selector.Init()
+}
 
 func (s *AuthStep) Update(msg tea.Msg) (tui.Step, tea.Cmd) {
 	if s.complete {

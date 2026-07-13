@@ -42,7 +42,7 @@ func SelectHints() []KeyBinding {
 	return []KeyBinding{
 		{Key: "↑↓", Desc: "navigate"},
 		{Key: "⏎", Desc: "select"},
-		{Key: "esc", Desc: "quit"},
+		{Key: "esc", Desc: "back"},
 	}
 }
 
@@ -52,7 +52,7 @@ func MultiSelectHints() []KeyBinding {
 		{Key: "↑↓", Desc: "navigate"},
 		{Key: "space", Desc: "toggle"},
 		{Key: "⏎", Desc: "confirm"},
-		{Key: "esc", Desc: "quit"},
+		{Key: "esc", Desc: "back"},
 	}
 }
 
@@ -60,15 +60,17 @@ func MultiSelectHints() []KeyBinding {
 func InputHints() []KeyBinding {
 	return []KeyBinding{
 		{Key: "⏎", Desc: "submit"},
-		{Key: "esc", Desc: "quit"},
+		{Key: "esc", Desc: "back"},
 	}
 }
 
-// ReviewHints returns standard hints for the review step.
+// ReviewHints returns standard hints for the review step. Only `esc` is
+// advertised for back: wizard-level esc supersedes the step-local backspace
+// (StepBackMsg) path, so showing both would imply two behaviors where there's
+// one. See #264 review.
 func ReviewHints() []KeyBinding {
 	return []KeyBinding{
 		{Key: "⏎", Desc: "confirm"},
-		{Key: "backspace", Desc: "back"},
-		{Key: "esc", Desc: "quit"},
+		{Key: "esc", Desc: "back"},
 	}
 }

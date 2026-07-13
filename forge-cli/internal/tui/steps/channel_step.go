@@ -104,6 +104,11 @@ func (s *ChannelStep) Title() string { return "Channel Connector" }
 func (s *ChannelStep) Icon() string  { return "📡" }
 
 func (s *ChannelStep) Init() tea.Cmd {
+	// Reset on (re-)entry so BACK navigation doesn't land on a completed step
+	// whose Update short-circuits on `s.complete` and strands the wizard.
+	// Re-entry contract — SkillsStep/CompressionStep precedent (#264 review).
+	s.complete = false
+	s.phase = channelSelectPhase
 	return s.selector.Init()
 }
 
@@ -553,6 +558,11 @@ func (s *ChannelStep) Summary() string {
 
 func (s *ChannelStep) Apply(ctx *tui.WizardContext) {
 	ctx.Channel = s.channel
+	// Write current state, not accumulate: back-navigation + choosing a
+	// different channel must not leave the prior channel's tokens behind.
+	// ChannelStep exclusively owns ChannelTokens, so a full reset is safe.
+	// See #264 review.
+	clear(ctx.ChannelTokens)
 	for k, v := range s.tokens {
 		ctx.ChannelTokens[k] = v
 	}

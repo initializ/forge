@@ -118,18 +118,11 @@ func (m MultiSelect) Update(msg tea.Msg) (MultiSelect, tea.Cmd) {
 		case " ":
 			m.Items[m.cursor].Checked = !m.Items[m.cursor].Checked
 		case "enter":
-			// If nothing is checked, auto-check the cursor item so the user
-			// doesn't have to remember Space+Enter for a single selection.
-			anyChecked := false
-			for _, item := range m.Items {
-				if item.Checked {
-					anyChecked = true
-					break
-				}
-			}
-			if !anyChecked && len(m.Items) > 0 {
-				m.Items[m.cursor].Checked = true
-			}
+			// Enter confirms exactly what Space has toggled — including an
+			// empty selection. It must NOT auto-check the cursor item: the
+			// cursor is just the highlight, and steps like Skills / Fallback
+			// legitimately allow selecting nothing. (Previously Enter with
+			// nothing checked silently selected whatever row was highlighted.)
 			m.done = true
 		}
 	}

@@ -179,8 +179,6 @@ func (b *BinRequirement) UnmarshalYAML(value *yaml.Node) error {
 	}
 }
 
-// SkillRequirements declares CLI binaries, environment variables, and runtime
-// capabilities a skill needs.
 // SkillToolDependency is one governed tool dependency: a reference to a
 // platform tool-registry entry (by its stable key) with the operations this
 // skill selects. Type distinguishes binary vs MCP registry entries.
@@ -190,6 +188,8 @@ type SkillToolDependency struct {
 	Operations []string `yaml:"operations,omitempty" json:"operations,omitempty"`
 }
 
+// SkillRequirements declares CLI binaries, environment variables, and runtime
+// capabilities a skill needs.
 type SkillRequirements struct {
 	Bins []BinRequirement `yaml:"bins,omitempty" json:"bins,omitempty"`
 	Env  *EnvRequirements `yaml:"env,omitempty" json:"env,omitempty"`

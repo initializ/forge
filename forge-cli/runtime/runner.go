@@ -797,6 +797,10 @@ func (r *Runner) Run(ctx context.Context) error {
 				r.logger.Warn("failed to register search tools", map[string]any{"error": err.Error()})
 			}
 
+			// Register the general file read/write/edit/patch builtins (#268),
+			// confined to the same searchRoot as the search tools.
+			r.registerGeneralFileTools(reg, searchRoot, r.hasSkill("code-agent"))
+
 			// Register read_skill tool for lazy-loading skill instructions
 			readSkill := builtins.NewReadSkillTool(r.cfg.WorkDir)
 			if regErr := reg.Register(readSkill); regErr != nil {
@@ -3193,6 +3197,25 @@ func ensureGitignore(workDir string) {
 
 // hasSkill checks whether a skill with the given name is present in the project's
 // discovered skill files. Checks both ## Tool: entry names and frontmatter name.
+// registerGeneralFileTools wires the general file read/write/edit/patch
+// builtins (#268) into reg, confined to root (the same searchRoot the search
+// tools use, so read/edit and grep/glob share one #235 confinement boundary).
+//
+// Skipped when the code-agent skill is active: its project-scoped code_agent_*
+// tools (registered from SKILL.md) are the specialized file surface, so adding
+// the general file_* builtins too would present the LLM two overlapping file
+// surfaces — skill tools win. (The names differ, so there is no registry
+// collision either way; this is a surface-clarity decision, not a conflict
+// avoidance.)
+func (r *Runner) registerGeneralFileTools(reg *tools.Registry, root string, codeAgentActive bool) {
+	if codeAgentActive {
+		return
+	}
+	if err := builtins.RegisterFileTools(reg, root); err != nil {
+		r.logger.Warn("failed to register file tools", map[string]any{"error": err.Error()})
+	}
+}
+
 func (r *Runner) hasSkill(name string) bool {
 	for _, sf := range r.discoverSkillFiles() {
 		entries, meta, err := cliskills.ParseFileWithMetadata(sf)

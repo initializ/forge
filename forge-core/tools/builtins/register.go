@@ -80,6 +80,33 @@ func RegisterCodeAgentSearchTools(reg *tools.Registry, workDir string) error {
 	return nil
 }
 
+// FileTools returns the general file read/write/edit/patch builtins,
+// path-confined to workDir via a PathValidator (the same #235 confinement the
+// search tools use). These are the general-agent counterpart to the code-agent
+// skill's project-scoped code_agent_* tools (#268): the runtime registers them
+// for a general agent so it has a real file read-back / edit / overwrite
+// surface, not just search + file_create.
+func FileTools(workDir string) []tools.Tool {
+	pv := NewPathValidator(workDir)
+	return []tools.Tool{
+		&fileReadTool{pathValidator: pv},
+		&fileWriteTool{pathValidator: pv},
+		&fileEditTool{pathValidator: pv},
+		&filePatchTool{pathValidator: pv},
+	}
+}
+
+// RegisterFileTools registers the general file read/write/edit/patch builtins
+// (#268), confined to workDir.
+func RegisterFileTools(reg *tools.Registry, workDir string) error {
+	for _, t := range FileTools(workDir) {
+		if err := reg.Register(t); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // CodeAgentReadTools returns read-only coding tools (file_read + search).
 func CodeAgentReadTools(workDir string) []tools.Tool {
 	pv := NewPathValidator(workDir)

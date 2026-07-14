@@ -106,4 +106,17 @@ type MCPToolDescriptor struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"inputSchema"`
+	// Annotations are the MCP spec's optional tool behavior hints
+	// (readOnlyHint / destructiveHint / idempotentHint). Advisory metadata
+	// from the server — surfaced so platform-side discovery can seed
+	// side-effect classifications; the runtime does not act on them.
+	Annotations *MCPToolAnnotations `json:"annotations,omitempty"`
+}
+
+// MCPToolAnnotations mirrors the MCP tool annotations object. Pointers so
+// "absent" and "false" stay distinguishable.
+type MCPToolAnnotations struct {
+	ReadOnlyHint    *bool `json:"readOnlyHint,omitempty"`
+	DestructiveHint *bool `json:"destructiveHint,omitempty"`
+	IdempotentHint  *bool `json:"idempotentHint,omitempty"`
 }

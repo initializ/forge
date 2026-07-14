@@ -262,6 +262,18 @@ func ExtractForgeMeta(meta *contract.SkillMetadata) *contract.ForgeSkillMeta {
 	return &forgeMeta
 }
 
+// ExtractForgeUses extracts the skill's governed tool dependencies
+// (metadata.forge.uses — references into the platform tool registry). Thin
+// wrapper over ExtractForgeMeta, mirroring ExtractForgeReqs. Returns nil when
+// the skill declares none — the pre-registry common case.
+func ExtractForgeUses(meta *contract.SkillMetadata) []contract.SkillToolDependency {
+	fm := ExtractForgeMeta(meta)
+	if fm == nil {
+		return nil
+	}
+	return fm.Uses
+}
+
 // ExtractForgeReqs extracts SkillRequirements, egress_domains, and guardrails from the generic
 // metadata map. Thin wrapper over ExtractForgeMeta for existing call sites.
 func ExtractForgeReqs(meta *contract.SkillMetadata) (*contract.SkillRequirements, []string, *contract.SkillGuardrailConfig) {

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## v0.17.1 — 2026-07-14
+
+Tools & platform-governance point release: a `web_fetch` builtin (read a
+URL as clean markdown, #266), the previously-dormant general file
+`file_read`/`file_write`/`file_edit`/`file_patch` builtins wired for
+general agents (#268), an operator-authored org-wide command denylist
+platform policy — `denied_command_patterns` (OWASP ASI02, #238), and an
+`apikey_header` LLM auth scheme for Kong AI Gateway / fixed-header API
+gateways (#302). All additive; two new default-on tools (`web_fetch` +
+file write/edit/patch). Full notes:
+https://github.com/initializ/forge/releases/tag/v0.17.1
+
 ## v0.17.0 — 2026-07-13
 
 Implements **AARM (Autonomous Action Runtime Management)** — the R-series

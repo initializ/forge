@@ -9,13 +9,27 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/initializ/forge/forge-core/credentials"
+	_ "github.com/initializ/forge/forge-core/credentials/static" // register the "static" provider
 	"github.com/initializ/forge/forge-core/security"
 )
 
+// egressCtx installs a permissive egress client (DefaultTransport) so tests can
+// reach the localhost httptest server. web_fetch REFUSES when no egress client
+// is present (fail-closed), so every real-fetch test must install one.
+func egressCtx() context.Context {
+	return security.WithEgressClient(context.Background(), &http.Client{Transport: http.DefaultTransport})
+}
+
 func runWebFetch(t *testing.T, ctx context.Context, args map[string]any) (map[string]any, error) {
 	t.Helper()
+	return runWebFetchTool(t, &webFetchTool{}, ctx, args)
+}
+
+func runWebFetchTool(t *testing.T, tool *webFetchTool, ctx context.Context, args map[string]any) (map[string]any, error) {
+	t.Helper()
 	raw, _ := json.Marshal(args)
-	out, err := (&webFetchTool{}).Execute(ctx, raw)
+	out, err := tool.Execute(ctx, raw)
 	if err != nil {
 		return nil, err
 	}
@@ -44,7 +58,7 @@ func TestWebFetch_ExtractsReadableText(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	m, err := runWebFetch(t, context.Background(), map[string]any{"url": srv.URL})
+	m, err := runWebFetch(t, egressCtx(), map[string]any{"url": srv.URL})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -76,7 +90,7 @@ func TestWebFetch_TruncatesAtMaxChars(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	m, err := runWebFetch(t, context.Background(), map[string]any{"url": srv.URL, "max_chars": 100})
+	m, err := runWebFetch(t, egressCtx(), map[string]any{"url": srv.URL, "max_chars": 100})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -101,7 +115,7 @@ func TestWebFetch_PlainTextPassthrough(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	m, err := runWebFetch(t, context.Background(), map[string]any{"url": srv.URL})
+	m, err := runWebFetch(t, egressCtx(), map[string]any{"url": srv.URL})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -119,7 +133,7 @@ func TestWebFetch_RejectsBinaryContentType(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := runWebFetch(t, context.Background(), map[string]any{"url": srv.URL})
+	_, err := runWebFetch(t, egressCtx(), map[string]any{"url": srv.URL})
 	if err == nil {
 		t.Fatal("expected web_fetch to reject image/png")
 	}
@@ -158,5 +172,132 @@ func TestExtractReadableText_MalformedHTML(t *testing.T) {
 		if !strings.Contains(got, s) {
 			t.Errorf("malformed HTML lost %q: %q", s, got)
 		}
+	}
+}
+
+// TestExtractReadableText_PreservesPreformatted is the #266-review fix: <pre>/
+// <code> content keeps its newlines + indentation instead of collapsing to one
+// run of tokens — the tool's headline use case is reading docs, where code
+// blocks live.
+func TestExtractReadableText_PreservesPreformatted(t *testing.T) {
+	got := extractReadableText("<html><body><pre>func main() {\n    fmt.Println(\"hi\")\n}</pre></body></html>")
+	if !strings.Contains(got, "func main() {\n") {
+		t.Errorf("pre newlines collapsed:\n%q", got)
+	}
+	if !strings.Contains(got, "\n    fmt.Println") {
+		t.Errorf("pre indentation collapsed:\n%q", got)
+	}
+	// A normal paragraph outside <pre> still collapses incidental whitespace.
+	para := extractReadableText("<p>one   two\n\tthree</p>")
+	if strings.Contains(para, "   ") {
+		t.Errorf("non-pre whitespace should collapse: %q", para)
+	}
+}
+
+// TestWebFetch_RefusesWithoutEgressClient pins the fail-CLOSED behavior: with no
+// egress client in context, web_fetch refuses rather than falling back to
+// http.DefaultTransport (which would bypass the allowlist / SSRF protections).
+func TestWebFetch_RefusesWithoutEgressClient(t *testing.T) {
+	_, err := (&webFetchTool{}).Execute(context.Background(), []byte(`{"url":"https://example.com"}`))
+	if err == nil || !strings.Contains(err.Error(), "egress enforcement") {
+		t.Fatalf("expected a refusal without an egress client, got %v", err)
+	}
+}
+
+// TestClassifyContentType covers the guard's branches, including the documented
+// empty-Content-Type → HTML behavior and the binary rejections.
+func TestClassifyContentType(t *testing.T) {
+	cases := []struct {
+		ct       string
+		wantKind contentKind
+		wantOK   bool
+	}{
+		{"", contentHTML, true}, // documented: empty CT treated as HTML
+		{"text/html; charset=utf-8", contentHTML, true},
+		{"application/xhtml+xml", contentHTML, true},
+		{"text/plain", contentText, true},
+		{"text/markdown", contentText, true},
+		{"application/json", contentText, true},
+		{"application/rss+xml", contentText, true},
+		{"image/png", contentText, false},
+		{"application/pdf", contentText, false},
+		{"application/octet-stream", contentText, false},
+	}
+	for _, c := range cases {
+		k, ok := classifyContentType(c.ct)
+		if ok != c.wantOK || (ok && k != c.wantKind) {
+			t.Errorf("classifyContentType(%q) = (%d,%v), want (%d,%v)", c.ct, k, ok, c.wantKind, c.wantOK)
+		}
+	}
+}
+
+// TestWebFetch_TranscodesCharset pins the charset fix: an ISO-8859-1 page
+// (common for older spec/RFC pages) comes back as valid UTF-8, not mojibake.
+func TestWebFetch_TranscodesCharset(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=iso-8859-1")
+		// "café latte" with é as the Latin-1 byte 0xE9.
+		_, _ = w.Write([]byte("<html><body><p>caf\xe9 latte</p></body></html>"))
+	}))
+	defer srv.Close()
+
+	m, err := runWebFetch(t, egressCtx(), map[string]any{"url": srv.URL})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if content, _ := m["content"].(string); !strings.Contains(content, "café latte") {
+		t.Errorf("ISO-8859-1 not transcoded to UTF-8: %q", content)
+	}
+}
+
+// TestWebFetch_StampsInjectedHeaders pins that the R9 JIT credential injector's
+// materialized headers reach the outbound request (same plumbing as
+// http_request).
+func TestWebFetch_StampsInjectedHeaders(t *testing.T) {
+	got := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got <- r.Header.Get("X-Api-Token")
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	inj, err := credentials.NewInjector(context.Background(), credentials.DefaultRegistry,
+		[]credentials.CredentialSpec{{
+			Tool:     "web_fetch",
+			Provider: "static",
+			Spec:     json.RawMessage(`{"headers":{"X-Api-Token":"secret123"}}`),
+		}}, nil)
+	if err != nil {
+		t.Fatalf("NewInjector: %v", err)
+	}
+
+	tool := (&webFetchTool{}).WithCredentialInjector(inj)
+	if _, ferr := runWebFetchTool(t, tool, egressCtx(), map[string]any{"url": srv.URL}); ferr != nil {
+		t.Fatalf("Execute: %v", ferr)
+	}
+	if h := <-got; h != "secret123" {
+		t.Errorf("injected header not stamped on the request: got %q", h)
+	}
+}
+
+// TestWebFetch_ByteCapBoundsRawRead pins the 2 MiB pre-extraction byte cap: a
+// response far larger than the cap yields bounded content even when max_chars
+// is effectively unlimited.
+func TestWebFetch_ByteCapBoundsRawRead(t *testing.T) {
+	big := strings.Repeat("A", 3<<20) // 3 MiB > webFetchByteLimit (2 MiB)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(big))
+	}))
+	defer srv.Close()
+
+	m, err := runWebFetch(t, egressCtx(), map[string]any{"url": srv.URL, "max_chars": 100_000_000})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	content, _ := m["content"].(string)
+	if len(content) > webFetchByteLimit {
+		t.Errorf("content %d bytes exceeds the byte cap %d", len(content), webFetchByteLimit)
 	}
 }

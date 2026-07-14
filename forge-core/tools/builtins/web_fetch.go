@@ -1,6 +1,7 @@
 package builtins
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"golang.org/x/net/html"
+	"golang.org/x/net/html/charset"
 
 	"github.com/initializ/forge/forge-core/credentials"
 	"github.com/initializ/forge/forge-core/security"
@@ -116,8 +118,20 @@ func (t *webFetchTool) Execute(ctx context.Context, args json.RawMessage) (strin
 		}
 	}
 
+	// Defense-in-depth: never fall back to http.DefaultTransport. When no
+	// egress client is installed, EgressTransportFromContext returns nil and a
+	// bare http.Client would silently bypass the allowlist / SSRF protections
+	// entirely. web_fetch is a default-on, LLM-URL-driven surface — the exact
+	// shape where a fail-open is worst — so refuse instead. The runtime always
+	// installs the egress client via WithEgressClient before tools run (#266
+	// review). (http_request still fails open at this seam; hardening both at
+	// a shared seam is tracked in #308.)
+	transport := security.EgressTransportFromContext(ctx)
+	if transport == nil {
+		return "", fmt.Errorf("web_fetch: refusing to fetch without egress enforcement (no egress client in context)")
+	}
 	client := &http.Client{
-		Transport:     security.EgressTransportFromContext(ctx),
+		Transport:     transport,
 		Timeout:       webFetchTimeout,
 		CheckRedirect: security.SafeRedirectPolicy(webFetchMaxRedirects),
 	}
@@ -144,11 +158,23 @@ func (t *webFetchTool) Execute(ctx context.Context, args json.RawMessage) (strin
 		return "", fmt.Errorf("reading response: %w", err)
 	}
 
+	// Transcode to UTF-8. Older spec/RFC pages — squarely this tool's
+	// wheelhouse — are often ISO-8859-1 or declare a charset= parameter;
+	// string(raw) would return mojibake. charset.NewReader reads the
+	// Content-Type charset, a <meta charset>, or a BOM (#266 review). On any
+	// detection/transcode error we keep the raw bytes rather than fail.
+	text := string(raw)
+	if r, cerr := charset.NewReader(bytes.NewReader(raw), contentType); cerr == nil {
+		if decoded, rerr := io.ReadAll(r); rerr == nil {
+			text = string(decoded)
+		}
+	}
+
 	var content string
 	if kind == contentHTML {
-		content = extractReadableText(string(raw))
+		content = extractReadableText(text)
 	} else {
-		content = strings.TrimSpace(string(raw))
+		content = strings.TrimSpace(text)
 	}
 
 	truncated := false
@@ -249,15 +275,26 @@ func extractReadableText(htmlContent string) string {
 		b.WriteString("# " + title + "\n\n")
 	}
 
+	// preDepth > 0 inside <pre>/<code>: emit text VERBATIM (keep newlines +
+	// indentation) so fetched code samples / config snippets survive intact,
+	// instead of collapsing to one run of tokens (#266 review).
+	preDepth := 0
 	var walk func(*html.Node)
 	walk = func(n *html.Node) {
 		switch n.Type {
 		case html.TextNode:
-			b.WriteString(collapseInlineWS(n.Data))
+			if preDepth > 0 {
+				b.WriteString(n.Data)
+			} else {
+				b.WriteString(collapseInlineWS(n.Data))
+			}
 			return
 		case html.ElementNode:
 			if skipTags[n.Data] {
 				return
+			}
+			if n.Data == "pre" || n.Data == "code" {
+				preDepth++
 			}
 			switch {
 			case isHeading(n.Data):
@@ -274,6 +311,9 @@ func extractReadableText(htmlContent string) string {
 			walk(c)
 		}
 		if n.Type == html.ElementNode {
+			if n.Data == "pre" || n.Data == "code" {
+				preDepth--
+			}
 			if n.Data == "a" {
 				if href := attr(n, "href"); isHTTPURL(href) {
 					b.WriteString(" (" + href + ")")

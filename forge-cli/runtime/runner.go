@@ -780,10 +780,15 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 
 			// Register search/exploration tools (grep, glob, tree).
+			// Compute the code-agent state ONCE — both the searchRoot scoping
+			// and the general-file-tool decision below read it, and they must
+			// agree (searchRoot=workspace/ ⇔ general file tools skipped).
+			codeAgentActive := r.hasSkill("code-agent")
+
 			// When code-agent skill is active, scope them to workspace/ so searches
 			// default to cloned repos. Otherwise scope to the main working directory.
 			searchRoot := r.cfg.WorkDir
-			if r.hasSkill("code-agent") {
+			if codeAgentActive {
 				codeDir := filepath.Join(r.cfg.WorkDir, "workspace")
 				if mkErr := os.MkdirAll(codeDir, 0o755); mkErr != nil {
 					r.logger.Warn("failed to create code workspace directory", map[string]any{"error": mkErr.Error()})
@@ -799,7 +804,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 			// Register the general file read/write/edit/patch builtins (#268),
 			// confined to the same searchRoot as the search tools.
-			r.registerGeneralFileTools(reg, searchRoot, r.hasSkill("code-agent"))
+			r.registerGeneralFileTools(reg, searchRoot, codeAgentActive)
 
 			// Register read_skill tool for lazy-loading skill instructions
 			readSkill := builtins.NewReadSkillTool(r.cfg.WorkDir)

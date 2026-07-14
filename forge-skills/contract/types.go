@@ -70,8 +70,16 @@ type ForgeSkillMeta struct {
 	// parent agent's `tool.<name>` span via TRACEPARENT env propagation
 	// (issue #182). Wrapping the binary in a bash skill works too, but
 	// adds a fork and a wrapper to maintain.
-	Runtime       string                `yaml:"runtime,omitempty" json:"runtime,omitempty"`
-	Requires      *SkillRequirements    `yaml:"requires,omitempty" json:"requires,omitempty"`
+	Runtime  string             `yaml:"runtime,omitempty" json:"runtime,omitempty"`
+	Requires *SkillRequirements `yaml:"requires,omitempty" json:"requires,omitempty"`
+	// Uses declares the skill's governed tool dependencies — references into
+	// the PLATFORM tool registry (the org-scoped catalog of admitted tools),
+	// chosen as binary or MCP with a selected operation subset. Additive and
+	// DECLARATIVE from forge's perspective: the platform resolves and
+	// validates refs at authoring/build time and materializes the runtime
+	// wiring (mcp servers, allowlists); forge parses the block so the
+	// declaration travels with the skill, and does not gate on it.
+	Uses          []SkillToolDependency `yaml:"uses,omitempty" json:"uses,omitempty"`
 	EgressDomains []string              `yaml:"egress_domains,omitempty" json:"egress_domains,omitempty"`
 	DeniedTools   []string              `yaml:"denied_tools,omitempty" json:"denied_tools,omitempty"`
 	WorkflowPhase string                `yaml:"workflow_phase,omitempty" json:"workflow_phase,omitempty"`
@@ -173,6 +181,15 @@ func (b *BinRequirement) UnmarshalYAML(value *yaml.Node) error {
 
 // SkillRequirements declares CLI binaries, environment variables, and runtime
 // capabilities a skill needs.
+// SkillToolDependency is one governed tool dependency: a reference to a
+// platform tool-registry entry (by its stable key) with the operations this
+// skill selects. Type distinguishes binary vs MCP registry entries.
+type SkillToolDependency struct {
+	Type       string   `yaml:"type" json:"type"` // binary | mcp
+	Ref        string   `yaml:"ref" json:"ref"`   // registry entry key, e.g. "mcp.linear"
+	Operations []string `yaml:"operations,omitempty" json:"operations,omitempty"`
+}
+
 type SkillRequirements struct {
 	Bins []BinRequirement `yaml:"bins,omitempty" json:"bins,omitempty"`
 	Env  *EnvRequirements `yaml:"env,omitempty" json:"env,omitempty"`

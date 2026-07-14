@@ -61,7 +61,7 @@ There are two distinct file surfaces, and they do **not** collide:
 
 | Surface | Tools | Scope | When |
 |---------|-------|-------|------|
-| General builtins (#268) | `file_read` / `file_write` / `file_edit` / `file_patch` | `WorkDir` (or `workspace/` when a code-agent workspace exists) | Every agent, **except** when the code-agent skill is active |
+| General builtins (#268) | `file_read` / `file_write` / `file_edit` / `file_patch` | `WorkDir` | Every agent, **except** when the code-agent skill is active |
 | Code-agent skill | `code_agent_read` / `code_agent_write` / `code_agent_run` (from the skill's `SKILL.md`) | the skill's `project_dir` | Only when the `code-agent` skill is active |
 
 When the `code-agent` skill is active, the general `file_*` builtins are **skipped** — the skill's project-scoped `code_agent_*` tools are the specialized file surface (skill tools win), so the LLM never sees two overlapping file surfaces. Search tools (`grep_search` / `glob_search` / `directory_tree`) are registered in both cases, scoped to `workspace/` under the code-agent skill and to `WorkDir` otherwise.

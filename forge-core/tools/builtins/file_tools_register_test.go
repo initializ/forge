@@ -33,13 +33,15 @@ func TestFileTools_ConfinePathTraversal(t *testing.T) {
 	ft := FileTools(root)
 
 	// Each tool's minimal args plus a traversal path. All must error before
-	// touching /etc/passwd.
+	// touching /etc/passwd. file_patch uses a VALID action (update) so the
+	// rejection is the path-confinement check, not an accidental unknown-action
+	// error firing first.
 	cases := map[string]map[string]any{
 		"file_read":  {"path": "../../../../../../etc/passwd"},
 		"file_write": {"path": "../../../../../../etc/passwd", "content": "x"},
 		"file_edit":  {"path": "../../../../../../etc/passwd", "old_text": "a", "new_text": "b"},
-		"file_patch": {"path": "../../../../../../etc/passwd", "operations": []map[string]any{
-			{"action": "write", "path": "../../../../../../etc/passwd", "content": "x"},
+		"file_patch": {"operations": []map[string]any{
+			{"action": "update", "path": "../../../../../../etc/passwd", "content": "x"},
 		}},
 	}
 
@@ -58,4 +60,21 @@ func TestFileTools_ConfinePathTraversal(t *testing.T) {
 			t.Errorf("%s: expected a confinement error, got %v", tool.Name(), err)
 		}
 	}
+
+	// file_patch resolves the move DESTINATION (new_path) too — a move whose
+	// source is confined but whose new_path escapes must also be rejected.
+	// Guards the destination-confinement path directly.
+	t.Run("file_patch move rejects escaping new_path", func(t *testing.T) {
+		patch := &filePatchTool{pathValidator: NewPathValidator(root)}
+		raw, _ := json.Marshal(map[string]any{"operations": []map[string]any{
+			{"action": "move", "path": "src.txt", "new_path": "../../../../../../etc/cron.d/x"},
+		}})
+		_, err := patch.Execute(context.Background(), raw)
+		if err == nil {
+			t.Fatal("move with an escaping new_path was NOT rejected")
+		}
+		if !strings.Contains(err.Error(), "new_path") || !strings.Contains(err.Error(), "outside the working directory") {
+			t.Errorf("expected a new_path confinement error, got %v", err)
+		}
+	})
 }

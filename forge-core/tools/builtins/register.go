@@ -28,6 +28,7 @@ func All(opts ...Options) []tools.Tool {
 	}
 	return []tools.Tool{
 		(&httpRequestTool{}).WithCredentialInjector(o.HTTPCredentialInjector),
+		(&webFetchTool{}).WithCredentialInjector(o.HTTPCredentialInjector),
 		&jsonParseTool{},
 		&csvParseTool{},
 		&datetimeNowTool{},

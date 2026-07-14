@@ -102,6 +102,7 @@ Every Forge agent has these built-in tools registered automatically. A skill USE
 
 - ` + "`" + `datetime_now` + "`" + ` — current date/time in any timezone. Args: ` + "`" + `timezone` + "`" + ` (IANA name, e.g. ` + "`" + `Australia/Brisbane` + "`" + `; default UTC), ` + "`" + `format` + "`" + ` (` + "`" + `rfc3339` + "`" + ` | ` + "`" + `unix` + "`" + ` | ` + "`" + `date` + "`" + ` | ` + "`" + `time` + "`" + ` | ` + "`" + `datetime` + "`" + `). Use for ANY "what's the time/date" need — never state a time from your own knowledge.
 - ` + "`" + `web_search` + "`" + ` — live web search (requires a web-search provider key configured). Use for current/live information from the web.
+- ` + "`" + `web_fetch` + "`" + ` — fetch a specific URL and return its main content as clean, readable text/markdown (strips nav/scripts/styling). Use to READ a known page/doc/spec/changelog. (` + "`" + `web_search` + "`" + ` finds pages; ` + "`" + `web_fetch` + "`" + ` reads one; ` + "`" + `http_request` + "`" + ` is for raw bytes or non-GET.)
 - ` + "`" + `http_request` + "`" + ` — HTTP call to an allowed egress domain. Use to hit a REST API directly (no script needed for a simple call).
 - ` + "`" + `json_parse` + "`" + ` / ` + "`" + `csv_parse` + "`" + ` — parse JSON / CSV payloads.
 - ` + "`" + `math_calculate` + "`" + ` — evaluate an arithmetic expression.

@@ -39,29 +39,41 @@ Tools are capabilities that an LLM agent can invoke during execution. Forge prov
 
 Register all builtins with `builtins.RegisterAll(registry)`.
 
-## Code-Agent Tools
+## File & Search Tools
 
-When the `code-agent` skill is active, Forge registers additional tools for autonomous code generation and modification. These tools are **not** registered by default — they are conditionally added when the skill requires them.
-
-All code-agent tools use a `PathValidator` that confines resolved paths within the agent's working directory, preventing directory traversal attacks.
+Every Forge agent gets a file read/write/edit/patch surface plus search, registered by default and confined to the agent's working directory (`WorkDir`) via a `PathValidator`. All resolved paths are confined within the working directory, preventing directory-traversal attacks.
 
 | Tool | Description |
 |------|-------------|
 | `file_read` | Read file contents with optional line offset/limit, or list directory entries |
-| `file_write` | Create or overwrite files in the project directory |
+| `file_write` | Create or overwrite files in the working directory |
 | `file_edit` | Edit files by exact string matching with unified diff output |
 | `file_patch` | Batch file operations (add, update, delete, move) in a single call |
 | `glob_search` | Find files by glob pattern (e.g., `**/*.go`), sorted by modification time |
 | `grep_search` | Search file contents with regex; uses `rg` if available, falls back to Go |
 | `directory_tree` | Display tree-formatted directory listing (default max depth: 3) |
 
+`file_read` / `file_write` / `file_edit` / `file_patch` are registered for general agents by the runtime (#268); previously they were reachable only when a skill wired them up. They give a general agent a real file-editing surface — not just `file_create` + search.
+
+### General file tools vs. the code-agent skill
+
+There are two distinct file surfaces, and they do **not** collide:
+
+| Surface | Tools | Scope | When |
+|---------|-------|-------|------|
+| General builtins (#268) | `file_read` / `file_write` / `file_edit` / `file_patch` | `WorkDir` (or `workspace/` when a code-agent workspace exists) | Every agent, **except** when the code-agent skill is active |
+| Code-agent skill | `code_agent_read` / `code_agent_write` / `code_agent_run` (from the skill's `SKILL.md`) | the skill's `project_dir` | Only when the `code-agent` skill is active |
+
+When the `code-agent` skill is active, the general `file_*` builtins are **skipped** — the skill's project-scoped `code_agent_*` tools are the specialized file surface (skill tools win), so the LLM never sees two overlapping file surfaces. Search tools (`grep_search` / `glob_search` / `directory_tree`) are registered in both cases, scoped to `workspace/` under the code-agent skill and to `WorkDir` otherwise.
+
 ### Registration Groups
 
-Code-agent tools are registered in layered groups, allowing skills to request only the capabilities they need:
+These tools are constructed and registered in layered groups (`forge-core/tools/builtins/register.go`), so the runtime and skills can request only the capabilities they need:
 
 | Group | Tools | Purpose |
 |-------|-------|---------|
-| `CodeAgentSearchTools` | `grep_search`, `glob_search`, `directory_tree` | Read-only exploration |
+| `FileTools` | `file_read`, `file_write`, `file_edit`, `file_patch` | General file surface — registered for non-code-agent agents (#268) |
+| `CodeAgentSearchTools` | `grep_search`, `glob_search`, `directory_tree` | Read-only exploration — registered for every Forge agent |
 | `CodeAgentReadTools` | `file_read` + search tools | Safe reading |
 | `CodeAgentWriteTools` | `file_write`, `file_edit`, `file_patch` | Modification |
 | `CodeAgentTools` | All read + write tools | Full code-agent capability |

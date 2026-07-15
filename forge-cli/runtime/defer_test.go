@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -349,3 +350,72 @@ func TestDecisionsEndpoint_BadDecision(t *testing.T) {
 	// Cleanup — the pending deferral would leak otherwise.
 	_ = engine.Resolve("task-x", deferengine.Resolution{Decision: deferengine.DecisionTimeout})
 }
+
+// TestDeferHook_FiresDeferralNotifier pins the #310 wiring: when a tool call is
+// deferred and a DeferralNotifier is set, the hook invokes it with the routing
+// target + task/tool/context, so a channel adapter can deliver the approval.
+func TestDeferHook_FiresDeferralNotifier(t *testing.T) {
+	cfg := types.DeferConfig{
+		Enabled:        true,
+		DefaultTimeout: 500 * time.Millisecond,
+		Tools: map[string]types.DeferToolConfig{
+			"cli_execute": {To: "channel:slack:#oncall", Timeout: 500 * time.Millisecond,
+				ContextTemplate: "run {tool}"},
+		},
+	}
+	r, _, _, hooks := buildTestRunner(t, cfg)
+
+	type call struct{ to, taskID, tool, ctx string }
+	got := make(chan call, 1)
+	r.SetDeferralNotifier(func(_ context.Context, to, taskID, tool, approverCtx string, _ time.Duration) error {
+		got <- call{to, taskID, tool, approverCtx}
+		return nil
+	})
+
+	hctx := &coreruntime.HookContext{ToolName: "cli_execute", ToolInput: `{}`, TaskID: "task-notify"}
+	done := make(chan error, 1)
+	go func() { done <- hooks.Fire(context.Background(), coreruntime.BeforeToolExec, hctx) }()
+
+	select {
+	case c := <-got:
+		if c.to != "channel:slack:#oncall" || c.taskID != "task-notify" || c.tool != "cli_execute" || c.ctx != "run cli_execute" {
+			t.Errorf("notifier got %+v", c)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("deferral notifier was not invoked")
+	}
+
+	// Unblock the hook so the goroutine exits cleanly.
+	_ = r.deferEngine.Resolve("task-notify", deferengine.Resolution{Decision: deferengine.DecisionApprove})
+	<-done
+}
+
+// TestDeferHook_NotifierFailureNonFatal: a delivery failure must NOT deny — the
+// hook still blocks and a direct approve still lets the tool proceed.
+func TestDeferHook_NotifierFailureNonFatal(t *testing.T) {
+	cfg := types.DeferConfig{
+		Enabled: true, DefaultTimeout: 500 * time.Millisecond,
+		Tools: map[string]types.DeferToolConfig{"cli_execute": {To: "channel:slack:#x", Timeout: 500 * time.Millisecond}},
+	}
+	r, _, _, hooks := buildTestRunner(t, cfg)
+	r.SetDeferralNotifier(func(context.Context, string, string, string, string, time.Duration) error {
+		return errTestDelivery
+	})
+
+	hctx := &coreruntime.HookContext{ToolName: "cli_execute", ToolInput: `{}`, TaskID: "task-nf"}
+	done := make(chan error, 1)
+	go func() { done <- hooks.Fire(context.Background(), coreruntime.BeforeToolExec, hctx) }()
+	time.Sleep(30 * time.Millisecond)
+	_ = r.deferEngine.Resolve("task-nf", deferengine.Resolution{Decision: deferengine.DecisionApprove})
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("delivery failure must not fail the hook on approve; got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("hook did not return")
+	}
+}
+
+var errTestDelivery = fmt.Errorf("simulated delivery failure")

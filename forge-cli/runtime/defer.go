@@ -101,6 +101,21 @@ func (r *Runner) registerDeferHook(hooks *coreruntime.HookRegistry, store TaskSt
 			},
 		})
 
+		// #310 — deliver an interactive approval request to the channel named
+		// in `to:` (e.g. Slack Block Kit buttons). Best-effort: a delivery
+		// failure is logged, never fatal — the approver can still POST
+		// /tasks/{id}/decisions, and blocking/denying on a Slack outage would
+		// be worse than a missing button.
+		if r.deferralNotifier != nil {
+			if nErr := r.deferralNotifier(ctx, spec.To, hctx.TaskID, hctx.ToolName, spec.ContextForApprover, spec.Timeout); nErr != nil {
+				r.logger.Warn("defer: approval delivery failed", map[string]any{
+					"tool":  hctx.ToolName,
+					"to":    spec.To,
+					"error": nErr.Error(),
+				})
+			}
+		}
+
 		start := time.Now()
 		res, waitErr := handle.WaitCtx(ctx)
 		if waitErr != nil {

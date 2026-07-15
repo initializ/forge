@@ -1,8 +1,12 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -321,10 +325,85 @@ func runRun(cmd *cobra.Command, args []string) error {
 				}
 				return plugin.SendResponse(event, response)
 			})
+
+			// Wire up DEFER (R4c) interactive approvals (#310): route a
+			// deferred tool call's `to: channel:<adapter>:<target>` to a
+			// channel adapter that supports interactive approvals, and resolve
+			// the approver's click back to the decisions endpoint.
+			resolver := func(ctx context.Context, d corechannels.ApprovalDecision) error {
+				return postDeferDecision(ctx, agentURL, runner.AuthToken(), d)
+			}
+			for _, plugin := range activePlugins {
+				if deliverer, ok := plugin.(corechannels.ApprovalDeliverer); ok {
+					deliverer.SetApprovalResolver(resolver)
+				}
+			}
+			runner.SetDeferralNotifier(func(ctx context.Context, to, taskID, tool, approverContext string, timeout time.Duration) error {
+				adapter, target, ok := parseDeferTarget(to)
+				if !ok {
+					return fmt.Errorf("defer `to` %q is not in channel:<adapter>:<target> form", to)
+				}
+				plugin, ok := activePlugins[adapter]
+				if !ok {
+					return fmt.Errorf("defer target adapter %q is not active", adapter)
+				}
+				deliverer, ok := plugin.(corechannels.ApprovalDeliverer)
+				if !ok {
+					return fmt.Errorf("channel adapter %q does not support interactive approvals", adapter)
+				}
+				return deliverer.DeliverApproval(ctx, corechannels.ApprovalRequest{
+					TaskID:  taskID,
+					Tool:    tool,
+					Context: approverContext,
+					Timeout: timeout,
+					Target:  target,
+				})
+			})
 		}
 	}
 
 	return runner.Run(ctx)
+}
+
+// parseDeferTarget parses a DEFER `to:` value of the form
+// "channel:<adapter>:<target>" (e.g. "channel:slack:#oncall") into its adapter
+// and target. Returns ok=false for any other shape.
+func parseDeferTarget(to string) (adapter, target string, ok bool) {
+	parts := strings.SplitN(strings.TrimSpace(to), ":", 3)
+	if len(parts) != 3 || parts[0] != "channel" || parts[1] == "" || parts[2] == "" {
+		return "", "", false
+	}
+	return parts[1], parts[2], true
+}
+
+// postDeferDecision POSTs an approver's decision to the agent's DEFER decisions
+// endpoint (the same endpoint a human would curl). Topology-agnostic: works
+// whether the channel adapter runs in-process or as a separate process.
+func postDeferDecision(ctx context.Context, agentURL, token string, d corechannels.ApprovalDecision) error {
+	body, _ := json.Marshal(map[string]string{
+		"decision": d.Decision,
+		"approver": d.Approver,
+		"note":     d.Note,
+	})
+	url := fmt.Sprintf("%s/tasks/%s/decisions", agentURL, d.TaskID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("decisions endpoint HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return nil
 }
 
 // buildRateLimitOverride translates the runRateLimit* flag vars into

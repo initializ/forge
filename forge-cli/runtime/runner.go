@@ -111,6 +111,14 @@ type RunnerConfig struct {
 // result to the appropriate channel (e.g. Slack, Telegram).
 type ScheduleNotifier func(ctx context.Context, channel, target string, response *a2a.Message) error
 
+// DeferralNotifier is called when a tool call is deferred for human approval
+// (R4c #211) to deliver an interactive approval request to a channel (#310).
+// `to` is the tool's `security.defer.tools.<tool>.to` value (e.g.
+// "channel:slack:#oncall"). Optional — a nil notifier means no channel
+// delivery; the approver can still POST /tasks/{id}/decisions directly. A
+// delivery error is logged, never fatal (a Slack outage must not auto-deny).
+type DeferralNotifier func(ctx context.Context, to, taskID, tool, approverContext string, timeout time.Duration) error
+
 // codeAgentDirective is appended to the system prompt when code-agent skill
 // is active. Forces the LLM to always call tools — never respond with text only.
 const codeAgentDirective = `## Code Agent — MANDATORY RULES
@@ -152,6 +160,7 @@ type Runner struct {
 	schedBackend         scheduler.Backend                 // schedule backend (nil until started); FileBackend in non-cluster deploys, KubernetesBackend (#162 part 2b) when running in-cluster with scheduler.backend=auto|kubernetes
 	startTime            time.Time                         // server start time (for /health uptime)
 	scheduleNotifier     ScheduleNotifier                  // optional: delivers cron results to channels
+	deferralNotifier     DeferralNotifier                  // optional: delivers DEFER approval requests to channels (#310)
 	authToken            string                            // resolved auth token (empty if --no-auth)
 	cancelRegistry       *coreruntime.CancellationRegistry // per-Runner in-flight cancellation registry (issue #88 / FWS-4)
 	auditSigningKey      *coreruntime.LoadedKey            // loaded once at startup; nil when signing is off (#213). Served on JWKS endpoint.
@@ -189,6 +198,12 @@ func NewRunner(cfg RunnerConfig) (*Runner, error) {
 // to channel adapters. Must be called before Run().
 func (r *Runner) SetScheduleNotifier(fn ScheduleNotifier) {
 	r.scheduleNotifier = fn
+}
+
+// SetDeferralNotifier sets the callback used to deliver DEFER (R4c) approval
+// requests to channel adapters (#310). Must be called before Run().
+func (r *Runner) SetDeferralNotifier(fn DeferralNotifier) {
+	r.deferralNotifier = fn
 }
 
 // ResolveAuth resolves the auth token early (before Run). This is needed so

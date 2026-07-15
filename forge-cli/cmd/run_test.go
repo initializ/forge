@@ -68,3 +68,28 @@ func TestRunCmd_InvalidConfigContent(t *testing.T) {
 		t.Error("expected error for invalid config")
 	}
 }
+
+// TestParseDeferTarget covers the DEFER `to:` routing parse (#310).
+func TestParseDeferTarget(t *testing.T) {
+	cases := []struct {
+		in              string
+		adapter, target string
+		ok              bool
+	}{
+		{"channel:slack:#oncall", "slack", "#oncall", true},
+		{"channel:telegram:12345", "telegram", "12345", true},
+		{"channel:slack:C0123ABC", "slack", "C0123ABC", true},
+		{"  channel:slack:#oncall  ", "slack", "#oncall", true}, // trimmed
+		{"slack:#oncall", "", "", false},                        // missing scheme
+		{"channel:slack", "", "", false},                        // missing target
+		{"channel::#oncall", "", "", false},                     // empty adapter
+		{"channel:slack:", "", "", false},                       // empty target
+		{"", "", "", false},
+	}
+	for _, c := range cases {
+		a, tg, ok := parseDeferTarget(c.in)
+		if ok != c.ok || a != c.adapter || tg != c.target {
+			t.Errorf("parseDeferTarget(%q) = (%q,%q,%v), want (%q,%q,%v)", c.in, a, tg, ok, c.adapter, c.target, c.ok)
+		}
+	}
+}

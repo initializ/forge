@@ -5,6 +5,7 @@ package channels
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/initializ/forge/forge-core/a2a"
 )
@@ -57,4 +58,45 @@ type Attachment struct {
 	Name     string `json:"name,omitempty"`
 	MimeType string `json:"mime_type,omitempty"`
 	URL      string `json:"url,omitempty"`
+}
+
+// --- Interactive human-approval (DEFER / R4c, #211) delivery -----------------
+
+// ApprovalRequest is a pending human-approval to deliver to an approver via an
+// interactive channel message (e.g. Slack Block Kit buttons). The runtime
+// builds one when a tool call is deferred; a channel adapter renders it.
+type ApprovalRequest struct {
+	TaskID  string        // the deferred A2A task; the resolution key
+	Tool    string        // the tool call awaiting approval
+	Context string        // rendered context_template (what the agent wants to do)
+	Timeout time.Duration // how long until auto-deny
+	Target  string        // adapter-specific destination (e.g. a Slack channel "#oncall")
+}
+
+// ApprovalDecision is an approver's response, delivered back to the runtime by
+// the adapter that received the interaction.
+type ApprovalDecision struct {
+	TaskID   string // must match the ApprovalRequest.TaskID
+	Decision string // "approve" | "reject"
+	Approver string // who acted (platform user id / name)
+	Note     string // optional justification
+}
+
+// ApprovalResolver is invoked by an adapter when an approver acts on a
+// delivered ApprovalRequest. The runtime routes it to the deferred task's
+// decision (typically POST /tasks/{id}/decisions). Wired via
+// ApprovalDeliverer.SetApprovalResolver at startup.
+type ApprovalResolver func(ctx context.Context, d ApprovalDecision) error
+
+// ApprovalDeliverer is an OPTIONAL capability. A channel adapter that can post
+// an interactive approval request AND receive the approver's response
+// implements it (Slack via Block Kit over Socket Mode, #310). Adapters that
+// don't implement it simply can't be a DEFER `to:` target; the deferral still
+// works via a direct POST /tasks/{id}/decisions.
+type ApprovalDeliverer interface {
+	// DeliverApproval posts the interactive approval request to req.Target.
+	DeliverApproval(ctx context.Context, req ApprovalRequest) error
+	// SetApprovalResolver wires the callback the adapter invokes when an
+	// approver acts. The runtime sets this once at startup.
+	SetApprovalResolver(r ApprovalResolver)
 }

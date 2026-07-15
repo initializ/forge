@@ -41,6 +41,11 @@ type Plugin struct {
 	apiBase     string // overridable for tests
 	dedupMu     sync.Mutex
 	dedupCache  map[string]time.Time
+
+	// approvalResolver is wired by the runtime (SetApprovalResolver) so an
+	// interactive DEFER approval click resolves the deferred task (#310).
+	// nil when interactive approvals aren't wired.
+	approvalResolver channels.ApprovalResolver
 }
 
 // New creates an uninitialised Slack plugin.
@@ -358,6 +363,16 @@ func (p *Plugin) readLoop(ctx context.Context, conn *websocket.Conn, handler cha
 		if envelope.Type == "disconnect" {
 			fmt.Println("  slack: received disconnect, will reconnect")
 			return nil
+		}
+
+		// Interactive components (Block Kit button clicks) arrive as
+		// `interactive` envelopes, not `events_api`. DEFER approval
+		// Approve/Reject buttons land here (#310). Already acked above.
+		if envelope.Type == "interactive" {
+			if err := p.handleInteractive(ctx, envelope.Payload); err != nil {
+				fmt.Printf("  slack: interactive handling error: %v\n", err)
+			}
+			continue
 		}
 
 		if envelope.Type != "events_api" {

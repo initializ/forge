@@ -178,19 +178,49 @@ replace.
 Never carries token bytes or full tool inputs beyond the truncated
 context template.
 
-## Notify integration (follow-up)
+## Notify integration
 
-The `to` field is free-form for now — the runtime doesn't route it
-anywhere. Operators wire their own notify path:
+### Native Slack approvals (#310)
 
-- Poll the audit stream for `task_deferred`, forward to Slack/Teams/etc.
-- Slack Block Kit approve/reject buttons post back to
-  `/tasks/{id}/decisions` (add an auth token — the endpoint honors
-  the runner's normal auth middleware).
+When the agent runs with `--with slack` and a deferred tool's `to` is
+`channel:slack:<channel>`, Forge **delivers the approval natively**: on a
+deferral the Slack adapter posts a **Block Kit** message with **Approve /
+Reject** buttons to that channel, and a click resolves the deferral —
+the tool proceeds or fails and the message updates with the outcome +
+approver.
 
-A first-party channel adapter with approve/reject buttons is
-tracked as a follow-up; the plumbing (audit → HTTP roundtrip) is
-in place today.
+```yaml
+security:
+  defer:
+    enabled: true
+    tools:
+      atlassian__jira_create_issue:
+        to: channel:slack:#oncall        # channel:<adapter>:<target>
+        timeout: 15m
+        context_template: "Agent wants to run {tool} with args: {args}"
+```
+
+This needs **no inbound exposure to Forge**: the Slack adapter uses
+Socket Mode (outbound WebSocket), so the button click arrives over the
+agent's existing outbound connection. Under the hood the click is routed
+to the same `POST /tasks/{id}/decisions` endpoint an operator would curl.
+Delivery is **best-effort** — if Slack is unreachable the deferral still
+holds and an approver can POST the decision directly; a delivery failure
+never auto-denies.
+
+The `to` value must be `channel:<adapter>:<target>`; an adapter that
+doesn't implement interactive approvals (`channels.ApprovalDeliverer`)
+can't be a target. Telegram / MS Teams interactive approvals are a
+follow-up (same interface).
+
+### Custom notify path
+
+For any other target (or without the Slack adapter), wire your own:
+
+- Poll the audit stream for `task_deferred` (carries `task_id`, `to`,
+  `context`), forward to your tool of choice.
+- Have it POST `{decision, approver, note}` to `/tasks/{id}/decisions`
+  (add an auth token — the endpoint honors the runner's auth middleware).
 
 ## Combining with other governance controls
 

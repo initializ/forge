@@ -200,6 +200,21 @@ security:
         context_template: "Agent wants to run {tool} with args: {args}"
 ```
 
+**The `<target>` may be a channel id (`C0123ABC5`) or a name (`#oncall`
+or `oncall`).** A name is resolved to its id via `conversations.list` and
+cached; an id is used directly. Requirements for the target channel:
+
+- **The bot must be a member** of the channel (invite it) — otherwise
+  Slack rejects the post with `not_in_channel`.
+- Resolving a **name** needs the bot's `channels:read` (public) +
+  `groups:read` (private) scopes; posting needs `chat:write`; updating the
+  message after a decision needs `chat:write` as well.
+- Name resolution **fails closed** — if the name can't be resolved (wrong
+  scope, bot not a member, no such channel) the delivery errors (logged,
+  non-fatal) rather than posting to the wrong place. If in doubt, use the
+  **channel id** directly (right-click the channel → *View channel
+  details* → the id is at the bottom).
+
 This needs **no inbound exposure to Forge**: the Slack adapter uses
 Socket Mode (outbound WebSocket), so the button click arrives over the
 agent's existing outbound connection. Under the hood the click is routed

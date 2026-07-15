@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/initializ/forge/forge-core/channels"
@@ -31,21 +34,138 @@ func (p *Plugin) SetApprovalResolver(r channels.ApprovalResolver) {
 }
 
 // DeliverApproval posts a Block Kit Approve/Reject message to req.Target (a
-// Slack channel like "#oncall"). The buttons carry the task id so the click
-// can be routed back to the deferral. Delivery failure is returned to the
-// caller (the runtime logs it, non-fatal — the approver can still POST the
-// decision directly).
+// Slack channel ID like "C0123ABC5" or a name like "#oncall"). The buttons
+// carry the task id so the click can be routed back to the deferral. Delivery
+// failure is returned to the caller (the runtime logs it, non-fatal — the
+// approver can still POST the decision directly).
 func (p *Plugin) DeliverApproval(ctx context.Context, req channels.ApprovalRequest) error {
 	if req.Target == "" {
 		return fmt.Errorf("slack DeliverApproval: empty target channel")
 	}
-	return p.postMessage(buildApprovalPayload(req))
+	channelID, err := p.resolveChannelID(ctx, req.Target)
+	if err != nil {
+		return fmt.Errorf("slack DeliverApproval: %w", err)
+	}
+	payload := buildApprovalPayload(req)
+	payload["channel"] = channelID
+	return p.postMessage(payload)
+}
+
+// channelIDPattern matches an encoded Slack channel/group/DM id (C…/G…/D…),
+// which chat.postMessage accepts directly. A "#name" or bare name is resolved.
+var channelIDPattern = regexp.MustCompile(`^[CGD][A-Z0-9]{6,}$`)
+
+// resolveChannelID turns a DEFER `to:` channel target into a Slack channel id.
+// An encoded id passes through unchanged (no API call). A "#name" or bare name
+// is resolved via conversations.list (public + private, matched
+// case-insensitively) and cached — Slack ids are stable across renames, so the
+// cache never goes stale on a rename. FAILS CLOSED: an unresolvable target
+// returns an error so an approval is never silently misrouted (needed because
+// chat.postMessage cannot address a PRIVATE channel by #name, and private is
+// the recommended approvals channel).
+func (p *Plugin) resolveChannelID(ctx context.Context, target string) (string, error) {
+	target = strings.TrimSpace(target)
+	name := strings.TrimPrefix(target, "#")
+	// No "#" prefix AND looks like an encoded id → already an id.
+	if target == name && channelIDPattern.MatchString(target) {
+		return target, nil
+	}
+	name = strings.ToLower(name)
+	if name == "" {
+		return "", fmt.Errorf("empty channel target")
+	}
+
+	p.chanMu.Lock()
+	if id, ok := p.chanIDCache[name]; ok {
+		p.chanMu.Unlock()
+		return id, nil
+	}
+	p.chanMu.Unlock()
+
+	id, err := p.lookupChannelID(ctx, name)
+	if err != nil {
+		return "", err
+	}
+	p.chanMu.Lock()
+	if p.chanIDCache == nil {
+		p.chanIDCache = map[string]string{}
+	}
+	p.chanIDCache[name] = id
+	p.chanMu.Unlock()
+	return id, nil
+}
+
+type slackConversation struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// lookupChannelID pages through conversations.list to find the channel whose
+// name matches (case-insensitive). Bounded to 20 pages (≈20k channels) so a
+// pathological workspace can't spin forever. Requires the bot's channels:read
+// (public) + groups:read (private) scopes, and the bot must be a member.
+func (p *Plugin) lookupChannelID(ctx context.Context, name string) (string, error) {
+	cursor := ""
+	for range 20 { // bound ≈ 20k channels
+		convs, next, err := p.listConversations(ctx, cursor)
+		if err != nil {
+			return "", err
+		}
+		for _, c := range convs {
+			if strings.EqualFold(c.Name, name) {
+				return c.ID, nil
+			}
+		}
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	return "", fmt.Errorf("channel %q not found — is the bot a member, and does it have channels:read + groups:read? (or use the channel id)", "#"+name)
+}
+
+// listConversations fetches one page of the workspace's public + private
+// channels the bot can see.
+func (p *Plugin) listConversations(ctx context.Context, cursor string) ([]slackConversation, string, error) {
+	q := url.Values{}
+	q.Set("types", "public_channel,private_channel")
+	q.Set("limit", "1000")
+	q.Set("exclude_archived", "true")
+	if cursor != "" {
+		q.Set("cursor", cursor)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.apiBase+"/conversations.list?"+q.Encode(), nil)
+	if err != nil {
+		return nil, "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+p.botToken)
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var out struct {
+		OK               bool                `json:"ok"`
+		Error            string              `json:"error"`
+		Channels         []slackConversation `json:"channels"`
+		ResponseMetadata struct {
+			NextCursor string `json:"next_cursor"`
+		} `json:"response_metadata"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, "", fmt.Errorf("conversations.list decode: %w", err)
+	}
+	if !out.OK {
+		return nil, "", fmt.Errorf("conversations.list: %s", out.Error)
+	}
+	return out.Channels, out.ResponseMetadata.NextCursor, nil
 }
 
 // buildApprovalPayload renders the chat.postMessage body for an approval
-// request. Split out (pure) so tests can assert the Block Kit shape without a
-// live Slack. `text` is the notification fallback; the blocks carry the
-// interactive buttons whose `value` is the task id (the resolution key).
+// request (minus the `channel`, which DeliverApproval sets from the resolved
+// id). Split out (pure) so tests can assert the Block Kit shape without a live
+// Slack. `text` is the notification fallback; the blocks carry the interactive
+// buttons whose `value` is the task id (the resolution key).
 func buildApprovalPayload(req channels.ApprovalRequest) map[string]any {
 	summary := fmt.Sprintf("*Approval required* for `%s`", req.Tool)
 	detail := summary
@@ -56,8 +176,7 @@ func buildApprovalPayload(req channels.ApprovalRequest) map[string]any {
 		detail += fmt.Sprintf("\n_Auto-denies in %s._", req.Timeout.Round(time.Second))
 	}
 	return map[string]any{
-		"channel": req.Target,
-		"text":    fmt.Sprintf("Approval required for %s", req.Tool), // fallback / a11y
+		"text": fmt.Sprintf("Approval required for %s", req.Tool), // fallback / a11y
 		"blocks": []any{
 			map[string]any{
 				"type": "section",

@@ -55,6 +55,11 @@ type Plugin struct {
 	// (#310) so a repeated deferral to the same channel skips conversations.list.
 	chanMu      sync.Mutex
 	chanIDCache map[string]string
+
+	// userEmailCache memoizes resolved user id → email for the DEFER approver
+	// allowlist (#313) so a repeated approver skips users.info.
+	userMu         sync.Mutex
+	userEmailCache map[string]string
 }
 
 // SetLogger wires a structured ops logger (channels.LoggerAware). Optional.
@@ -73,10 +78,11 @@ func (p *Plugin) logWarn(msg string, fields map[string]any) {
 // New creates an uninitialised Slack plugin.
 func New() *Plugin {
 	return &Plugin{
-		client:      &http.Client{Timeout: 30 * time.Second},
-		apiBase:     slackAPIBase,
-		dedupCache:  make(map[string]time.Time),
-		chanIDCache: make(map[string]string),
+		client:         &http.Client{Timeout: 30 * time.Second},
+		apiBase:        slackAPIBase,
+		dedupCache:     make(map[string]time.Time),
+		chanIDCache:    make(map[string]string),
+		userEmailCache: make(map[string]string),
 	}
 }
 

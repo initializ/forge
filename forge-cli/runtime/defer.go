@@ -140,11 +140,12 @@ func (r *Runner) registerDeferHook(hooks *coreruntime.HookRegistry, store TaskSt
 				CorrelationID: hctx.CorrelationID,
 				TaskID:        hctx.TaskID,
 				Fields: map[string]any{
-					"tool":     hctx.ToolName,
-					"decision": string(res.Decision),
-					"approver": res.Approver,
-					"note":     res.Note,
-					"wait_ms":  waitMs,
+					"tool":           hctx.ToolName,
+					"decision":       string(res.Decision),
+					"approver":       res.Approver,
+					"approver_email": res.ApproverEmail,
+					"note":           res.Note,
+					"wait_ms":        waitMs,
 				},
 			})
 			return nil
@@ -154,11 +155,12 @@ func (r *Runner) registerDeferHook(hooks *coreruntime.HookRegistry, store TaskSt
 				CorrelationID: hctx.CorrelationID,
 				TaskID:        hctx.TaskID,
 				Fields: map[string]any{
-					"tool":     hctx.ToolName,
-					"decision": string(res.Decision),
-					"approver": res.Approver,
-					"note":     res.Note,
-					"wait_ms":  waitMs,
+					"tool":           hctx.ToolName,
+					"decision":       string(res.Decision),
+					"approver":       res.Approver,
+					"approver_email": res.ApproverEmail,
+					"note":           res.Note,
+					"wait_ms":        waitMs,
 				},
 			})
 			return fmt.Errorf("defer: rejected by %s: %s", res.Approver, res.Note)
@@ -204,11 +206,31 @@ func resolveDeferSpec(cfg types.DeferConfig, tool types.DeferToolConfig, hctx *c
 		"{tool}", hctx.ToolName,
 		"{args}", hctx.ToolInput,
 	).Replace(ctxTemplate)
+	approvers := tool.Approvers
+	if len(approvers) == 0 {
+		approvers = cfg.DefaultApprovers
+	}
 	return deferengine.Spec{
 		To:                 to,
 		Timeout:            timeout,
 		ContextForApprover: rendered,
+		Approvers:          normalizeApprovers(approvers),
 	}
+}
+
+// normalizeApprovers lowercases + trims the allowlist emails and drops blanks,
+// so the engine's case-insensitive membership check is a plain compare.
+func normalizeApprovers(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	for _, e := range in {
+		if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // truncateForAudit caps context strings on the audit event so a
@@ -245,7 +267,7 @@ func (r *Runner) registerDecisionsEndpoint(srv *server.Server, auditLogger *core
 	if r.deferEngine == nil {
 		return
 	}
-	srv.RegisterHTTPHandler("POST /tasks/{id}/decisions", makeDecisionsHandler(r.deferEngine))
+	srv.RegisterHTTPHandler("POST /tasks/{id}/decisions", makeDecisionsHandler(r.deferEngine, auditLogger))
 }
 
 // makeDecisionsHandler returns the http.HandlerFunc for
@@ -254,7 +276,7 @@ func (r *Runner) registerDecisionsEndpoint(srv *server.Server, auditLogger *core
 // status-code paths (400 malformed / 404 no-pending-deferral /
 // 409 Peek-vs-Resolve race / 200 resolved) without spinning up
 // the full a2a server.
-func makeDecisionsHandler(engine *deferengine.Engine) http.HandlerFunc {
+func makeDecisionsHandler(engine *deferengine.Engine, auditLogger *coreruntime.AuditLogger) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		taskID := req.PathValue("id")
 		if taskID == "" {
@@ -262,9 +284,10 @@ func makeDecisionsHandler(engine *deferengine.Engine) http.HandlerFunc {
 			return
 		}
 		var body struct {
-			Decision string `json:"decision"`
-			Approver string `json:"approver"`
-			Note     string `json:"note"`
+			Decision      string `json:"decision"`
+			Approver      string `json:"approver"`
+			ApproverEmail string `json:"approver_email"` // #313 — for the allowlist check
+			Note          string `json:"note"`
 		}
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body: " + err.Error()})
@@ -277,16 +300,43 @@ func makeDecisionsHandler(engine *deferengine.Engine) http.HandlerFunc {
 			})
 			return
 		}
-		if _, ok := engine.Peek(taskID); !ok {
+		handle, ok := engine.Peek(taskID)
+		if !ok {
 			writeJSON(w, http.StatusNotFound, map[string]string{
 				"error": "no pending deferral for task",
 			})
 			return
 		}
+		// #313 — approver allowlist. When the tool declares `approvers`, the
+		// resolved email must be present and listed; fail closed (an empty
+		// email against a non-empty allowlist is refused). The deferral stays
+		// pending so a real approver can still act. No-op when no allowlist is
+		// configured (empty Approvers → IsApprover always true).
+		if !handle.IsApprover(body.ApproverEmail) {
+			if auditLogger != nil {
+				auditLogger.Emit(coreruntime.AuditEvent{
+					Event:  coreruntime.AuditTaskDeferredDecision,
+					TaskID: taskID,
+					Fields: map[string]any{
+						"tool":           handle.Tool(),
+						"decision":       "denied",
+						"reason":         "unauthorized_approver",
+						"authorized":     false,
+						"approver":       body.Approver,
+						"approver_email": body.ApproverEmail,
+					},
+				})
+			}
+			writeJSON(w, http.StatusForbidden, map[string]string{
+				"error": "approver not authorized to resolve this deferral",
+			})
+			return
+		}
 		if err := engine.Resolve(taskID, deferengine.Resolution{
-			Decision: decision,
-			Approver: body.Approver,
-			Note:     body.Note,
+			Decision:      decision,
+			Approver:      body.Approver,
+			ApproverEmail: body.ApproverEmail,
+			Note:          body.Note,
 		}); err != nil {
 			// Race: another decision landed in the window between
 			// Peek and Resolve. 409 is the honest signal.

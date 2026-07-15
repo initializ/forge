@@ -366,6 +366,11 @@ type DeferConfig struct {
 	// legal — the deferral fires and the audit event carries "" for
 	// operators to route on downstream.
 	DefaultTo string `yaml:"default_to,omitempty"`
+
+	// DefaultApprovers is the approver email allowlist applied when a
+	// tool's Approvers is unset (#313). Empty → no allowlist (any approver
+	// may resolve). See DeferToolConfig.Approvers.
+	DefaultApprovers []string `yaml:"default_approvers,omitempty"`
 }
 
 // Validate returns an error when the config would silently no-op or
@@ -399,6 +404,14 @@ type DeferToolConfig struct {
 	// at hook time. When empty, the payload is
 	// `"tool={tool} args={args}"`.
 	ContextTemplate string `yaml:"context_template,omitempty"`
+
+	// Approvers is the email allowlist authorized to resolve this tool's
+	// deferrals (#313). Empty → falls back to DeferConfig.DefaultApprovers;
+	// if that is also empty there is NO allowlist and any approver may
+	// resolve (channel membership is the ACL). Non-empty → the decisions
+	// endpoint requires the approver's resolved email to be in this set
+	// (case-insensitive) and FAILS CLOSED when the email can't be resolved.
+	Approvers []string `yaml:"approvers,omitempty"`
 }
 
 // ObservabilityConfig groups telemetry-related sub-blocks. Today it

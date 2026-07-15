@@ -78,8 +78,13 @@ type ApprovalRequest struct {
 type ApprovalDecision struct {
 	TaskID   string // must match the ApprovalRequest.TaskID
 	Decision string // "approve" | "reject"
-	Approver string // who acted (platform user id / name)
-	Note     string // optional justification
+	Approver string // who acted (platform user id / name), for audit
+	// ApproverEmail is the approver's resolved email (#313). Adapters populate
+	// it (e.g. Slack via users.info) so the runtime's approver allowlist check
+	// is adapter-agnostic. Empty when the adapter couldn't resolve it — the
+	// runtime fails closed against a configured allowlist.
+	ApproverEmail string
+	Note          string // optional justification
 }
 
 // ApprovalResolver is invoked by an adapter when an approver acts on a

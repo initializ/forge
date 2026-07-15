@@ -68,38 +68,41 @@ func interactionJSON(actionID, taskID, username string) []byte {
 // the ignore paths (not our buttons / wrong shape).
 func TestParseApprovalInteraction(t *testing.T) {
 	t.Run("approve", func(t *testing.T) {
-		d, ch, ts, ok := parseApprovalInteraction(interactionJSON(approveActionID, "task-7", "alice"))
+		d, uid, ch, ts, ok := parseApprovalInteraction(interactionJSON(approveActionID, "task-7", "alice"))
 		if !ok || d.Decision != "approve" || d.TaskID != "task-7" || d.Approver != "alice" {
 			t.Fatalf("got %+v ok=%v", d, ok)
+		}
+		if uid != "U1" {
+			t.Errorf("user id = %q, want U1 (needed for email resolution)", uid)
 		}
 		if ch != "C1" || ts != "1700000000.000100" {
 			t.Errorf("message locator wrong: ch=%q ts=%q", ch, ts)
 		}
 	})
 	t.Run("reject", func(t *testing.T) {
-		d, _, _, ok := parseApprovalInteraction(interactionJSON(rejectActionID, "task-7", "bob"))
+		d, _, _, _, ok := parseApprovalInteraction(interactionJSON(rejectActionID, "task-7", "bob"))
 		if !ok || d.Decision != "reject" {
 			t.Fatalf("got %+v ok=%v", d, ok)
 		}
 	})
 	t.Run("approver falls back to name then id", func(t *testing.T) {
-		d, _, _, _ := parseApprovalInteraction(interactionJSON(approveActionID, "t", "")) // no username
+		d, _, _, _, _ := parseApprovalInteraction(interactionJSON(approveActionID, "t", "")) // no username
 		if d.Approver != "Alice N" {
 			t.Errorf("approver fallback = %q, want name", d.Approver)
 		}
 	})
 	t.Run("not our button ignored", func(t *testing.T) {
-		if _, _, _, ok := parseApprovalInteraction(interactionJSON("some_other_app_action", "t", "x")); ok {
+		if _, _, _, _, ok := parseApprovalInteraction(interactionJSON("some_other_app_action", "t", "x")); ok {
 			t.Error("a non-forge action_id must be ignored")
 		}
 	})
 	t.Run("wrong type ignored", func(t *testing.T) {
-		if _, _, _, ok := parseApprovalInteraction([]byte(`{"type":"view_submission"}`)); ok {
+		if _, _, _, _, ok := parseApprovalInteraction([]byte(`{"type":"view_submission"}`)); ok {
 			t.Error("non-block_actions must be ignored")
 		}
 	})
 	t.Run("empty task id ignored", func(t *testing.T) {
-		if _, _, _, ok := parseApprovalInteraction(interactionJSON(approveActionID, "", "x")); ok {
+		if _, _, _, _, ok := parseApprovalInteraction(interactionJSON(approveActionID, "", "x")); ok {
 			t.Error("empty value (task id) must be ignored")
 		}
 	})
@@ -275,5 +278,86 @@ func TestResolveChannelID(t *testing.T) {
 func TestDeliverApproval_EmptyTarget(t *testing.T) {
 	if err := New().DeliverApproval(context.Background(), channels.ApprovalRequest{TaskID: "t"}); err == nil {
 		t.Fatal("expected an error for an empty target channel")
+	}
+}
+
+// TestResolveUserEmail covers users.info resolution (#313): success + cache,
+// no-email, and missing-scope error.
+func TestResolveUserEmail(t *testing.T) {
+	t.Run("resolves lowercased + caches", func(t *testing.T) {
+		var calls int
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(r.URL.Path, "/users.info") {
+				calls++
+				_, _ = w.Write([]byte(`{"ok":true,"user":{"profile":{"email":"Alice@Corp.com"}}}`))
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer srv.Close()
+		p := New()
+		p.apiBase = srv.URL
+		p.botToken = "xoxb-test"
+		for range 2 {
+			email, err := p.resolveUserEmail(context.Background(), "U1")
+			if err != nil || email != "alice@corp.com" {
+				t.Fatalf("resolveUserEmail = (%q,%v), want alice@corp.com", email, err)
+			}
+		}
+		if calls != 1 {
+			t.Errorf("users.info called %d times, want 1 (cached)", calls)
+		}
+	})
+
+	t.Run("no email fails", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"ok":true,"user":{"profile":{"email":""}}}`))
+		}))
+		defer srv.Close()
+		p := New()
+		p.apiBase = srv.URL
+		p.botToken = "x"
+		if _, err := p.resolveUserEmail(context.Background(), "U2"); err == nil {
+			t.Error("expected an error when no email is on the profile")
+		}
+	})
+
+	t.Run("missing scope surfaces", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"ok":false,"error":"missing_scope"}`))
+		}))
+		defer srv.Close()
+		p := New()
+		p.apiBase = srv.URL
+		p.botToken = "x"
+		if _, err := p.resolveUserEmail(context.Background(), "U3"); err == nil || !strings.Contains(err.Error(), "missing_scope") {
+			t.Errorf("expected the missing_scope error, got %v", err)
+		}
+	})
+}
+
+// TestHandleInteractive_AttachesEmail: a click resolves the approver's email
+// and attaches it to the decision passed to the runtime (#313).
+func TestHandleInteractive_AttachesEmail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/users.info") {
+			_, _ = w.Write([]byte(`{"ok":true,"user":{"profile":{"email":"carol@corp.com"}}}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK) // chat.update
+	}))
+	defer srv.Close()
+
+	var got channels.ApprovalDecision
+	p := New()
+	p.apiBase = srv.URL
+	p.botToken = "xoxb-test"
+	p.SetApprovalResolver(func(_ context.Context, d channels.ApprovalDecision) error { got = d; return nil })
+
+	if err := p.handleInteractive(context.Background(), interactionJSON(approveActionID, "task-9", "carol")); err != nil {
+		t.Fatalf("handleInteractive: %v", err)
+	}
+	if got.ApproverEmail != "carol@corp.com" {
+		t.Errorf("ApproverEmail = %q, want carol@corp.com", got.ApproverEmail)
 	}
 }

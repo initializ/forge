@@ -480,9 +480,10 @@ func parseDeferTarget(to string) (adapter, target string, ok bool) {
 // whether the channel adapter runs in-process or as a separate process.
 func postDeferDecision(ctx context.Context, agentURL, token string, d corechannels.ApprovalDecision) error {
 	body, _ := json.Marshal(map[string]string{
-		"decision": d.Decision,
-		"approver": d.Approver,
-		"note":     d.Note,
+		"decision":       d.Decision,
+		"approver":       d.Approver,
+		"approver_email": d.ApproverEmail, // #313 — the runtime allowlist check keys on this
+		"note":           d.Note,
 	})
 	url := fmt.Sprintf("%s/tasks/%s/decisions", agentURL, d.TaskID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))

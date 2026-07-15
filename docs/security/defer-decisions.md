@@ -228,20 +228,17 @@ doesn't implement interactive approvals (`channels.ApprovalDeliverer`)
 can't be a target. Telegram / MS Teams interactive approvals are a
 follow-up (same interface).
 
-> ⚠️ **The approval authority is channel membership.** Any user who can
-> see the message and click a button resolves the deferred call. Forge
-> records **who** clicked (in the audit event) but does **not** yet check
-> that they are *authorized* to approve — so **the target channel's
-> membership IS the approval ACL.** Consequences:
+> ⚠️ **Without an `approvers` allowlist, the approval authority is channel
+> membership.** Any user who can see the message and click a button
+> resolves the deferred call. So unless you set `approvers` (below),
+> **the target channel's membership IS the approval ACL.** Consequences:
 >
 > - Route approvals to a **tightly-scoped private channel**, not a broad
 >   `#oncall` that includes guests, contractors, bots, or integrations.
 > - A **compromised member account** grants approval authority over every
 >   agent action routed there — treat channel membership as a privileged
 >   grant.
-> - There is no requester≠approver (four-eyes) or per-tool approver
->   restriction today. A per-tool, email-based approver allowlist is
->   tracked in #313.
+> - There is no requester≠approver (four-eyes) gate yet.
 >
 > **No rejection reason is captured from Slack today.** A button click
 > carries no free text, so a Slack `reject` records an empty `note`; if
@@ -252,6 +249,38 @@ follow-up (same interface).
 `security.defer` routes `cli_execute` to `channel:slack:…` but `slack` is
 not active — start with `--with slack`). The deferral still holds; the
 approval just won't be delivered until an approver POSTs directly.
+
+### Approver allowlist (`approvers`)
+
+To require that only specific people can approve — rather than anyone in
+the channel — set a per-tool (or default) **email** allowlist:
+
+```yaml
+security:
+  defer:
+    default_approvers: [sec-lead@corp.com]     # applied when a tool omits its own
+    tools:
+      cli_execute:
+        to: channel:slack:#sec-approvals
+        timeout: 5m
+        approvers: [alice@corp.com, oncall-lead@corp.com]   # only these may resolve
+```
+
+- **Email, not platform ids** — a portable identity that works the same
+  across Slack / Teams / a web console and matches Forge's OIDC model.
+- **The Slack adapter resolves the clicker's email** via `users.info`
+  (cached) — this needs the bot's **`users:read.email`** scope.
+- **Enforced in the shared runtime** at `POST /tasks/{id}/decisions`
+  (adapter-agnostic — a direct `curl` must send `approver_email` too), and
+  **fails closed**: an approver whose email isn't listed — or can't be
+  resolved (guest without email, missing scope) — is refused with `403`
+  and the **deferral stays pending** for a real approver. The refusal is
+  audited (`task_deferred_decision` with `authorized: false`).
+- Empty `approvers` (and empty `default_approvers`) → no allowlist; channel
+  membership is the ACL (see the warning above).
+
+Group/role-based approver policies and a requester≠approver (four-eyes)
+gate are future work.
 
 > ⏱ **Approval window for channel-initiated conversations.** A conversation
 > that arrives *through* a channel adapter (Slack/Telegram → agent) is

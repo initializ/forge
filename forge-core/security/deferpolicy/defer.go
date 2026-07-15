@@ -23,6 +23,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -41,10 +43,11 @@ const (
 // deferral. Emitted onto Handle.wait, consumed by the executor
 // goroutine when it resumes.
 type Resolution struct {
-	Decision Decision
-	Approver string // free-form; typically a user id or email
-	Note     string // optional operator-supplied justification
-	At       time.Time
+	Decision      Decision
+	Approver      string // free-form; typically a user id or name
+	ApproverEmail string // resolved approver email (#313), when available
+	Note          string // optional operator-supplied justification
+	At            time.Time
 }
 
 // Handle represents a pending deferral. The executor obtains one
@@ -73,6 +76,26 @@ type Spec struct {
 	To                 string
 	Timeout            time.Duration
 	ContextForApprover string
+	// Approvers is the per-tool approver allowlist (#313), normalized to
+	// lowercase emails. Empty → no allowlist (any approver may resolve).
+	// Non-empty → the decisions endpoint requires the approver's email to
+	// be present and in this set (fail-closed).
+	Approvers []string
+}
+
+// IsApprover reports whether email is authorized to resolve this deferral.
+// An empty allowlist authorizes anyone (pre-#313 behavior). A non-empty
+// allowlist requires a non-empty email that is a member — fail-closed.
+// Comparison is case-insensitive.
+func (h *Handle) IsApprover(email string) bool {
+	if len(h.spec.Approvers) == 0 {
+		return true
+	}
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return false
+	}
+	return slices.Contains(h.spec.Approvers, email)
 }
 
 // TaskID returns the task the deferral is for. Used by the runner

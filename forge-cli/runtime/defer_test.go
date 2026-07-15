@@ -305,7 +305,7 @@ func TestDecisionsEndpoint_HappyPath(t *testing.T) {
 	req.SetPathValue("id", "task-http")
 	rec := httptest.NewRecorder()
 
-	handler := makeDecisionsHandler(engine)
+	handler := makeDecisionsHandler(engine, coreruntime.NewAuditLogger(discardWriter{}))
 	handler(rec, req)
 
 	if rec.Code != 200 {
@@ -328,7 +328,7 @@ func TestDecisionsEndpoint_NotFound(t *testing.T) {
 	req := httptest.NewRequest("POST", "/tasks/nope/decisions", strings.NewReader(string(body)))
 	req.SetPathValue("id", "nope")
 	rec := httptest.NewRecorder()
-	makeDecisionsHandler(engine)(rec, req)
+	makeDecisionsHandler(engine, coreruntime.NewAuditLogger(discardWriter{}))(rec, req)
 	if rec.Code != 404 {
 		t.Errorf("status: got %d want 404", rec.Code)
 	}
@@ -343,7 +343,7 @@ func TestDecisionsEndpoint_BadDecision(t *testing.T) {
 	req := httptest.NewRequest("POST", "/tasks/task-x/decisions", strings.NewReader(string(body)))
 	req.SetPathValue("id", "task-x")
 	rec := httptest.NewRecorder()
-	makeDecisionsHandler(engine)(rec, req)
+	makeDecisionsHandler(engine, coreruntime.NewAuditLogger(discardWriter{}))(rec, req)
 	if rec.Code != 400 {
 		t.Errorf("status: got %d want 400", rec.Code)
 	}
@@ -419,3 +419,85 @@ func TestDeferHook_NotifierFailureNonFatal(t *testing.T) {
 }
 
 var errTestDelivery = fmt.Errorf("simulated delivery failure")
+
+// TestDecisionsEndpoint_ApproverAllowlist covers #313 enforcement at the
+// decisions endpoint: allowlisted email resolves (case-insensitive),
+// non-listed is refused (deferral stays pending), empty email fails closed,
+// and no allowlist allows anyone.
+func TestDecisionsEndpoint_ApproverAllowlist(t *testing.T) {
+	post := func(engine *deferengine.Engine, taskID, email string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]string{"decision": "approve", "approver": "who", "approver_email": email})
+		req := httptest.NewRequest("POST", "/tasks/"+taskID+"/decisions", strings.NewReader(string(body)))
+		req.SetPathValue("id", taskID)
+		rec := httptest.NewRecorder()
+		makeDecisionsHandler(engine, coreruntime.NewAuditLogger(discardWriter{}))(rec, req)
+		return rec
+	}
+	allow := deferengine.Spec{Timeout: 5 * time.Second, Approvers: []string{"alice@corp.com"}}
+
+	t.Run("allowlisted email resolves (case-insensitive)", func(t *testing.T) {
+		engine := deferengine.New()
+		_, _ = engine.Register("t1", "cli_execute", allow)
+		if rec := post(engine, "t1", "Alice@Corp.com"); rec.Code != 200 {
+			t.Errorf("allowlisted approver: got %d want 200; %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("non-listed refused, deferral stays pending", func(t *testing.T) {
+		engine := deferengine.New()
+		_, _ = engine.Register("t2", "cli_execute", allow)
+		if rec := post(engine, "t2", "mallory@evil.com"); rec.Code != 403 {
+			t.Errorf("non-listed approver: got %d want 403", rec.Code)
+		}
+		if _, ok := engine.Peek("t2"); !ok {
+			t.Error("deferral must stay pending after a refused approval")
+		}
+		_ = engine.Resolve("t2", deferengine.Resolution{Decision: deferengine.DecisionTimeout})
+	})
+
+	t.Run("empty email fails closed", func(t *testing.T) {
+		engine := deferengine.New()
+		_, _ = engine.Register("t3", "cli_execute", allow)
+		if rec := post(engine, "t3", ""); rec.Code != 403 {
+			t.Errorf("empty email vs allowlist must fail closed: got %d want 403", rec.Code)
+		}
+		_ = engine.Resolve("t3", deferengine.Resolution{Decision: deferengine.DecisionTimeout})
+	})
+
+	t.Run("no allowlist allows anyone", func(t *testing.T) {
+		engine := deferengine.New()
+		_, _ = engine.Register("t4", "cli_execute", deferengine.Spec{Timeout: 5 * time.Second})
+		if rec := post(engine, "t4", ""); rec.Code != 200 {
+			t.Errorf("no allowlist: got %d want 200", rec.Code)
+		}
+	})
+}
+
+// TestResolveDeferSpec_Approvers pins normalization + the default fallback.
+func TestResolveDeferSpec_Approvers(t *testing.T) {
+	hctx := &coreruntime.HookContext{ToolName: "cli_execute", ToolInput: "{}"}
+
+	t.Run("per-tool, normalized", func(t *testing.T) {
+		spec := resolveDeferSpec(types.DeferConfig{}, types.DeferToolConfig{
+			Approvers: []string{"  Alice@Corp.com ", "BOB@corp.com", "  "},
+		}, hctx)
+		want := []string{"alice@corp.com", "bob@corp.com"}
+		if len(spec.Approvers) != 2 || spec.Approvers[0] != want[0] || spec.Approvers[1] != want[1] {
+			t.Errorf("approvers = %v, want %v (lowercased, trimmed, blanks dropped)", spec.Approvers, want)
+		}
+	})
+
+	t.Run("falls back to default_approvers", func(t *testing.T) {
+		spec := resolveDeferSpec(types.DeferConfig{DefaultApprovers: []string{"OnCall@corp.com"}},
+			types.DeferToolConfig{}, hctx)
+		if len(spec.Approvers) != 1 || spec.Approvers[0] != "oncall@corp.com" {
+			t.Errorf("approvers = %v, want [oncall@corp.com]", spec.Approvers)
+		}
+	})
+
+	t.Run("empty → no allowlist", func(t *testing.T) {
+		if spec := resolveDeferSpec(types.DeferConfig{}, types.DeferToolConfig{}, hctx); spec.Approvers != nil {
+			t.Errorf("no approvers → nil, got %v", spec.Approvers)
+		}
+	})
+}

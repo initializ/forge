@@ -231,13 +231,13 @@ type slackInteraction struct {
 // that isn't one of our approval buttons (other apps' interactions, non-button
 // types) so the caller ignores it. `channelID`/`msgTS` locate the message for
 // the outcome update.
-func parseApprovalInteraction(payload []byte) (dec channels.ApprovalDecision, channelID, msgTS string, ok bool) {
+func parseApprovalInteraction(payload []byte) (dec channels.ApprovalDecision, userID, channelID, msgTS string, ok bool) {
 	var in slackInteraction
 	if err := json.Unmarshal(payload, &in); err != nil {
-		return dec, "", "", false
+		return dec, "", "", "", false
 	}
 	if in.Type != "block_actions" || len(in.Actions) == 0 {
-		return dec, "", "", false
+		return dec, "", "", "", false
 	}
 	a := in.Actions[0]
 	var decision string
@@ -247,10 +247,10 @@ func parseApprovalInteraction(payload []byte) (dec channels.ApprovalDecision, ch
 	case rejectActionID:
 		decision = "reject"
 	default:
-		return dec, "", "", false // not our button
+		return dec, "", "", "", false // not our button
 	}
 	if a.Value == "" {
-		return dec, "", "", false
+		return dec, "", "", "", false
 	}
 	approver := in.User.Username
 	if approver == "" {
@@ -263,15 +263,78 @@ func parseApprovalInteraction(payload []byte) (dec channels.ApprovalDecision, ch
 		TaskID:   a.Value,
 		Decision: decision,
 		Approver: approver,
-	}, in.Channel.ID, in.Message.TS, true
+	}, in.User.ID, in.Channel.ID, in.Message.TS, true
+}
+
+// resolveUserEmail resolves a Slack user id to their email via users.info
+// (cached), for the DEFER approver allowlist (#313). Requires the
+// users:read.email scope. Returns an error when the email can't be determined
+// (missing scope, guest without an email) — the caller leaves ApproverEmail
+// empty and the runtime fails closed against a configured allowlist.
+func (p *Plugin) resolveUserEmail(ctx context.Context, userID string) (string, error) {
+	if userID == "" {
+		return "", fmt.Errorf("empty user id")
+	}
+	p.userMu.Lock()
+	if e, ok := p.userEmailCache[userID]; ok {
+		p.userMu.Unlock()
+		return e, nil
+	}
+	p.userMu.Unlock()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.apiBase+"/users.info?user="+url.QueryEscape(userID), nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+p.botToken)
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var out struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+		User  struct {
+			Profile struct {
+				Email string `json:"email"`
+			} `json:"profile"`
+		} `json:"user"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", fmt.Errorf("users.info decode: %w", err)
+	}
+	if !out.OK {
+		return "", fmt.Errorf("users.info: %s", out.Error)
+	}
+	email := strings.ToLower(strings.TrimSpace(out.User.Profile.Email))
+	if email == "" {
+		return "", fmt.Errorf("no email on profile (guest, or missing users:read.email scope)")
+	}
+	p.userMu.Lock()
+	if p.userEmailCache == nil {
+		p.userEmailCache = map[string]string{}
+	}
+	p.userEmailCache[userID] = email
+	p.userMu.Unlock()
+	return email, nil
 }
 
 // handleInteractive resolves an approval button click. No-op for interactions
 // that aren't ours. Best-effort updates the source message with the outcome.
 func (p *Plugin) handleInteractive(ctx context.Context, payload []byte) error {
-	dec, channelID, msgTS, ok := parseApprovalInteraction(payload)
+	dec, userID, channelID, msgTS, ok := parseApprovalInteraction(payload)
 	if !ok {
 		return nil // not a forge approval interaction; ignore quietly
+	}
+	// Resolve the approver's email for the runtime allowlist (#313). Best
+	// effort: on failure ApproverEmail stays empty and the runtime fails
+	// closed if the tool declares an allowlist. We still log it so a missing
+	// users:read.email scope is visible.
+	if email, err := p.resolveUserEmail(ctx, userID); err == nil {
+		dec.ApproverEmail = email
+	} else {
+		p.logWarn("could not resolve approver email", map[string]any{"user": userID, "error": err.Error()})
 	}
 	if p.approvalResolver == nil {
 		return fmt.Errorf("approval click for task %s but no resolver wired", dec.TaskID)

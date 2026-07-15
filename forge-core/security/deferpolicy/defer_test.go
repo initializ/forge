@@ -236,3 +236,26 @@ func TestDefaultTimeout(t *testing.T) {
 			h.Deadline(), e.now())
 	}
 }
+
+// TestHandle_IsApprover pins the #313 allowlist membership check: empty
+// allowlist authorizes anyone; a non-empty one requires a listed email
+// (case-insensitive) and fails closed on an empty email.
+func TestHandle_IsApprover(t *testing.T) {
+	e := New()
+
+	noList, _ := e.Register("t-none", "cli_execute", Spec{Timeout: time.Minute})
+	if !noList.IsApprover("") || !noList.IsApprover("anyone@x.com") {
+		t.Error("empty allowlist must authorize anyone")
+	}
+
+	list, _ := e.Register("t-list", "cli_execute", Spec{Timeout: time.Minute, Approvers: []string{"alice@corp.com"}})
+	if !list.IsApprover("alice@corp.com") || !list.IsApprover("  ALICE@Corp.com  ") {
+		t.Error("listed email (any case/whitespace) must be authorized")
+	}
+	if list.IsApprover("mallory@evil.com") {
+		t.Error("non-listed email must be refused")
+	}
+	if list.IsApprover("") {
+		t.Error("empty email against a non-empty allowlist must fail closed")
+	}
+}

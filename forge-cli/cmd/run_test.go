@@ -5,7 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/initializ/forge/forge-cli/channels"
 	"github.com/initializ/forge/forge-core/types"
 )
 
@@ -140,4 +142,49 @@ func TestDeferChannelTargetWarnings(t *testing.T) {
 			t.Errorf("disabled defer must not warn, got %v", w)
 		}
 	})
+}
+
+// TestDeferTimeoutWarnings covers the #314 timeout-mismatch warning: a
+// channel-routed DEFER with a timeout longer than the sync wait warns.
+func TestDeferTimeoutWarnings(t *testing.T) {
+	syncWait := 6 * time.Minute
+	cfg := types.DeferConfig{
+		Enabled: true,
+		Tools: map[string]types.DeferToolConfig{
+			"long_channel":  {To: "channel:slack:#oncall", Timeout: 15 * time.Minute}, // > 6m → warn
+			"short_channel": {To: "channel:slack:#oncall", Timeout: 5 * time.Minute},  // <= 6m → ok
+			"default_to":    {To: "channel:slack:#oncall"},                            // default 10m → warn
+			"human_target":  {To: "human:oncall", Timeout: 30 * time.Minute},          // not a channel → ignored
+		},
+	}
+
+	warns := deferTimeoutWarnings(cfg, syncWait)
+	if len(warns) != 2 { // long_channel + default_to
+		t.Fatalf("expected 2 timeout warnings, got %d: %v", len(warns), warns)
+	}
+	joined := strings.Join(warns, "\n")
+	for _, want := range []string{"long_channel", "default_to", "6m0s", "Set timeout <="} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("timeout warning missing %q:\n%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "short_channel") || strings.Contains(joined, "human_target") {
+		t.Errorf("should not warn for short_channel/human_target:\n%s", joined)
+	}
+
+	t.Run("disabled → no warnings", func(t *testing.T) {
+		off := cfg
+		off.Enabled = false
+		if w := deferTimeoutWarnings(off, syncWait); w != nil {
+			t.Errorf("disabled defer must not warn, got %v", w)
+		}
+	})
+}
+
+// TestSyncRequestTimeout_IsReferenced guards the single-source-of-truth: the
+// warning threshold uses the exported router constant.
+func TestSyncRequestTimeout_IsReferenced(t *testing.T) {
+	if channels.SyncRequestTimeout != 360*time.Second {
+		t.Errorf("SyncRequestTimeout = %v, want 360s", channels.SyncRequestTimeout)
+	}
 }

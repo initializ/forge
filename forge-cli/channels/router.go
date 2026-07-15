@@ -16,6 +16,13 @@ import (
 	"github.com/initializ/forge/forge-core/channels"
 )
 
+// SyncRequestTimeout is how long the router holds a channel-initiated
+// tasks/send request open waiting for the agent's response. It is the ceiling
+// on how long a channel-initiated tool call can spend awaiting a human DEFER
+// approval before the HTTP call times out (the request context is cancelled and
+// the deferral is abandoned). See #314 for lifting this via async delivery.
+const SyncRequestTimeout = 360 * time.Second
+
 // Router forwards channel events to an A2A agent server via JSON-RPC over HTTP.
 type Router struct {
 	agentURL    string
@@ -30,7 +37,7 @@ func NewRouter(agentURL, bearerToken string) *Router {
 		agentURL:    agentURL,
 		bearerToken: bearerToken,
 		client: &http.Client{
-			Timeout: 360 * time.Second,
+			Timeout: SyncRequestTimeout,
 		},
 	}
 }

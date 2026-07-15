@@ -88,6 +88,24 @@ type ApprovalDecision struct {
 // ApprovalDeliverer.SetApprovalResolver at startup.
 type ApprovalResolver func(ctx context.Context, d ApprovalDecision) error
 
+// Logger is the minimal structured ops logger a channel adapter uses for
+// operational signals (the FWS-9 stdout ops stream). Satisfied by
+// forge-core/runtime.Logger, so the runtime can wire its logger without this
+// package importing it.
+type Logger interface {
+	Info(msg string, fields map[string]any)
+	Warn(msg string, fields map[string]any)
+	Error(msg string, fields map[string]any)
+	Debug(msg string, fields map[string]any)
+}
+
+// LoggerAware is an OPTIONAL capability: an adapter that routes operational
+// signals through a structured logger implements it. The runtime wires it at
+// startup; adapters that don't implement it keep their own logging.
+type LoggerAware interface {
+	SetLogger(Logger)
+}
+
 // ApprovalDeliverer is an OPTIONAL capability. A channel adapter that can post
 // an interactive approval request AND receive the approver's response
 // implements it (Slack via Block Kit over Socket Mode, #310). Adapters that

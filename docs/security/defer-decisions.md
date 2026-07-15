@@ -213,6 +213,31 @@ doesn't implement interactive approvals (`channels.ApprovalDeliverer`)
 can't be a target. Telegram / MS Teams interactive approvals are a
 follow-up (same interface).
 
+> ⚠️ **The approval authority is channel membership.** Any user who can
+> see the message and click a button resolves the deferred call. Forge
+> records **who** clicked (in the audit event) but does **not** yet check
+> that they are *authorized* to approve — so **the target channel's
+> membership IS the approval ACL.** Consequences:
+>
+> - Route approvals to a **tightly-scoped private channel**, not a broad
+>   `#oncall` that includes guests, contractors, bots, or integrations.
+> - A **compromised member account** grants approval authority over every
+>   agent action routed there — treat channel membership as a privileged
+>   grant.
+> - There is no requester≠approver (four-eyes) or per-tool approver
+>   restriction today. A per-tool, email-based approver allowlist is
+>   tracked in #313.
+>
+> **No rejection reason is captured from Slack today.** A button click
+> carries no free text, so a Slack `reject` records an empty `note`; if
+> you need a documented reason, resolve via `POST /tasks/{id}/decisions`
+> with a `note`, or wait for the follow-up that opens a reason modal.
+
+**If the target adapter isn't running**, Forge warns at startup (e.g.
+`security.defer` routes `cli_execute` to `channel:slack:…` but `slack` is
+not active — start with `--with slack`). The deferral still holds; the
+approval just won't be delivered until an approver POSTs directly.
+
 ### Custom notify path
 
 For any other target (or without the Slack adapter), wire your own:

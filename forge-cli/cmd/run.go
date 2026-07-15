@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -21,6 +22,7 @@ import (
 	corechannels "github.com/initializ/forge/forge-core/channels"
 	coreruntime "github.com/initializ/forge/forge-core/runtime"
 	"github.com/initializ/forge/forge-core/security"
+	"github.com/initializ/forge/forge-core/types"
 	"github.com/spf13/cobra"
 )
 
@@ -251,6 +253,11 @@ func runRun(cmd *cobra.Command, args []string) error {
 		cancel()
 	}()
 
+	// activeChannelSet is the set of adapters actually running (post policy
+	// filter). Used below to warn if a DEFER `to:` routes approvals to a
+	// channel that isn't active (#311 review / user report).
+	activeChannelSet := map[string]bool{}
+
 	// Start channel adapters if --with flag is set
 	if runWithChannels != "" {
 		registry := defaultRegistry()
@@ -302,6 +309,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 			defer plugin.Stop() //nolint:errcheck
 
 			activePlugins[name] = plugin
+			activeChannelSet[name] = true
 
 			go func() {
 				if err := plugin.Start(ctx, router.Handler()); err != nil {
@@ -330,12 +338,24 @@ func runRun(cmd *cobra.Command, args []string) error {
 			// deferred tool call's `to: channel:<adapter>:<target>` to a
 			// channel adapter that supports interactive approvals, and resolve
 			// the approver's click back to the decisions endpoint.
+			opsLog := coreruntime.NewJSONLogger(os.Stdout, false)
 			resolver := func(ctx context.Context, d corechannels.ApprovalDecision) error {
-				return postDeferDecision(ctx, agentURL, runner.AuthToken(), d)
+				if err := postDeferDecision(ctx, agentURL, runner.AuthToken(), d); err != nil {
+					opsLog.Warn("defer: recording approval decision failed", map[string]any{
+						"task_id": d.TaskID, "decision": d.Decision, "approver": d.Approver, "error": err.Error(),
+					})
+					return err
+				}
+				return nil
 			}
 			for _, plugin := range activePlugins {
 				if deliverer, ok := plugin.(corechannels.ApprovalDeliverer); ok {
 					deliverer.SetApprovalResolver(resolver)
+				}
+				// Route the adapter's ops signals (e.g. approval-handling
+				// errors) through the structured stdout stream (#311 review).
+				if la, ok := plugin.(corechannels.LoggerAware); ok {
+					la.SetLogger(opsLog)
 				}
 			}
 			runner.SetDeferralNotifier(func(ctx context.Context, to, taskID, tool, approverContext string, timeout time.Duration) error {
@@ -362,7 +382,43 @@ func runRun(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// #311 review / user report: warn (loudly, at startup) if a DEFER tool
+	// routes approvals to a channel adapter that isn't active — otherwise the
+	// approval is silently never delivered (the deferral still holds; an
+	// approver must POST /tasks/{id}/decisions directly). Runs regardless of
+	// --with so a missing adapter is caught even when no channel is started.
+	for _, w := range deferChannelTargetWarnings(cfg.Security.Defer, activeChannelSet) {
+		fmt.Fprintln(os.Stderr, "  Warning:    "+w)
+	}
+
 	return runner.Run(ctx)
+}
+
+// deferChannelTargetWarnings returns a warning for each DEFER tool whose `to:`
+// routes to a `channel:<adapter>:…` that is not in the active adapter set.
+// Pure + testable.
+func deferChannelTargetWarnings(deferCfg types.DeferConfig, activeChannels map[string]bool) []string {
+	if !deferCfg.Enabled {
+		return nil
+	}
+	var warns []string
+	seen := map[string]bool{}
+	for tool, tc := range deferCfg.Tools {
+		to := tc.To
+		if to == "" {
+			to = deferCfg.DefaultTo
+		}
+		adapter, _, ok := parseDeferTarget(to)
+		if !ok || activeChannels[adapter] || seen[tool] {
+			continue
+		}
+		seen[tool] = true
+		warns = append(warns, fmt.Sprintf(
+			"security.defer routes %q approvals to channel adapter %q, but it is not active — start with --with %s, or approvals must be resolved via POST /tasks/{id}/decisions",
+			tool, adapter, adapter))
+	}
+	sort.Strings(warns) // deterministic order (map iteration)
+	return warns
 }
 
 // parseDeferTarget parses a DEFER `to:` value of the form

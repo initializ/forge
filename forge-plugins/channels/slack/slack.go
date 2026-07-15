@@ -46,6 +46,23 @@ type Plugin struct {
 	// interactive DEFER approval click resolves the deferred task (#310).
 	// nil when interactive approvals aren't wired.
 	approvalResolver channels.ApprovalResolver
+
+	// logger is an optional structured ops logger (SetLogger). When set, the
+	// approval-resolution error path routes through it; nil → fmt.Printf.
+	logger channels.Logger
+}
+
+// SetLogger wires a structured ops logger (channels.LoggerAware). Optional.
+func (p *Plugin) SetLogger(l channels.Logger) { p.logger = l }
+
+// logWarn routes an operational warning through the structured logger when set,
+// else falls back to the plugin's existing fmt.Printf style.
+func (p *Plugin) logWarn(msg string, fields map[string]any) {
+	if p.logger != nil {
+		p.logger.Warn(msg, fields)
+		return
+	}
+	fmt.Printf("  slack: %s %v\n", msg, fields)
 }
 
 // New creates an uninitialised Slack plugin.
@@ -370,7 +387,9 @@ func (p *Plugin) readLoop(ctx context.Context, conn *websocket.Conn, handler cha
 		// Approve/Reject buttons land here (#310). Already acked above.
 		if envelope.Type == "interactive" {
 			if err := p.handleInteractive(ctx, envelope.Payload); err != nil {
-				fmt.Printf("  slack: interactive handling error: %v\n", err)
+				// The approval-resolution error path — surface it on the
+				// structured ops stream when wired (#311 review).
+				p.logWarn("interactive approval handling failed", map[string]any{"error": err.Error()})
 			}
 			continue
 		}

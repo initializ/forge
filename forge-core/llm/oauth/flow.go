@@ -145,6 +145,15 @@ func (f *Flow) buildAuthURL(pkce *PKCEParams, state string) string {
 }
 
 // openBrowser opens the given URL in the default browser.
+//
+// Windows note: `cmd /c start <url>` treats `&` as the shell "AND"
+// separator, truncating any URL that has more than one query
+// parameter — the OpenAI OAuth authorize URL has eight, so the
+// browser opens with only `?response_type=code` and OpenAI's auth
+// server returns a generic `unknown_error`. `rundll32
+// url.dll,FileProtocolHandler` opens URLs through the Windows shell
+// API without invoking cmd's parser, so `&` in query strings stays
+// intact across Windows Terminal / PowerShell / cmd.exe.
 func openBrowser(url string) error {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
@@ -153,7 +162,7 @@ func openBrowser(url string) error {
 	case "linux":
 		cmd = exec.Command("xdg-open", url)
 	case "windows":
-		cmd = exec.Command("cmd", "/c", "start", url)
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
 	default:
 		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
 	}

@@ -39,9 +39,9 @@ DEFER is **not** the right tool for:
        tools:
          cli_execute:
            to: channel:slack:#oncall
-           timeout: 10m
+           timeout: 5m     # keep <= 6m for channel-routed approvals (see the window note below)
            context_template: "Agent wants to run {tool} with args: {args}"
-       default_timeout: 10m
+       default_timeout: 5m
    ```
 
 2. **`BeforeToolExec` hook fires** on a matching tool call:
@@ -196,7 +196,7 @@ security:
     tools:
       atlassian__jira_create_issue:
         to: channel:slack:#oncall        # channel:<adapter>:<target>
-        timeout: 15m
+        timeout: 5m                       # <= 6m for channel-routed approvals (see the window note below)
         context_template: "Agent wants to run {tool} with args: {args}"
 ```
 

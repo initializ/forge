@@ -187,15 +187,31 @@ func (c *clientImpl) Initialized(ctx context.Context) error {
 
 // ListTools fetches the server's tool catalog.
 func (c *clientImpl) ListTools(ctx context.Context) ([]MCPToolDescriptor, error) {
-	resp, err := c.roundTrip(ctx, MethodToolsList, nil)
-	if err != nil {
-		return nil, err
+	// tools/list is paginated (spec: cursor/nextCursor) — follow every page so
+	// large servers aren't silently truncated to their first page.
+	const maxPages = 64 // defensive bound against a misbehaving server
+	var tools []MCPToolDescriptor
+	cursor := ""
+	for page := 0; page < maxPages; page++ {
+		var params any
+		if cursor != "" {
+			params = ListToolsParams{Cursor: cursor}
+		}
+		resp, err := c.roundTrip(ctx, MethodToolsList, params)
+		if err != nil {
+			return nil, err
+		}
+		var out ListToolsResult
+		if err := json.Unmarshal(resp.Result, &out); err != nil {
+			return nil, fmt.Errorf("%w: parse ListToolsResult: %v", ErrProtocolError, err)
+		}
+		tools = append(tools, out.Tools...)
+		if out.NextCursor == "" || out.NextCursor == cursor {
+			return tools, nil
+		}
+		cursor = out.NextCursor
 	}
-	var out ListToolsResult
-	if err := json.Unmarshal(resp.Result, &out); err != nil {
-		return nil, fmt.Errorf("%w: parse ListToolsResult: %v", ErrProtocolError, err)
-	}
-	return out.Tools, nil
+	return nil, fmt.Errorf("%w: tools/list did not terminate after %d pages", ErrProtocolError, maxPages)
 }
 
 // CallTool invokes a single tool by name.

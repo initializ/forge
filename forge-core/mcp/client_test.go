@@ -209,3 +209,56 @@ func TestClient_CtxCancel_AbortsCallTool(t *testing.T) {
 		t.Errorf("CallTool did not return after ctx cancel")
 	}
 }
+
+func TestClient_ListTools_FollowsPagination(t *testing.T) {
+	t.Parallel()
+	srv := newMockMCPServer(t, func(w http.ResponseWriter, r *http.Request) {
+		var msg JSONRPCMessage
+		_ = json.NewDecoder(r.Body).Decode(&msg)
+		w.Header().Set("Content-Type", "application/json")
+		if msg.Method != MethodToolsList {
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + msg.ID.String() + `,"error":{"code":-32601,"message":"unknown method"}}`))
+			return
+		}
+		var params ListToolsParams
+		_ = json.Unmarshal(msg.Params, &params)
+		switch params.Cursor {
+		case "":
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + msg.ID.String() + `,"result":{"tools":[{"name":"a"},{"name":"b"}],"nextCursor":"p2"}}`))
+		case "p2":
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + msg.ID.String() + `,"result":{"tools":[{"name":"c"}]}}`))
+		default:
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + msg.ID.String() + `,"error":{"code":-32602,"message":"bad cursor"}}`))
+		}
+	})
+	c, cancel := runClient(t, srv)
+	defer cancel()
+	tools, err := c.ListTools(context.Background())
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if len(tools) != 3 || tools[0].Name != "a" || tools[2].Name != "c" {
+		t.Errorf("tools = %v, want a,b,c across two pages", tools)
+	}
+}
+
+func TestClient_ListTools_RepeatedCursorTerminates(t *testing.T) {
+	t.Parallel()
+	srv := newMockMCPServer(t, func(w http.ResponseWriter, r *http.Request) {
+		var msg JSONRPCMessage
+		_ = json.NewDecoder(r.Body).Decode(&msg)
+		w.Header().Set("Content-Type", "application/json")
+		// Misbehaving server: always returns the same nextCursor.
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + msg.ID.String() + `,"result":{"tools":[{"name":"loop"}],"nextCursor":"same"}}`))
+	})
+	c, cancel := runClient(t, srv)
+	defer cancel()
+	tools, err := c.ListTools(context.Background())
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	// First page + one page at cursor "same", then the repeat guard stops.
+	if len(tools) != 2 {
+		t.Errorf("len(tools) = %d, want 2 (repeat-cursor guard)", len(tools))
+	}
+}

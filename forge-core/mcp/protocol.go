@@ -106,9 +106,17 @@ type InitializeResult struct {
 	ServerInfo      ServerInfo     `json:"serverInfo"`
 }
 
-// ListToolsResult is the result field of a tools/list response.
+// ListToolsParams is the params field of a tools/list request; Cursor pages
+// through a server's paginated tool list.
+type ListToolsParams struct {
+	Cursor string `json:"cursor,omitempty"`
+}
+
+// ListToolsResult is the result field of a tools/list response. A non-empty
+// NextCursor means the list is paginated and more pages follow.
 type ListToolsResult struct {
-	Tools []MCPToolDescriptor `json:"tools"`
+	Tools      []MCPToolDescriptor `json:"tools"`
+	NextCursor string              `json:"nextCursor,omitempty"`
 }
 
 // CallToolParams is the params field of a tools/call request.

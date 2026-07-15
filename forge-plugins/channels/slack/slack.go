@@ -50,6 +50,11 @@ type Plugin struct {
 	// logger is an optional structured ops logger (SetLogger). When set, the
 	// approval-resolution error path routes through it; nil → fmt.Printf.
 	logger channels.Logger
+
+	// chanIDCache memoizes resolved channel name → id for approval delivery
+	// (#310) so a repeated deferral to the same channel skips conversations.list.
+	chanMu      sync.Mutex
+	chanIDCache map[string]string
 }
 
 // SetLogger wires a structured ops logger (channels.LoggerAware). Optional.
@@ -68,9 +73,10 @@ func (p *Plugin) logWarn(msg string, fields map[string]any) {
 // New creates an uninitialised Slack plugin.
 func New() *Plugin {
 	return &Plugin{
-		client:     &http.Client{Timeout: 30 * time.Second},
-		apiBase:    slackAPIBase,
-		dedupCache: make(map[string]time.Time),
+		client:      &http.Client{Timeout: 30 * time.Second},
+		apiBase:     slackAPIBase,
+		dedupCache:  make(map[string]time.Time),
+		chanIDCache: make(map[string]string),
 	}
 }
 

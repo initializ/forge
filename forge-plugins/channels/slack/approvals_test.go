@@ -25,8 +25,8 @@ func TestBuildApprovalPayload(t *testing.T) {
 		Target:  "#oncall",
 	})
 
-	if payload["channel"] != "#oncall" {
-		t.Errorf("channel = %v, want #oncall", payload["channel"])
+	if _, present := payload["channel"]; present {
+		t.Error("channel must be set by DeliverApproval (from the resolved id), not the builder")
 	}
 	if txt, _ := payload["text"].(string); !strings.Contains(txt, "atlassian__jira_create_issue") {
 		t.Errorf("fallback text missing tool: %q", txt)
@@ -160,16 +160,35 @@ func TestHandleInteractive_IgnoresForeign(t *testing.T) {
 	}
 }
 
-// TestDeliverApproval_PostsBlockKit: the send path posts a Block Kit message
-// with the buttons to chat.postMessage.
+// slackTestServer stands in for the Slack API: it resolves a fixed channel
+// (#oncall → C999, private) via conversations.list and captures the
+// chat.postMessage body. listCalls counts conversations.list hits (for the
+// cache test).
+func slackTestServer(t *testing.T, postBody *[]byte, listCalls *int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/conversations.list"):
+			if listCalls != nil {
+				*listCalls++
+			}
+			_, _ = w.Write([]byte(`{"ok":true,"channels":[{"id":"C999","name":"oncall"}],"response_metadata":{"next_cursor":""}}`))
+		case strings.HasSuffix(r.URL.Path, "/chat.postMessage"):
+			if postBody != nil {
+				*postBody, _ = io.ReadAll(r.Body)
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+}
+
+// TestDeliverApproval_PostsBlockKit: the send path resolves the target name to
+// an id and posts a Block Kit message with the buttons to chat.postMessage.
 func TestDeliverApproval_PostsBlockKit(t *testing.T) {
 	var body []byte
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/chat.postMessage") {
-			body, _ = io.ReadAll(r.Body)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
+	srv := slackTestServer(t, &body, nil)
 	defer srv.Close()
 
 	p := New()
@@ -183,11 +202,73 @@ func TestDeliverApproval_PostsBlockKit(t *testing.T) {
 		t.Fatalf("DeliverApproval: %v", err)
 	}
 	blob := string(body)
-	for _, want := range []string{`"channel":"#oncall"`, `"action_id":"` + approveActionID + `"`, `"value":"task-1"`, "kubectl delete pod x"} {
+	// #oncall resolved to its id C999 before posting.
+	for _, want := range []string{`"channel":"C999"`, `"action_id":"` + approveActionID + `"`, `"value":"task-1"`, "kubectl delete pod x"} {
 		if !strings.Contains(blob, want) {
 			t.Errorf("posted message missing %q\n%s", want, blob)
 		}
 	}
+}
+
+// TestResolveChannelID covers id passthrough (no API call), name → id
+// resolution (public + private), the cache, and fail-closed on not-found.
+func TestResolveChannelID(t *testing.T) {
+	t.Run("encoded id passes through without an API call", func(t *testing.T) {
+		p := New()
+		p.apiBase = "http://127.0.0.1:0" // any call would fail
+		for _, id := range []string{"C0123ABC5", "G0456DEF7", "D0789GHI9"} {
+			got, err := p.resolveChannelID(context.Background(), id)
+			if err != nil || got != id {
+				t.Errorf("resolveChannelID(%q) = (%q,%v), want passthrough", id, got, err)
+			}
+		}
+	})
+
+	t.Run("name resolves and caches", func(t *testing.T) {
+		var calls int
+		srv := slackTestServer(t, nil, &calls)
+		defer srv.Close()
+		p := New()
+		p.apiBase = srv.URL
+		p.botToken = "xoxb-test"
+
+		for _, in := range []string{"#oncall", "oncall", "#OnCall"} { // #, bare, mixed-case
+			got, err := p.resolveChannelID(context.Background(), in)
+			if err != nil || got != "C999" {
+				t.Fatalf("resolveChannelID(%q) = (%q,%v), want C999", in, got, err)
+			}
+		}
+		if calls != 1 {
+			t.Errorf("conversations.list called %d times, want 1 (cached)", calls)
+		}
+	})
+
+	t.Run("not found fails closed", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"ok":true,"channels":[],"response_metadata":{"next_cursor":""}}`))
+		}))
+		defer srv.Close()
+		p := New()
+		p.apiBase = srv.URL
+		p.botToken = "xoxb-test"
+		if _, err := p.resolveChannelID(context.Background(), "#ghost"); err == nil {
+			t.Fatal("expected an error for an unresolvable channel (fail closed)")
+		}
+	})
+
+	t.Run("slack API error surfaces", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"ok":false,"error":"missing_scope"}`))
+		}))
+		defer srv.Close()
+		p := New()
+		p.apiBase = srv.URL
+		p.botToken = "xoxb-test"
+		_, err := p.resolveChannelID(context.Background(), "#oncall")
+		if err == nil || !strings.Contains(err.Error(), "missing_scope") {
+			t.Fatalf("expected the slack error to surface, got %v", err)
+		}
+	})
 }
 
 // TestDeliverApproval_EmptyTarget guards the obvious misconfig.

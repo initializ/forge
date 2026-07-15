@@ -253,6 +253,21 @@ follow-up (same interface).
 not active — start with `--with slack`). The deferral still holds; the
 approval just won't be delivered until an approver POSTs directly.
 
+> ⏱ **Approval window for channel-initiated conversations.** A conversation
+> that arrives *through* a channel adapter (Slack/Telegram → agent) is
+> served synchronously: the channel router holds the request open for
+> `channels.SyncRequestTimeout` (**6 minutes**). Because the agent loop
+> runs under that request's context, if the approval doesn't land within
+> ~6 minutes the HTTP call times out, the context is cancelled, and the
+> **deferral is abandoned** (the tool call fails; a later click gets a
+> `404`). So for channel-routed approvals, **set `timeout` ≤ 6m** — Forge
+> warns at startup if a channel target's `timeout` exceeds the sync
+> window. Direct A2A clients that hold the connection (or poll `tasks/get`)
+> aren't bound by this. The proper fix — detaching the deferred task and
+> delivering the result asynchronously so long approvals survive — is
+> tracked in #314. The session itself always resumes intact on approval
+> (the deferral is keyed on the task id, not the channel).
+
 ### Custom notify path
 
 For any other target (or without the Slack adapter), wire your own:

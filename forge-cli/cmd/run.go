@@ -390,6 +390,15 @@ func runRun(cmd *cobra.Command, args []string) error {
 	for _, w := range deferChannelTargetWarnings(cfg.Security.Defer, activeChannelSet) {
 		fmt.Fprintln(os.Stderr, "  Warning:    "+w)
 	}
+	// #311 review / #314: a channel-initiated conversation only waits
+	// channels.SyncRequestTimeout for the agent's response, so a DEFER timeout
+	// longer than that can't be honored for channel-routed approvals — the
+	// HTTP call times out and the deferral is abandoned before the approver
+	// acts. Warn so operators set a fitting timeout (real fix: async delivery,
+	// #314).
+	for _, w := range deferTimeoutWarnings(cfg.Security.Defer, channels.SyncRequestTimeout) {
+		fmt.Fprintln(os.Stderr, "  Warning:    "+w)
+	}
 
 	return runner.Run(ctx)
 }
@@ -418,6 +427,40 @@ func deferChannelTargetWarnings(deferCfg types.DeferConfig, activeChannels map[s
 			tool, adapter, adapter))
 	}
 	sort.Strings(warns) // deterministic order (map iteration)
+	return warns
+}
+
+// deferTimeoutWarnings returns a warning for each DEFER tool that routes to a
+// channel with a timeout longer than syncWait — the window a channel-initiated
+// conversation actually waits for the agent's response. Beyond it the HTTP call
+// times out and the deferral is abandoned before the approver can act (#314).
+func deferTimeoutWarnings(deferCfg types.DeferConfig, syncWait time.Duration) []string {
+	if !deferCfg.Enabled {
+		return nil
+	}
+	var warns []string
+	for tool, tc := range deferCfg.Tools {
+		to := tc.To
+		if to == "" {
+			to = deferCfg.DefaultTo
+		}
+		if _, _, ok := parseDeferTarget(to); !ok {
+			continue // only channel-routed approvals are bound by the sync wait
+		}
+		timeout := tc.Timeout
+		if timeout == 0 {
+			timeout = deferCfg.DefaultTimeout
+		}
+		if timeout == 0 {
+			timeout = 10 * time.Minute // engine default
+		}
+		if timeout > syncWait {
+			warns = append(warns, fmt.Sprintf(
+				"security.defer routes %q approvals to a channel with timeout %s, but a channel-initiated conversation only waits ~%s (the channel router HTTP timeout) — an approval that arrives later is lost and the tool call fails. Set timeout <= %s (or await the async-delivery fix, #314).",
+				tool, timeout, syncWait, syncWait))
+		}
+	}
+	sort.Strings(warns)
 	return warns
 }
 

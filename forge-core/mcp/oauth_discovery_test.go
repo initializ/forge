@@ -29,6 +29,7 @@ type discoveryServer struct {
 	regCalls      atomic.Int32
 	noPRWellKnown bool // suppress /.well-known/oauth-protected-resource (force WWW-Authenticate path)
 	noRegEndpoint bool // omit registration_endpoint from AS metadata
+	confidential  bool // /register returns a client_secret (confidential client)
 }
 
 func newDiscoveryServer(t *testing.T) *discoveryServer {
@@ -72,6 +73,10 @@ func newDiscoveryServer(t *testing.T) *discoveryServer {
 	mux.HandleFunc("/register", func(w http.ResponseWriter, _ *http.Request) {
 		d.regCalls.Add(1)
 		w.WriteHeader(http.StatusCreated)
+		if d.confidential {
+			_, _ = w.Write([]byte(`{"client_id":"dyn-client-123","client_secret":"sh-sh-secret"}`))
+			return
+		}
 		_, _ = w.Write([]byte(`{"client_id":"dyn-client-123"}`))
 	})
 
@@ -189,6 +194,47 @@ func TestResolveOAuthConfig_RefreshNoDiscovery(t *testing.T) {
 	}
 	if n := d.regCalls.Load(); n != 0 {
 		t.Errorf("refresh path hit the registration endpoint %d times, want 0", n)
+	}
+}
+
+// TestResolveOAuthConfig_RefreshPartialConfigFailsClosed pins the
+// managed-drift invariant (#320 review, finding 3): on the refresh path,
+// a partially-materialized config (e.g. client_id came through but the
+// endpoint env vars were empty) must fail closed and NEVER mint a
+// divergent client — even though the same partial config on the login
+// path would fall through to DCR.
+func TestResolveOAuthConfig_RefreshPartialConfigFailsClosed(t *testing.T) {
+	withTempCredsDir(t)
+	d := newDiscoveryServer(t)
+	f := NewOAuthFlow()
+
+	partial := OAuthServerConfig{ServerURL: d.url(), ClientID: "materialized-but-endpoints-empty"}
+	_, err := f.resolveOAuthConfig(context.Background(), "srv", partial, false) // refresh path
+	if err == nil || !strings.Contains(err.Error(), "forge mcp login") {
+		t.Fatalf("partial config on the refresh path must fail closed; got: %v", err)
+	}
+	if n := d.regCalls.Load(); n != 0 {
+		t.Errorf("refresh path minted a client for a partial config (%d DCR calls, want 0)", n)
+	}
+}
+
+// TestResolveOAuthConfig_ConfidentialClientFailsClosed: if the AS issues
+// a confidential client (client_secret) despite our public-client
+// registration, resolve fails closed and persists nothing (#320 review,
+// finding 1 — no secret ever hits the store).
+func TestResolveOAuthConfig_ConfidentialClientFailsClosed(t *testing.T) {
+	withTempCredsDir(t)
+	d := newDiscoveryServer(t)
+	d.confidential = true
+	f := NewOAuthFlow()
+
+	_, err := f.resolveOAuthConfig(context.Background(), "srv", OAuthServerConfig{ServerURL: d.url()}, true)
+	if err == nil || !strings.Contains(err.Error(), "confidential client") {
+		t.Fatalf("want a fail-closed confidential-client error, got: %v", err)
+	}
+	// Nothing persisted → no host learned back either.
+	if h := RegisteredOAuthHosts([]string{"srv"}); h != nil {
+		t.Errorf("a confidential-client failure persisted a registration: %v", h)
 	}
 }
 

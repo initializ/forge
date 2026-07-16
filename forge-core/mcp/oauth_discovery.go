@@ -52,8 +52,12 @@ type oauthRegistration struct {
 	TokenURL        string   `json:"token_url"`
 	RegistrationURL string   `json:"registration_url,omitempty"`
 	ClientID        string   `json:"client_id"`
-	ClientSecret    string   `json:"client_secret,omitempty"` // if the AS issued a confidential client
 	Scopes          []string `json:"scopes,omitempty"`
+	// NOTE: a DCR client_secret is deliberately NOT persisted (#320
+	// review, finding 1). We register as a public PKCE client and the
+	// token path sends no secret, so a secret would be stored (possibly
+	// in the plaintext-fallback store) for no benefit — pure liability.
+	// A confidential client is refused at resolve time instead.
 }
 
 // loopbackRedirectURIs are what DCR registers for laptop-time login.
@@ -107,6 +111,12 @@ func (f *OAuthFlow) resolveOAuthConfig(ctx context.Context, name string, cfg OAu
 		return mergeRegistration(cfg, reg), nil
 	}
 
+	// Fail-closed asymmetry (#320 review, finding 3): the refresh path
+	// (BearerToken → allowDiscovery=false) stops here. So a
+	// partially-materialized config in a fresh pod — e.g. a platform env
+	// var came through empty, so step 1 didn't match and no record
+	// exists — fails closed and NEVER mints a divergent client. Only the
+	// interactive login path (allowDiscovery=true) falls through to DCR.
 	if !allowDiscovery {
 		return cfg, fmt.Errorf("%w: no oauth endpoints for %q and no stored registration — run 'forge mcp login %s'", ErrNoToken, name, name)
 	}
@@ -120,7 +130,7 @@ func (f *OAuthFlow) resolveOAuthConfig(ctx context.Context, name string, cfg OAu
 		return cfg, err
 	}
 
-	clientID, clientSecret := cfg.ClientID, cfg.ClientSecret
+	clientID := cfg.ClientID
 	if clientID == "" {
 		if meta.RegistrationEndpoint == "" {
 			return cfg, fmt.Errorf("%w: server %q advertises no registration_endpoint and no client_id is configured — supply client_id/authorize_url/token_url, or use a server that supports dynamic client registration", ErrProtocolError, name)
@@ -129,9 +139,18 @@ func (f *OAuthFlow) resolveOAuthConfig(ctx context.Context, name string, cfg OAu
 		if len(scopes) == 0 {
 			scopes = meta.ScopesSupported
 		}
+		var clientSecret string
 		clientID, clientSecret, err = f.registerClient(ctx, meta.RegistrationEndpoint, scopes)
 		if err != nil {
 			return cfg, err
+		}
+		if clientSecret != "" {
+			// We register as a public PKCE client (token_endpoint_auth_method
+			// = none) and the token path sends no client_secret. If the AS
+			// ignored that and issued a confidential client, we can't
+			// authenticate it — and we refuse to persist a secret (#320
+			// finding 1). Fail closed rather than half-register.
+			return cfg, fmt.Errorf("%w: server %q issued a confidential client (client_secret); Forge supports only public PKCE clients for MCP OAuth — configure client_id/authorize_url/token_url explicitly for this server", ErrProtocolError, name)
 		}
 	}
 
@@ -140,7 +159,6 @@ func (f *OAuthFlow) resolveOAuthConfig(ctx context.Context, name string, cfg OAu
 		TokenURL:        firstNonEmpty(cfg.TokenURL, meta.TokenEndpoint),
 		RegistrationURL: meta.RegistrationEndpoint,
 		ClientID:        clientID,
-		ClientSecret:    clientSecret,
 		Scopes:          cfg.Scopes,
 	}
 	if reg.AuthorizeURL == "" || reg.TokenURL == "" {
@@ -156,7 +174,6 @@ func (f *OAuthFlow) resolveOAuthConfig(ctx context.Context, name string, cfg OAu
 // registration. Explicit cfg fields are never overwritten (precedence).
 func mergeRegistration(cfg OAuthServerConfig, reg oauthRegistration) OAuthServerConfig {
 	cfg.ClientID = firstNonEmpty(cfg.ClientID, reg.ClientID)
-	cfg.ClientSecret = firstNonEmpty(cfg.ClientSecret, reg.ClientSecret)
 	cfg.AuthorizeURL = firstNonEmpty(cfg.AuthorizeURL, reg.AuthorizeURL)
 	cfg.TokenURL = firstNonEmpty(cfg.TokenURL, reg.TokenURL)
 	if len(cfg.Scopes) == 0 {
@@ -167,48 +184,61 @@ func mergeRegistration(cfg OAuthServerConfig, reg oauthRegistration) OAuthServer
 
 // discoverAuthServer runs RFC 9728 → RFC 8414 from the MCP server URL
 // and returns the authorization-server metadata.
+//
+// SECURITY (#320 review, minor): the RFC 9728 result — the
+// `resource_metadata` pointer and the authorization_servers list — is
+// server-controlled, and these fetches run with the plain 15s client at
+// laptop-time login (the runtime/refresh path IS egress-enforced). A
+// hostile MCP url could thus steer the login-time fetch at an internal
+// metadata endpoint. Low severity (operator-initiated, laptop-side,
+// byte/timeout-bounded), noted so it isn't mistaken for egress-enforced.
 func (f *OAuthFlow) discoverAuthServer(ctx context.Context, serverURL string) (authServerMetadata, error) {
 	var zero authServerMetadata
 
-	asURL, err := f.discoverProtectedResource(ctx, serverURL)
+	authServers, err := f.discoverProtectedResource(ctx, serverURL)
 	if err != nil {
 		return zero, err
 	}
 
-	// RFC 8414: {issuer}/.well-known/oauth-authorization-server, with
-	// the OpenID variant as a fallback for servers that only publish
+	// RFC 9728 advertises a LIST of authorization servers; try each in
+	// order so a multi-AS resource with a dead primary still completes.
+	// RFC 8414: {issuer}/.well-known/oauth-authorization-server, with the
+	// OpenID variant as a fallback for servers that only publish
 	// openid-configuration.
-	for _, wk := range []string{
-		wellKnown(asURL, "oauth-authorization-server"),
-		wellKnown(asURL, "openid-configuration"),
-	} {
-		meta, err := fetchJSON[authServerMetadata](ctx, f.httpClient(), wk)
-		if err == nil && meta.TokenEndpoint != "" && meta.AuthorizationEndpoint != "" {
-			return meta, nil
+	for _, asURL := range authServers {
+		for _, wk := range []string{
+			wellKnown(asURL, "oauth-authorization-server"),
+			wellKnown(asURL, "openid-configuration"),
+		} {
+			meta, err := fetchJSON[authServerMetadata](ctx, f.httpClient(), wk)
+			if err == nil && meta.TokenEndpoint != "" && meta.AuthorizationEndpoint != "" {
+				return meta, nil
+			}
 		}
 	}
-	return zero, fmt.Errorf("%w: no usable authorization-server metadata at %s", ErrProtocolError, asURL)
+	return zero, fmt.Errorf("%w: no usable authorization-server metadata for %s (tried %d server(s))", ErrProtocolError, serverURL, len(authServers))
 }
 
-// discoverProtectedResource resolves the authorization server for an
-// MCP resource (RFC 9728). It first tries the well-known path derived
-// from the server URL; if the server instead answers 401 with a
-// WWW-Authenticate `resource_metadata` pointer, that is honored too.
-func (f *OAuthFlow) discoverProtectedResource(ctx context.Context, serverURL string) (string, error) {
+// discoverProtectedResource resolves the authorization server(s) for an
+// MCP resource (RFC 9728), returning the full authorization_servers
+// list. It first tries the well-known path derived from the server URL;
+// if the server instead answers 401 with a WWW-Authenticate
+// `resource_metadata` pointer, that is honored too.
+func (f *OAuthFlow) discoverProtectedResource(ctx context.Context, serverURL string) ([]string, error) {
 	// Primary: the well-known path off the server origin.
 	prURL := wellKnown(serverURL, "oauth-protected-resource")
 	if pr, err := fetchJSON[protectedResourceMetadata](ctx, f.httpClient(), prURL); err == nil && len(pr.AuthorizationServers) > 0 {
-		return pr.AuthorizationServers[0], nil
+		return pr.AuthorizationServers, nil
 	}
 
 	// Fallback: probe the server itself and read the 401
 	// WWW-Authenticate `resource_metadata` param (RFC 9728 §5.1).
 	if rm := f.probeResourceMetadataURL(ctx, serverURL); rm != "" {
 		if pr, err := fetchJSON[protectedResourceMetadata](ctx, f.httpClient(), rm); err == nil && len(pr.AuthorizationServers) > 0 {
-			return pr.AuthorizationServers[0], nil
+			return pr.AuthorizationServers, nil
 		}
 	}
-	return "", fmt.Errorf("%w: could not discover an authorization server for %s (no RFC 9728 protected-resource metadata)", ErrProtocolError, serverURL)
+	return nil, fmt.Errorf("%w: could not discover an authorization server for %s (no RFC 9728 protected-resource metadata)", ErrProtocolError, serverURL)
 }
 
 // probeResourceMetadataURL makes an unauthenticated request to the MCP

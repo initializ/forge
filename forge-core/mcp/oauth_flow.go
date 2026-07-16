@@ -95,7 +95,6 @@ type OAuthServerConfig struct {
 	// discovery (#316) when the endpoints below are not configured.
 	ServerURL    string
 	ClientID     string
-	ClientSecret string // set only when DCR issued a confidential client
 	Scopes       []string
 	AuthorizeURL string
 	TokenURL     string
@@ -402,9 +401,18 @@ func (f *OAuthFlow) refreshTimeout() time.Duration {
 	return 30 * time.Second
 }
 
-// Logout deletes the stored token for an MCP server. Idempotent.
+// Logout deletes the stored token AND the discovery/registration record
+// for an MCP server. Clearing the registration (#320 review) is the
+// recovery path when an authorization server revokes the dynamically
+// registered client: the next `forge mcp login` re-discovers and
+// re-registers from scratch. Idempotent.
 func (f *OAuthFlow) Logout(name string) error {
-	return oauth.DeleteCredentials(storeKey(name))
+	tokErr := oauth.DeleteCredentials(storeKey(name))
+	regErr := oauth.DeleteRecord(regStoreKey(name))
+	if tokErr != nil {
+		return tokErr
+	}
+	return regErr
 }
 
 func (f *OAuthFlow) emit(server string, ok bool, reason string) {

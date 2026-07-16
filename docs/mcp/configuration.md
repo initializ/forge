@@ -103,9 +103,13 @@ So a fully zero-config OAuth server is just:
 
 **Precedence & rules:**
 
-- **Explicit config always wins.** Set `client_id`/`authorize_url`/`token_url`
-  to override discovery (for servers that don't advertise metadata or
-  don't support DCR).
+- **Discovery is the standalone default; explicit config always wins.**
+  Setting `client_id`/`authorize_url`/`token_url` is both the *static
+  override* (for servers that don't advertise metadata or don't support
+  DCR) **and the platform-materialized path** — the normal case when a
+  control plane materializes these fields from a registry entry. Explicit
+  config is not just the exception; under managed/admission-time
+  provisioning it is the common case.
 - `authorize_url` and `token_url` must be set **together** (or both
   omitted); a partial pair is a validation error.
 - **Fail-closed:** if a server advertises no metadata / no
@@ -117,6 +121,15 @@ So a fully zero-config OAuth server is just:
   login-time registration record and merged into the egress allowlist at
   runtime automatically. (Discovery itself runs at laptop-time
   `forge mcp login`, off the egress-enforced path.)
+- **Recovery (revoked/expired client):** a dynamically-registered client
+  is minted once and never re-minted. If the authorization server revokes
+  it (or `client_secret_expires_at` passes), run `forge mcp logout <name>`
+  — that clears both the token and the stored registration — then
+  `forge mcp login <name>` again to re-discover and re-register.
+- **Confidential clients are not supported.** Forge registers a public
+  (PKCE) client and sends no `client_secret`. If a server insists on
+  issuing a confidential client, login fails closed — configure
+  `client_id`/`authorize_url`/`token_url` explicitly for that server.
 
 ### `mcp.servers[].tools`
 

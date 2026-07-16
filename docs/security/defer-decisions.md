@@ -298,10 +298,13 @@ security:
 >   reach the port can assert any email. Never rely on the allowlist without
 >   the runner's auth middleware enabled.
 >
-> A non-email approver entry (a typo like `alice@crop.com`, or a bare handle)
-> can never match and silently locks that person out — fail-closed, not
-> insecure. Forge warns at startup for any `approvers`/`default_approvers`
-> entry that isn't email-shaped so the typo is caught before it's needed.
+> A **malformed** approver entry — a bare handle (`alice`), a missing `@`
+> (`alicecorp.com`), or a no-dot domain (`alice@corp`) — can never match and
+> silently locks that person out; fail-closed, not insecure. Forge warns at
+> startup for any `approvers`/`default_approvers` entry that isn't
+> email-shaped so the mistake is caught before it's needed. (This is a
+> structural check only — it can't catch a *valid-but-wrong* address like a
+> `corp`↔`crop` domain typo, which needs a directory to detect.)
 
 Group/role-based approver policies and a requester≠approver (four-eyes)
 gate are future work.

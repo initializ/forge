@@ -25,6 +25,14 @@ var _ channels.ApprovalDeliverer = (*Plugin)(nil)
 const (
 	approveActionID = "forge_defer_approve"
 	rejectActionID  = "forge_defer_reject"
+
+	// rejectCallbackID identifies the reason-capture modal opened on a Reject
+	// click. A button click carries no free text, so Reject opens a modal
+	// (views.open) that prompts for a justification; the view_submission comes
+	// back with this callback_id and the typed reason becomes the decision Note.
+	rejectCallbackID = "forge_defer_reject_modal"
+	reasonBlockID    = "forge_reject_reason_block"
+	reasonActionID   = "forge_reject_reason"
 )
 
 // SetApprovalResolver wires the callback invoked when an approver clicks a
@@ -208,8 +216,9 @@ func buildApprovalPayload(req channels.ApprovalRequest) map[string]any {
 
 // slackInteraction is the subset of Slack's block_actions payload we consume.
 type slackInteraction struct {
-	Type string `json:"type"`
-	User struct {
+	Type      string `json:"type"`
+	TriggerID string `json:"trigger_id"` // opens the reject-reason modal (views.open)
+	User      struct {
 		ID       string `json:"id"`
 		Username string `json:"username"`
 		Name     string `json:"name"`
@@ -230,14 +239,14 @@ type slackInteraction struct {
 // block_actions payload. Pure + testable. Returns ok=false for any payload
 // that isn't one of our approval buttons (other apps' interactions, non-button
 // types) so the caller ignores it. `channelID`/`msgTS` locate the message for
-// the outcome update.
-func parseApprovalInteraction(payload []byte) (dec channels.ApprovalDecision, userID, channelID, msgTS string, ok bool) {
+// the outcome update; `triggerID` opens the reject-reason modal.
+func parseApprovalInteraction(payload []byte) (dec channels.ApprovalDecision, userID, channelID, msgTS, triggerID string, ok bool) {
 	var in slackInteraction
 	if err := json.Unmarshal(payload, &in); err != nil {
-		return dec, "", "", "", false
+		return dec, "", "", "", "", false
 	}
 	if in.Type != "block_actions" || len(in.Actions) == 0 {
-		return dec, "", "", "", false
+		return dec, "", "", "", "", false
 	}
 	a := in.Actions[0]
 	var decision string
@@ -247,10 +256,10 @@ func parseApprovalInteraction(payload []byte) (dec channels.ApprovalDecision, us
 	case rejectActionID:
 		decision = "reject"
 	default:
-		return dec, "", "", "", false // not our button
+		return dec, "", "", "", "", false // not our button
 	}
 	if a.Value == "" {
-		return dec, "", "", "", false
+		return dec, "", "", "", "", false
 	}
 	approver := in.User.Username
 	if approver == "" {
@@ -263,7 +272,7 @@ func parseApprovalInteraction(payload []byte) (dec channels.ApprovalDecision, us
 		TaskID:   a.Value,
 		Decision: decision,
 		Approver: approver,
-	}, in.User.ID, in.Channel.ID, in.Message.TS, true
+	}, in.User.ID, in.Channel.ID, in.Message.TS, in.TriggerID, true
 }
 
 // resolveUserEmail resolves a Slack user id to their email via users.info
@@ -320,15 +329,62 @@ func (p *Plugin) resolveUserEmail(ctx context.Context, userID string) (string, e
 	return email, nil
 }
 
-// handleInteractive resolves an approval button click. No-op for interactions
-// that aren't ours. Best-effort updates the source message with the outcome.
+// handleInteractive dispatches an interactive envelope. Approve resolves the
+// deferral immediately; Reject opens a reason-capture modal whose submission
+// (view_submission) resolves it with the typed justification. No-op for
+// interactions that aren't ours.
 func (p *Plugin) handleInteractive(ctx context.Context, payload []byte) error {
-	dec, userID, channelID, msgTS, ok := parseApprovalInteraction(payload)
+	var probe struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(payload, &probe); err != nil {
+		return nil
+	}
+	switch probe.Type {
+	case "view_submission":
+		return p.handleRejectSubmission(ctx, payload)
+	default: // block_actions (and anything else falls through to the no-op)
+		return p.handleBlockAction(ctx, payload)
+	}
+}
+
+// handleBlockAction routes an Approve/Reject button click. Approve resolves
+// straight away; Reject opens the reason modal (falling back to a
+// reason-less reject only if the modal can't be opened, so a reject is never
+// lost to a transient views.open failure).
+func (p *Plugin) handleBlockAction(ctx context.Context, payload []byte) error {
+	dec, userID, channelID, msgTS, triggerID, ok := parseApprovalInteraction(payload)
 	if !ok {
 		return nil // not a forge approval interaction; ignore quietly
 	}
-	// Resolve the approver's email for the runtime allowlist (#313). Best
-	// effort: on failure ApproverEmail stays empty and the runtime fails
+	if dec.Decision == "reject" {
+		meta := rejectMeta{TaskID: dec.TaskID, ChannelID: channelID, MsgTS: msgTS}
+		if err := p.openRejectModal(ctx, triggerID, meta); err != nil {
+			p.logWarn("could not open reject-reason modal; rejecting without a reason",
+				map[string]any{"task": dec.TaskID, "error": err.Error()})
+			return p.resolveDecision(ctx, dec, userID, channelID, msgTS)
+		}
+		return nil // resolution happens on modal submit
+	}
+	return p.resolveDecision(ctx, dec, userID, channelID, msgTS)
+}
+
+// handleRejectSubmission resolves the deferral from a reject-modal submission,
+// carrying the typed reason as the decision Note.
+func (p *Plugin) handleRejectSubmission(ctx context.Context, payload []byte) error {
+	dec, userID, meta, ok := parseRejectSubmission(payload)
+	if !ok {
+		return nil // not our modal
+	}
+	return p.resolveDecision(ctx, dec, userID, meta.ChannelID, meta.MsgTS)
+}
+
+// resolveDecision resolves the email for the runtime allowlist (#313), invokes
+// the wired resolver, and best-effort updates the source message with the
+// outcome. Shared by the approve, reject-with-reason, and reason-less-reject
+// fallback paths.
+func (p *Plugin) resolveDecision(ctx context.Context, dec channels.ApprovalDecision, userID, channelID, msgTS string) error {
+	// Best effort: on failure ApproverEmail stays empty and the runtime fails
 	// closed if the tool declares an allowlist. We still log it so a missing
 	// users:read.email scope is visible.
 	if email, err := p.resolveUserEmail(ctx, userID); err == nil {
@@ -347,6 +403,132 @@ func (p *Plugin) handleInteractive(ctx context.Context, payload []byte) error {
 	}
 	p.updateApprovalMessage(channelID, msgTS, approvalOutcomeText(dec))
 	return nil
+}
+
+// rejectMeta is round-tripped through the modal's private_metadata so the
+// view_submission can locate the deferral (task id) and the source message.
+type rejectMeta struct {
+	TaskID    string `json:"task_id"`
+	ChannelID string `json:"channel_id"`
+	MsgTS     string `json:"msg_ts"`
+}
+
+// viewSubmission is the subset of Slack's view_submission payload we consume.
+type viewSubmission struct {
+	Type string `json:"type"`
+	User struct {
+		ID       string `json:"id"`
+		Username string `json:"username"`
+		Name     string `json:"name"`
+	} `json:"user"`
+	View struct {
+		CallbackID      string `json:"callback_id"`
+		PrivateMetadata string `json:"private_metadata"`
+		State           struct {
+			Values map[string]map[string]struct {
+				Value string `json:"value"`
+			} `json:"values"`
+		} `json:"state"`
+	} `json:"view"`
+}
+
+// parseRejectSubmission extracts the reject decision + reason from a
+// view_submission. Pure + testable. ok=false for any submission that isn't our
+// reject modal (wrong callback_id, unparseable metadata) so the caller ignores
+// it.
+func parseRejectSubmission(payload []byte) (dec channels.ApprovalDecision, userID string, meta rejectMeta, ok bool) {
+	var in viewSubmission
+	if err := json.Unmarshal(payload, &in); err != nil {
+		return dec, "", meta, false
+	}
+	if in.Type != "view_submission" || in.View.CallbackID != rejectCallbackID {
+		return dec, "", meta, false
+	}
+	if err := json.Unmarshal([]byte(in.View.PrivateMetadata), &meta); err != nil || meta.TaskID == "" {
+		return dec, "", meta, false
+	}
+	var reason string
+	if block, ok := in.View.State.Values[reasonBlockID]; ok {
+		reason = strings.TrimSpace(block[reasonActionID].Value)
+	}
+	approver := in.User.Username
+	if approver == "" {
+		approver = in.User.Name
+	}
+	if approver == "" {
+		approver = in.User.ID
+	}
+	return channels.ApprovalDecision{
+		TaskID:   meta.TaskID,
+		Decision: "reject",
+		Approver: approver,
+		Note:     reason,
+	}, in.User.ID, meta, true
+}
+
+// openRejectModal opens the reason-capture modal (views.open) using the click's
+// trigger_id. The deferral stays pending until the modal is submitted.
+func (p *Plugin) openRejectModal(ctx context.Context, triggerID string, meta rejectMeta) error {
+	if triggerID == "" {
+		return fmt.Errorf("empty trigger_id")
+	}
+	metaJSON, err := json.Marshal(meta)
+	if err != nil {
+		return err
+	}
+	body, _ := json.Marshal(map[string]any{
+		"trigger_id": triggerID,
+		"view":       buildRejectModal(string(metaJSON)),
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.apiBase+"/views.open", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+p.botToken)
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var out struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return fmt.Errorf("views.open decode: %w", err)
+	}
+	if !out.OK {
+		return fmt.Errorf("views.open: %s", out.Error)
+	}
+	return nil
+}
+
+// buildRejectModal renders the views.open modal (minus trigger_id). Pure so
+// tests can assert the shape. `privateMetadata` round-trips the rejectMeta so
+// the submission can locate the deferral and source message. The reason input
+// is required so a reject always carries a justification.
+func buildRejectModal(privateMetadata string) map[string]any {
+	return map[string]any{
+		"type":             "modal",
+		"callback_id":      rejectCallbackID,
+		"private_metadata": privateMetadata,
+		"title":            map[string]any{"type": "plain_text", "text": "Reject action"},
+		"submit":           map[string]any{"type": "plain_text", "text": "Reject"},
+		"close":            map[string]any{"type": "plain_text", "text": "Cancel"},
+		"blocks": []any{
+			map[string]any{
+				"type":     "input",
+				"block_id": reasonBlockID,
+				"label":    map[string]any{"type": "plain_text", "text": "Reason for rejection"},
+				"element": map[string]any{
+					"type":      "plain_text_input",
+					"action_id": reasonActionID,
+					"multiline": true,
+				},
+			},
+		},
+	}
 }
 
 // approvalOutcomeText is the message body that replaces the buttons after a

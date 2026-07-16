@@ -52,8 +52,9 @@ func TestBuildApprovalPayload(t *testing.T) {
 
 func interactionJSON(actionID, taskID, username string) []byte {
 	m := map[string]any{
-		"type": "block_actions",
-		"user": map[string]any{"id": "U1", "username": username, "name": "Alice N"},
+		"type":       "block_actions",
+		"trigger_id": "trig-1",
+		"user":       map[string]any{"id": "U1", "username": username, "name": "Alice N"},
 		"actions": []any{map[string]any{
 			"action_id": actionID, "value": taskID, "type": "button",
 		}},
@@ -68,7 +69,7 @@ func interactionJSON(actionID, taskID, username string) []byte {
 // the ignore paths (not our buttons / wrong shape).
 func TestParseApprovalInteraction(t *testing.T) {
 	t.Run("approve", func(t *testing.T) {
-		d, uid, ch, ts, ok := parseApprovalInteraction(interactionJSON(approveActionID, "task-7", "alice"))
+		d, uid, ch, ts, _, ok := parseApprovalInteraction(interactionJSON(approveActionID, "task-7", "alice"))
 		if !ok || d.Decision != "approve" || d.TaskID != "task-7" || d.Approver != "alice" {
 			t.Fatalf("got %+v ok=%v", d, ok)
 		}
@@ -79,30 +80,33 @@ func TestParseApprovalInteraction(t *testing.T) {
 			t.Errorf("message locator wrong: ch=%q ts=%q", ch, ts)
 		}
 	})
-	t.Run("reject", func(t *testing.T) {
-		d, _, _, _, ok := parseApprovalInteraction(interactionJSON(rejectActionID, "task-7", "bob"))
+	t.Run("reject carries trigger id for the modal", func(t *testing.T) {
+		d, _, _, _, trigger, ok := parseApprovalInteraction(interactionJSON(rejectActionID, "task-7", "bob"))
 		if !ok || d.Decision != "reject" {
 			t.Fatalf("got %+v ok=%v", d, ok)
 		}
+		if trigger != "trig-1" {
+			t.Errorf("trigger_id = %q, want trig-1 (needed to open the reason modal)", trigger)
+		}
 	})
 	t.Run("approver falls back to name then id", func(t *testing.T) {
-		d, _, _, _, _ := parseApprovalInteraction(interactionJSON(approveActionID, "t", "")) // no username
+		d, _, _, _, _, _ := parseApprovalInteraction(interactionJSON(approveActionID, "t", "")) // no username
 		if d.Approver != "Alice N" {
 			t.Errorf("approver fallback = %q, want name", d.Approver)
 		}
 	})
 	t.Run("not our button ignored", func(t *testing.T) {
-		if _, _, _, _, ok := parseApprovalInteraction(interactionJSON("some_other_app_action", "t", "x")); ok {
+		if _, _, _, _, _, ok := parseApprovalInteraction(interactionJSON("some_other_app_action", "t", "x")); ok {
 			t.Error("a non-forge action_id must be ignored")
 		}
 	})
 	t.Run("wrong type ignored", func(t *testing.T) {
-		if _, _, _, _, ok := parseApprovalInteraction([]byte(`{"type":"view_submission"}`)); ok {
+		if _, _, _, _, _, ok := parseApprovalInteraction([]byte(`{"type":"view_submission"}`)); ok {
 			t.Error("non-block_actions must be ignored")
 		}
 	})
 	t.Run("empty task id ignored", func(t *testing.T) {
-		if _, _, _, _, ok := parseApprovalInteraction(interactionJSON(approveActionID, "", "x")); ok {
+		if _, _, _, _, _, ok := parseApprovalInteraction(interactionJSON(approveActionID, "", "x")); ok {
 			t.Error("empty value (task id) must be ignored")
 		}
 	})
@@ -359,5 +363,140 @@ func TestHandleInteractive_AttachesEmail(t *testing.T) {
 	}
 	if got.ApproverEmail != "carol@corp.com" {
 		t.Errorf("ApproverEmail = %q, want carol@corp.com", got.ApproverEmail)
+	}
+}
+
+// rejectSubmissionJSON builds a view_submission payload for the reject modal.
+func rejectSubmissionJSON(callbackID, meta, reason string) []byte {
+	m := map[string]any{
+		"type": "view_submission",
+		"user": map[string]any{"id": "U1", "username": "dave"},
+		"view": map[string]any{
+			"callback_id":      callbackID,
+			"private_metadata": meta,
+			"state": map[string]any{
+				"values": map[string]any{
+					reasonBlockID: map[string]any{
+						reasonActionID: map[string]any{"type": "plain_text_input", "value": reason},
+					},
+				},
+			},
+		},
+	}
+	b, _ := json.Marshal(m)
+	return b
+}
+
+// TestBuildRejectModal pins the modal shape: our callback_id, the round-tripped
+// private_metadata, and the required reason input.
+func TestBuildRejectModal(t *testing.T) {
+	raw, _ := json.Marshal(buildRejectModal(`{"task_id":"task-5"}`))
+	blob := string(raw)
+	for _, want := range []string{
+		`"type":"modal"`,
+		`"callback_id":"` + rejectCallbackID + `"`,
+		`"private_metadata":"{\"task_id\":\"task-5\"}"`,
+		`"block_id":"` + reasonBlockID + `"`,
+		`"action_id":"` + reasonActionID + `"`,
+		`"multiline":true`,
+	} {
+		if !strings.Contains(blob, want) {
+			t.Errorf("reject modal missing %q\n%s", want, blob)
+		}
+	}
+}
+
+// TestParseRejectSubmission covers the reason + metadata extraction and the
+// ignore paths (wrong callback, unparseable/empty metadata).
+func TestParseRejectSubmission(t *testing.T) {
+	meta := `{"task_id":"task-5","channel_id":"C1","msg_ts":"111.222"}`
+	t.Run("extracts reason and meta", func(t *testing.T) {
+		d, uid, m, ok := parseRejectSubmission(rejectSubmissionJSON(rejectCallbackID, meta, "  too risky for prod  "))
+		if !ok || d.Decision != "reject" || d.TaskID != "task-5" || d.Approver != "dave" {
+			t.Fatalf("got %+v ok=%v", d, ok)
+		}
+		if d.Note != "too risky for prod" {
+			t.Errorf("note = %q, want trimmed reason", d.Note)
+		}
+		if uid != "U1" || m.ChannelID != "C1" || m.MsgTS != "111.222" {
+			t.Errorf("locator wrong: uid=%q meta=%+v", uid, m)
+		}
+	})
+	t.Run("wrong callback ignored", func(t *testing.T) {
+		if _, _, _, ok := parseRejectSubmission(rejectSubmissionJSON("someone_elses_modal", meta, "x")); ok {
+			t.Error("a foreign callback_id must be ignored")
+		}
+	})
+	t.Run("bad metadata ignored", func(t *testing.T) {
+		if _, _, _, ok := parseRejectSubmission(rejectSubmissionJSON(rejectCallbackID, "not-json", "x")); ok {
+			t.Error("unparseable private_metadata must be ignored")
+		}
+	})
+}
+
+// TestHandleBlockAction_RejectOpensModal: a Reject click opens the reason modal
+// (views.open) and does NOT resolve the deferral yet.
+func TestHandleBlockAction_RejectOpensModal(t *testing.T) {
+	var openedModal bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/views.open") {
+			openedModal = true
+			body, _ := io.ReadAll(r.Body)
+			if !strings.Contains(string(body), `"trigger_id":"trig-1"`) {
+				t.Errorf("views.open missing trigger id: %s", body)
+			}
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	var resolved bool
+	p := New()
+	p.apiBase = srv.URL
+	p.botToken = "xoxb-test"
+	p.SetApprovalResolver(func(context.Context, channels.ApprovalDecision) error { resolved = true; return nil })
+
+	if err := p.handleInteractive(context.Background(), interactionJSON(rejectActionID, "task-5", "dave")); err != nil {
+		t.Fatalf("handleInteractive: %v", err)
+	}
+	if !openedModal {
+		t.Error("expected a views.open to prompt for the reject reason")
+	}
+	if resolved {
+		t.Error("the deferral must NOT resolve until the modal is submitted")
+	}
+}
+
+// TestHandleRejectSubmission: submitting the reason modal resolves the deferral
+// as a reject carrying the typed reason and the resolved approver email.
+func TestHandleRejectSubmission(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/users.info") {
+			_, _ = w.Write([]byte(`{"ok":true,"user":{"profile":{"email":"dave@corp.com"}}}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK) // chat.update
+	}))
+	defer srv.Close()
+
+	var got channels.ApprovalDecision
+	p := New()
+	p.apiBase = srv.URL
+	p.botToken = "xoxb-test"
+	p.SetApprovalResolver(func(_ context.Context, d channels.ApprovalDecision) error { got = d; return nil })
+
+	meta := `{"task_id":"task-5","channel_id":"C1","msg_ts":"111.222"}`
+	payload := rejectSubmissionJSON(rejectCallbackID, meta, "denied: touches prod data")
+	if err := p.handleInteractive(context.Background(), payload); err != nil {
+		t.Fatalf("handleInteractive: %v", err)
+	}
+	if got.Decision != "reject" || got.TaskID != "task-5" {
+		t.Fatalf("resolver got %+v", got)
+	}
+	if got.Note != "denied: touches prod data" {
+		t.Errorf("note = %q, want the typed reason", got.Note)
+	}
+	if got.ApproverEmail != "dave@corp.com" {
+		t.Errorf("ApproverEmail = %q, want dave@corp.com", got.ApproverEmail)
 	}
 }

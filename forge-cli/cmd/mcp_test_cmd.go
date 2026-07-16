@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/initializ/forge/forge-core/llm/oauth"
 	"github.com/initializ/forge/forge-core/mcp"
 	"github.com/spf13/cobra"
 )
@@ -30,6 +31,15 @@ func mcpTestRun(cmd *cobra.Command, args []string) error {
 	spec, err := findServerSpec(cfg, name)
 	if err != nil {
 		return err
+	}
+
+	// Apply the token-store-path override (forge.yaml > env) so `mcp test`
+	// reads OAuth tokens from the same location `mcp login` wrote them —
+	// mirroring mcp_login.go / mcp_logout.go. Without this, `test` always
+	// looked in the default ~/.forge/credentials and reported "no stored
+	// token" for any server logged in under MCP_TOKEN_STORE_PATH.
+	if path := loginTokenStorePath(cfg); path != "" {
+		oauth.SetCredentialsDir(path)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*timeout+5*time.Second)

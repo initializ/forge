@@ -127,14 +127,12 @@ func validateMCPAuth(prefix string, a types.MCPAuth, r *ValidationResult) {
 
 	switch a.Type {
 	case "oauth":
-		if a.ClientID == "" {
-			r.Errors = append(r.Errors, prefix+": client_id is required for oauth")
-		}
-		if a.AuthorizeURL == "" {
-			r.Errors = append(r.Errors, prefix+": authorize_url is required for oauth")
-		}
-		if a.TokenURL == "" {
-			r.Errors = append(r.Errors, prefix+": token_url is required for oauth")
+		// #316: client_id + endpoints may be discovered (RFC 9728/8414/7591)
+		// from the server url, so the trio is no longer required. Only a
+		// PARTIAL endpoint config is an error — authorize_url and token_url
+		// must be set together, or both omitted (⇒ discovery from url).
+		if (a.AuthorizeURL == "") != (a.TokenURL == "") {
+			r.Errors = append(r.Errors, prefix+": authorize_url and token_url must be set together (or both omitted to discover them from the server url)")
 		}
 	case "bearer", "static":
 		if a.TokenEnv == "" {

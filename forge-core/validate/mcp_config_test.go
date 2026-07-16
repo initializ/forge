@@ -97,7 +97,9 @@ func TestValidateMCPConfig(t *testing.T) {
 			wantErrs: []string{"duplicate name"},
 		},
 		{
-			name: "auth oauth without client_id",
+			// #316: client_id may be omitted (dynamic client registration),
+			// with both endpoints explicit — valid, no error.
+			name: "auth oauth without client_id (DCR) is allowed",
 			cfg: types.MCPConfig{Servers: []types.MCPServer{{
 				Name: "x", Transport: "http", URL: "http://x",
 				Auth: &types.MCPAuth{
@@ -107,10 +109,21 @@ func TestValidateMCPConfig(t *testing.T) {
 				},
 				Tools: types.MCPToolFilter{Allow: []string{"y"}},
 			}}},
-			wantErrs: []string{"client_id is required"},
+			wantNoErr: true,
 		},
 		{
-			name: "auth oauth without authorize_url",
+			// #316: both endpoints omitted ⇒ discover from the server url. Valid.
+			name: "auth oauth full discovery (no endpoints, no client_id) is allowed",
+			cfg: types.MCPConfig{Servers: []types.MCPServer{{
+				Name: "x", Transport: "http", URL: "https://mcp.example.com/mcp",
+				Auth:  &types.MCPAuth{Type: "oauth", Scopes: []string{"read"}},
+				Tools: types.MCPToolFilter{Allow: []string{"y"}},
+			}}},
+			wantNoErr: true,
+		},
+		{
+			// Partial endpoint config is still an error — must be paired.
+			name: "auth oauth with only token_url (partial) is an error",
 			cfg: types.MCPConfig{Servers: []types.MCPServer{{
 				Name: "x", Transport: "http", URL: "http://x",
 				Auth: &types.MCPAuth{
@@ -120,10 +133,10 @@ func TestValidateMCPConfig(t *testing.T) {
 				},
 				Tools: types.MCPToolFilter{Allow: []string{"y"}},
 			}}},
-			wantErrs: []string{"authorize_url is required"},
+			wantErrs: []string{"must be set together"},
 		},
 		{
-			name: "auth oauth without token_url",
+			name: "auth oauth with only authorize_url (partial) is an error",
 			cfg: types.MCPConfig{Servers: []types.MCPServer{{
 				Name: "x", Transport: "http", URL: "http://x",
 				Auth: &types.MCPAuth{
@@ -133,7 +146,7 @@ func TestValidateMCPConfig(t *testing.T) {
 				},
 				Tools: types.MCPToolFilter{Allow: []string{"y"}},
 			}}},
-			wantErrs: []string{"token_url is required"},
+			wantErrs: []string{"must be set together"},
 		},
 		{
 			name: "auth bearer without token_env",

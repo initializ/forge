@@ -8,7 +8,31 @@ import (
 	"github.com/initializ/forge/forge-core/llm/oauth"
 	"github.com/initializ/forge/forge-core/mcp"
 	coreruntime "github.com/initializ/forge/forge-core/runtime"
+	"github.com/initializ/forge/forge-core/types"
 )
+
+// oauthServerNames returns the names of the oauth-typed MCP servers.
+func oauthServerNames(cfg types.MCPConfig) []string {
+	var names []string
+	for _, s := range cfg.Servers {
+		if s.Auth != nil && s.Auth.Type == "oauth" {
+			names = append(names, s.Name)
+		}
+	}
+	return names
+}
+
+// mcpRegisteredOAuthHosts applies the MCP token-store override, then
+// returns the authorize/token/registration hosts persisted at login
+// time by OAuth discovery (#316) — merged into the egress allowlist so
+// a discovered authorization-server host (absent from forge.yaml) is
+// reachable at runtime.
+func mcpRegisteredOAuthHosts(cfg types.MCPConfig) []string {
+	if sp := mcpTokenStorePath(cfg.TokenStorePath); sp != "" {
+		oauth.SetCredentialsDir(sp)
+	}
+	return mcp.RegisteredOAuthHosts(oauthServerNames(cfg))
+}
 
 // mcpTokenStorePath returns the effective OAuth credentials
 // directory for MCP. Precedence (highest first):

@@ -136,11 +136,17 @@ func NewServer(spec types.MCPServer, deps ServerDeps) (*Server, error) {
 				return nil, fmt.Errorf("%w: server %q: auth.token_env is required for type=%s", ErrProtocolError, spec.Name, spec.Auth.Type)
 			}
 		case "oauth":
-			if spec.Auth.ClientID == "" {
-				return nil, fmt.Errorf("%w: server %q: auth.client_id is required for oauth", ErrProtocolError, spec.Name)
+			// #316: the endpoints + client_id may be discovered
+			// (RFC 9728/8414/7591) from the server URL, so the trio is no
+			// longer required. Only reject a PARTIAL endpoint config —
+			// authorize_url and token_url must be set together or both
+			// omitted (both-omitted ⇒ discovery). A server with no URL
+			// and no endpoints has nothing to discover from.
+			if (spec.Auth.AuthorizeURL == "") != (spec.Auth.TokenURL == "") {
+				return nil, fmt.Errorf("%w: server %q: auth.authorize_url and auth.token_url must be set together (or both omitted for discovery)", ErrProtocolError, spec.Name)
 			}
-			if spec.Auth.AuthorizeURL == "" || spec.Auth.TokenURL == "" {
-				return nil, fmt.Errorf("%w: server %q: auth.authorize_url and auth.token_url are required for oauth", ErrProtocolError, spec.Name)
+			if spec.Auth.AuthorizeURL == "" && spec.URL == "" {
+				return nil, fmt.Errorf("%w: server %q: oauth needs either explicit authorize_url/token_url or a url to discover them from", ErrProtocolError, spec.Name)
 			}
 			if deps.OAuth == nil {
 				return nil, fmt.Errorf("%w: server %q requires oauth but no OAuthFlow supplied", ErrProtocolError, spec.Name)
@@ -513,6 +519,7 @@ func buildAuthFn(spec types.MCPServer, flow *OAuthFlow) AuthTokenFunc {
 		}
 	case "oauth":
 		cfg := OAuthServerConfig{
+			ServerURL:    spec.URL, // for #316 discovery / persisted-registration lookup
 			ClientID:     spec.Auth.ClientID,
 			Scopes:       spec.Auth.Scopes,
 			AuthorizeURL: spec.Auth.AuthorizeURL,

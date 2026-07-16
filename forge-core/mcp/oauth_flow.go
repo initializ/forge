@@ -91,7 +91,11 @@ func NewOAuthFlow() *OAuthFlow {
 // to keep this package importable from cmd/ without a dependency on
 // the types package shape changing.
 type OAuthServerConfig struct {
+	// ServerURL is the MCP server endpoint. Used for RFC 9728/8414
+	// discovery (#316) when the endpoints below are not configured.
+	ServerURL    string
 	ClientID     string
+	ClientSecret string // set only when DCR issued a confidential client
 	Scopes       []string
 	AuthorizeURL string
 	TokenURL     string
@@ -137,8 +141,16 @@ func newLoginServer(handler http.Handler) *http.Server {
 // `forge mcp login <name>`. Blocks until the callback fires or ctx
 // is cancelled.
 func (f *OAuthFlow) Login(ctx context.Context, name string, cfg OAuthServerConfig) error {
+	// Resolve endpoints + client_id: explicit config wins, else a
+	// prior registration, else RFC 9728/8414/7591 discovery + DCR
+	// (#316). allowDiscovery=true — this is the interactive path.
+	resolved, err := f.resolveOAuthConfig(ctx, name, cfg, true)
+	if err != nil {
+		return err
+	}
+	cfg = resolved
 	if cfg.ClientID == "" || cfg.AuthorizeURL == "" || cfg.TokenURL == "" {
-		return fmt.Errorf("%w: oauth Login requires client_id, authorize_url, token_url", ErrProtocolError)
+		return fmt.Errorf("%w: oauth Login could not resolve client_id, authorize_url, token_url (configure them, or use a discovery-capable server)", ErrProtocolError)
 	}
 	if f.BrowserOpener == nil {
 		// Fail fast — see the BrowserOpener field docstring. The CLI
@@ -274,6 +286,16 @@ func (f *OAuthFlow) BearerToken(ctx context.Context, name string, cfg OAuthServe
 	if !tok.IsExpiredWithBuffer(f.RefreshWindow) {
 		return tok.AccessToken, nil
 	}
+
+	// Refresh needed — resolve token_url/client_id. Explicit config or
+	// a persisted registration only; the refresh path never runs
+	// discovery/DCR (allowDiscovery=false) — a first-time mint requires
+	// interactive `forge mcp login`. #316
+	resolved, rerr := f.resolveOAuthConfig(ctx, name, cfg, false)
+	if rerr != nil {
+		return "", rerr
+	}
+	cfg = resolved
 
 	// Singleflight: collapse concurrent refreshes. The leader spawns
 	// the refresh goroutine and EVERY subsequent caller — including

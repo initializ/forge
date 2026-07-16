@@ -594,6 +594,11 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Same for MCP servers — without this, every HTTPS MCP call would
 	// be silently blocked. Mirror the AuthDomains pattern.
 	egressDomains = append(egressDomains, security.MCPDomains(r.cfg.Config.MCP)...)
+	// #316: with OAuth discovery the authorization-server host is not in
+	// forge.yaml to pre-seed the allowlist — it is learned at login time
+	// and persisted in the registration record. mcpRegisteredOAuthHosts
+	// applies the store-path override and reads those hosts back.
+	egressDomains = append(egressDomains, mcpRegisteredOAuthHosts(r.cfg.Config.MCP)...)
 	// Phase 6 (#107 / #108) — same for the OTel collector. Without
 	// this, dev runs with `observability.tracing.enabled: true` and
 	// `egress.mode: allowlist` would silently drop spans on shutdown.

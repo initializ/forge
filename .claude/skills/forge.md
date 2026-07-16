@@ -296,7 +296,9 @@ The agent loop calls tools the LLM asks for. The registry merges:
   `mcp.servers[]` block. Names are namespaced `<server>__<tool>` (e.g.
   `linear__create_issue`). Phase 1 ships HTTP transport only; stdio is
   rejected at validate time with a roadmap pointer. OAuth 2.1 PKCE
-  supported via `forge mcp login`.
+  supported via `forge mcp login`; `client_id`/`authorize_url`/`token_url`
+  are optional — discovered from the server url via RFC 9728/8414 with
+  RFC 7591 dynamic client registration when omitted (#316).
 
 `cli_execute` ships 13 security layers — shell denylist, binary
 allowlist, `LookPath` resolution at startup, argument validation
@@ -821,9 +823,9 @@ enterprise raw-capture path.
 `docs/security/audit-logging.md` § Trace cross-link,
 `docs/security/egress-control.md` § OTel collector auto-extension.
 
-### 12.11 Governance framework R1–R9 (#216 umbrella)
+### 12.11 Governance framework R1–R10 (#216 umbrella)
 
-Six MUST + three SHOULD requirements from an agent-runtime governance framework. Complete on `main` after #245 / #246 / #247 / #248 land (R4c is the last piece).
+Six MUST + three SHOULD requirements from an agent-runtime governance framework, complete on `main` after #245 / #246 / #247 / #248 land (R4c is the last piece). **R10 (delegated identity) is a proposed fourth SHOULD** — not yet implemented; see #317 / #318.
 
 | # | Requirement | Type | Where it lives | Related PR |
 |---|---|:-:|---|:-:|
@@ -838,6 +840,7 @@ Six MUST + three SHOULD requirements from an agent-runtime governance framework.
 | R7 | Semantic distance | SHOULD | `forge-core/security/intent/drift.go`; `security.intent_drift` on top of R3. Rolling-window mean-below-threshold + monotone-decrease trip conditions. State-transition dedup (one `entered`, one `recovered` — no per-call flood). | #246 |
 | R8 | OpenTelemetry export | SHOULD | `observability.tracing` in yaml. Real tracer provider; OTLP HTTP/gRPC export. Audit events carry `trace_id` + `span_id` closing the loop between the SIEM channel and the APM channel. Baseline (#108). | — |
 | R9 | Least-privilege credentials | SHOULD | `forge-core/credentials/`; top-level `credentials:` in yaml. Providers: `static`, `sts_assume_role`. Fresh credentials per tool call; injected into subprocess env (`cli_execute`) or outbound headers (`http_request`). `credential_issued` / `credential_revoked` audit events. **No credential material in audit payloads.** | #236 |
+| R10 | Delegated identity / on-behalf-of authorization | SHOULD (proposed) | Downstream tool calls (esp. remote MCP) execute under the **requesting user's** delegated identity, not a shared service grant — per-user, per-session, on-behalf-of. Where R9 scopes *what a tool may do*, R10 scopes *whose authority it acts under*. One `BearerToken(server, subject, session)` seam, **resolver behind it** (`design-tool-registry.md` §18): the **Forge-local resolver** (interactive OAuth, ephemeral per session; standalone-capable — #317) and the **managed broker resolver** (vaulted 3LO → ID-JAG; holds the IdP trust relationship — initializ, `initializ/aip/mcp-delegated-identity-broker.md`; #318 = the thin `id_jag` `method:` sliver in the Forge repo). Forge never learns which resolver answered. Delegation follows authorization (never mint speculatively); token injected at egress, never through the agent; writes still route through DEFER regardless of token validity (§18.5). Planned audit events: `mcp_auth_requested` / `mcp_auth_completed` / `mcp_auth_denied`. | #317 / #318 |
 
 **Config off by default.** Every governance block ships disabled — an absent block leaves the hook unregistered and the wire shape unchanged from a pre-governance Forge. Rollout: turn each on independently, warn-only first (`hard_threshold: -1`), gather the score distribution against your embedder + workload, then set `hard_threshold` a bit **below** the observed floor of your normal traffic (typically ~0.2–0.3; the default is `0.3`). `hard_threshold` is "score below → deny", so a high value like `0.85` would deny almost all legitimate calls — aligned actions cluster well above it (0.6–0.9 on OpenAI `text-embedding-3-small`).
 
@@ -850,6 +853,7 @@ Six MUST + three SHOULD requirements from an agent-runtime governance framework.
 - `docs/security/audit-signing.md` (R6)
 - `docs/security/audit-tamper-evidence.md` (R5)
 - `docs/security/least-privilege-credentials.md` (R9)
+- R10 (delegated identity) — proposed; authority `design-tool-registry.md` §18; #317 (Forge-local interactive resolver) / #318 (`id_jag` sliver) / `initializ/aip/mcp-delegated-identity-broker.md` (broker resolvers).
 - `docs/security/policy-decisions.md` (five-decision enum reference)
 
 ---

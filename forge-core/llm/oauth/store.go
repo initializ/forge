@@ -149,6 +149,111 @@ func MigrateToEncrypted(provider string) error {
 	return nil
 }
 
+// --- generic JSON records (beyond Token) ---
+//
+// SaveRecord / LoadRecord / DeleteRecord persist an arbitrary
+// JSON-serializable value under a caller-supplied key, using the same
+// encrypted-preferred, plaintext-fallback strategy as the token
+// helpers. Added for the MCP OAuth discovery/registration record
+// (#316): the minted client_id + discovered endpoints must survive
+// across a refresh and a pod restart, exactly like the token itself.
+
+// SaveRecord persists v (marshaled to JSON) under key.
+func SaveRecord(key string, v any) error {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Errorf("marshaling record: %w", err)
+	}
+	if ep := encryptedProvider(); ep != nil {
+		if err := ep.Set(key, string(data)); err != nil {
+			return fmt.Errorf("saving encrypted record: %w", err)
+		}
+		_ = removeRecordFile(key) // migration clean-up
+		return nil
+	}
+	return saveRecordPlaintext(key, data)
+}
+
+// LoadRecord loads a record saved by SaveRecord into v. Returns
+// found=false (nil error) when no record exists for key.
+func LoadRecord(key string, v any) (found bool, err error) {
+	if ep := encryptedProvider(); ep != nil {
+		val, gErr := ep.Get(key)
+		if gErr == nil {
+			if jErr := json.Unmarshal([]byte(val), v); jErr != nil {
+				return false, fmt.Errorf("parsing encrypted record: %w", jErr)
+			}
+			return true, nil
+		}
+		if !secrets.IsNotFound(gErr) {
+			return false, fmt.Errorf("reading encrypted record: %w", gErr)
+		}
+		// Not found in encrypted store — fall through to plaintext.
+	}
+	return loadRecordPlaintext(key, v)
+}
+
+// DeleteRecord removes a record from both stores. Idempotent.
+func DeleteRecord(key string) error {
+	if ep := encryptedProvider(); ep != nil {
+		if err := ep.Delete(key); err != nil && !secrets.IsNotFound(err) {
+			return fmt.Errorf("deleting encrypted record: %w", err)
+		}
+	}
+	return removeRecordFile(key)
+}
+
+func recordPath(key string) (string, error) {
+	dir, err := DefaultCredentialsDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, key+".json"), nil
+}
+
+func saveRecordPlaintext(key string, data []byte) error {
+	dir, err := DefaultCredentialsDir()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("creating credentials directory: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, key+".json"), data, 0o600); err != nil {
+		return fmt.Errorf("writing record: %w", err)
+	}
+	return nil
+}
+
+func loadRecordPlaintext(key string, v any) (bool, error) {
+	path, err := recordPath(key)
+	if err != nil {
+		return false, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("reading record: %w", err)
+	}
+	if err := json.Unmarshal(data, v); err != nil {
+		return false, fmt.Errorf("parsing record: %w", err)
+	}
+	return true, nil
+}
+
+func removeRecordFile(key string) error {
+	path, err := recordPath(key)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing record: %w", err)
+	}
+	return nil
+}
+
 // --- plaintext helpers ---
 
 func savePlaintext(provider string, token *Token) error {

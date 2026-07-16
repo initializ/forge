@@ -399,10 +399,12 @@ func runRun(cmd *cobra.Command, args []string) error {
 	for _, w := range deferTimeoutWarnings(cfg.Security.Defer, channels.SyncRequestTimeout) {
 		fmt.Fprintln(os.Stderr, "  Warning:    "+w)
 	}
-	// #315 review (finding 2): approver emails are free strings, so a typo
-	// (`alice@crop.com`) silently never matches and locks that person out —
-	// fail-closed, so not insecure, just a confusing lockout. Warn on any
-	// approver entry that isn't email-shaped so the typo is caught at startup.
+	// #315 review (finding 2): approver emails are free strings, so a
+	// malformed entry (a bare handle, a missing `@`, a no-dot domain) silently
+	// never matches and locks that person out — fail-closed, so not insecure,
+	// just a confusing lockout. Warn on any approver entry that isn't
+	// email-shaped so the mistake is caught at startup. (Structural only — a
+	// valid-but-wrong address like a `corp`↔`crop` typo can't be caught here.)
 	for _, w := range deferApproverWarnings(cfg.Security.Defer) {
 		fmt.Fprintln(os.Stderr, "  Warning:    "+w)
 	}
@@ -485,7 +487,7 @@ func deferApproverWarnings(deferCfg types.DeferConfig) []string {
 		for _, a := range list {
 			if !looksLikeEmail(a) {
 				warns = append(warns, fmt.Sprintf(
-					"security.defer %s lists approver %q, which is not an email — the approver allowlist matches on email, so this entry will never authorize anyone (check for a typo)",
+					"security.defer %s lists approver %q, which is not email-shaped — the approver allowlist matches on email, so this entry will never authorize anyone (missing @, bare handle, or no-dot domain)",
 					where, a))
 			}
 		}

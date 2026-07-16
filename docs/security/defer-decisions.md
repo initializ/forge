@@ -185,9 +185,10 @@ context template.
 When the agent runs with `--with slack` and a deferred tool's `to` is
 `channel:slack:<channel>`, Forge **delivers the approval natively**: on a
 deferral the Slack adapter posts a **Block Kit** message with **Approve /
-Reject** buttons to that channel, and a click resolves the deferral —
-the tool proceeds or fails and the message updates with the outcome +
-approver.
+Reject** buttons to that channel. **Approve** resolves the deferral
+immediately; **Reject** opens a modal that prompts for a reason (recorded
+as the decision `note`). Either way the tool then proceeds or fails and
+the message updates with the outcome + approver.
 
 ```yaml
 security:
@@ -240,10 +241,13 @@ follow-up (same interface).
 >   grant.
 > - There is no requester≠approver (four-eyes) gate yet.
 >
-> **No rejection reason is captured from Slack today.** A button click
-> carries no free text, so a Slack `reject` records an empty `note`; if
-> you need a documented reason, resolve via `POST /tasks/{id}/decisions`
-> with a `note`, or wait for the follow-up that opens a reason modal.
+> **Reject captures a reason.** A button click carries no free text, so
+> clicking **Reject** opens a modal that prompts for a justification; the
+> typed reason is recorded as the decision `note` (and surfaces in the
+> `task_deferred_decision` audit event and the `defer: rejected by …`
+> tool error). If the modal can't be opened (a transient `views.open`
+> failure), Forge falls back to a reason-less reject so the decision is
+> never lost. **Approve** resolves immediately, with no modal.
 
 **If the target adapter isn't running**, Forge warns at startup (e.g.
 `security.defer` routes `cli_execute` to `channel:slack:…` but `slack` is

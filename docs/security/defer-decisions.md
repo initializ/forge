@@ -283,6 +283,26 @@ security:
 - Empty `approvers` (and empty `default_approvers`) → no allowlist; channel
   membership is the ACL (see the warning above).
 
+> 🔑 **The allowlist authorizes an *asserted* email — its strength depends on
+> who asserts it.**
+>
+> - **Slack path** (the one #311 left open): the runtime resolves the real
+>   email from `users.info`, bound to the authenticated Slack identity. Here
+>   the allowlist genuinely restricts *which channel members* can approve.
+> - **Direct `POST /tasks/{id}/decisions`**: the endpoint trusts the
+>   `approver_email` the caller supplies. Whoever holds the runtime bearer
+>   token can assert any listed email — so for direct posts the real gate is
+>   the endpoint's **authentication**, and the allowlist is advisory on top.
+>   That's acceptable (the token holder is already trusted), but it means
+>   **`--no-auth` + an allowlist does not hold**: with no auth, anyone who can
+>   reach the port can assert any email. Never rely on the allowlist without
+>   the runner's auth middleware enabled.
+>
+> A non-email approver entry (a typo like `alice@crop.com`, or a bare handle)
+> can never match and silently locks that person out — fail-closed, not
+> insecure. Forge warns at startup for any `approvers`/`default_approvers`
+> entry that isn't email-shaped so the typo is caught before it's needed.
+
 Group/role-based approver policies and a requester≠approver (four-eyes)
 gate are future work.
 

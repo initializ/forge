@@ -399,6 +399,13 @@ func runRun(cmd *cobra.Command, args []string) error {
 	for _, w := range deferTimeoutWarnings(cfg.Security.Defer, channels.SyncRequestTimeout) {
 		fmt.Fprintln(os.Stderr, "  Warning:    "+w)
 	}
+	// #315 review (finding 2): approver emails are free strings, so a typo
+	// (`alice@crop.com`) silently never matches and locks that person out —
+	// fail-closed, so not insecure, just a confusing lockout. Warn on any
+	// approver entry that isn't email-shaped so the typo is caught at startup.
+	for _, w := range deferApproverWarnings(cfg.Security.Defer) {
+		fmt.Fprintln(os.Stderr, "  Warning:    "+w)
+	}
 
 	return runner.Run(ctx)
 }
@@ -462,6 +469,46 @@ func deferTimeoutWarnings(deferCfg types.DeferConfig, syncWait time.Duration) []
 	}
 	sort.Strings(warns)
 	return warns
+}
+
+// deferApproverWarnings returns a warning for each DEFER approver entry
+// (per-tool `approvers` or `default_approvers`) that isn't email-shaped. The
+// allowlist matches on email (#313), so a non-email entry can never match and
+// silently locks that approver out — fail-closed, but a startup warning turns a
+// 2 a.m. lockout into a config typo caught at boot. Pure + testable.
+func deferApproverWarnings(deferCfg types.DeferConfig) []string {
+	if !deferCfg.Enabled {
+		return nil
+	}
+	var warns []string
+	check := func(where string, list []string) {
+		for _, a := range list {
+			if !looksLikeEmail(a) {
+				warns = append(warns, fmt.Sprintf(
+					"security.defer %s lists approver %q, which is not an email — the approver allowlist matches on email, so this entry will never authorize anyone (check for a typo)",
+					where, a))
+			}
+		}
+	}
+	for tool, tc := range deferCfg.Tools {
+		check(fmt.Sprintf("tool %q", tool), tc.Approvers)
+	}
+	check("default_approvers", deferCfg.DefaultApprovers)
+	sort.Strings(warns)
+	return warns
+}
+
+// looksLikeEmail is a deliberately loose check — one "@" with non-empty local
+// and domain parts, and a dot in the domain. Enough to catch the common typos
+// (missing @, bare username) without rejecting valid addresses.
+func looksLikeEmail(s string) bool {
+	s = strings.TrimSpace(s)
+	at := strings.IndexByte(s, '@')
+	if at <= 0 || at != strings.LastIndexByte(s, '@') || at == len(s)-1 {
+		return false
+	}
+	domain := s[at+1:]
+	return strings.Contains(domain, ".") && !strings.HasPrefix(domain, ".") && !strings.HasSuffix(domain, ".")
 }
 
 // parseDeferTarget parses a DEFER `to:` value of the form

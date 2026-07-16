@@ -181,6 +181,62 @@ func TestDeferTimeoutWarnings(t *testing.T) {
 	})
 }
 
+// TestDeferApproverWarnings covers the config-hygiene warning (#315 finding 2):
+// a non-email approver entry (per-tool or default) can never match the
+// email-keyed allowlist, so it's flagged at startup.
+func TestDeferApproverWarnings(t *testing.T) {
+	cfg := types.DeferConfig{
+		Enabled: true,
+		Tools: map[string]types.DeferToolConfig{
+			"ok_tool":  {Approvers: []string{"alice@corp.com"}},        // valid → no warn
+			"bad_tool": {Approvers: []string{"bob", "carol@corp.com"}}, // "bob" → warn
+			"typo":     {Approvers: []string{"dave@corp"}},             // no dot in domain → warn
+		},
+		DefaultApprovers: []string{"@handle"}, // bare handle → warn
+	}
+
+	warns := deferApproverWarnings(cfg)
+	if len(warns) != 3 { // bob + dave@corp + @handle
+		t.Fatalf("expected 3 approver warnings, got %d: %v", len(warns), warns)
+	}
+	joined := strings.Join(warns, "\n")
+	for _, want := range []string{`"bob"`, `"dave@corp"`, `"@handle"`, "default_approvers"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("approver warning missing %q:\n%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "alice@corp.com") {
+		t.Errorf("must not warn for a valid email:\n%s", joined)
+	}
+
+	t.Run("disabled → no warnings", func(t *testing.T) {
+		off := cfg
+		off.Enabled = false
+		if w := deferApproverWarnings(off); w != nil {
+			t.Errorf("disabled defer must not warn, got %v", w)
+		}
+	})
+
+	t.Run("looksLikeEmail edge cases", func(t *testing.T) {
+		for in, want := range map[string]bool{
+			"a@b.com":     true,
+			"a.b@c.co.uk": true,
+			"bob":         false,
+			"a@b":         false, // no dot in domain
+			"@b.com":      false, // empty local
+			"a@":          false, // empty domain
+			"a@@b.com":    false, // two @
+			"a@.com":      false, // domain starts with dot
+			"a@b.":        false, // domain ends with dot
+			" a@b.com ":   true,  // trimmed
+		} {
+			if got := looksLikeEmail(in); got != want {
+				t.Errorf("looksLikeEmail(%q) = %v, want %v", in, got, want)
+			}
+		}
+	})
+}
+
 // TestSyncRequestTimeout_IsReferenced guards the single-source-of-truth: the
 // warning threshold uses the exported router constant.
 func TestSyncRequestTimeout_IsReferenced(t *testing.T) {

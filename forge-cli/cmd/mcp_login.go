@@ -64,6 +64,7 @@ func mcpLoginRun(cmd *cobra.Command, args []string) error {
 	fmt.Printf("opening browser to authorize Forge against %s...\n", name)
 	fmt.Println("(if a browser does not open, look for the URL on stdout below)")
 	if err := flow.Login(ctx, name, mcp.OAuthServerConfig{
+		ServerURL:    spec.URL, // enables RFC 9728/8414/7591 discovery when endpoints are omitted (#316)
 		ClientID:     spec.Auth.ClientID,
 		Scopes:       spec.Auth.Scopes,
 		AuthorizeURL: spec.Auth.AuthorizeURL,

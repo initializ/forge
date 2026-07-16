@@ -583,29 +583,33 @@ type MCPToolFilter struct {
 type MCPAuth struct {
 	// Type is one of:
 	//   - "oauth"  → OAuth 2.1 PKCE; tokens stored in MCPConfig.TokenStorePath.
-	//                Requires ClientID, AuthorizeURL, TokenURL.
-	//                Use `forge mcp login <name>` once at laptop time.
+	//                ClientID / AuthorizeURL / TokenURL are OPTIONAL: when
+	//                omitted, Forge discovers them from the server URL via
+	//                RFC 9728 / RFC 8414 and dynamically registers a client
+	//                (RFC 7591) at first `forge mcp login` (#316). Set them
+	//                explicitly to override discovery.
 	//   - "bearer" → static Bearer token from env var TokenEnv.
 	//   - "static" → same as bearer; named separately for clarity in
 	//                forge.yaml.
 	Type string `yaml:"type"`
 
-	// ClientID is the OAuth client identifier registered with the MCP
-	// server's authorization service. Required when Type == "oauth".
+	// ClientID is the OAuth client identifier. Optional for Type ==
+	// "oauth": when empty and the authorization server supports RFC 7591,
+	// Forge mints one at login and persists it (encrypted) for reuse.
 	ClientID string `yaml:"client_id,omitempty"`
 
-	// Scopes is the OAuth scope set requested at login.
+	// Scopes is the OAuth scope set requested at login. When empty,
+	// discovery uses the server's advertised scopes_supported.
 	Scopes []string `yaml:"scopes,omitempty"`
 
-	// AuthorizeURL is the OAuth 2.1 authorization endpoint (where
-	// `forge mcp login` opens the browser). Required when Type ==
-	// "oauth". Phase 1 requires this be explicit; Phase 1.5 will add
-	// RFC 9728 / RFC 8414 automated discovery via the MCP server URL.
+	// AuthorizeURL is the OAuth 2.1 authorization endpoint. Optional for
+	// Type == "oauth": discovered via RFC 8414 when omitted. Must be set
+	// together with TokenURL (or both omitted for discovery).
 	AuthorizeURL string `yaml:"authorize_url,omitempty"`
 
-	// TokenURL is the OAuth 2.1 token endpoint (where authorization
-	// codes and refresh tokens are exchanged). Required when
-	// Type == "oauth".
+	// TokenURL is the OAuth 2.1 token endpoint. Optional for Type ==
+	// "oauth": discovered via RFC 8414 when omitted. Must be set together
+	// with AuthorizeURL.
 	TokenURL string `yaml:"token_url,omitempty"`
 
 	// TokenEnv names the environment variable holding the bearer

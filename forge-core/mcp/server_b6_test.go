@@ -78,9 +78,11 @@ func TestB6_NewServer_RequiresTokenEnvForBearerStatic(t *testing.T) {
 	}
 }
 
-// TestB6_NewServer_RequiresOAuthFields covers the other adjacent
-// failure modes — same shape of bug for oauth.
-func TestB6_NewServer_RequiresOAuthFields(t *testing.T) {
+// TestB6_NewServer_RejectsPartialOAuthEndpoints covers the adjacent
+// failure mode after #316: the endpoints may be discovered, so the trio
+// is no longer required — but a PARTIAL endpoint config (one of
+// authorize_url/token_url set, the other empty) is still rejected.
+func TestB6_NewServer_RejectsPartialOAuthEndpoints(t *testing.T) {
 	t.Parallel()
 	full := &types.MCPAuth{
 		Type: "oauth", ClientID: "c",
@@ -91,9 +93,8 @@ func TestB6_NewServer_RequiresOAuthFields(t *testing.T) {
 		mutate  func(*types.MCPAuth)
 		wantSub string
 	}{
-		{"missing client_id", func(a *types.MCPAuth) { a.ClientID = "" }, "client_id is required"},
-		{"missing authorize_url", func(a *types.MCPAuth) { a.AuthorizeURL = "" }, "authorize_url and auth.token_url are required"},
-		{"missing token_url", func(a *types.MCPAuth) { a.TokenURL = "" }, "authorize_url and auth.token_url are required"},
+		{"only token_url", func(a *types.MCPAuth) { a.AuthorizeURL = "" }, "must be set together"},
+		{"only authorize_url", func(a *types.MCPAuth) { a.TokenURL = "" }, "must be set together"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -112,6 +113,21 @@ func TestB6_NewServer_RequiresOAuthFields(t *testing.T) {
 				t.Errorf("err lacks %q: %v", tc.wantSub, err)
 			}
 		})
+	}
+}
+
+// TestB6_NewServer_AcceptsDiscoveryOAuth: with #316, an oauth server
+// that omits client_id AND both endpoints (relying on discovery from
+// the url) constructs successfully.
+func TestB6_NewServer_AcceptsDiscoveryOAuth(t *testing.T) {
+	t.Parallel()
+	_, err := NewServer(types.MCPServer{
+		Name: "oa", Transport: "http", URL: "https://mcp.example.com/mcp",
+		Auth:  &types.MCPAuth{Type: "oauth", Scopes: []string{"read"}},
+		Tools: types.MCPToolFilter{Allow: []string{"x"}},
+	}, ServerDeps{HTTPClient: http.DefaultClient, OAuth: NewOAuthFlow()})
+	if err != nil {
+		t.Fatalf("discovery-based oauth should construct, got: %v", err)
 	}
 }
 

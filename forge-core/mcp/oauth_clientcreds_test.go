@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -105,5 +106,36 @@ func TestBuildAuthFn_ClientCredentials_ResolvesSecretFromEnv(t *testing.T) {
 	}
 	if gotSecret != "env-secret" {
 		t.Errorf("client_secret sent = %q, want the value from $MY_MCP_SECRET", gotSecret)
+	}
+}
+
+// TestBuildAuthFn_ClientCredentials_EmptySecret: when the named secret env
+// var resolves to "" (the common headless misconfig — platform didn't
+// inject it), the authFn fails closed with a clear cause and never hits
+// the token endpoint (#325 review finding 1).
+func TestBuildAuthFn_ClientCredentials_EmptySecret(t *testing.T) {
+	withTempCredsDir(t)
+	t.Setenv("UNSET_MCP_SECRET", "") // configured by name, empty value
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte(`{"access_token":"x","token_type":"bearer","expires_in":3600}`))
+	}))
+	defer srv.Close()
+
+	flow := NewOAuthFlow()
+	spec := types.MCPServer{
+		Name: "svc", URL: "https://x",
+		Auth: &types.MCPAuth{
+			Type: "oauth", Grant: "client_credentials",
+			ClientID: "a", ClientSecretEnv: "UNSET_MCP_SECRET", TokenURL: srv.URL,
+		},
+	}
+	_, err := buildAuthFn(spec, flow)(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "resolved to an empty value") {
+		t.Fatalf("want a clear empty-secret error, got %v", err)
+	}
+	if n := hits.Load(); n != 0 {
+		t.Errorf("token endpoint hit %d times, want 0 (should fail before minting)", n)
 	}
 }

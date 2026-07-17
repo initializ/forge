@@ -16,9 +16,19 @@ import (
 // server ref, and can emit a (forbidden) refresh_token.
 func newFakeResolver(t *testing.T, expiresIn int, includeRefresh bool) (*httptest.Server, *int) {
 	t.Helper()
+	t.Setenv("FORGE_ORG_ID", "org-42")
+	t.Setenv("FORGE_WORKSPACE_ID", "ws-7")
 	hits := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits++
+		// Tenancy headers must ride along so the platform can select the
+		// per-org HS256 secret + authorize the workspace (the "missing
+		// org-id header" 401 fix).
+		if r.Header.Get("Org-Id") != "org-42" || r.Header.Get("Workspace-Id") != "ws-7" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "missing org-id header"})
+			return
+		}
 		if r.Header.Get("Authorization") != "Bearer agent-cred-1" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return

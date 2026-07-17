@@ -208,6 +208,11 @@ type ToolHandle struct {
 	Server     string
 	Descriptor MCPToolDescriptor
 	Client     Client
+	// Resolver selects the Client per call (#317). For ordinary servers
+	// it's a StaticResolver over Client (unchanged behavior); a type=user
+	// server will supply a per-subject pool so each call routes to the
+	// requesting user's own connection.
+	Resolver ClientResolver
 }
 
 func (m *Manager) Tools() []ToolHandle {
@@ -240,7 +245,15 @@ func (m *Manager) Tools() []ToolHandle {
 			continue
 		}
 		for _, d := range srv.Tools() {
-			out = append(out, ToolHandle{Server: n, Descriptor: d, Client: client})
+			out = append(out, ToolHandle{
+				Server:     n,
+				Descriptor: d,
+				Client:     client,
+				// Per-call resolution seam (#317). Ordinary servers resolve
+				// to the same shared client (unchanged); a per-subject pool
+				// server routes per requesting user.
+				Resolver: StaticResolver{Client: client},
+			})
 		}
 	}
 	return out

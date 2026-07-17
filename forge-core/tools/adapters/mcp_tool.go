@@ -50,7 +50,11 @@ const truncatedSuffix = "\n[truncated]"
 type MCPTool struct {
 	server     string
 	descriptor mcp.MCPToolDescriptor
-	client     mcp.Client
+	// resolver selects the Client per call (#317). When nil, client is
+	// used directly (a fixed connection). A per-subject pool resolver
+	// routes each call to the requesting user's own connection.
+	resolver mcp.ClientResolver
+	client   mcp.Client
 
 	maxResultChars int
 	audit          *runtime.AuditLogger
@@ -64,8 +68,14 @@ type MCPToolOpts struct {
 	// Descriptor is the tool's discovery payload from tools/list.
 	Descriptor mcp.MCPToolDescriptor
 
-	// Client is the per-server JSON-RPC client. Required.
+	// Client is the per-server JSON-RPC client. Used when Resolver is nil.
 	Client mcp.Client
+
+	// Resolver selects the Client per call (#317). Preferred over Client
+	// when set; the runtime passes the ToolHandle's resolver so a
+	// per-subject-pool server routes each call to the requesting user's
+	// connection. Optional — nil falls back to Client.
+	Resolver mcp.ClientResolver
 
 	// MaxResultChars truncates tool results above this size. 0 ⇒ default.
 	MaxResultChars int
@@ -93,6 +103,7 @@ func NewMCPTool(opts MCPToolOpts) (*MCPTool, error) {
 	return &MCPTool{
 		server:         opts.Server,
 		descriptor:     opts.Descriptor,
+		resolver:       opts.Resolver,
 		client:         opts.Client,
 		maxResultChars: maxChars,
 		audit:          opts.Audit,
@@ -124,6 +135,16 @@ func validateDescriptorName(name string) error {
 // tools.Registry admits "__" in the name.
 func (m *MCPTool) MCPSource() {}
 
+// resolveClient selects the Client for this call: the per-subject pool
+// resolver when set (routing to the requesting user's connection), else
+// the fixed client (#317).
+func (m *MCPTool) resolveClient(ctx context.Context) (mcp.Client, error) {
+	if m.resolver != nil {
+		return m.resolver.ClientFor(ctx)
+	}
+	return m.client, nil
+}
+
 // Name returns "<server>__<tool>".
 func (m *MCPTool) Name() string {
 	return m.server + "__" + m.descriptor.Name
@@ -153,7 +174,16 @@ func (m *MCPTool) Execute(ctx context.Context, args json.RawMessage) (string, er
 	correlationID := runtime.CorrelationIDFromContext(ctx)
 
 	m.emitCall(correlationID, len(args))
-	res, err := m.client.CallTool(ctx, m.descriptor.Name, args)
+	// Resolve the connection for THIS call's requesting user (#317). A
+	// static resolver returns the shared client (unchanged); a per-subject
+	// pool returns that user's own connection, establishing it lazily.
+	client, err := m.resolveClient(ctx)
+	if err != nil {
+		durMs := time.Since(start).Milliseconds()
+		m.emitResult(correlationID, durMs, 0, false, classifyToolErr(err))
+		return "", fmt.Errorf("mcp %s/%s: %w", m.server, m.descriptor.Name, err)
+	}
+	res, err := client.CallTool(ctx, m.descriptor.Name, args)
 	durMs := time.Since(start).Milliseconds()
 
 	if err != nil {

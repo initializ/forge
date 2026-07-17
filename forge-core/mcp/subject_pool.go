@@ -12,15 +12,30 @@ import (
 // ClientResolver resolves which MCP Client a tool call should use. The
 // per-call ctx carries the requesting user's identity, so a per-subject
 // pool can route to that user's own connection (#317 connection
-// lifecycle). Servers that don't need per-user connections will use a
-// static resolver (the shared Client) — added with the tool-routing seam
-// that consumes this (the next increment; see the #317 design comment).
+// lifecycle). Servers that don't need per-user connections use a
+// StaticResolver returning the one shared Client.
 type ClientResolver interface {
 	ClientFor(ctx context.Context) (Client, error)
 }
 
-// subjectConnPool is the per-user ClientResolver.
-var _ ClientResolver = (*subjectConnPool)(nil)
+var (
+	_ ClientResolver = (*subjectConnPool)(nil)
+	_ ClientResolver = StaticResolver{}
+)
+
+// StaticResolver returns one fixed Client for every call — the shared
+// single-connection behavior for bearer/static/agent-principal/discovered
+// -oauth servers, where one identity serves all requests. It is the
+// default the tool-routing seam uses so non-per-user servers behave
+// exactly as before.
+type StaticResolver struct{ Client Client }
+
+func (s StaticResolver) ClientFor(context.Context) (Client, error) {
+	if s.Client == nil {
+		return nil, fmt.Errorf("%w: no MCP client available", ErrTransportUnavailable)
+	}
+	return s.Client, nil
+}
 
 // poolEstablishTimeout bounds a single per-subject connect+initialize.
 const poolEstablishTimeout = 30 * time.Second

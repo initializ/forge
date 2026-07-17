@@ -422,10 +422,16 @@ func (f *OAuthFlow) doClientCredentials(ctx context.Context, name string, cfg OA
 	if err != nil {
 		msg := err.Error()
 		if strings.Contains(msg, "invalid_client") ||
-			strings.Contains(msg, "unauthorized_client") ||
-			strings.Contains(msg, "invalid_scope") {
+			strings.Contains(msg, "unauthorized_client") {
 			f.emit(name, false, "client_credentials_denied")
 			return "", fmt.Errorf("%w: %v", ErrTokenRevoked, err)
+		}
+		if strings.Contains(msg, "invalid_scope") {
+			// A bad *requested* scope is a config error (auth.scopes), not a
+			// revoked client — classify distinctly so the diagnostic points
+			// at the config, not at credentials (#325 review finding 2).
+			f.emit(name, false, "invalid_scope")
+			return "", fmt.Errorf("%w: invalid scope requested (check auth.scopes): %v", ErrProtocolError, err)
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			f.emit(name, false, "timeout")

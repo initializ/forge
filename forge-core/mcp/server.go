@@ -543,6 +543,14 @@ func buildAuthFn(spec types.MCPServer, flow *OAuthFlow) AuthTokenFunc {
 				// rotated Secret takes effect without a Manager restart
 				// (mirrors the bearer/static token lookup). #324
 				c.ClientSecret = getenv(secretEnv)
+				if c.ClientSecret == "" {
+					// The most common headless misconfig: the secret env var
+					// is configured by NAME but the platform didn't inject a
+					// value. Fail closed with a clear cause instead of letting
+					// the AS reject client_secret="" as a misleading
+					// "revoked" (#325 review finding 1).
+					return "", fmt.Errorf("%w: server %q: client_secret_env %q resolved to an empty value — is the secret injected into the agent's environment?", ErrProtocolError, name, secretEnv)
+				}
 			}
 			return flow.BearerToken(ctx, name, c)
 		}

@@ -202,6 +202,37 @@ mcp:
       required: true
 ```
 
+#### Environment placeholders (#321)
+
+`${VAR}` / `$VAR` placeholders in the MCP connection fields — `url`,
+`client_id`, `authorize_url`, `token_url`, and `scopes` — are **expanded
+at load** from the process environment (and the `.env` file loaded by
+`forge run`), matching the egress-domain expansion semantics. This is how
+managed/platform mode ships a server: the generated `forge.yaml` bakes
+only the *shape* (literal `url` + placeholders), and the values are
+injected into the agent's env at deploy — so rotating a pinned client is
+a redeploy, not a rebuild.
+
+```yaml
+auth:
+  type: oauth
+  client_id: ${MCP_LINEAR_CLIENT_ID}
+  authorize_url: ${MCP_LINEAR_AUTHORIZE_URL}
+  token_url: ${MCP_LINEAR_TOKEN_URL}
+  scopes: ["${MCP_LINEAR_SCOPES}"]     # one var carrying "read write" → two scopes
+```
+
+- With all of `client_id`/`authorize_url`/`token_url` present after
+  expansion, resolution takes the **explicit** branch — no runtime
+  discovery or DCR (the managed-mode contract).
+- An **unset** variable expands to `""`, so the block reads as
+  *unconfigured* and falls to the discovery / fail-closed path — never a
+  literal `${…}` dial.
+- A single `scopes` entry is **split on whitespace** post-expansion, so
+  `${MCP_LINEAR_SCOPES}="read write"` becomes `[read, write]`.
+- `token_env` (for `bearer`/`static`) is **not** expanded — it is the
+  *name* of an env var, resolved at runtime.
+
 ### In-cluster MCP with bearer token from a K8s Secret
 
 ```yaml

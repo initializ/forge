@@ -26,6 +26,22 @@ func loadAndPrepareConfig(envFilePath string) (*types.ForgeConfig, string, error
 		cfgPath = filepath.Join(wd, cfgPath)
 	}
 
+	workDir := filepath.Dir(cfgPath)
+
+	// Load .env into the process environment BEFORE parsing forge.yaml so
+	// ${VAR} placeholders in the config (MCP connection fields, #321)
+	// expand at parse time — and so channel adapters can resolve env vars.
+	envPath := resolveEnvPath(workDir, envFilePath)
+	envVars, err := runtime.LoadEnvFile(envPath)
+	if err != nil {
+		return nil, "", fmt.Errorf("loading env file: %w", err)
+	}
+	for k, v := range envVars {
+		if os.Getenv(k) == "" {
+			_ = os.Setenv(k, v)
+		}
+	}
+
 	cfg, err := config.LoadForgeConfig(cfgPath)
 	if err != nil {
 		return nil, "", fmt.Errorf("loading config: %w", err)
@@ -37,25 +53,6 @@ func loadAndPrepareConfig(envFilePath string) (*types.ForgeConfig, string, error
 			fmt.Fprintf(os.Stderr, "ERROR: %s\n", e)
 		}
 		return nil, "", fmt.Errorf("config validation failed: %d error(s)", len(result.Errors))
-	}
-
-	workDir := filepath.Dir(cfgPath)
-
-	// Resolve env file path relative to workdir
-	envPath := envFilePath
-	if !filepath.IsAbs(envPath) {
-		envPath = filepath.Join(workDir, envPath)
-	}
-
-	// Load .env into process environment so channel adapters can resolve env vars
-	envVars, err := runtime.LoadEnvFile(envPath)
-	if err != nil {
-		return nil, "", fmt.Errorf("loading env file: %w", err)
-	}
-	for k, v := range envVars {
-		if os.Getenv(k) == "" {
-			_ = os.Setenv(k, v)
-		}
 	}
 
 	// Prompt for passphrase if encrypted secrets are configured but passphrase is missing.

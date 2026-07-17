@@ -104,8 +104,9 @@ mcp:
   identity from the authenticated request and POSTs `{server: <ref>, subject}`,
   so each user gets **their own** token *and its own connection*. It is
   **inherently lazy**: `required: true` is rejected (there is no user at
-  startup), and until the platform has a grant for that user the call fails
-  auth-required.
+  startup), and until the platform has a grant for that user the call
+  **pauses** on the [auth-required gate](#delegated-consent--the-auth-required-gate-330)
+  (rather than failing) until they consent.
 - **`tools.schemas`** is **required** for `type: user` — the server has no
   connection at startup (no user), so it can't run `tools/list`. The platform
   **materializes** the tool schemas from the registry entry into config, and
@@ -174,6 +175,51 @@ mcp:
 > tool set changes, the `tools.schemas` in `forge.yaml` is stale until the
 > platform re-materializes the registry entry (a redeploy) — the same
 > snapshot semantics as the `allow: ["*"]` discovery filter.
+
+#### Delegated consent — the auth-required gate (#330)
+
+When a `type: user` call has **no grant yet** for the requesting user, the
+tool call does not fail — it **pauses** on the auth-required gate, the user is
+prompted to consent, and the call **resumes** with their token once a grant
+exists. This is the delegated analog of the [DEFER](../security/defer-decisions.md)
+park/resume: DEFER waits for a human to *approve an action*; the auth gate
+waits for a user to *complete OAuth consent*.
+
+```
+type: user call, no grant  →  PARK (task status → auth-required)
+                           →  prompt the user to consent
+                           →  user consents → platform holds a grant
+                           →  RESUME → the call re-resolves and proceeds
+```
+
+- **One prompt per user, not per call.** The gate is keyed by
+  `{subject, server}`, so a user's concurrent calls (in any task) share **one**
+  gate and **one** consent; a single grant resumes them all.
+- **The gate never sees a token.** It only unblocks the executor to re-resolve
+  through the normal delegated path — the token is fetched by the resolver, not
+  handed through the agent (AARM R10; `design-tool-registry.md` §18.5).
+- **Bounded.** A call parks for at most the gate timeout (default 10m), then
+  fails auth-required. Audit events: `mcp_auth_required` → `mcp_auth_resolved`
+  / `mcp_auth_timeout`.
+
+**Resuming a parked call — two modes (§18.4):**
+
+| Mode | Consent delivery + callback | Resume signal to Forge |
+|------|-----------------------------|------------------------|
+| **Managed** | The platform prompts (Slack DM / console), hosts the OAuth callback, and holds the token. | `POST /mcp/consent` with `{subject, server}` (optionally `granted:false` to refuse). Carries **no token** — a pure "a grant now exists, re-resolve" signal. |
+| **Standalone** | Forge hosts its own loopback callback `GET /mcp/oauth/callback`. | The callback validates the OAuth `state` (single-use, expiring, **session-bound** — cross-session/replayed/expired callbacks are rejected), exchanges the code for a token, then resumes. |
+
+> **Never resume before the grant exists.** In standalone mode the callback
+> resumes the gate **only after** the code→token exchange succeeds — resuming
+> with no stored token would just re-park the call. Delegation follows
+> authorization.
+
+> **Swappable token store.** The per-user access-token cache is the
+> `SubjectTokenStore` interface (in-process by default). A managed broker can
+> substitute a shared/durable implementation so grants survive restarts and are
+> shared across replicas — the resolver and agent are unchanged. Only
+> short-lived **access** tokens live here; refresh tokens never leave the
+> broker.
 
 #### OAuth discovery & dynamic client registration (#316)
 

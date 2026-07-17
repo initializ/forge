@@ -46,6 +46,7 @@ type subjectConnPool struct {
 	conns  map[string]Client
 	inFly  map[string]*connFlight
 	closed bool
+	wg     sync.WaitGroup // tracks in-flight establishes for a synchronous Close
 }
 
 type connFlight struct {
@@ -93,26 +94,42 @@ func (p *subjectConnPool) ClientFor(ctx context.Context) (Client, error) {
 		if id := auth.IdentityFromContext(ctx); id != nil {
 			connCtx = auth.WithIdentity(connCtx, id)
 		}
+		p.wg.Add(1)
 		go func() {
-			defer cancel()
-			c, err := p.connect(connCtx)
-			p.mu.Lock()
-			delete(p.inFly, subject)
-			switch {
-			case err != nil:
-				// leave nothing cached
-			case p.closed:
-				// pool closed mid-establish — drop it
-				if c != nil {
-					_ = c.Close()
+			var (
+				c   Client
+				err error
+			)
+			// Unconditionally clear the flight, cache-or-close the result,
+			// and unblock waiters — even if p.connect panics. Without this,
+			// a panicking factory/Initialize would leave inFly[subject]
+			// populated and fl.done open, wedging EVERY future call for
+			// that subject on a dead flight (#329 review finding 1).
+			defer func() {
+				if r := recover(); r != nil {
+					c, err = nil, fmt.Errorf("%w: connect panicked: %v", ErrProtocolError, r)
 				}
-				c, err = nil, ErrClosed
-			default:
-				p.conns[subject] = c
-			}
-			p.mu.Unlock()
-			fl.client, fl.err = c, err
-			close(fl.done)
+				p.mu.Lock()
+				delete(p.inFly, subject)
+				switch {
+				case err != nil:
+					// leave nothing cached
+				case p.closed:
+					// pool closed mid-establish — drop it
+					if c != nil {
+						_ = c.Close()
+					}
+					c, err = nil, ErrClosed
+				default:
+					p.conns[subject] = c
+				}
+				p.mu.Unlock()
+				fl.client, fl.err = c, err
+				close(fl.done)
+				cancel()
+				p.wg.Done()
+			}()
+			c, err = p.connect(connCtx)
 		}()
 	} else {
 		p.mu.Unlock()
@@ -143,7 +160,12 @@ func (p *subjectConnPool) Evict(ctx context.Context) {
 	}
 }
 
-// Close tears down every pooled connection. The pool is unusable after.
+// Close tears down every pooled connection synchronously. It first marks
+// the pool closed (so any in-flight establish self-closes on completion),
+// waits for those establishes to finish, then closes the cached
+// connections — so when Close returns, no connection remains open and no
+// establish is still running (#329 review finding 2). The pool is
+// unusable after.
 func (p *subjectConnPool) Close() error {
 	p.mu.Lock()
 	if p.closed {
@@ -151,6 +173,13 @@ func (p *subjectConnPool) Close() error {
 		return nil
 	}
 	p.closed = true
+	p.mu.Unlock()
+
+	// Join in-flight establishes: each sees p.closed and drops its own
+	// connection, so after Wait nothing new lands in p.conns.
+	p.wg.Wait()
+
+	p.mu.Lock()
 	conns := p.conns
 	p.conns = map[string]Client{}
 	p.mu.Unlock()

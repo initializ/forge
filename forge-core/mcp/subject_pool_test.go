@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/initializ/forge/forge-core/auth"
 )
@@ -138,6 +139,73 @@ func TestSubjectConnPool_EvictReconnects(t *testing.T) {
 	}
 	if n := connects.Load(); n != 2 {
 		t.Errorf("connects = %d, want 2 (establish, evict, re-establish)", n)
+	}
+}
+
+// TestSubjectConnPool_ConnectErrorNotCached: a failed establish surfaces
+// the error, caches nothing, and a later retry re-establishes (#329
+// review finding 3).
+func TestSubjectConnPool_ConnectErrorNotCached(t *testing.T) {
+	var connects atomic.Int32
+	var mu sync.Mutex
+	fail := true
+	pool := newSubjectConnPool(func(context.Context) (Client, error) {
+		connects.Add(1)
+		mu.Lock()
+		f := fail
+		mu.Unlock()
+		if f {
+			return nil, errors.New("dial refused")
+		}
+		return &fakeClient{}, nil
+	})
+	ctx := ctxWithUser("frank@corp.com")
+
+	if _, err := pool.ClientFor(ctx); err == nil {
+		t.Fatal("connect error must surface")
+	}
+	if pool.len() != 0 {
+		t.Errorf("a failed establish must not cache a connection; len=%d", pool.len())
+	}
+	mu.Lock()
+	fail = false
+	mu.Unlock()
+	if _, err := pool.ClientFor(ctx); err != nil {
+		t.Fatalf("retry after a failed establish must re-establish: %v", err)
+	}
+	if n := connects.Load(); n != 2 {
+		t.Errorf("connects = %d, want 2 (failed then retried)", n)
+	}
+}
+
+// TestSubjectConnPool_ConnectPanicDoesNotWedge: a panicking connect fails
+// that one establish cleanly (error, not hang) and does NOT wedge the
+// subject's flight — a later call re-establishes (#329 review finding 1).
+func TestSubjectConnPool_ConnectPanicDoesNotWedge(t *testing.T) {
+	var panicOnce atomic.Bool
+	panicOnce.Store(true)
+	pool := newSubjectConnPool(func(context.Context) (Client, error) {
+		if panicOnce.CompareAndSwap(true, false) {
+			panic("boom in transport")
+		}
+		return &fakeClient{}, nil
+	})
+	ctx := ctxWithUser("grace@corp.com")
+
+	done := make(chan error, 1)
+	go func() { _, err := pool.ClientFor(ctx); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a connect panic must surface as an error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ClientFor hung after connect panicked — the flight is wedged")
+	}
+
+	// The flight must be cleared — the subject is not poisoned.
+	if _, err := pool.ClientFor(ctx); err != nil {
+		t.Fatalf("after a panicked establish the subject must re-establish, got: %v", err)
 	}
 }
 

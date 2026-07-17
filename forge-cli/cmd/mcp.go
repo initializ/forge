@@ -9,11 +9,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/initializ/forge/forge-cli/config"
+	"github.com/initializ/forge/forge-cli/runtime"
 	"github.com/initializ/forge/forge-core/mcp"
 	"github.com/initializ/forge/forge-core/types"
 	"github.com/initializ/forge/forge-core/validate"
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 )
 
 // mcpCmd is the root for "forge mcp" subcommands. Phase 1 ships
@@ -84,15 +85,26 @@ func loadForgeConfig(cmd *cobra.Command) (*types.ForgeConfig, error) {
 		wd, _ := os.Getwd()
 		path = filepath.Join(wd, path)
 	}
-	data, err := os.ReadFile(path)
+	// Load .env into the process env BEFORE parsing so ${VAR} placeholders
+	// in MCP connection fields (#321) expand here too — laptop-time
+	// `forge mcp login` must resolve the same placeholders the runtime
+	// does, or a managed `client_id: ${…}` reaches the OAuth flow as a
+	// literal. Best-effort: a missing .env is fine.
+	if envVars, err := runtime.LoadEnvFile(resolveEnvPath(filepath.Dir(path), ".env")); err == nil {
+		for k, v := range envVars {
+			if os.Getenv(k) == "" {
+				_ = os.Setenv(k, v)
+			}
+		}
+	}
+	// config.LoadForgeConfig → types.ParseForgeConfig expands the
+	// placeholders and checks required fields; then run the full validator
+	// for the mcp-specific error messages (review B14).
+	cfg, err := config.LoadForgeConfig(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", path, err)
+		return nil, err
 	}
-	var cfg types.ForgeConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", path, err)
-	}
-	result := validate.ValidateForgeConfig(&cfg)
+	result := validate.ValidateForgeConfig(cfg)
 	if !result.IsValid() {
 		return nil, fmt.Errorf("%s is invalid:\n  - %s", path,
 			strings.Join(result.Errors, "\n  - "))
@@ -101,7 +113,7 @@ func loadForgeConfig(cmd *cobra.Command) (*types.ForgeConfig, error) {
 	for _, w := range result.Warnings {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
 	}
-	return &cfg, nil
+	return cfg, nil
 }
 
 // findServerSpec returns the MCPServer entry for the given name, or

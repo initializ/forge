@@ -957,11 +957,13 @@ func expandEnvRef(s string) string {
 	return os.Expand(s, os.Getenv)
 }
 
-// expandScopeRefs expands each scope entry and splits any post-expansion
+// expandScopeRefs expands each scope entry and splits its (post-expansion)
 // value on whitespace — so a single `${…_SCOPES}` carrying "read write"
-// becomes two scopes (OAuth scopes are space-delimited by RFC 6749, so a
-// value never legitimately contains an internal space). Empty entries
-// are dropped.
+// becomes two scopes. The split is UNCONDITIONAL: a literal
+// `scopes: ["read write"]` (no `$`) also becomes ["read", "write"]. That
+// is intentional and safe — OAuth scopes are space-delimited by RFC 6749,
+// so a single scope value never legitimately contains an internal space.
+// Empty entries are dropped.
 func expandScopeRefs(in []string) []string {
 	if len(in) == 0 {
 		return in

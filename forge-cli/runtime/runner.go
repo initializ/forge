@@ -1021,6 +1021,7 @@ func (r *Runner) Run(ctx context.Context) error {
 						Server:     h.Server,
 						Descriptor: h.Descriptor,
 						Client:     h.Client,
+						Resolver:   h.Resolver, // per-call client resolution (#317)
 						Audit:      auditLogger,
 					})
 					if ctorErr != nil {

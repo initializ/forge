@@ -95,6 +95,67 @@ func TestMCPTool_Execute_Happy(t *testing.T) {
 	}
 }
 
+// userKey carries a fake subject in ctx for the per-call resolution test.
+type userKey struct{}
+
+// resolverStub routes to a client chosen by the ctx's fake subject.
+type resolverStub struct {
+	byUser map[string]mcp.Client
+	err    error
+}
+
+func (r resolverStub) ClientFor(ctx context.Context) (mcp.Client, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	u, _ := ctx.Value(userKey{}).(string)
+	return r.byUser[u], nil
+}
+
+// TestMCPTool_Execute_ResolvesClientPerCall: with a Resolver, Execute
+// picks the connection from the per-call ctx — two users' calls route to
+// their own clients (#317 routing seam).
+func TestMCPTool_Execute_ResolvesClientPerCall(t *testing.T) {
+	t.Parallel()
+	alice := &mockClient{res: &mcp.CallToolResult{Content: []mcp.ToolContent{{Type: "text", Text: "alice-result"}}}}
+	bob := &mockClient{res: &mcp.CallToolResult{Content: []mcp.ToolContent{{Type: "text", Text: "bob-result"}}}}
+	a, err := NewMCPTool(MCPToolOpts{
+		Server:     "srv",
+		Descriptor: mcp.MCPToolDescriptor{Name: "echo", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		Resolver:   resolverStub{byUser: map[string]mcp.Client{"alice": alice, "bob": bob}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := a.Execute(context.WithValue(context.Background(), userKey{}, "alice"), json.RawMessage(`{}`))
+	if err != nil || got != "alice-result" {
+		t.Fatalf("alice: got=%q err=%v", got, err)
+	}
+	got, err = a.Execute(context.WithValue(context.Background(), userKey{}, "bob"), json.RawMessage(`{}`))
+	if err != nil || got != "bob-result" {
+		t.Fatalf("bob: got=%q err=%v (each call must route to its own connection)", got, err)
+	}
+}
+
+// TestMCPTool_Execute_ResolverErrorSurfaces: a resolver that can't produce
+// a connection (e.g. no user in ctx / no grant yet) surfaces as a tool
+// error rather than a nil-deref.
+func TestMCPTool_Execute_ResolverErrorSurfaces(t *testing.T) {
+	t.Parallel()
+	a, err := NewMCPTool(MCPToolOpts{
+		Server:     "srv",
+		Descriptor: mcp.MCPToolDescriptor{Name: "echo", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		Resolver:   resolverStub{err: errors.New("no connection for this user")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Execute(context.Background(), json.RawMessage(`{}`)); err == nil {
+		t.Fatal("a resolver error must surface, not nil-deref")
+	}
+}
+
 func TestMCPTool_Execute_Truncation(t *testing.T) {
 	t.Parallel()
 	long := strings.Repeat("a", 100_000)

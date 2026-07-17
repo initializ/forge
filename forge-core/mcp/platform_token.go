@@ -98,6 +98,19 @@ func (p *platformTokenSource) fetch(ctx context.Context) (string, time.Duration,
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+identity)
+	// Tenancy headers, exactly as the admission + remote-session-store
+	// clients send them: the platform verifies a PER-ORG HS256 token, so it
+	// needs Org-Id to select the signing secret BEFORE it can validate the
+	// bearer (without this the endpoint 401s "missing org-id header"), and
+	// Workspace-Id to authorize the request against the entry (entitlement).
+	// Read from the standard FORGE_ORG_ID / FORGE_WORKSPACE_ID env the
+	// platform always injects; omitted when empty (standalone/dev).
+	if org := os.Getenv("FORGE_ORG_ID"); org != "" {
+		req.Header.Set("Org-Id", org)
+	}
+	if ws := os.Getenv("FORGE_WORKSPACE_ID"); ws != "" {
+		req.Header.Set("Workspace-Id", ws)
+	}
 
 	client := p.client
 	if client == nil {

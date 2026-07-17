@@ -102,29 +102,66 @@ mcp:
   is valid.
 - **`type: user`** (#317) — delegated. Forge resolves the **requesting user's**
   identity from the authenticated request and POSTs `{server: <ref>, subject}`,
-  so each user gets **their own** token (cached per subject). It is **inherently
-  lazy**: `required: true` is rejected (there is no user at startup), and until
-  the platform has a grant for that user the call fails auth-required — the
-  server simply carries no tools for a user who hasn't consented yet.
+  so each user gets **their own** token *and its own connection*. It is
+  **inherently lazy**: `required: true` is rejected (there is no user at
+  startup), and until the platform has a grant for that user the call fails
+  auth-required.
+- **`tools.schemas`** is **required** for `type: user` — the server has no
+  connection at startup (no user), so it can't run `tools/list`. The platform
+  **materializes** the tool schemas from the registry entry into config, and
+  Forge registers them without a live connection; the per-user connection is
+  established lazily on the first call. See [Materialized tool schemas](#materialized-tool-schemas-317).
 - **`ref`** names the platform tool-registry entry the token is authorized
   against (defaults to the server name).
 - **Egress:** the platform token-endpoint host is auto-merged into the
   allowlist.
 
-> ⚠️ **Isolation boundary (today).** `type: user` currently resolves a
-> per-user **token on each call**; the underlying MCP **connection is still
-> shared** across users (per-subject connection isolation is a follow-up).
-> A **stateless** MCP server that re-authorizes on every request honors the
-> per-call token, so this gives real per-user isolation. A **session-stateful**
-> server that binds identity at `initialize` may not re-scope the session
-> when the per-call token changes — so confirm your MCP server re-authorizes
-> per request before relying on `type: user` for hard isolation against such
-> a server.
+> **Per-user connection isolation.** For `type: user`, Forge establishes one
+> MCP **connection per requesting user** — the connection's `initialize` runs
+> under that user's token, so identity is bound at the connection level, not
+> just per call. This holds even for a **session-stateful** server that binds
+> identity at `initialize`: user A's calls ride user A's session, user B's ride
+> B's. Connections are established lazily (first call) and per subject.
 
 > The platform materializes both the `platform` block and the per-identity
 > server entries (same URL, split by `type`). For the **standalone** (no
 > platform) equivalents, use `type: oauth` — 3-legged `forge mcp login` for a
 > user, or `grant: client_credentials` for an agent-principal (above).
+
+#### Materialized tool schemas (#317)
+
+A `type: user` server can't discover tools at startup (no user ⇒ no
+connection), so its tools are declared under `tools.schemas` — the platform
+materializes them from the tool-registry entry. Forge registers them without
+a live connection; `allow`/`deny` still filter this set.
+
+```yaml
+mcp:
+  servers:
+    - name: atlassian-write
+      transport: http
+      url: https://mcp.atlassian.com/mcp
+      auth: { type: user, ref: mcp.atlassian }
+      required: false
+      tools:
+        allow: ["*"]
+        schemas:                    # platform-materialized; no live tools/list
+          - name: create_issue
+            description: Create a Jira issue
+            input_schema:
+              type: object
+              properties:
+                project: { type: string }
+                summary: { type: string }
+              required: [project, summary]
+```
+
+- Each schema is `name` + optional `description` + `input_schema` (a JSON
+  Schema authored as YAML; an omitted `input_schema` defaults to
+  `{"type":"object"}`). Names are validated exactly as discovered tools are —
+  non-empty and no `__` (the namespace separator).
+- The first call by a user establishes that user's connection lazily and runs
+  `initialize` under their token; subsequent calls reuse it.
 
 #### OAuth discovery & dynamic client registration (#316)
 

@@ -17,7 +17,10 @@ package mcp
 //
 // Keep this in sync with the state diagram in docs/mcp/index.md.
 var validTransitions = map[ServerState][]ServerState{
-	StateConfigured:   {StateConnecting, StateStopped},
+	// Configured → Ready is the #317 "materialized" path: a type=user
+	// server registers platform-supplied tool schemas and goes Ready
+	// without an eager connection (per-user connections are lazy).
+	StateConfigured:   {StateConnecting, StateReady, StateStopped},
 	StateConnecting:   {StateInitializing, StateDegraded, StateStopped},
 	StateInitializing: {StateDiscovering, StateDegraded, StateStopped},
 	StateDiscovering:  {StateReady, StateDegraded, StateStopped},

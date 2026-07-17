@@ -241,18 +241,22 @@ func (m *Manager) Tools() []ToolHandle {
 			continue
 		}
 		client := srv.Client()
-		if client == nil {
+		// A per-subject (type=user) server has no shared client — its calls
+		// resolve per requesting user — so it is still included. A static
+		// server keeps the pre-existing "skip until a client exists" guard.
+		if !srv.usesSubjectPool() && client == nil {
 			continue
 		}
+		resolver := srv.resolver()
 		for _, d := range srv.Tools() {
 			out = append(out, ToolHandle{
 				Server:     n,
 				Descriptor: d,
 				Client:     client,
-				// Per-call resolution seam (#317). Ordinary servers resolve
-				// to the same shared client (unchanged); a per-subject pool
-				// server routes per requesting user.
-				Resolver: StaticResolver{Client: client},
+				// Per-call resolution seam (#317): ordinary servers resolve
+				// to the shared client (unchanged); a pool server routes per
+				// requesting user.
+				Resolver: resolver,
 			})
 		}
 	}

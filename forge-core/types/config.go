@@ -580,6 +580,26 @@ type MCPToolFilter struct {
 	// when Allow=["*"]). A tool listed in both Allow and Deny is a
 	// validation error.
 	Deny []string `yaml:"deny,omitempty"`
+
+	// Schemas are platform-MATERIALIZED tool descriptors (#317). A
+	// type=user server has no connection at startup (no requesting user),
+	// so it can't run tools/list — the platform materializes the tool
+	// schemas from the registry entry into config, and Forge registers
+	// them without a live connection, connecting per-user lazily only for
+	// calls. Allow/Deny still filter this set.
+	Schemas []MCPToolSchema `yaml:"schemas,omitempty"`
+}
+
+// MCPToolSchema is a materialized MCP tool descriptor (#317) — the
+// platform's substitute for a live tools/list entry. Lives in types (not
+// mcp) to avoid an import cycle; the mcp package converts it to an
+// MCPToolDescriptor.
+type MCPToolSchema struct {
+	Name        string `yaml:"name"`
+	Description string `yaml:"description,omitempty"`
+	// InputSchema is the JSON Schema for the tool's arguments, authored as
+	// a YAML mapping and marshaled to JSON when the descriptor is built.
+	InputSchema map[string]any `yaml:"input_schema,omitempty"`
 }
 
 // PlatformConfig wires a deployed agent to its managing platform's token

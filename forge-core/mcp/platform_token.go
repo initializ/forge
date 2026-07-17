@@ -58,6 +58,11 @@ type PlatformSourceConfig struct {
 	AgentIdentity string
 	Ref           string
 	HTTPClient    *http.Client
+
+	// SubjectStore swaps the per-user delegated-token cache (§18.8 #2).
+	// Used only by the delegated (type=user) resolver. nil ⇒ the in-process
+	// default; a managed broker substitutes a shared/durable store.
+	SubjectStore SubjectTokenStore
 }
 
 // Token returns a valid access token, fetching from the platform when the
@@ -180,8 +185,10 @@ type delegatedTokenSource struct {
 	ref      string
 	client   *http.Client
 
-	mu    sync.Mutex
-	cache map[string]cachedToken // key: subject
+	// store caches access tokens per subject. Swappable (§18.8 #2): the
+	// default is in-process; a managed broker can substitute a shared/durable
+	// impl so grants survive restarts and are shared across replicas.
+	store SubjectTokenStore
 }
 
 type cachedToken struct {
@@ -190,34 +197,31 @@ type cachedToken struct {
 }
 
 func newDelegatedTokenSource(cfg PlatformSourceConfig) *delegatedTokenSource {
+	store := cfg.SubjectStore
+	if store == nil {
+		store = newMemSubjectTokenStore(0)
+	}
 	return &delegatedTokenSource{
 		endpoint: cfg.TokenEndpoint,
 		identity: cfg.AgentIdentity,
 		ref:      cfg.Ref,
 		client:   cfg.HTTPClient,
+		store:    store,
 	}
 }
 
 // TokenForSubject returns a valid access token for the requesting user,
-// fetching from the platform when the per-subject cache is empty/expiring.
+// fetching from the platform when the per-subject store is empty/expiring.
 func (d *delegatedTokenSource) TokenForSubject(ctx context.Context, subject string) (string, error) {
 	if subject == "" {
 		return "", fmt.Errorf("%w: delegated token requires a requesting-user subject", ErrNoToken)
 	}
-	// Fast path: a cached, unexpired token for this subject. The lock is
-	// NOT held across the network fetch, so a slow fetch for user A never
-	// blocks user B — the multi-user path is the whole point of #317.
-	d.mu.Lock()
-	if c, ok := d.cache[subject]; ok {
-		if c.token != "" && time.Now().Before(c.expiresAt.Add(-platformTokenSkew)) {
-			d.mu.Unlock()
-			return c.token, nil
-		}
-		// Evict the stale entry — don't hold a sensitive token past use
-		// (#327 review finding 2).
-		delete(d.cache, subject)
+	// Fast path: a cached, unexpired token for this subject. The store is not
+	// held across the network fetch, so a slow fetch for user A never blocks
+	// user B — the multi-user path is the whole point of #317.
+	if tok, ok := d.store.Get(subject); ok {
+		return tok, nil
 	}
-	d.mu.Unlock()
 
 	tok, ttl, status, err := doPlatformTokenRequest(ctx, d.client, d.endpoint, d.identity, d.ref, subject)
 	if err != nil {
@@ -230,20 +234,7 @@ func (d *delegatedTokenSource) TokenForSubject(ctx context.Context, subject stri
 		return "", fmt.Errorf("%w: platform token endpoint returned %d for server %q (subject %q)", ErrProtocolError, status, d.ref, subject)
 	}
 
-	d.mu.Lock()
-	if d.cache == nil {
-		d.cache = map[string]cachedToken{}
-	}
-	// Opportunistic sweep so the map can't grow unbounded with one-shot
-	// users' stale tokens — a background-free TTL bound (#327 review).
-	now := time.Now()
-	for s, c := range d.cache {
-		if !now.Before(c.expiresAt) {
-			delete(d.cache, s)
-		}
-	}
-	d.cache[subject] = cachedToken{token: tok, expiresAt: now.Add(ttl)}
-	d.mu.Unlock()
+	d.store.Put(subject, tok, ttl)
 	return tok, nil
 }
 

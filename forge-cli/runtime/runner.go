@@ -599,6 +599,10 @@ func (r *Runner) Run(ctx context.Context) error {
 	// and persisted in the registration record. mcpRegisteredOAuthHosts
 	// applies the store-path override and reads those hosts back.
 	egressDomains = append(egressDomains, mcpRegisteredOAuthHosts(r.cfg.Config.MCP)...)
+	// §19: the platform token resolver must be reachable for
+	// auth.type=platform servers — merge its host (env-expanded; the
+	// endpoint may be materialized as ${VAR}).
+	egressDomains = append(egressDomains, platformResolverHost(r.cfg.Config.Platform)...)
 	// Phase 6 (#107 / #108) — same for the OTel collector. Without
 	// this, dev runs with `observability.tracing.enabled: true` and
 	// `egress.mode: allowlist` would silently drop spans on shutdown.

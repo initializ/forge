@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"os"
 
 	"github.com/initializ/forge/forge-core/llm/oauth"
@@ -117,6 +118,7 @@ func (r *Runner) startMCPManager(
 		Logger:     r.logger,
 		Audit:      auditLogger,
 		OAuth:      flow,
+		Platform:   r.cfg.Config.Platform,
 	})
 	if err != nil {
 		return nil, err
@@ -133,4 +135,18 @@ func (r *Runner) startMCPManager(
 		"oauth_used": needsOAuth,
 	})
 	return mgr, nil
+}
+
+// platformResolverHost returns the platform token-resolver host for the
+// egress allowlist (auth.type=platform servers fetch tokens from it).
+// Empty when no platform block is configured.
+func platformResolverHost(p *types.PlatformConfig) []string {
+	if p == nil || p.TokenEndpoint == "" {
+		return nil
+	}
+	u, err := url.Parse(os.Expand(p.TokenEndpoint, os.Getenv))
+	if err != nil || u.Hostname() == "" {
+		return nil
+	}
+	return []string{u.Hostname()}
 }

@@ -342,3 +342,33 @@ func TestValidateMCPConfig_StdioErrorContainsRoadmapHint(t *testing.T) {
 		}
 	}
 }
+
+// §19 managed identities: platform/user are legal types; a Required
+// user-server is rejected (delegated identity is inherently lazy).
+func TestValidateMCPConfig_ManagedIdentityTypes(t *testing.T) {
+	base := func(auth *types.MCPAuth, required bool) types.MCPConfig {
+		return types.MCPConfig{Servers: []types.MCPServer{{
+			Name: "x", Transport: "http", URL: "https://mcp.example.com/mcp",
+			Auth: auth, Required: required,
+			Tools: types.MCPToolFilter{Allow: []string{"y"}},
+		}}}
+	}
+
+	var r ValidationResult
+	ValidateMCPConfig(base(&types.MCPAuth{Type: "platform"}, true), &r)
+	if len(r.Errors) != 0 {
+		t.Fatalf("platform + required must validate (startup-viable): %v", r.Errors)
+	}
+
+	r = ValidationResult{}
+	ValidateMCPConfig(base(&types.MCPAuth{Type: "user"}, false), &r)
+	if len(r.Errors) != 0 {
+		t.Fatalf("lazy user server must validate: %v", r.Errors)
+	}
+
+	r = ValidationResult{}
+	ValidateMCPConfig(base(&types.MCPAuth{Type: "user"}, true), &r)
+	if len(r.Errors) == 0 {
+		t.Fatal("user + required:true must be a validation error")
+	}
+}

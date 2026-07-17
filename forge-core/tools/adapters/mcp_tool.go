@@ -56,8 +56,25 @@ type MCPTool struct {
 	resolver mcp.ClientResolver
 	client   mcp.Client
 
+	// authGate parks a delegated call that has no grant for the requesting
+	// user, resuming it after consent (#330). nil ⇒ no gating: an ErrNoToken
+	// surfaces as a normal failure (the pre-#330 behavior, and the path for
+	// non-delegated servers / tests).
+	authGate AuthGate
+
 	maxResultChars int
 	audit          *runtime.AuditLogger
+}
+
+// AuthGate turns "this user has no grant yet" from a hard failure into a
+// pause-and-resume. When resolving the per-user connection returns
+// mcp.ErrNoToken, Execute calls Await instead of failing; the runtime
+// implementation parks the executor on the authgate engine, delivers a
+// consent prompt, and returns once a grant exists (→ nil, Execute
+// re-resolves and proceeds) or the wait ends without one (→ error, Execute
+// gives up). Implemented in forge-cli/runtime; nil in core/tests.
+type AuthGate interface {
+	Await(ctx context.Context, server string) error
 }
 
 // MCPToolOpts configures a new MCPTool.
@@ -76,6 +93,12 @@ type MCPToolOpts struct {
 	// per-subject-pool server routes each call to the requesting user's
 	// connection. Optional — nil falls back to Client.
 	Resolver mcp.ClientResolver
+
+	// AuthGate parks a delegated call lacking a grant until the requesting
+	// user consents (#330). Optional — nil disables gating (ErrNoToken fails
+	// the call as before). The runtime passes its authgate-backed impl for
+	// type=user servers.
+	AuthGate AuthGate
 
 	// MaxResultChars truncates tool results above this size. 0 ⇒ default.
 	MaxResultChars int
@@ -105,6 +128,7 @@ func NewMCPTool(opts MCPToolOpts) (*MCPTool, error) {
 		descriptor:     opts.Descriptor,
 		resolver:       opts.Resolver,
 		client:         opts.Client,
+		authGate:       opts.AuthGate,
 		maxResultChars: maxChars,
 		audit:          opts.Audit,
 	}, nil
@@ -178,6 +202,19 @@ func (m *MCPTool) Execute(ctx context.Context, args json.RawMessage) (string, er
 	// static resolver returns the shared client (unchanged); a per-subject
 	// pool returns that user's own connection, establishing it lazily.
 	client, err := m.resolveClient(ctx)
+	if err != nil && m.authGate != nil && errors.Is(err, mcp.ErrNoToken) {
+		// No grant yet for this user (#330). Rather than fail the call, park
+		// the executor and let the user consent; on a granted resume,
+		// re-resolve — the delegated path now finds the grant and the
+		// per-user connection establishes. A gate error (timeout / cancel /
+		// no requesting user) means give up; it flows to the emit+return
+		// below and classifies like the underlying ErrNoToken.
+		if gateErr := m.authGate.Await(ctx, m.server); gateErr != nil {
+			err = gateErr
+		} else {
+			client, err = m.resolveClient(ctx)
+		}
+	}
 	if err != nil {
 		durMs := time.Since(start).Milliseconds()
 		m.emitResult(correlationID, durMs, 0, false, classifyToolErr(err))

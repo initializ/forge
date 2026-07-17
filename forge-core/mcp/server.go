@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/initializ/forge/forge-core/auth"
 	"github.com/initializ/forge/forge-core/runtime"
 	"github.com/initializ/forge/forge-core/types"
 )
@@ -177,6 +178,12 @@ func NewServer(spec types.MCPServer, deps ServerDeps) (*Server, error) {
 			// a human — reject the combination (also caught by validate).
 			if spec.Required {
 				return nil, fmt.Errorf("%w: server %q: auth.type=user cannot be required:true — delegated identity connects lazily after consent", ErrProtocolError, spec.Name)
+			}
+			// #317: the delegated token resolves via the platform token
+			// endpoint (per-user, {server, subject}) — so the platform block
+			// is the contract, same as type=platform.
+			if deps.Platform == nil || deps.Platform.TokenEndpoint == "" {
+				return nil, fmt.Errorf("%w: server %q: auth.type=user requires the top-level platform block (delegated tokens resolve via the platform token endpoint)", ErrProtocolError, spec.Name)
 			}
 		}
 	}
@@ -590,13 +597,28 @@ func buildAuthFn(spec types.MCPServer, deps ServerDeps) AuthTokenFunc {
 		})
 		return src.Token
 	case "user":
-		// Delegated user identity — no grant exists until the
-		// platform-side consent flow (#317) completes. Fail each attempt
-		// with an actionable error; the server is non-Required so it
+		// Delegated user identity (#317): resolve a per-REQUESTING-USER
+		// token from the platform token endpoint. Lazy by design — until a
+		// request carries an authenticated user, and until the platform has
+		// a grant for that user, this fails with ErrNoToken so the server
 		// never blocks startup.
+		ref := spec.Auth.Ref
+		if ref == "" {
+			ref = spec.Name
+		}
+		src := newDelegatedTokenSource(PlatformSourceConfig{
+			TokenEndpoint: deps.Platform.TokenEndpoint,
+			AgentIdentity: deps.Platform.AgentIdentity,
+			Ref:           ref,
+			HTTPClient:    deps.HTTPClient,
+		})
 		serverName := spec.Name
-		return func(_ context.Context) (string, error) {
-			return "", fmt.Errorf("%w: server %q uses delegated user identity — no user grant yet (the platform consent flow completes it; writes are lazy by design)", ErrNoToken, serverName)
+		return func(ctx context.Context) (string, error) {
+			subject := delegatedSubject(ctx)
+			if subject == "" {
+				return "", fmt.Errorf("%w: server %q uses delegated user identity but no requesting user is in context — it connects lazily under a user's session, never at startup", ErrNoToken, serverName)
+			}
+			return src.TokenForSubject(ctx, subject)
 		}
 	}
 	// Defense in depth — NewServer should have rejected an unknown
@@ -609,6 +631,22 @@ func buildAuthFn(spec types.MCPServer, deps ServerDeps) AuthTokenFunc {
 		return "", fmt.Errorf("%w: server %q has unknown auth.type %q — buildAuthFn called without going through NewServer (review B6)",
 			ErrProtocolError, serverName, unknownType)
 	}
+}
+
+// delegatedSubject extracts the requesting user's stable identifier from
+// the authenticated request context for the type=user resolver (#317).
+// Email is preferred (portable, matches the §18 email-keyed model), then
+// the user id. Empty when there is no authenticated user in ctx (e.g. a
+// connection established at startup with no request behind it).
+func delegatedSubject(ctx context.Context) string {
+	id := auth.IdentityFromContext(ctx)
+	if id == nil {
+		return ""
+	}
+	if id.Email != "" {
+		return id.Email
+	}
+	return id.UserID
 }
 
 // getenv is overridable for tests.

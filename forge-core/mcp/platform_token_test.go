@@ -155,13 +155,19 @@ func TestNewServer_PlatformAndUserRules(t *testing.T) {
 		t.Fatal("user + required:true must be rejected")
 	}
 	u.Required = false
-	if _, err := NewServer(u, deps); err != nil {
-		t.Fatalf("lazy user server must construct: %v", err)
+	// #317: type=user now resolves via the platform token endpoint, so it
+	// requires the platform block (same as type=platform).
+	if _, err := NewServer(u, deps); err == nil {
+		t.Fatal("user without a platform block must fail construction (resolves via the platform endpoint)")
+	}
+	if _, err := NewServer(u, depsWithPlatform); err != nil {
+		t.Fatalf("lazy user server (with platform block) must construct: %v", err)
 	}
 
-	fn := buildAuthFn(u, deps)
+	// No requesting user in ctx → auth-required (lazy), never a token.
+	fn := buildAuthFn(u, depsWithPlatform)
 	if _, err := fn(context.Background()); !errors.Is(err, ErrNoToken) {
-		t.Fatalf("user auth must fail lazily with ErrNoToken, got: %v", err)
+		t.Fatalf("user auth with no requesting user must fail lazily with ErrNoToken, got: %v", err)
 	}
 }
 

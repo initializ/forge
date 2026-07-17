@@ -67,9 +67,54 @@ MCPs).
 | `oauth`     | *(none required — see Discovery)* | Hosted MCPs (Linear, Notion, GitHub hosted) |
 | `bearer`    | `token_env`     | In-cluster sidecars; CI machine-to-machine |
 | `static`    | `token_env`     | Same as bearer; named for clarity         |
+| `platform`  | top-level `platform` block | **Managed:** agent-principal (service) identity resolved by the platform |
+| `user`      | top-level `platform` block | **Managed:** delegated per-requesting-user identity, resolved by the platform |
 
 `token_env` is the name of an environment variable; the variable's
 value is read at runtime — never stored in `forge.yaml`.
+
+#### Managed identity — `type: platform` / `type: user`
+
+In a platform-managed deployment, Forge doesn't hold long-lived
+credentials at all: it fetches a **short-lived access token** from the
+platform's token endpoint per request. The refresh token stays platform-side
+and never reaches the agent. Both types use the top-level `platform` block:
+
+```yaml
+platform:
+  token_endpoint: ${INITIALIZ_TOKEN_ENDPOINT}   # ${VAR}-expanded at use
+  agent_identity: ${FORGE_PLATFORM_TOKEN}       # the agent's platform credential
+
+mcp:
+  servers:
+    - name: atlassian-read
+      url: https://mcp.atlassian.com/mcp
+      auth: { type: platform, ref: mcp.atlassian }   # agent-principal
+      required: true          # startup-viable: no human needed
+    - name: atlassian-write
+      url: https://mcp.atlassian.com/mcp
+      auth: { type: user, ref: mcp.atlassian }       # delegated per-user
+      required: false         # lazy: no user at startup
+```
+
+- **`type: platform`** — agent-principal. Forge POSTs `{server: <ref>}` with
+  the agent credential; startup-viable (no user, no login). `required: true`
+  is valid.
+- **`type: user`** (#317) — delegated. Forge resolves the **requesting user's**
+  identity from the authenticated request and POSTs `{server: <ref>, subject}`,
+  so each user gets **their own** token (cached per subject). It is **inherently
+  lazy**: `required: true` is rejected (there is no user at startup), and until
+  the platform has a grant for that user the call fails auth-required — the
+  server simply carries no tools for a user who hasn't consented yet.
+- **`ref`** names the platform tool-registry entry the token is authorized
+  against (defaults to the server name).
+- **Egress:** the platform token-endpoint host is auto-merged into the
+  allowlist.
+
+> The platform materializes both the `platform` block and the per-identity
+> server entries (same URL, split by `type`). For the **standalone** (no
+> platform) equivalents, use `type: oauth` — 3-legged `forge mcp login` for a
+> user, or `grant: client_credentials` for an agent-principal (above).
 
 #### OAuth discovery & dynamic client registration (#316)
 

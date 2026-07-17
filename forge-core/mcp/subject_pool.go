@@ -1,0 +1,177 @@
+package mcp
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/initializ/forge/forge-core/auth"
+)
+
+// ClientResolver resolves which MCP Client a tool call should use. The
+// per-call ctx carries the requesting user's identity, so a per-subject
+// pool can route to that user's own connection (#317 connection
+// lifecycle). Servers that don't need per-user connections will use a
+// static resolver (the shared Client) — added with the tool-routing seam
+// that consumes this (the next increment; see the #317 design comment).
+type ClientResolver interface {
+	ClientFor(ctx context.Context) (Client, error)
+}
+
+// subjectConnPool is the per-user ClientResolver.
+var _ ClientResolver = (*subjectConnPool)(nil)
+
+// poolEstablishTimeout bounds a single per-subject connect+initialize.
+const poolEstablishTimeout = 30 * time.Second
+
+// subjectConnPool maintains one lazily-established MCP connection per
+// requesting-user subject (#317). A type=user server binds identity at
+// initialize, so each user needs their own connection: the pool
+// establishes it on first use — running connect (factory + Initialize)
+// under that user's identity so authFn resolves THEIR token at
+// initialize — and reuses it thereafter.
+//
+// Establishment is single-flighted per subject (a burst of a user's first
+// calls opens exactly one connection); distinct subjects never block each
+// other. Concurrency-safe; Close tears down every connection.
+type subjectConnPool struct {
+	// connect establishes a fresh connection. Its ctx carries the
+	// subject's identity but is decoupled from any caller's cancellation
+	// (background-derived + a hard timeout) so one caller's cancel can't
+	// tear down the shared connection mid-establish (the B2 lesson).
+	connect func(ctx context.Context) (Client, error)
+
+	mu     sync.Mutex
+	conns  map[string]Client
+	inFly  map[string]*connFlight
+	closed bool
+}
+
+type connFlight struct {
+	done   chan struct{}
+	client Client
+	err    error
+}
+
+func newSubjectConnPool(connect func(ctx context.Context) (Client, error)) *subjectConnPool {
+	return &subjectConnPool{
+		connect: connect,
+		conns:   map[string]Client{},
+		inFly:   map[string]*connFlight{},
+	}
+}
+
+// ClientFor returns the connection for the requesting user in ctx,
+// establishing it on first use. No authenticated user → ErrNoToken
+// (lazy; a delegated connection is never established at startup).
+func (p *subjectConnPool) ClientFor(ctx context.Context) (Client, error) {
+	subject := delegatedSubject(ctx)
+	if subject == "" {
+		return nil, fmt.Errorf("%w: no requesting user in context — a delegated MCP connection is established lazily under a user's session", ErrNoToken)
+	}
+
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return nil, ErrClosed
+	}
+	if c, ok := p.conns[subject]; ok {
+		p.mu.Unlock()
+		return c, nil
+	}
+	fl, exists := p.inFly[subject]
+	if !exists {
+		fl = &connFlight{done: make(chan struct{})}
+		p.inFly[subject] = fl
+		p.mu.Unlock()
+
+		// Preserve the subject's identity on a background-derived,
+		// bounded ctx so authFn resolves the right user's token but a
+		// caller's cancel can't abort the shared establish.
+		connCtx, cancel := context.WithTimeout(context.Background(), poolEstablishTimeout)
+		if id := auth.IdentityFromContext(ctx); id != nil {
+			connCtx = auth.WithIdentity(connCtx, id)
+		}
+		go func() {
+			defer cancel()
+			c, err := p.connect(connCtx)
+			p.mu.Lock()
+			delete(p.inFly, subject)
+			switch {
+			case err != nil:
+				// leave nothing cached
+			case p.closed:
+				// pool closed mid-establish — drop it
+				if c != nil {
+					_ = c.Close()
+				}
+				c, err = nil, ErrClosed
+			default:
+				p.conns[subject] = c
+			}
+			p.mu.Unlock()
+			fl.client, fl.err = c, err
+			close(fl.done)
+		}()
+	} else {
+		p.mu.Unlock()
+	}
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-fl.done:
+	}
+	return fl.client, fl.err
+}
+
+// Evict drops (and closes) the connection for a subject — call when a
+// request on it fails with a connection error so the next call
+// re-establishes. Idempotent.
+func (p *subjectConnPool) Evict(ctx context.Context) {
+	subject := delegatedSubject(ctx)
+	if subject == "" {
+		return
+	}
+	p.mu.Lock()
+	c, ok := p.conns[subject]
+	delete(p.conns, subject)
+	p.mu.Unlock()
+	if ok && c != nil {
+		_ = c.Close()
+	}
+}
+
+// Close tears down every pooled connection. The pool is unusable after.
+func (p *subjectConnPool) Close() error {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return nil
+	}
+	p.closed = true
+	conns := p.conns
+	p.conns = map[string]Client{}
+	p.mu.Unlock()
+	for _, c := range conns {
+		if c != nil {
+			_ = c.Close()
+		}
+	}
+	return nil
+}
+
+// len reports the number of live connections (for tests / metrics).
+func (p *subjectConnPool) len() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.conns)
+}
+
+// inFlyLen reports in-flight establishments (test-only).
+func (p *subjectConnPool) inFlyLen() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.inFly)
+}

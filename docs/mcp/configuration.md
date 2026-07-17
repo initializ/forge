@@ -163,6 +163,18 @@ mcp:
 - The first call by a user establishes that user's connection lazily and runs
   `initialize` under their token; subsequent calls reuse it.
 
+> **The schema set is a global declaration — per-user access is enforced at
+> call time.** `tools.schemas` (and the `allow`/`deny` filter) is the same for
+> every user: it's what the server *can* expose. A user whose platform grant
+> doesn't cover a materialized tool still sees it registered, so the LLM may
+> attempt it and get a **runtime auth error from that user's own connection** —
+> the per-user gate is the connection, not registration.
+
+> **Staleness.** Materialized schemas are a snapshot. If the MCP server's real
+> tool set changes, the `tools.schemas` in `forge.yaml` is stale until the
+> platform re-materializes the registry entry (a redeploy) — the same
+> snapshot semantics as the `allow: ["*"]` discovery filter.
+
 #### OAuth discovery & dynamic client registration (#316)
 
 For `type: oauth`, `client_id` / `authorize_url` / `token_url` are all

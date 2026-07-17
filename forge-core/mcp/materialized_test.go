@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/initializ/forge/forge-core/auth"
 	"github.com/initializ/forge/forge-core/types"
@@ -50,6 +51,53 @@ func TestServer_MaterializedDescriptors(t *testing.T) {
 	bad := newUserServer(t, "https://x", []types.MCPToolSchema{{Name: "a__b", InputSchema: map[string]any{"type": "object"}}}, pf)
 	if _, err := bad.materializedDescriptors(); err == nil {
 		t.Error("a name containing __ must be rejected")
+	}
+}
+
+// initFailClient fails Initialize and blocks its Run demux until Close —
+// so the test can assert establish's Close stops the just-started Run.
+type initFailClient struct {
+	closed  chan struct{}
+	runDone chan struct{}
+}
+
+func (c *initFailClient) Run(context.Context) { <-c.closed; close(c.runDone) }
+func (c *initFailClient) Initialize(context.Context, ClientInfo) (*InitializeResult, error) {
+	return nil, errNoGrant
+}
+func (c *initFailClient) Initialized(context.Context) error { return nil }
+func (c *initFailClient) ListTools(context.Context) ([]MCPToolDescriptor, error) {
+	return nil, nil
+}
+func (c *initFailClient) CallTool(context.Context, string, json.RawMessage) (*CallToolResult, error) {
+	return nil, nil
+}
+func (c *initFailClient) Close() error { close(c.closed); return nil }
+
+var errNoGrant = &protocolError{"401 no grant for user"}
+
+type protocolError struct{ msg string }
+
+func (e *protocolError) Error() string { return e.msg }
+
+// TestServer_Establish_InitializeFailure_StopsRun: on an Initialize
+// failure (expected — a user without a grant 401s), establish's Close must
+// stop the demux Run goroutine it started, or every failed establish leaks
+// a goroutine (#329 re-review finding B).
+func TestServer_Establish_InitializeFailure_StopsRun(t *testing.T) {
+	srv := newUserServer(t, "https://x", nil,
+		&types.PlatformConfig{TokenEndpoint: "https://p", AgentIdentity: "c"})
+	fc := &initFailClient{closed: make(chan struct{}), runDone: make(chan struct{})}
+	srv.factory = func(context.Context) (Client, error) { return fc, nil }
+
+	if _, err := srv.establish(auth.WithIdentity(context.Background(), &auth.Identity{Email: "bob@corp.com"})); err == nil {
+		t.Fatal("establish must fail when Initialize fails")
+	}
+	select {
+	case <-fc.runDone:
+		// Run stopped by Close — no leak.
+	case <-time.After(2 * time.Second):
+		t.Fatal("demux Run goroutine leaked after Initialize failure — Close did not stop it")
 	}
 }
 

@@ -208,9 +208,14 @@ func (d *delegatedTokenSource) TokenForSubject(ctx context.Context, subject stri
 	// NOT held across the network fetch, so a slow fetch for user A never
 	// blocks user B — the multi-user path is the whole point of #317.
 	d.mu.Lock()
-	if c, ok := d.cache[subject]; ok && c.token != "" && time.Now().Before(c.expiresAt.Add(-platformTokenSkew)) {
-		d.mu.Unlock()
-		return c.token, nil
+	if c, ok := d.cache[subject]; ok {
+		if c.token != "" && time.Now().Before(c.expiresAt.Add(-platformTokenSkew)) {
+			d.mu.Unlock()
+			return c.token, nil
+		}
+		// Evict the stale entry — don't hold a sensitive token past use
+		// (#327 review finding 2).
+		delete(d.cache, subject)
 	}
 	d.mu.Unlock()
 
@@ -229,7 +234,15 @@ func (d *delegatedTokenSource) TokenForSubject(ctx context.Context, subject stri
 	if d.cache == nil {
 		d.cache = map[string]cachedToken{}
 	}
-	d.cache[subject] = cachedToken{token: tok, expiresAt: time.Now().Add(ttl)}
+	// Opportunistic sweep so the map can't grow unbounded with one-shot
+	// users' stale tokens — a background-free TTL bound (#327 review).
+	now := time.Now()
+	for s, c := range d.cache {
+		if !now.Before(c.expiresAt) {
+			delete(d.cache, s)
+		}
+	}
+	d.cache[subject] = cachedToken{token: tok, expiresAt: now.Add(ttl)}
 	d.mu.Unlock()
 	return tok, nil
 }

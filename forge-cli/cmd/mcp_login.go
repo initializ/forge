@@ -45,6 +45,14 @@ func mcpLoginRun(cmd *cobra.Command, args []string) error {
 				return spec.Auth.Type
 			}())
 	}
+	// #324: the client_credentials (agent-principal) grant has no user and
+	// no browser step — the token is minted at runtime from client_id +
+	// the secret in client_secret_env. There is nothing to log in.
+	if spec.Auth.Grant == "client_credentials" {
+		fmt.Printf("server %q uses grant client_credentials (agent-principal) — no login needed.\n", name)
+		fmt.Println("the token is minted at runtime from client_id + $" + spec.Auth.ClientSecretEnv + ".")
+		return nil
+	}
 
 	// Apply any token-store-path override (review B11) so the
 	// laptop-side Login persists into the same location the

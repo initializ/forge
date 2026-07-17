@@ -122,6 +122,40 @@ func TestValidateMCPConfig(t *testing.T) {
 			wantNoErr: true,
 		},
 		{
+			// #324: agent-principal client_credentials — full config valid.
+			name: "auth oauth client_credentials (full) is allowed",
+			cfg: types.MCPConfig{Servers: []types.MCPServer{{
+				Name: "x", Transport: "http", URL: "https://x",
+				Auth: &types.MCPAuth{
+					Type: "oauth", Grant: "client_credentials",
+					ClientID: "a", ClientSecretEnv: "MCP_SECRET", TokenURL: "https://as/token",
+				},
+				Tools: types.MCPToolFilter{Allow: []string{"y"}},
+			}}},
+			wantNoErr: true,
+		},
+		{
+			name: "auth oauth client_credentials missing secret_env is an error",
+			cfg: types.MCPConfig{Servers: []types.MCPServer{{
+				Name: "x", Transport: "http", URL: "https://x",
+				Auth: &types.MCPAuth{
+					Type: "oauth", Grant: "client_credentials",
+					ClientID: "a", TokenURL: "https://as/token",
+				},
+				Tools: types.MCPToolFilter{Allow: []string{"y"}},
+			}}},
+			wantErrs: []string{"client_secret_env is required for grant client_credentials"},
+		},
+		{
+			name: "auth oauth unknown grant is an error",
+			cfg: types.MCPConfig{Servers: []types.MCPServer{{
+				Name: "x", Transport: "http", URL: "https://x",
+				Auth:  &types.MCPAuth{Type: "oauth", Grant: "password"},
+				Tools: types.MCPToolFilter{Allow: []string{"y"}},
+			}}},
+			wantErrs: []string{"must be one of: authorization_code, client_credentials"},
+		},
+		{
 			// Partial endpoint config is still an error — must be paired.
 			name: "auth oauth with only token_url (partial) is an error",
 			cfg: types.MCPConfig{Servers: []types.MCPServer{{

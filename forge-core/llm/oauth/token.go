@@ -95,6 +95,27 @@ func RefreshTokenCtx(ctx context.Context, client *http.Client, tokenURL, clientI
 	return doTokenRequestCtx(ctx, client, tokenURL, data)
 }
 
+// ClientCredentialsTokenCtx mints a token via the OAuth 2.0
+// client_credentials grant (RFC 6749 §4.4) — the 2-legged,
+// agent-principal path (#324). No user, no authorization code: the
+// client authenticates with its own id + secret (client_secret_post).
+// The response typically carries no refresh_token; the caller re-mints
+// from the id + secret on expiry.
+//
+// Caller MUST pass a context with a finite deadline; pass the
+// egress-controlled client in production (see ExchangeCodeCtx).
+func ClientCredentialsTokenCtx(ctx context.Context, client *http.Client, tokenURL, clientID, clientSecret string, scopes []string) (*Token, error) {
+	data := url.Values{
+		"grant_type":    {"client_credentials"},
+		"client_id":     {clientID},
+		"client_secret": {clientSecret},
+	}
+	if len(scopes) > 0 {
+		data.Set("scope", strings.Join(scopes, " "))
+	}
+	return doTokenRequestCtx(ctx, client, tokenURL, data)
+}
+
 // defaultTokenTimeout bounds the deprecated http.Post fallback path
 // used by the no-ctx legacy callers. New callers go through
 // *Ctx helpers with their own bounded context.

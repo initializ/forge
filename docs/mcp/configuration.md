@@ -126,10 +126,55 @@ So a fully zero-config OAuth server is just:
   it (or `client_secret_expires_at` passes), run `forge mcp logout <name>`
   — that clears both the token and the stored registration — then
   `forge mcp login <name>` again to re-discover and re-register.
-- **Confidential clients are not supported.** Forge registers a public
-  (PKCE) client and sends no `client_secret`. If a server insists on
-  issuing a confidential client, login fails closed — configure
-  `client_id`/`authorize_url`/`token_url` explicitly for that server.
+- **Confidential clients are not supported** *for the interactive grant*.
+  Forge registers a public (PKCE) client and sends no `client_secret`. If
+  a server insists on issuing a confidential client, login fails closed —
+  configure `client_id`/`authorize_url`/`token_url` explicitly for that
+  server. (Confidential credentials *are* used by the `client_credentials`
+  grant below.)
+
+#### Agent-principal — `grant: client_credentials` (2LO, #324)
+
+The default `oauth` grant is 3-legged: a **user** consents once via
+`forge mcp login`. Set `grant: client_credentials` for the
+**agent-principal** path — the deployed agent authenticates as **itself**,
+with no user and no browser, so it works **headless**:
+
+```yaml
+mcp:
+  servers:
+    - name: internal-api
+      transport: http
+      url: https://mcp.internal.corp/mcp
+      auth:
+        type: oauth
+        grant: client_credentials       # 2-legged; agent acts as itself
+        client_id: forge-agent
+        client_secret_env: MCP_INTERNAL_SECRET   # NAME of an env var; never in yaml
+        token_url: https://mcp.internal.corp/token
+        scopes: [read]
+      tools: { allow: ["*"] }
+```
+
+- **Requires** an explicit `client_id`, `client_secret_env`, and
+  `token_url` (2LO has no authorization endpoint and no dynamic
+  registration). `authorize_url` is not used.
+- `client_secret_env` names an environment variable (like `token_env`) —
+  the secret is read at runtime and rotated by redeploy, never stored in
+  `forge.yaml`.
+- **No `forge mcp login`** — the token is minted at runtime and re-minted
+  on expiry. `forge mcp login <name>` on such a server prints "no login
+  needed."
+- **`required: true` is valid here** (unlike a delegated/per-user server,
+  which has no user at startup): the agent-principal token resolves at
+  startup, so a required server can gate readiness.
+- The token endpoint host is auto-added to the egress allowlist (from
+  `token_url`).
+
+> Use this where the MCP server supports the client_credentials / 2LO
+> grant and the agent should act as a service identity. For per-user
+> (delegated) identity, see #317. Managed platform-brokered tokens are
+> #324's follow-on (the platform holds the service refresh token).
 
 ### `mcp.servers[].tools`
 

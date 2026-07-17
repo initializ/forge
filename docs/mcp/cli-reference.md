@@ -70,6 +70,11 @@ bearer / static / no-auth servers, and fails closed with a clear message
 if a server advertises no metadata / no registration endpoint and no
 `client_id` is configured.
 
+**Agent-principal servers need no login.** A server with
+`grant: client_credentials` (2LO — the agent authenticates as itself, #324)
+mints its token at runtime; `forge mcp login <name>` on such a server
+prints "no login needed" and exits successfully.
+
 For Kubernetes deployments:
 
 ```sh

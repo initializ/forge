@@ -171,6 +171,8 @@ type Runner struct {
 	deferEngine          *deferengine.Engine               // R4c (#211) deferred-authorization engine; nil when disabled
 	authGateEngine       *authgate.Engine                  // R10 (#330) MCP auth-required gate; nil until an MCP manager with a type=user server is wired
 	consentDeliverer     ConsentDeliverer                  // optional: delivers MCP consent prompts to channels (#330); nil in standalone (no delivery yet)
+	callbackCompleter    CallbackCompleter                 // optional: standalone loopback code→token exchange (#330); nil ⇒ no loopback callback (managed hosts its own)
+	stateBinder          *stateBinder                      // standalone OAuth state binding (single-use/expiring/session-bound); lazily built with the callback endpoint
 	taskStore            *a2a.TaskStore                    // shared task store, populated once srv is built; read by defer hook when it fires
 	platformCommandGuard *coreruntime.PlatformCommandGuard // #238 (ASI02) operator-authored command deny, applied to every tool call; empty when no layer declares denied_command_patterns
 }
@@ -215,6 +217,15 @@ func (r *Runner) SetDeferralNotifier(fn DeferralNotifier) {
 // lands. Must be called before Run().
 func (r *Runner) SetConsentDeliverer(fn ConsentDeliverer) {
 	r.consentDeliverer = fn
+}
+
+// SetCallbackCompleter enables the STANDALONE loopback consent callback
+// (#330): the injected func exchanges an OAuth code for a token and stores
+// it for {subject, server}. When set, GET /mcp/oauth/callback is registered;
+// when nil (managed mode), it is not — the platform hosts its own callback.
+// Must be called before Run().
+func (r *Runner) SetCallbackCompleter(fn CallbackCompleter) {
+	r.callbackCompleter = fn
 }
 
 // ResolveAuth resolves the auth token early (before Run). This is needed so
@@ -2322,6 +2333,11 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 	// when a delegated MCP grant lands, unblocking calls parked on the
 	// auth-required gate. No-op wire when no type=user MCP server is active.
 	r.registerMCPConsentEndpoint(srv, auditLogger)
+
+	// R10 (#330) — standalone loopback OAuth callback. Registered only when
+	// a CallbackCompleter is set (standalone interactive mode); managed
+	// deployments host their own callback and skip this.
+	r.registerMCPCallbackEndpoint(srv, auditLogger)
 }
 
 // serveJWKS is the handler for /.well-known/forge-audit-keys. Split

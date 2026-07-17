@@ -93,12 +93,22 @@ func NewOAuthFlow() *OAuthFlow {
 type OAuthServerConfig struct {
 	// ServerURL is the MCP server endpoint. Used for RFC 9728/8414
 	// discovery (#316) when the endpoints below are not configured.
-	ServerURL    string
+	ServerURL string
+	// Grant is "" / "authorization_code" (3LO, default) or
+	// "client_credentials" (2LO agent-principal, #324).
+	Grant string
+	// ClientSecret is used only for the client_credentials grant. The
+	// caller resolves it from the env var named by MCPAuth.ClientSecretEnv
+	// at call time (never persisted in config).
+	ClientSecret string
 	ClientID     string
 	Scopes       []string
 	AuthorizeURL string
 	TokenURL     string
 }
+
+// grantClientCredentials is the 2-legged agent-principal grant (#324).
+const grantClientCredentials = "client_credentials"
 
 // storeKey returns the credential-store key for an MCP server.
 // Prefixed "MCP_" so MCP tokens are namespaced separately from LLM
@@ -270,35 +280,41 @@ func (f *OAuthFlow) Login(ctx context.Context, name string, cfg OAuthServerConfi
 // Safe for concurrent use: per-server singleflight collapses N
 // concurrent calls into 1 /token POST.
 func (f *OAuthFlow) BearerToken(ctx context.Context, name string, cfg OAuthServerConfig) (string, error) {
+	clientCreds := cfg.Grant == grantClientCredentials
+
 	tok, err := oauth.LoadCredentials(storeKey(name))
 	if err != nil {
 		return "", fmt.Errorf("loading credentials for %q: %w", name, err)
 	}
-	if tok == nil {
-		// Distinct from ErrTokenRevoked — see errors.go ErrNoToken
-		// docstring (review B11). Emit a "no_token" audit reason so
-		// dashboards can tell first-use from revocation.
+	if tok != nil && !tok.IsExpiredWithBuffer(f.RefreshWindow) {
+		return tok.AccessToken, nil
+	}
+
+	// The cached token is absent or expired. For 3LO, a first-time mint
+	// requires interactive `forge mcp login` — a headless refresh cannot
+	// create one. The client_credentials (2LO, #324) path has no user and
+	// mints on demand from ClientID + ClientSecret, so no stored login
+	// token is required.
+	if tok == nil && !clientCreds {
 		f.emit(name, false, "no_token")
 		return "", fmt.Errorf("%w: %q — run 'forge mcp login %s'", ErrNoToken, name, name)
 	}
 
-	if !tok.IsExpiredWithBuffer(f.RefreshWindow) {
-		return tok.AccessToken, nil
+	// 3LO refresh resolves token_url/client_id (explicit config or a
+	// persisted registration only; never discovery/DCR on refresh — #316).
+	// client_credentials uses the explicit token_url/client_id/secret
+	// directly (2LO has no authorize endpoint and no persisted login).
+	if !clientCreds {
+		resolved, rerr := f.resolveOAuthConfig(ctx, name, cfg, false)
+		if rerr != nil {
+			return "", rerr
+		}
+		cfg = resolved
 	}
 
-	// Refresh needed — resolve token_url/client_id. Explicit config or
-	// a persisted registration only; the refresh path never runs
-	// discovery/DCR (allowDiscovery=false) — a first-time mint requires
-	// interactive `forge mcp login`. #316
-	resolved, rerr := f.resolveOAuthConfig(ctx, name, cfg, false)
-	if rerr != nil {
-		return "", rerr
-	}
-	cfg = resolved
-
-	// Singleflight: collapse concurrent refreshes. The leader spawns
-	// the refresh goroutine and EVERY subsequent caller — including
-	// the leader itself — waits on grp.done below.
+	// Singleflight: collapse concurrent (re)mints into one /token call.
+	// The leader spawns the goroutine and EVERY subsequent caller —
+	// including the leader itself — waits on grp.done below.
 	//
 	// CRITICAL (review B2): the goroutine's context is derived from
 	// context.Background, NOT from the leader's ctx. If we used the
@@ -328,9 +344,13 @@ func (f *OAuthFlow) BearerToken(ctx context.Context, name string, cfg OAuthServe
 				f.mu.Unlock()
 				close(grp.done)
 			}()
-			refreshCtx, cancel := context.WithTimeout(context.Background(), f.refreshTimeout())
+			mintCtx, cancel := context.WithTimeout(context.Background(), f.refreshTimeout())
 			defer cancel()
-			grp.token, grp.err = f.doRefresh(refreshCtx, name, cfg, tok.RefreshToken)
+			if clientCreds {
+				grp.token, grp.err = f.doClientCredentials(mintCtx, name, cfg)
+			} else {
+				grp.token, grp.err = f.doRefresh(mintCtx, name, cfg, tok.RefreshToken)
+			}
 		}()
 	} else {
 		f.mu.Unlock()
@@ -388,6 +408,36 @@ func (f *OAuthFlow) doRefresh(ctx context.Context, name string, cfg OAuthServerC
 		return "", fmt.Errorf("saving refreshed token: %w", err)
 	}
 	f.emit(name, true, "refreshed")
+	return newTok.AccessToken, nil
+}
+
+// doClientCredentials mints an agent-principal token via the
+// client_credentials grant (#324) and caches it. The token has no
+// refresh_token; on expiry BearerToken re-mints from ClientID +
+// ClientSecret. Cache-write failure is NON-FATAL — the token is
+// re-mintable, so a read-only store just means minting per use rather
+// than a broken request.
+func (f *OAuthFlow) doClientCredentials(ctx context.Context, name string, cfg OAuthServerConfig) (string, error) {
+	newTok, err := oauth.ClientCredentialsTokenCtx(ctx, f.HTTPClient, cfg.TokenURL, cfg.ClientID, cfg.ClientSecret, cfg.Scopes)
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "invalid_client") ||
+			strings.Contains(msg, "unauthorized_client") ||
+			strings.Contains(msg, "invalid_scope") {
+			f.emit(name, false, "client_credentials_denied")
+			return "", fmt.Errorf("%w: %v", ErrTokenRevoked, err)
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			f.emit(name, false, "timeout")
+			return "", fmt.Errorf("%w: client_credentials timed out after %s", ErrTransportUnavailable, f.refreshTimeout())
+		}
+		f.emit(name, false, "transport")
+		return "", fmt.Errorf("%w: %v", ErrTransportUnavailable, err)
+	}
+	f.emit(name, true, "client_credentials")
+	if serr := oauth.SaveCredentials(storeKey(name), newTok); serr != nil {
+		f.emit(name, false, "store_error") // non-fatal — token is re-mintable
+	}
 	return newTok.AccessToken, nil
 }
 

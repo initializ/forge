@@ -595,9 +595,24 @@ type MCPAuth struct {
 	//                forge.yaml.
 	Type string `yaml:"type"`
 
-	// ClientID is the OAuth client identifier. Optional for Type ==
-	// "oauth": when empty and the authorization server supports RFC 7591,
-	// Forge mints one at login and persists it (encrypted) for reuse.
+	// Grant selects the OAuth grant for Type == "oauth":
+	//   - "" / "authorization_code" → 3-legged PKCE (the default; a user
+	//     consents once via `forge mcp login`). This is the delegated path.
+	//   - "client_credentials" → 2-legged agent-principal (#324): the agent
+	//     authenticates as ITSELF with ClientID + a secret named by
+	//     ClientSecretEnv. No user, no browser, no login — the token is
+	//     minted at runtime. Requires an explicit ClientID, ClientSecretEnv,
+	//     and TokenURL (2LO has no authorization endpoint and no DCR).
+	Grant string `yaml:"grant,omitempty"`
+
+	// ClientSecretEnv names the environment variable holding the OAuth
+	// client secret, used only by Grant == "client_credentials". Read at
+	// runtime, never stored in forge.yaml (same contract as TokenEnv).
+	ClientSecretEnv string `yaml:"client_secret_env,omitempty"`
+
+	// ClientID is the OAuth client identifier. Optional for the default
+	// authorization_code grant (discovered/DCR at login when empty);
+	// REQUIRED for Grant == "client_credentials".
 	ClientID string `yaml:"client_id,omitempty"`
 
 	// Scopes is the OAuth scope set requested at login. When empty,

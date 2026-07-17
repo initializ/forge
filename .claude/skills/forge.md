@@ -298,7 +298,9 @@ The agent loop calls tools the LLM asks for. The registry merges:
   rejected at validate time with a roadmap pointer. OAuth 2.1 PKCE
   supported via `forge mcp login`; `client_id`/`authorize_url`/`token_url`
   are optional — discovered from the server url via RFC 9728/8414 with
-  RFC 7591 dynamic client registration when omitted (#316).
+  RFC 7591 dynamic client registration when omitted (#316). Agent-principal
+  (headless, no login) via `grant: client_credentials` — 2LO with
+  `client_id` + `client_secret_env` + `token_url`, minted at runtime (#324).
 
 `cli_execute` ships 13 security layers — shell denylist, binary
 allowlist, `LookPath` resolution at startup, argument validation

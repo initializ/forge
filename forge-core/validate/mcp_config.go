@@ -127,12 +127,33 @@ func validateMCPAuth(prefix string, a types.MCPAuth, r *ValidationResult) {
 
 	switch a.Type {
 	case "oauth":
-		// #316: client_id + endpoints may be discovered (RFC 9728/8414/7591)
-		// from the server url, so the trio is no longer required. Only a
-		// PARTIAL endpoint config is an error — authorize_url and token_url
-		// must be set together, or both omitted (⇒ discovery from url).
-		if (a.AuthorizeURL == "") != (a.TokenURL == "") {
-			r.Errors = append(r.Errors, prefix+": authorize_url and token_url must be set together (or both omitted to discover them from the server url)")
+		switch a.Grant {
+		case "", "authorization_code":
+			// #316: client_id + endpoints may be discovered (RFC 9728/8414/7591)
+			// from the server url, so the trio is no longer required. Only a
+			// PARTIAL endpoint config is an error — authorize_url and token_url
+			// must be set together, or both omitted (⇒ discovery from url).
+			if (a.AuthorizeURL == "") != (a.TokenURL == "") {
+				r.Errors = append(r.Errors, prefix+": authorize_url and token_url must be set together (or both omitted to discover them from the server url)")
+			}
+		case "client_credentials":
+			// #324: agent-principal 2LO — explicit client + secret + token
+			// endpoint (no authorization endpoint, no DCR).
+			if a.ClientID == "" {
+				r.Errors = append(r.Errors, prefix+": client_id is required for grant client_credentials")
+			}
+			if a.ClientSecretEnv == "" {
+				r.Errors = append(r.Errors, prefix+": client_secret_env is required for grant client_credentials")
+			}
+			if a.TokenURL == "" {
+				r.Errors = append(r.Errors, prefix+": token_url is required for grant client_credentials")
+			}
+			if a.AuthorizeURL != "" {
+				r.Errors = append(r.Errors, prefix+": authorize_url is not used with grant client_credentials")
+			}
+		default:
+			r.Errors = append(r.Errors, fmt.Sprintf(
+				"%s: grant %q must be one of: authorization_code, client_credentials", prefix, a.Grant))
 		}
 	case "bearer", "static":
 		if a.TokenEnv == "" {

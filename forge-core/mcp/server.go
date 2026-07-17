@@ -136,17 +136,25 @@ func NewServer(spec types.MCPServer, deps ServerDeps) (*Server, error) {
 				return nil, fmt.Errorf("%w: server %q: auth.token_env is required for type=%s", ErrProtocolError, spec.Name, spec.Auth.Type)
 			}
 		case "oauth":
-			// #316: the endpoints + client_id may be discovered
-			// (RFC 9728/8414/7591) from the server URL, so the trio is no
-			// longer required. Only reject a PARTIAL endpoint config —
-			// authorize_url and token_url must be set together or both
-			// omitted (both-omitted ⇒ discovery). A server with no URL
-			// and no endpoints has nothing to discover from.
-			if (spec.Auth.AuthorizeURL == "") != (spec.Auth.TokenURL == "") {
-				return nil, fmt.Errorf("%w: server %q: auth.authorize_url and auth.token_url must be set together (or both omitted for discovery)", ErrProtocolError, spec.Name)
-			}
-			if spec.Auth.AuthorizeURL == "" && spec.URL == "" {
-				return nil, fmt.Errorf("%w: server %q: oauth needs either explicit authorize_url/token_url or a url to discover them from", ErrProtocolError, spec.Name)
+			if spec.Auth.Grant == grantClientCredentials {
+				// #324: 2LO agent-principal needs an explicit client + secret
+				// + token endpoint (no authorize endpoint, no DCR).
+				if spec.Auth.ClientID == "" || spec.Auth.ClientSecretEnv == "" || spec.Auth.TokenURL == "" {
+					return nil, fmt.Errorf("%w: server %q: grant client_credentials requires auth.client_id, auth.client_secret_env, auth.token_url", ErrProtocolError, spec.Name)
+				}
+			} else {
+				// #316: the endpoints + client_id may be discovered
+				// (RFC 9728/8414/7591) from the server URL, so the trio is no
+				// longer required. Only reject a PARTIAL endpoint config —
+				// authorize_url and token_url must be set together or both
+				// omitted (both-omitted ⇒ discovery). A server with no URL
+				// and no endpoints has nothing to discover from.
+				if (spec.Auth.AuthorizeURL == "") != (spec.Auth.TokenURL == "") {
+					return nil, fmt.Errorf("%w: server %q: auth.authorize_url and auth.token_url must be set together (or both omitted for discovery)", ErrProtocolError, spec.Name)
+				}
+				if spec.Auth.AuthorizeURL == "" && spec.URL == "" {
+					return nil, fmt.Errorf("%w: server %q: oauth needs either explicit authorize_url/token_url or a url to discover them from", ErrProtocolError, spec.Name)
+				}
 			}
 			if deps.OAuth == nil {
 				return nil, fmt.Errorf("%w: server %q requires oauth but no OAuthFlow supplied", ErrProtocolError, spec.Name)
@@ -520,14 +528,23 @@ func buildAuthFn(spec types.MCPServer, flow *OAuthFlow) AuthTokenFunc {
 	case "oauth":
 		cfg := OAuthServerConfig{
 			ServerURL:    spec.URL, // for #316 discovery / persisted-registration lookup
+			Grant:        spec.Auth.Grant,
 			ClientID:     spec.Auth.ClientID,
 			Scopes:       spec.Auth.Scopes,
 			AuthorizeURL: spec.Auth.AuthorizeURL,
 			TokenURL:     spec.Auth.TokenURL,
 		}
+		secretEnv := spec.Auth.ClientSecretEnv
 		name := spec.Name
 		return func(ctx context.Context) (string, error) {
-			return flow.BearerToken(ctx, name, cfg)
+			c := cfg
+			if c.Grant == grantClientCredentials {
+				// Resolve the client secret from env at call time so a
+				// rotated Secret takes effect without a Manager restart
+				// (mirrors the bearer/static token lookup). #324
+				c.ClientSecret = getenv(secretEnv)
+			}
+			return flow.BearerToken(ctx, name, c)
 		}
 	}
 	// Defense in depth — NewServer should have rejected an unknown

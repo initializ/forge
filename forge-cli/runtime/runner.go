@@ -43,6 +43,7 @@ import (
 	"github.com/initializ/forge/forge-core/scheduler"
 	"github.com/initializ/forge/forge-core/secrets"
 	"github.com/initializ/forge/forge-core/security"
+	"github.com/initializ/forge/forge-core/security/authgate"
 	deferengine "github.com/initializ/forge/forge-core/security/deferpolicy"
 	"github.com/initializ/forge/forge-core/security/intent"
 	"github.com/initializ/forge/forge-core/security/stepup"
@@ -168,6 +169,8 @@ type Runner struct {
 	intentEngine         *intent.Engine                    // R3 (#208) intent-alignment engine; nil when disabled
 	stepUpEngine         *stepup.Engine                    // R4b (#210) step-up authorization engine; nil when disabled
 	deferEngine          *deferengine.Engine               // R4c (#211) deferred-authorization engine; nil when disabled
+	authGateEngine       *authgate.Engine                  // R10 (#330) MCP auth-required gate; nil until an MCP manager with a type=user server is wired
+	consentDeliverer     ConsentDeliverer                  // optional: delivers MCP consent prompts to channels (#330); nil in standalone (no delivery yet)
 	taskStore            *a2a.TaskStore                    // shared task store, populated once srv is built; read by defer hook when it fires
 	platformCommandGuard *coreruntime.PlatformCommandGuard // #238 (ASI02) operator-authored command deny, applied to every tool call; empty when no layer declares denied_command_patterns
 }
@@ -204,6 +207,14 @@ func (r *Runner) SetScheduleNotifier(fn ScheduleNotifier) {
 // requests to channel adapters (#310). Must be called before Run().
 func (r *Runner) SetDeferralNotifier(fn DeferralNotifier) {
 	r.deferralNotifier = fn
+}
+
+// SetConsentDeliverer sets the callback used to deliver MCP auth-required
+// consent prompts (#330) — the managed platform injects one that hands off
+// to its consent flow; standalone leaves it nil until the loopback resolver
+// lands. Must be called before Run().
+func (r *Runner) SetConsentDeliverer(fn ConsentDeliverer) {
+	r.consentDeliverer = fn
 }
 
 // ResolveAuth resolves the auth token early (before Run). This is needed so
@@ -1016,12 +1027,27 @@ func (r *Runner) Run(ctx context.Context) error {
 				return fmt.Errorf("starting mcp manager: %w", err)
 			} else if mcpMgr != nil {
 				defer func() { _ = mcpMgr.Stop() }()
+				// Auth-required gate (#330): parks a delegated (type=user) call
+				// that has no grant for the requesting user until they consent,
+				// instead of failing. Harmless for non-delegated servers — only
+				// an ErrNoToken from the per-user resolver ever trips it.
+				if r.authGateEngine == nil {
+					r.authGateEngine = authgate.New()
+				}
+				mcpGate := &mcpAuthGate{
+					engine:    r.authGateEngine,
+					store:     r, // Runner.SetStatus flips task status while parked
+					audit:     auditLogger,
+					deliverer: r.consentDeliverer,
+					logger:    r.logger,
+				}
 				for _, h := range mcpMgr.Tools() {
 					mcpTool, ctorErr := adapters.NewMCPTool(adapters.MCPToolOpts{
 						Server:     h.Server,
 						Descriptor: h.Descriptor,
 						Client:     h.Client,
 						Resolver:   h.Resolver, // per-call client resolution (#317)
+						AuthGate:   mcpGate,    // park-on-no-grant, resume-on-consent (#330)
 						Audit:      auditLogger,
 					})
 					if ctorErr != nil {
@@ -2291,6 +2317,11 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 	// resolve pending deferrals. No-op wire (nothing registered)
 	// when defer is disabled.
 	r.registerDecisionsEndpoint(srv, auditLogger)
+
+	// R10 (#330) — consent-resume endpoint the platform/operator calls
+	// when a delegated MCP grant lands, unblocking calls parked on the
+	// auth-required gate. No-op wire when no type=user MCP server is active.
+	r.registerMCPConsentEndpoint(srv, auditLogger)
 }
 
 // serveJWKS is the handler for /.well-known/forge-audit-keys. Split

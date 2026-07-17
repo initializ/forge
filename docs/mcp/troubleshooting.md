@@ -23,6 +23,11 @@ rows.
 | `forge mcp login` opens browser but `state mismatch` after consent           | Stale callback or malicious redirect attempt            | Re-run; if persistent, check for browser extensions injecting URLs |
 | At runtime: `mcp: oauth token revoked`                                       | Refresh token denied — usually expired or user revoked  | `forge mcp login <name>` again; re-bundle the Secret           |
 | At runtime: `mcp: no stored token for "<name>" — run 'forge mcp login ...'`  | Token store empty inside the pod                        | Mount the Secret correctly; set `HOME` so the store path resolves |
+| `forge mcp test` reports `no stored token` right after a successful login    | `test` read a different store than `login` wrote        | Set the same `mcp.token_store_path` (forge.yaml) or `MCP_TOKEN_STORE_PATH` for both — `test` now honors it (fixed) |
+| `could not discover an authorization server` at login                        | Server has no RFC 9728 metadata / wrong endpoint         | Use the Streamable HTTP `/mcp` URL (not `/sse`); or set `authorize_url`/`token_url`/`client_id` explicitly |
+| `advertises no registration_endpoint and no client_id` at login             | Server doesn't support RFC 7591 dynamic registration     | Configure `client_id` (+ `authorize_url`/`token_url`) explicitly for that server |
+| `issued a confidential client (client_secret)` at login                     | Server returned a secret; Forge is public-PKCE only      | Configure `client_id`/`authorize_url`/`token_url` explicitly (Forge won't store a client secret) |
+| At runtime: `mcp: oauth token revoked` after the AS revoked the DCR client   | Persisted registration is stale                          | `forge mcp logout <name>` (clears the registration record) then `forge mcp login <name>` to re-discover + re-register |
 
 ## Tool name conflicts
 
@@ -37,6 +42,7 @@ rows.
 |------------------------------------------------------------------------------|---------------------------------------------------------|----------------------------------------------------------------|
 | Locally the agent works; in K8s it fails with `transport unavailable`        | NetworkPolicy egress doesn't include the MCP server      | Rebuild — `egress_stage.go` merges `MCPDomains` automatically; re-apply manifests |
 | OAuth refresh fails with `transport: dial` from the pod                      | `token_url` host blocked by NetworkPolicy                | The build merges this too — verify the latest `egress_allowlist.json` |
+| Discovery-based server: refresh blocked because the auth-server host isn't allowlisted | The build-time freeze can't know a *discovered* host | The runtime learns it from the login-time `mcp_reg_<name>.json` and merges it — ensure that file is mounted alongside the token (see [cli-reference](cli-reference.md#forge-mcp-login-name)) |
 
 ## Runtime behavior
 

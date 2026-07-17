@@ -66,6 +66,22 @@ const (
 	EventMCPToolConflict   = "mcp_tool_conflict"
 	EventMCPTokenRefresh   = "mcp_token_refresh"
 
+	// Auth-required gate events (R10 / #330). A delegated (type=user) MCP
+	// call with no grant for the requesting user PARKS on the authgate
+	// engine instead of failing; these trace park → resume/timeout. The
+	// gate never sees a token — it only unblocks the executor to re-resolve
+	// once the platform holds a grant.
+	//
+	//   EventMCPAuthRequired  — a call parked awaiting user consent; the
+	//                           task flipped to `auth-required` and (first
+	//                           waiter only) a consent prompt was delivered.
+	//   EventMCPAuthResolved  — consent arrived (or the wait was canceled);
+	//                           parked call(s) resumed and re-resolved.
+	//   EventMCPAuthTimeout   — no consent within the window; the call fails.
+	EventMCPAuthRequired = "mcp_auth_required"
+	EventMCPAuthResolved = "mcp_auth_resolved"
+	EventMCPAuthTimeout  = "mcp_auth_timeout"
+
 	// Agent Card events. Emitted once at agent startup with the
 	// finalized A2A Agent Card content for traceability. Carries the
 	// card's name, version, URL, protocolVersion, skill count, and a

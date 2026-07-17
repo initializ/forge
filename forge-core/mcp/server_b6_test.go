@@ -222,7 +222,7 @@ func TestB6_BuildAuthFn_UnknownType_FailsOnFirstCall(t *testing.T) {
 	fn := buildAuthFn(types.MCPServer{
 		Name: "x",
 		Auth: &types.MCPAuth{Type: "Bearer"},
-	}, nil)
+	}, ServerDeps{})
 	if fn == nil {
 		t.Fatal("buildAuthFn returned nil for unknown type — silent no-auth (the B6 regression)")
 	}

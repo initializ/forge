@@ -96,7 +96,7 @@ func TestBuildAuthFn_ClientCredentials_ResolvesSecretFromEnv(t *testing.T) {
 			ClientID: "a", ClientSecretEnv: "MY_MCP_SECRET", TokenURL: srv.URL,
 		},
 	}
-	authFn := buildAuthFn(spec, flow)
+	authFn := buildAuthFn(spec, ServerDeps{OAuth: flow})
 	if authFn == nil {
 		t.Fatal("buildAuthFn returned nil for a client_credentials server")
 	}
@@ -131,7 +131,7 @@ func TestBuildAuthFn_ClientCredentials_EmptySecret(t *testing.T) {
 			ClientID: "a", ClientSecretEnv: "UNSET_MCP_SECRET", TokenURL: srv.URL,
 		},
 	}
-	_, err := buildAuthFn(spec, flow)(context.Background())
+	_, err := buildAuthFn(spec, ServerDeps{OAuth: flow})(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "resolved to an empty value") {
 		t.Fatalf("want a clear empty-secret error, got %v", err)
 	}

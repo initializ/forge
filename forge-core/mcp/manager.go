@@ -55,6 +55,11 @@ type ManagerDeps struct {
 	// auth.type=oauth. Required when at least one such server exists
 	// in cfg; otherwise may be nil.
 	OAuth *OAuthFlow
+
+	// Platform is the managed token-resolver wiring (ForgeConfig.Platform),
+	// required by servers with auth.type=platform; otherwise may be nil.
+	// MUST stay field-identical with ServerDeps (type conversion below).
+	Platform *types.PlatformConfig
 }
 
 // NewManager constructs a Manager. Fails fast if config validation

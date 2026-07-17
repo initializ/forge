@@ -25,7 +25,7 @@ var mcpToolNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_]{1,64}$`)
 var knownMCPTransports = map[string]bool{"http": true}
 
 // knownMCPAuthTypes is the closed set of accepted auth types.
-var knownMCPAuthTypes = map[string]bool{"oauth": true, "bearer": true, "static": true}
+var knownMCPAuthTypes = map[string]bool{"oauth": true, "bearer": true, "static": true, "platform": true, "user": true}
 
 // minMCPTimeout bounds the timeout knob. Anything tighter is almost
 // certainly a misconfiguration; the default (set in the runtime when
@@ -100,6 +100,13 @@ func validateMCPServer(prefix string, s types.MCPServer, r *ValidationResult) {
 	// Auth: when present, type must be known and required fields set.
 	if s.Auth != nil {
 		validateMCPAuth(prefix+".auth", *s.Auth, r)
+		// Delegated user identity is inherently lazy — there is no user
+		// at startup, so a Required user-server would deadlock startup on
+		// a human. Reject the combination outright.
+		if s.Auth.Type == "user" && s.Required {
+			r.Errors = append(r.Errors,
+				prefix+": auth.type=user cannot be combined with required:true — delegated identity connects lazily after consent")
+		}
 	}
 
 	// Tools: default-deny. Allow and Deny cannot both be empty —
@@ -121,7 +128,7 @@ func validateMCPAuth(prefix string, a types.MCPAuth, r *ValidationResult) {
 	}
 	if !knownMCPAuthTypes[a.Type] {
 		r.Errors = append(r.Errors, fmt.Sprintf(
-			"%s: type %q must be one of: oauth, bearer, static", prefix, a.Type))
+			"%s: type %q must be one of: oauth, bearer, static, platform, user", prefix, a.Type))
 		return
 	}
 

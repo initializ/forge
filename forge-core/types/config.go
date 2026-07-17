@@ -29,6 +29,7 @@ type ForgeConfig struct {
 	Secrets        SecretsConfig       `yaml:"secrets,omitempty"`
 	Auth           AuthConfig          `yaml:"auth,omitempty"`
 	MCP            MCPConfig           `yaml:"mcp,omitempty"`
+	Platform       *PlatformConfig     `yaml:"platform,omitempty"`
 	Schedules      []ScheduleConfig    `yaml:"schedules,omitempty"`
 	Scheduler      SchedulerConfig     `yaml:"scheduler,omitempty"`
 	CORSOrigins    []string            `yaml:"cors_origins,omitempty"`
@@ -581,6 +582,24 @@ type MCPToolFilter struct {
 	Deny []string `yaml:"deny,omitempty"`
 }
 
+// PlatformConfig wires a deployed agent to its managing platform's token
+// resolver (the managed half of the resolver seam): MCP servers with
+// auth.type "platform" fetch a SHORT-LIVED access token from TokenEndpoint,
+// authenticating with AgentIdentity. The resource refresh token stays
+// platform-side, always — the agent never holds it.
+//
+// Both fields support ${VAR} env expansion resolved AT USE (like
+// auth.token_env): the platform materializes the identity as a pod secret
+// and rotation takes effect without a rebuild or restart.
+type PlatformConfig struct {
+	// TokenEndpoint is the platform token resolver
+	// (POST {"server": <ref>} → {"access_token", "expires_in"}).
+	TokenEndpoint string `yaml:"token_endpoint"`
+	// AgentIdentity is the agent's platform credential (typically
+	// ${FORGE_PLATFORM_TOKEN}), sent as the Bearer on token requests.
+	AgentIdentity string `yaml:"agent_identity"`
+}
+
 // MCPAuth declares the authentication mechanism for an MCP server.
 type MCPAuth struct {
 	// Type is one of:
@@ -593,7 +612,22 @@ type MCPAuth struct {
 	//   - "bearer" → static Bearer token from env var TokenEnv.
 	//   - "static" → same as bearer; named separately for clarity in
 	//                forge.yaml.
+	//   - "platform" → managed (platform-materialized): fetch a short-lived
+	//                access token from ForgeConfig.Platform.TokenEndpoint
+	//                under the AGENT-PRINCIPAL / service identity.
+	//                Startup-viable — no human, no login, no stored token.
+	//   - "user"   → managed (platform-materialized): DELEGATED USER
+	//                identity. Inherently lazy — there is no user at
+	//                startup, so it must not be Required; calls fail with
+	//                an auth-required error until the platform-side consent
+	//                flow (#317) produces a grant.
 	Type string `yaml:"type"`
+
+	// Ref names the platform tool-registry entry this server was
+	// materialized from — what the platform token resolver authorizes
+	// against. Platform-materialized; only meaningful for type
+	// platform/user (defaults to the server name when empty).
+	Ref string `yaml:"ref,omitempty"`
 
 	// Grant selects the OAuth grant for Type == "oauth":
 	//   - "" / "authorization_code" → 3-legged PKCE (the default; a user

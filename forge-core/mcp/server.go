@@ -87,6 +87,9 @@ type ServerDeps struct {
 	Logger     ServerLogger // nil → no-op
 	Audit      *runtime.AuditLogger
 	OAuth      *OAuthFlow // nil → no OAuth servers in this config
+	// Platform is the managed token-resolver wiring, required by servers
+	// with auth.type=platform. nil → no platform servers in this config.
+	Platform *types.PlatformConfig
 }
 
 // knownMCPAuthTypes is the closed set of accepted Auth.Type values.
@@ -102,9 +105,11 @@ type ServerDeps struct {
 // of types changes, both copies must move together — covered by
 // TestB6_KnownAuthTypes_MatchValidate.
 var knownMCPAuthTypes = map[string]bool{
-	"bearer": true,
-	"static": true,
-	"oauth":  true,
+	"bearer":   true,
+	"static":   true,
+	"oauth":    true,
+	"platform": true, // managed: agent-principal token from the platform resolver
+	"user":     true, // managed: delegated user identity (lazy; #317)
 }
 
 // NewServer constructs a Server. Returns an error when:
@@ -128,7 +133,7 @@ func NewServer(spec types.MCPServer, deps ServerDeps) (*Server, error) {
 			return nil, fmt.Errorf("%w: server %q: auth.type is required when auth block is set", ErrProtocolError, spec.Name)
 		}
 		if !knownMCPAuthTypes[spec.Auth.Type] {
-			return nil, fmt.Errorf("%w: server %q: unknown auth.type %q (must be one of: bearer, static, oauth)", ErrProtocolError, spec.Name, spec.Auth.Type)
+			return nil, fmt.Errorf("%w: server %q: unknown auth.type %q (must be one of: bearer, static, oauth, platform, user)", ErrProtocolError, spec.Name, spec.Auth.Type)
 		}
 		switch spec.Auth.Type {
 		case "bearer", "static":
@@ -159,6 +164,20 @@ func NewServer(spec types.MCPServer, deps ServerDeps) (*Server, error) {
 			if deps.OAuth == nil {
 				return nil, fmt.Errorf("%w: server %q requires oauth but no OAuthFlow supplied", ErrProtocolError, spec.Name)
 			}
+		case "platform":
+			// Agent-principal identity from the platform resolver. The
+			// platform block is the contract — without it the server can
+			// never authenticate, so fail construction, not the first call.
+			if deps.Platform == nil || deps.Platform.TokenEndpoint == "" {
+				return nil, fmt.Errorf("%w: server %q: auth.type=platform requires the top-level platform block (token_endpoint + agent_identity) — platform-materialized config", ErrProtocolError, spec.Name)
+			}
+		case "user":
+			// Delegated user identity is INHERENTLY LAZY: there is no user
+			// at startup. A Required user-server would deadlock startup on
+			// a human — reject the combination (also caught by validate).
+			if spec.Required {
+				return nil, fmt.Errorf("%w: server %q: auth.type=user cannot be required:true — delegated identity connects lazily after consent", ErrProtocolError, spec.Name)
+			}
 		}
 	}
 	logger := deps.Logger
@@ -166,7 +185,7 @@ func NewServer(spec types.MCPServer, deps ServerDeps) (*Server, error) {
 		logger = nopLogger{}
 	}
 
-	authFn := buildAuthFn(spec, deps.OAuth)
+	authFn := buildAuthFn(spec, deps)
 	factory := func(ctx context.Context) (Client, error) {
 		tr, err := NewHTTPTransport(spec.URL, deps.HTTPClient, authFn)
 		if err != nil {
@@ -515,10 +534,11 @@ func filterTools(descs []MCPToolDescriptor, f types.MCPToolFilter) []MCPToolDesc
 // os.Getenv lookups happen INSIDE the closure so changes to env at
 // runtime (e.g., a K8s Secret rotated and the pod restarted) take
 // effect on the next call without a Manager restart.
-func buildAuthFn(spec types.MCPServer, flow *OAuthFlow) AuthTokenFunc {
+func buildAuthFn(spec types.MCPServer, deps ServerDeps) AuthTokenFunc {
 	if spec.Auth == nil {
 		return nil
 	}
+	flow := deps.OAuth
 	switch spec.Auth.Type {
 	case "bearer", "static":
 		env := spec.Auth.TokenEnv
@@ -553,6 +573,30 @@ func buildAuthFn(spec types.MCPServer, flow *OAuthFlow) AuthTokenFunc {
 				}
 			}
 			return flow.BearerToken(ctx, name, c)
+		}
+	case "platform":
+		// Agent-principal (service) identity: short-lived access token
+		// from the platform resolver, cached to TTL. The resource refresh
+		// token never reaches this process (invariant 8).
+		ref := spec.Auth.Ref
+		if ref == "" {
+			ref = spec.Name
+		}
+		src := newPlatformTokenSource(PlatformSourceConfig{
+			TokenEndpoint: deps.Platform.TokenEndpoint,
+			AgentIdentity: deps.Platform.AgentIdentity,
+			Ref:           ref,
+			HTTPClient:    deps.HTTPClient,
+		})
+		return src.Token
+	case "user":
+		// Delegated user identity — no grant exists until the
+		// platform-side consent flow (#317) completes. Fail each attempt
+		// with an actionable error; the server is non-Required so it
+		// never blocks startup.
+		serverName := spec.Name
+		return func(_ context.Context) (string, error) {
+			return "", fmt.Errorf("%w: server %q uses delegated user identity — no user grant yet (the platform consent flow completes it; writes are lazy by design)", ErrNoToken, serverName)
 		}
 	}
 	// Defense in depth — NewServer should have rejected an unknown

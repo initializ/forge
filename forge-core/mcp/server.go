@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -73,6 +74,12 @@ type Server struct {
 	tools  []MCPToolDescriptor
 	client Client
 	cancel context.CancelFunc
+
+	// pool is non-nil for a type=user server: it holds one connection per
+	// requesting-user subject, established lazily. Such a server runs
+	// "materialized" (no eager connect) and exposes the pool as its
+	// per-call ClientResolver (#317).
+	pool *subjectConnPool
 
 	ready        chan struct{} // closed when first Ready
 	failed       chan struct{} // closed on terminal Failed/Stopped
@@ -200,7 +207,7 @@ func NewServer(spec types.MCPServer, deps ServerDeps) (*Server, error) {
 		}
 		return NewClient(tr), nil
 	}
-	return &Server{
+	srv := &Server{
 		Name:    spec.Name,
 		Spec:    spec,
 		factory: factory,
@@ -210,7 +217,14 @@ func NewServer(spec types.MCPServer, deps ServerDeps) (*Server, error) {
 		state:   StateConfigured,
 		ready:   make(chan struct{}),
 		failed:  make(chan struct{}),
-	}, nil
+	}
+	// #317: a type=user server has no user (and so no connection) at
+	// startup — it runs "materialized": Ready with the platform-supplied
+	// tool schemas, connecting per requesting user lazily for calls.
+	if spec.Auth != nil && spec.Auth.Type == "user" {
+		srv.pool = newSubjectConnPool(srv.establish)
+	}
+	return srv, nil
 }
 
 // State returns the current lifecycle state. Cheap; safe for
@@ -259,6 +273,13 @@ func (s *Server) Run(ctx context.Context) error {
 	s.cancel = cancel
 	s.mu.Unlock()
 	defer cancel()
+
+	// #317: a per-subject (type=user) server has no user at startup, so it
+	// never eager-connects — it registers materialized tools and reaches
+	// Ready, connecting per requesting user lazily on calls.
+	if s.usesSubjectPool() {
+		return s.runMaterialized(ctx)
+	}
 
 	attempt := 0
 	for {
@@ -332,6 +353,97 @@ func (s *Server) Run(ctx context.Context) error {
 // then blocks until the underlying client's demultiplexer exits or
 // ctx is cancelled. Returns a non-nil error if any step failed; nil
 // if the cycle ended cleanly (ctx cancel after Ready).
+// establish opens and initializes a fresh connection for the pool (#317).
+// The ctx carries the requesting user's identity, so the transport's
+// authFn resolves THAT user's token at initialize. The demultiplexer runs
+// for the connection's lifetime (stopped by cli.Close()), not just the
+// establish window.
+func (s *Server) establish(ctx context.Context) (Client, error) {
+	cli, err := s.factory(ctx)
+	if err != nil {
+		return nil, withPhase("connect", err)
+	}
+	if r, ok := cli.(interface{ Run(context.Context) }); ok {
+		go r.Run(context.Background()) // lifetime = connection; cli.Close() stops it
+	}
+	initCtx, cancel := context.WithTimeout(ctx, s.timeout())
+	defer cancel()
+	if _, err := cli.Initialize(initCtx, ClientInfo{Name: "forge-mcp", Version: "0.12.0"}); err != nil {
+		_ = cli.Close()
+		return nil, withPhase("initialize", err)
+	}
+	if err := cli.Initialized(initCtx); err != nil {
+		_ = cli.Close()
+		return nil, withPhase("initialize", fmt.Errorf("initialized notification: %w", err))
+	}
+	return cli, nil
+}
+
+// resolver returns this server's per-call ClientResolver: the per-subject
+// pool for type=user, otherwise a StaticResolver over the shared client.
+func (s *Server) resolver() ClientResolver {
+	if s.pool != nil {
+		return s.pool
+	}
+	return StaticResolver{Client: s.Client()}
+}
+
+// usesSubjectPool reports whether calls route per requesting user (#317).
+func (s *Server) usesSubjectPool() bool { return s.pool != nil }
+
+// materializedDescriptors converts the platform-supplied tool schemas
+// (types) into MCP descriptors, validating names + input schemas the same
+// way tools/list results are (#317).
+func (s *Server) materializedDescriptors() ([]MCPToolDescriptor, error) {
+	out := make([]MCPToolDescriptor, 0, len(s.Spec.Tools.Schemas))
+	for i, sc := range s.Spec.Tools.Schemas {
+		if sc.Name == "" {
+			return nil, fmt.Errorf("tool schema[%d]: name is empty", i)
+		}
+		if strings.Contains(sc.Name, "__") {
+			return nil, fmt.Errorf("tool schema[%d] %q: name contains \"__\" — reserved for the <server>__<tool> separator", i, sc.Name)
+		}
+		raw := json.RawMessage(`{"type":"object"}`)
+		if sc.InputSchema != nil {
+			b, err := json.Marshal(sc.InputSchema)
+			if err != nil {
+				return nil, fmt.Errorf("tool schema[%d] %q: input_schema: %w", i, sc.Name, err)
+			}
+			raw = b
+		}
+		if err := ValidateInputSchema(raw); err != nil {
+			return nil, fmt.Errorf("tool schema[%d] %q: %w", i, sc.Name, err)
+		}
+		out = append(out, MCPToolDescriptor{Name: sc.Name, Description: sc.Description, InputSchema: raw})
+	}
+	return out, nil
+}
+
+// runMaterialized is the type=user lifecycle: register the materialized
+// tool schemas and reach Ready WITHOUT an eager connection (there is no
+// user at startup). Per-user connections are established lazily by the
+// pool on tool calls. Blocks until ctx cancel, then tears the pool down.
+func (s *Server) runMaterialized(ctx context.Context) error {
+	descs, err := s.materializedDescriptors()
+	if err != nil {
+		return withPhase("materialize", err)
+	}
+	filtered := filterTools(descs, s.Spec.Tools)
+	s.mu.Lock()
+	s.tools = filtered
+	s.mu.Unlock()
+	s.transition(StateReady)
+	s.emitStarted(len(filtered))
+	s.once.Do(func() { close(s.ready) })
+
+	<-ctx.Done()
+	if s.pool != nil {
+		_ = s.pool.Close()
+	}
+	s.transition(StateStopped)
+	return nil
+}
+
 func (s *Server) runOnce(ctx context.Context) error {
 	s.transition(StateConnecting)
 

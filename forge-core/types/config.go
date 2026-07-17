@@ -3,6 +3,8 @@ package types
 
 import (
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/initializ/forge/forge-core/credentials"
@@ -904,6 +906,12 @@ func ParseForgeConfig(data []byte) (*ForgeConfig, error) {
 		return nil, fmt.Errorf("parsing forge config: %w", err)
 	}
 
+	// Expand ${VAR}/$VAR env placeholders in MCP connection fields at
+	// parse time (#321) — so every consumer (runner, mcp login/test,
+	// validate, security.MCPDomains, the build pipeline) sees resolved
+	// values, and the egress allowlist is computed from real hosts.
+	expandMCPEnv(&cfg)
+
 	if cfg.AgentID == "" {
 		return nil, fmt.Errorf("forge config: agent_id is required")
 	}
@@ -915,4 +923,52 @@ func ParseForgeConfig(data []byte) (*ForgeConfig, error) {
 	}
 
 	return &cfg, nil
+}
+
+// expandMCPEnv expands ${VAR}/$VAR env placeholders in MCP connection
+// fields against the process env (os.Expand semantics, matching the
+// egress-domain expansion) — #321.
+//
+// An unset variable expands to "" (os.Expand default): a fully-unset
+// oauth block then reads as "unconfigured" and correctly falls to the
+// discovery / fail-closed paths rather than dialing a literal `${…}` URL.
+//
+// TokenEnv is intentionally NOT expanded — it is the NAME of an env var,
+// resolved at runtime, not a value.
+func expandMCPEnv(cfg *ForgeConfig) {
+	for i := range cfg.MCP.Servers {
+		s := &cfg.MCP.Servers[i]
+		s.URL = expandEnvRef(s.URL)
+		if s.Auth != nil {
+			s.Auth.ClientID = expandEnvRef(s.Auth.ClientID)
+			s.Auth.AuthorizeURL = expandEnvRef(s.Auth.AuthorizeURL)
+			s.Auth.TokenURL = expandEnvRef(s.Auth.TokenURL)
+			s.Auth.Scopes = expandScopeRefs(s.Auth.Scopes)
+		}
+	}
+}
+
+// expandEnvRef expands ${VAR}/$VAR in s against the process env. A
+// string with no `$` is returned unchanged; an unset var expands to "".
+func expandEnvRef(s string) string {
+	if !strings.Contains(s, "$") {
+		return s
+	}
+	return os.Expand(s, os.Getenv)
+}
+
+// expandScopeRefs expands each scope entry and splits any post-expansion
+// value on whitespace — so a single `${…_SCOPES}` carrying "read write"
+// becomes two scopes (OAuth scopes are space-delimited by RFC 6749, so a
+// value never legitimately contains an internal space). Empty entries
+// are dropped.
+func expandScopeRefs(in []string) []string {
+	if len(in) == 0 {
+		return in
+	}
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		out = append(out, strings.Fields(expandEnvRef(s))...)
+	}
+	return out
 }

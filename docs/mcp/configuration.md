@@ -228,10 +228,22 @@ auth:
 - An **unset** variable expands to `""`, so the block reads as
   *unconfigured* and falls to the discovery / fail-closed path — never a
   literal `${…}` dial.
-- A single `scopes` entry is **split on whitespace** post-expansion, so
-  `${MCP_LINEAR_SCOPES}="read write"` becomes `[read, write]`.
+- A `scopes` entry is **split on whitespace** post-expansion, so
+  `${MCP_LINEAR_SCOPES}="read write"` becomes `[read, write]`. (The split
+  is unconditional — a literal `["read write"]` splits too; OAuth scopes
+  are space-delimited by RFC 6749, so a value never has an internal space.)
 - `token_env` (for `bearer`/`static`) is **not** expanded — it is the
   *name* of an env var, resolved at runtime.
+
+> ⚠️ **Keep `url` literal.** Although `url` accepts placeholders for
+> symmetry, the **build-time egress freeze** reads MCP hosts from the
+> config at *build* time — where the deploy env is unset, so a
+> `url: ${MCP_URL}` expands to `""`. That empty value fails the
+> `url is required for http transport` validation (a loud build error),
+> and even if it slipped through it wouldn't be in the frozen
+> `egress_allowlist.json` / NetworkPolicy, blocking the host at runtime in
+> a container. Managed mode keeps `url` literal and places placeholders
+> only on the auth fields — do the same.
 
 ### In-cluster MCP with bearer token from a K8s Secret
 

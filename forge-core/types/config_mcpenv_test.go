@@ -84,6 +84,32 @@ func TestParseForgeConfig_UnsetMCPEnv(t *testing.T) {
 	}
 }
 
+// TestParseForgeConfig_LiteralScopeSplit pins the intentional behavior
+// (#323 review finding 3): a literal, space-containing scopes entry is
+// split on whitespace too — not only an expanded `${SCOPES}`.
+func TestParseForgeConfig_LiteralScopeSplit(t *testing.T) {
+	const y = `
+agent_id: a
+version: 0.1.0
+framework: custom
+entrypoint: /bin/true
+mcp:
+  servers:
+    - name: linear
+      transport: http
+      url: https://x/mcp
+      auth: { type: oauth, scopes: ["read write"] }
+      tools: { allow: ["*"] }
+`
+	cfg, err := ParseForgeConfig([]byte(y))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := cfg.MCP.Servers[0].Auth.Scopes; !reflect.DeepEqual(got, []string{"read", "write"}) {
+		t.Errorf("literal space-scope = %v, want [read write] (unconditional split is intended)", got)
+	}
+}
+
 // TestParseForgeConfig_TokenEnvNotExpanded: TokenEnv is a NAME, not a
 // value — it must survive verbatim even when it looks like a placeholder.
 func TestParseForgeConfig_TokenEnvNotExpanded(t *testing.T) {

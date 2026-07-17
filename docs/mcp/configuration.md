@@ -111,6 +111,16 @@ mcp:
 - **Egress:** the platform token-endpoint host is auto-merged into the
   allowlist.
 
+> ⚠️ **Isolation boundary (today).** `type: user` currently resolves a
+> per-user **token on each call**; the underlying MCP **connection is still
+> shared** across users (per-subject connection isolation is a follow-up).
+> A **stateless** MCP server that re-authorizes on every request honors the
+> per-call token, so this gives real per-user isolation. A **session-stateful**
+> server that binds identity at `initialize` may not re-scope the session
+> when the per-call token changes — so confirm your MCP server re-authorizes
+> per request before relying on `type: user` for hard isolation against such
+> a server.
+
 > The platform materializes both the `platform` block and the per-identity
 > server entries (same URL, split by `type`). For the **standalone** (no
 > platform) equivalents, use `type: oauth` — 3-legged `forge mcp login` for a

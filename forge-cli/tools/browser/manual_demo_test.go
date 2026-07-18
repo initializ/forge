@@ -50,12 +50,12 @@ func TestManualBrowseDemo(t *testing.T) {
 	// demonstrates real egress enforcement, not dev-open.
 	matcher := security.NewDomainMatcher(security.ModeAllowlist, []string{u.Hostname()})
 	proxy := security.NewEgressProxy(matcher, false)
-	proxy.OnAttempt = func(domain string, allowed bool) {
+	proxy.OnAttempt = func(a security.EgressAttempt) {
 		verdict := "ALLOW"
-		if !allowed {
+		if !a.Allowed {
 			verdict = "BLOCK"
 		}
-		t.Logf("[egress] %-5s %s", verdict, domain)
+		t.Logf("[egress] %-5s %s", verdict, a.Domain)
 	}
 	proxyURL, err := proxy.Start(context.Background())
 	if err != nil {

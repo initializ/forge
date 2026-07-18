@@ -2,6 +2,7 @@ package security
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
@@ -21,7 +22,28 @@ type EgressProxy struct {
 	listener      net.Listener
 	srv           *http.Server
 	addr          string // "127.0.0.1:<port>"
-	OnAttempt     func(domain string, allowed bool)
+	OnAttempt     func(EgressAttempt)
+}
+
+// EgressAttempt describes a single egress decision for audit correlation.
+// TaskID and CorrelationID are recovered from the Proxy-Authorization header
+// the subprocess sends (see identityFromRequest) — the caller injects them as
+// userinfo in the HTTP_PROXY URL, which HTTP clients replay as Basic proxy
+// credentials on every request and CONNECT. They are empty when the client
+// doesn't send credentials (arbitrary binaries), which degrades gracefully to
+// the pre-#338 behaviour: a domain-only event with no task attribution.
+type EgressAttempt struct {
+	Domain        string
+	Allowed       bool
+	TaskID        string
+	CorrelationID string
+}
+
+// egressIdentity carries the per-request task/invocation IDs recovered from the
+// proxy credentials, threaded from the request handler down to the callback.
+type egressIdentity struct {
+	taskID        string
+	correlationID string
 }
 
 // NewEgressProxy creates a new EgressProxy that validates domains using the
@@ -89,8 +111,9 @@ func (p *EgressProxy) handleRequest(w http.ResponseWriter, req *http.Request) {
 // handleHTTP forwards plain HTTP requests after domain validation.
 func (p *EgressProxy) handleHTTP(w http.ResponseWriter, req *http.Request) {
 	host := extractHost(req.URL.Host)
+	id := identityFromRequest(req)
 
-	if !p.checkDomain(host) {
+	if !p.checkDomain(host, id) {
 		http.Error(w, fmt.Sprintf("egress proxy: domain %q blocked", host), http.StatusForbidden)
 		return
 	}
@@ -132,8 +155,9 @@ func (p *EgressProxy) handleHTTP(w http.ResponseWriter, req *http.Request) {
 // hostname, then blind-relays bytes without decrypting TLS.
 func (p *EgressProxy) handleConnect(w http.ResponseWriter, req *http.Request) {
 	host := extractHost(req.Host)
+	id := identityFromRequest(req)
 
-	if !p.checkDomain(host) {
+	if !p.checkDomain(host, id) {
 		http.Error(w, fmt.Sprintf("egress proxy: domain %q blocked", host), http.StatusForbidden)
 		return
 	}
@@ -182,28 +206,59 @@ func (p *EgressProxy) handleConnect(w http.ResponseWriter, req *http.Request) {
 }
 
 // checkDomain validates a host against the matcher, allowing localhost always.
-func (p *EgressProxy) checkDomain(host string) bool {
+func (p *EgressProxy) checkDomain(host string, id egressIdentity) bool {
 	// Reject non-standard IP formats early
 	if err := ValidateHostIP(host); err != nil {
-		p.fireCallback(host, false)
+		p.fireCallback(host, false, id)
 		return false
 	}
 
 	// Localhost is always allowed
 	if IsLocalhost(host) {
-		p.fireCallback(host, true)
+		p.fireCallback(host, true, id)
 		return true
 	}
 
 	allowed := p.matcher.IsAllowed(host)
-	p.fireCallback(host, allowed)
+	p.fireCallback(host, allowed, id)
 	return allowed
 }
 
-func (p *EgressProxy) fireCallback(domain string, allowed bool) {
+func (p *EgressProxy) fireCallback(domain string, allowed bool, id egressIdentity) {
 	if p.OnAttempt != nil {
-		p.OnAttempt(domain, allowed)
+		p.OnAttempt(EgressAttempt{
+			Domain:        domain,
+			Allowed:       allowed,
+			TaskID:        id.taskID,
+			CorrelationID: id.correlationID,
+		})
 	}
+}
+
+// identityFromRequest recovers the task/invocation IDs the caller stashed in
+// the proxy credentials. HTTP clients that see userinfo in the HTTP_PROXY URL
+// replay it as a "Proxy-Authorization: Basic base64(taskID:correlationID)"
+// header on every proxied request and CONNECT. Returns a zero identity when the
+// header is absent or malformed — the proxy still enforces and audits, just
+// without task attribution (arbitrary binaries that ignore proxy creds).
+func identityFromRequest(req *http.Request) egressIdentity {
+	h := req.Header.Get("Proxy-Authorization")
+	if h == "" {
+		return egressIdentity{}
+	}
+	const prefix = "Basic "
+	if len(h) <= len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) {
+		return egressIdentity{}
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(h[len(prefix):]))
+	if err != nil {
+		return egressIdentity{}
+	}
+	task, corr, found := strings.Cut(string(raw), ":")
+	if !found {
+		return egressIdentity{}
+	}
+	return egressIdentity{taskID: task, correlationID: corr}
 }
 
 // extractHost strips the port from a host:port string.

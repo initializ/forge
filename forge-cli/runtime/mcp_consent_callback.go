@@ -109,9 +109,10 @@ type CallbackCompleter func(subject, server, code string) error
 
 // sessionFromRequest extracts the caller's session id for the cross-session
 // check. Prefers an explicit forge session header; falls back to a session
-// cookie. Empty ⇒ the handler skips the session match (still enforces
-// single-use + expiry), which is the correct degradation when no session
-// context is available (e.g. a purely CLI-driven loopback).
+// cookie (the header isn't set on a browser redirect, so the cookie is the
+// real path for the IdP callback). An empty result fails the mandatory
+// session match in the handler — the network-exposed callback never
+// downgrades to single-use+expiry alone.
 func sessionFromRequest(r *http.Request) string {
 	if h := r.Header.Get("X-Forge-Session"); h != "" {
 		return h
@@ -161,14 +162,20 @@ func makeMCPCallbackHandler(
 			http.Error(w, "invalid, expired, or already-used state", http.StatusBadRequest)
 			return
 		}
-		// Cross-session guard: the callback must land in the session that
-		// started the flow. A leaked/replayed state used from another
-		// session is rejected.
-		if b.session != "" {
-			if got := sessionOf(req); got != b.session {
-				http.Error(w, "state/session mismatch", http.StatusBadRequest)
-				return
-			}
+		// Cross-session guard — MANDATORY. This endpoint is unauthenticated
+		// (a browser redirect carries no bearer token) and is registered on
+		// the network-exposed main server (cfg.Host, possibly 0.0.0.0), so
+		// the state binding is its ENTIRE security. Single-use + expiry alone
+		// would let anyone who obtains a state within its TTL complete the
+		// flow, so we additionally require the callback to land in the SAME
+		// session that started it. An empty bound session is a config/Issue-
+		// side bug (a network-exposed flow must bind a session) and is
+		// rejected fail-closed rather than silently downgrading to
+		// single-use+expiry. A future loopback-bound variant that wanted to
+		// relax this would bind the listener to localhost.
+		if b.session == "" || sessionOf(req) != b.session {
+			http.Error(w, "state/session mismatch", http.StatusBadRequest)
+			return
 		}
 		// Exchange the code for a token and store it for {subject, server}.
 		// Only AFTER this succeeds do we resume — resolving the gate with no

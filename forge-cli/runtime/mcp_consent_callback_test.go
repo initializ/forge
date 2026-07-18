@@ -161,6 +161,50 @@ func TestMCPCallback_CrossSessionRejected(t *testing.T) {
 	}
 }
 
+// An empty bound session is rejected fail-closed — the network-exposed
+// callback must never downgrade to single-use+expiry alone (finding 2).
+func TestMCPCallback_EmptySessionRejected(t *testing.T) {
+	binder := newStateBinder(time.Hour)
+	engine := authgate.New()
+	comp := &fakeCompleter{}
+	// Issue with an empty session (a config/Issue-side bug on a network-
+	// exposed flow) — even a request that also presents no session must fail.
+	state, _ := binder.Issue("alice@corp.com", "atl", "")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/mcp/oauth/callback?state="+state+"&code=x", nil)
+	// No X-Forge-Session / cookie either.
+	newCallback(t, binder, engine, comp)(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("empty-session binding → %d, want 400 (fail-closed)", rec.Code)
+	}
+	if comp.calls != 0 {
+		t.Fatal("empty-session callback must NOT exchange the code")
+	}
+}
+
+// A request that presents no session against a session-bound state is
+// rejected (the mandatory cross-session guard, missing-side).
+func TestMCPCallback_MissingRequestSessionRejected(t *testing.T) {
+	binder := newStateBinder(time.Hour)
+	engine := authgate.New()
+	comp := &fakeCompleter{}
+	state, _ := binder.Issue("alice@corp.com", "atl", "sess-1")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/mcp/oauth/callback?state="+state+"&code=x", nil)
+	// Deliberately no session header/cookie on the request.
+	newCallback(t, binder, engine, comp)(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing request session → %d, want 400", rec.Code)
+	}
+	if comp.calls != 0 {
+		t.Fatal("a sessionless request must NOT exchange the code")
+	}
+}
+
 // A replayed callback (state already consumed) is rejected without a second
 // exchange.
 func TestMCPCallback_ReplayRejected(t *testing.T) {

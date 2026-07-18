@@ -28,16 +28,28 @@ type errorResponse struct {
 //     emitted by the handler); removable after one release cycle
 func DefaultSkipPaths() map[string]bool {
 	return map[string]bool{
-		"GET /":                                true,
-		"GET /.well-known/agent-card.json":     true,
-		"GET /.well-known/agent.json":          true,
-		"GET /healthz":                         true,
-		"GET /health":                          true,
+		"GET /":                            true,
+		"GET /.well-known/agent-card.json": true,
+		"GET /.well-known/agent.json":      true,
+		"GET /healthz":                     true,
+		"GET /health":                      true,
+		// The standalone MCP OAuth callback (#330) is a browser redirect
+		// FROM the IdP — it carries no bearer token, so it must bypass auth
+		// or the middleware 401s it before the handler runs. Its authenticity
+		// is the single-use, session-bound OAuth `state` it validates, not a
+		// bearer token. Exempt unconditionally: it is registered only in
+		// standalone mode (a CallbackCompleter is set); in managed mode the
+		// path is unregistered and a request just 404s after the skip. NOTE
+		// the contrast with POST /mcp/consent, which is deliberately NOT
+		// exempt — the managed platform authenticates when it posts the
+		// resume signal.
+		"GET /mcp/oauth/callback":              true,
 		"OPTIONS /":                            true,
 		"OPTIONS /.well-known/agent-card.json": true,
 		"OPTIONS /.well-known/agent.json":      true,
 		"OPTIONS /healthz":                     true,
 		"OPTIONS /health":                      true,
+		"OPTIONS /mcp/oauth/callback":          true,
 	}
 }
 

@@ -126,6 +126,26 @@ func TestMiddleware(t *testing.T) {
 			wantStatus: http.StatusUnauthorized,
 		},
 		{
+			// #330: the standalone OAuth callback is a tokenless browser
+			// redirect — it MUST bypass auth (its authenticity is the state
+			// binding). Pins the exemption so a future refactor can't 401 it.
+			name:       "GET /mcp/oauth/callback is public (tokenless IdP redirect)",
+			opts:       MiddlewareOptions{Chain: chain, SkipPaths: DefaultSkipPaths()},
+			method:     "GET",
+			path:       "/mcp/oauth/callback",
+			wantStatus: http.StatusOK,
+		},
+		{
+			// #330: the consent RESUME signal is the opposite — the managed
+			// platform authenticates when it posts it, so it must NOT be
+			// exempt. Guards against accidentally skip-listing both together.
+			name:       "POST /mcp/consent requires auth",
+			opts:       MiddlewareOptions{Chain: chain, SkipPaths: DefaultSkipPaths()},
+			method:     "POST",
+			path:       "/mcp/consent",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
 			name:       "case insensitive Bearer prefix",
 			opts:       MiddlewareOptions{Chain: chain, SkipPaths: DefaultSkipPaths()},
 			method:     "POST",

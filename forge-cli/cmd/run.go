@@ -231,6 +231,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		RateLimitOverride:   rateLimitOverride,
 		TracingFlags:        tracingFlags,
 		RuntimeVersion:      appVersion,
+		RuntimeCommit:       appCommit,
 	})
 	if err != nil {
 		return fmt.Errorf("creating runner: %w", err)

@@ -237,10 +237,14 @@ func (p *EgressProxy) fireCallback(domain string, allowed bool, id egressIdentit
 
 // identityFromRequest recovers the task/invocation IDs the caller stashed in
 // the proxy credentials. HTTP clients that see userinfo in the HTTP_PROXY URL
-// replay it as a "Proxy-Authorization: Basic base64(taskID:correlationID)"
-// header on every proxied request and CONNECT. Returns a zero identity when the
-// header is absent or malformed — the proxy still enforces and audits, just
-// without task attribution (arbitrary binaries that ignore proxy creds).
+// replay it as a "Proxy-Authorization: Basic base64(user:pass)" header on every
+// proxied request and CONNECT, where user/pass are the base64url-encoded task
+// and correlation IDs (see proxyURLWithIdentity). The inner base64url encoding
+// keeps each half free of the ':' separator, so a task ID containing a raw
+// colon can't mis-split its own attribution. Returns a zero identity when the
+// header is absent or doesn't match that exact shape — the proxy still enforces
+// and audits, just without task attribution (arbitrary binaries that ignore
+// proxy creds, or send their own unrelated credentials).
 func identityFromRequest(req *http.Request) egressIdentity {
 	h := req.Header.Get("Proxy-Authorization")
 	if h == "" {
@@ -254,11 +258,16 @@ func identityFromRequest(req *http.Request) egressIdentity {
 	if err != nil {
 		return egressIdentity{}
 	}
-	task, corr, found := strings.Cut(string(raw), ":")
+	encTask, encCorr, found := strings.Cut(string(raw), ":")
 	if !found {
 		return egressIdentity{}
 	}
-	return egressIdentity{taskID: task, correlationID: corr}
+	task, tErr := base64.RawURLEncoding.DecodeString(encTask)
+	corr, cErr := base64.RawURLEncoding.DecodeString(encCorr)
+	if tErr != nil || cErr != nil {
+		return egressIdentity{}
+	}
+	return egressIdentity{taskID: string(task), correlationID: string(corr)}
 }
 
 // extractHost strips the port from a host:port string.

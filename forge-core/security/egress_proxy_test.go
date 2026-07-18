@@ -342,9 +342,14 @@ func TestEgressProxyURL(t *testing.T) {
 
 // TestIdentityFromRequest covers the Proxy-Authorization decode that recovers
 // the task/invocation IDs the subprocess replays as Basic proxy creds (#338).
+// The credential shape is base64(b64url(task) ":" b64url(corr)) — the inner
+// base64url keeps each half colon-free so a task ID containing ':' can't
+// mis-split its own attribution.
 func TestIdentityFromRequest(t *testing.T) {
-	basic := func(user, pass string) string {
-		return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
+	b64u := func(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
+	// basic builds the exact header a client produces from the stamped userinfo.
+	basic := func(task, corr string) string {
+		return "Basic " + base64.StdEncoding.EncodeToString([]byte(b64u(task)+":"+b64u(corr)))
 	}
 	tests := []struct {
 		name     string
@@ -355,11 +360,13 @@ func TestIdentityFromRequest(t *testing.T) {
 		{"both ids", basic("task-123", "corr-abc"), "task-123", "corr-abc"},
 		{"task only, empty corr", basic("task-123", ""), "task-123", ""},
 		{"empty task, corr only", basic("", "corr-abc"), "", "corr-abc"},
-		{"case-insensitive scheme", "basic " + base64.StdEncoding.EncodeToString([]byte("t:c")), "t", "c"},
+		{"colon-bearing task id round-trips", basic("urn:task:1", "corr-abc"), "urn:task:1", "corr-abc"},
+		{"case-insensitive scheme", "basic " + base64.StdEncoding.EncodeToString([]byte(b64u("t")+":"+b64u("c"))), "t", "c"},
 		{"no header", "", "", ""},
 		{"wrong scheme", "Bearer abc", "", ""},
-		{"not base64", "Basic @@@notb64@@@", "", ""},
+		{"outer not base64", "Basic @@@notb64@@@", "", ""},
 		{"no colon separator", "Basic " + base64.StdEncoding.EncodeToString([]byte("nocolon")), "", ""},
+		{"inner halves not base64url", "Basic " + base64.StdEncoding.EncodeToString([]byte("!!!:@@@")), "", ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -406,10 +413,12 @@ func TestEgressProxyAttributesIdentity(t *testing.T) {
 	}
 	defer proxy.Stop() //nolint:errcheck
 
-	// Proxy URL carries the identity as userinfo — the client replays it as a
-	// Basic Proxy-Authorization header, exactly like proxyURLWithIdentity does.
+	// Proxy URL carries the identity as base64url-encoded userinfo — the client
+	// replays it as a Basic Proxy-Authorization header, exactly like
+	// proxyURLWithIdentity stamps it.
+	b64u := func(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
 	proxyURL, _ := url.Parse(proxyAddr)
-	proxyURL.User = url.UserPassword("task-xyz", "corr-777")
+	proxyURL.User = url.UserPassword(b64u("task-xyz"), b64u("corr-777"))
 	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
 
 	resp, err := client.Get(upstream.URL + "/test")
@@ -425,5 +434,64 @@ func TestEgressProxyAttributesIdentity(t *testing.T) {
 	}
 	if got.CorrelationID != "corr-777" {
 		t.Errorf("CorrelationID = %q, want %q", got.CorrelationID, "corr-777")
+	}
+}
+
+// TestEgressProxyAttributesIdentityCONNECT proves identity surfaces through the
+// HTTPS CONNECT tunnel path, not just plain HTTP — handleConnect reads the same
+// Proxy-Authorization the client sends on the CONNECT request itself. A colon in
+// the task ID is deliberately used to also exercise the separator-safe encoding
+// end-to-end (#338).
+func TestEgressProxyAttributesIdentityCONNECT(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+	host, port, _ := net.SplitHostPort(upstreamURL.Host)
+
+	matcher := NewDomainMatcher(ModeAllowlist, []string{host})
+	proxy := NewEgressProxy(matcher, false)
+
+	var mu sync.Mutex
+	var got EgressAttempt
+	proxy.OnAttempt = func(a EgressAttempt) {
+		mu.Lock()
+		got = a
+		mu.Unlock()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	proxyAddr, err := proxy.Start(ctx)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer proxy.Stop() //nolint:errcheck
+
+	b64u := func(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
+	proxyURL, _ := url.Parse(proxyAddr)
+	proxyURL.User = url.UserPassword(b64u("urn:task:9"), b64u("corr-9"))
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy:           http.ProxyURL(proxyURL),
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+		},
+		Timeout: 5 * time.Second,
+	}
+
+	resp, err := client.Get("https://" + host + ":" + port + "/test")
+	if err != nil {
+		t.Fatalf("CONNECT request failed: %v", err)
+	}
+	resp.Body.Close() //nolint:errcheck
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got.TaskID != "urn:task:9" {
+		t.Errorf("TaskID = %q, want %q", got.TaskID, "urn:task:9")
+	}
+	if got.CorrelationID != "corr-9" {
+		t.Errorf("CorrelationID = %q, want %q", got.CorrelationID, "corr-9")
 	}
 }

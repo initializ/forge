@@ -2,12 +2,15 @@ package tools
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	coreruntime "github.com/initializ/forge/forge-core/runtime"
 )
 
 func TestCLIExecute_Name(t *testing.T) {
@@ -583,7 +586,7 @@ func TestBuildEnv_GHConfigDirScopedToGh(t *testing.T) {
 	})
 
 	// gh binary should get GH_CONFIG_DIR
-	ghEnv := tool.buildEnv("gh")
+	ghEnv := tool.buildEnv(context.Background(), "gh")
 	found := false
 	for _, e := range ghEnv {
 		if strings.HasPrefix(e, "GH_CONFIG_DIR=") {
@@ -596,7 +599,7 @@ func TestBuildEnv_GHConfigDirScopedToGh(t *testing.T) {
 	}
 
 	// curl binary should NOT get GH_CONFIG_DIR
-	curlEnv := tool.buildEnv("curl")
+	curlEnv := tool.buildEnv(context.Background(), "curl")
 	for _, e := range curlEnv {
 		if strings.HasPrefix(e, "GH_CONFIG_DIR=") {
 			t.Error("GH_CONFIG_DIR should not be set for curl binary")
@@ -624,7 +627,7 @@ func TestBuildEnv_KubeconfigScopedToKubectl(t *testing.T) {
 	})
 
 	// kubectl should get KUBECONFIG
-	kubectlEnv := tool.buildEnv("kubectl")
+	kubectlEnv := tool.buildEnv(context.Background(), "kubectl")
 	found := false
 	for _, e := range kubectlEnv {
 		if strings.HasPrefix(e, "KUBECONFIG=") {
@@ -640,7 +643,7 @@ func TestBuildEnv_KubeconfigScopedToKubectl(t *testing.T) {
 	}
 
 	// curl should NOT get KUBECONFIG
-	curlEnv := tool.buildEnv("curl")
+	curlEnv := tool.buildEnv(context.Background(), "curl")
 	for _, e := range curlEnv {
 		if strings.HasPrefix(e, "KUBECONFIG=") {
 			t.Error("KUBECONFIG should not be set for curl binary")
@@ -669,7 +672,7 @@ func TestBuildEnv_KubectlNoProxy(t *testing.T) {
 	tool.proxyURL = "http://127.0.0.1:54321"
 
 	// kubectl should get NO_PROXY with the K8s API server host
-	kubectlEnv := tool.buildEnv("kubectl")
+	kubectlEnv := tool.buildEnv(context.Background(), "kubectl")
 	var noProxy string
 	for _, e := range kubectlEnv {
 		if strings.HasPrefix(e, "NO_PROXY=") {
@@ -688,10 +691,42 @@ func TestBuildEnv_KubectlNoProxy(t *testing.T) {
 	}
 
 	// curl should NOT get NO_PROXY
-	curlEnv := tool.buildEnv("curl")
+	curlEnv := tool.buildEnv(context.Background(), "curl")
 	for _, e := range curlEnv {
 		if strings.HasPrefix(e, "NO_PROXY=") {
 			t.Error("NO_PROXY should not be set for curl binary")
 		}
+	}
+}
+
+// TestBuildEnv_ProxyIdentityStamped pins that cli_execute (the tool the LLM
+// drives via curl/gh/etc.) stamps the task/invocation IDs into the injected
+// HTTP_PROXY, so the egress proxy can attribute its subprocess egress (#338).
+// This is the path that produced source=proxy events with no task_id before
+// the fix was extended beyond SkillCommandExecutor.
+func TestBuildEnv_ProxyIdentityStamped(t *testing.T) {
+	tool := NewCLIExecuteTool(CLIExecuteConfig{
+		AllowedBinaries: []string{"curl"},
+		WorkDir:         t.TempDir(),
+	})
+	tool.proxyURL = "http://127.0.0.1:54321"
+
+	ctx := coreruntime.WithCorrelationID(
+		coreruntime.WithTaskID(context.Background(), "aibuilderdemo-1784399795814070000"),
+		"7fabfb4f99467e8c",
+	)
+	want := "HTTP_PROXY=http://" +
+		base64.RawURLEncoding.EncodeToString([]byte("aibuilderdemo-1784399795814070000")) + ":" +
+		base64.RawURLEncoding.EncodeToString([]byte("7fabfb4f99467e8c")) + "@127.0.0.1:54321"
+
+	env := tool.buildEnv(ctx, "curl")
+	var found bool
+	for _, e := range env {
+		if e == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected identity-stamped %q in cli_execute env; got:\n%s", want, strings.Join(env, "\n"))
 	}
 }

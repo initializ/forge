@@ -327,12 +327,12 @@ The `allow_private_ips` field controls whether RFC 1918 addresses are allowed th
 Both the enforcer and proxy emit structured audit events:
 
 ```json
-{"event":"egress_allowed","domain":"api.tavily.com","mode":"allowlist"}
-{"event":"egress_blocked","domain":"evil.com","mode":"allowlist"}
-{"event":"egress_allowed","domain":"api.tavily.com","mode":"allowlist","source":"proxy"}
+{"event":"egress_allowed","correlation_id":"a1b2c3d4","task_id":"task-1","fields":{"domain":"api.tavily.com","mode":"allowlist"}}
+{"event":"egress_blocked","correlation_id":"a1b2c3d4","task_id":"task-1","fields":{"domain":"evil.com","mode":"allowlist"}}
+{"event":"egress_allowed","correlation_id":"a1b2c3d4","task_id":"task-1","fields":{"domain":"api.tavily.com","mode":"allowlist","source":"proxy"}}
 ```
 
-Events without `"source"` come from the in-process enforcer; events with `"source": "proxy"` come from the subprocess proxy.
+Events without `"source"` come from the in-process enforcer; events with `"source": "proxy"` come from the subprocess proxy. Both carry `correlation_id` (the invocation ID) and `task_id`. The in-process enforcer reads them from the request context; the proxy recovers them from the `Proxy-Authorization` credentials the subprocess replays — the runner stamps the task/invocation IDs into the injected `HTTP_PROXY` URL as userinfo, and standard HTTP clients echo that back as a Basic proxy-auth header on every request and `CONNECT`. A binary that ignores proxy credentials is still enforced and audited, but its proxy events omit the identity fields (issue #338).
 
 ## Related Files
 

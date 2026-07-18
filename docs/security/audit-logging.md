@@ -48,12 +48,12 @@ All runtime security events are emitted as structured NDJSON to stderr with corr
 ```json
 {"ts":"2026-02-28T10:00:00Z","event":"session_start","correlation_id":"a1b2c3d4","task_id":"task-1"}
 {"ts":"2026-02-28T10:00:01Z","event":"tool_exec","correlation_id":"a1b2c3d4","fields":{"tool":"tavily_research","phase":"start"}}
-{"ts":"2026-02-28T10:00:01Z","event":"egress_allowed","correlation_id":"a1b2c3d4","fields":{"domain":"api.tavily.com","mode":"allowlist","source":"proxy"}}
+{"ts":"2026-02-28T10:00:01Z","event":"egress_allowed","correlation_id":"a1b2c3d4","task_id":"task-1","fields":{"domain":"api.tavily.com","mode":"allowlist","source":"proxy"}}
 {"ts":"2026-02-28T10:00:05Z","event":"tool_exec","correlation_id":"a1b2c3d4","fields":{"tool":"tavily_research","phase":"end"}}
 {"ts":"2026-02-28T10:00:06Z","event":"session_end","correlation_id":"a1b2c3d4","fields":{"state":"completed"}}
 ```
 
-The `source` field distinguishes in-process enforcer events from subprocess proxy events.
+The `source` field distinguishes in-process enforcer events from subprocess proxy events. Both carry `correlation_id` and `task_id`: the in-process enforcer reads them from the request context, while the subprocess proxy recovers them from the `Proxy-Authorization` credentials the subprocess replays (the runner stamps the task/invocation IDs into the `HTTP_PROXY` URL userinfo). A subprocess binary that ignores proxy credentials still produces an enforced, audited event — just without the identity fields (issue #338).
 
 ### Workflow correlation
 
@@ -581,7 +581,7 @@ documented inline:
 
 | Site | Why plain `Emit` |
 |---|---|
-| Egress proxy `OnAttempt` with `source=proxy` | Subprocess HTTP `CONNECT` has no Go ctx tying back to the A2A request |
+| Egress proxy `OnAttempt` with `source=proxy` | Subprocess HTTP `CONNECT` has no Go ctx tying back to the A2A request, so it can't use `EmitFromContext`. Since #338 it still recovers `task_id` + `correlation_id` out-of-band from the `Proxy-Authorization` creds and sets them on the event manually; seq + trace cross-link remain unavailable (no ctx). |
 | MCP server startup events (`mcp_server_started` / `_failed` / `_degraded`) | Pre-invocation; no scope |
 | Scheduler tick (`schedule_fire` / `schedule_complete` / `schedule_skip` / `schedule_modify`) | Runs on its own timer outside any A2A request |
 | Startup banners (`policy_loaded`, `agent_card_published`, `audit_export_status`) | Pre-invocation; no scope |

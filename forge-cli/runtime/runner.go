@@ -106,6 +106,12 @@ type RunnerConfig struct {
 	// the `forge.runtime.version` OTel resource attribute so backends
 	// can compare agent runs across Forge upgrade waves. Empty = "dev".
 	RuntimeVersion string
+
+	// RuntimeCommit is the Forge cli's own build commit (short SHA),
+	// injected via `-X main.commit`. Shown on the startup banner next to
+	// RuntimeVersion so a running agent's exact binary is identifiable.
+	// "none"/"" = unset (a dev build) → the banner shows just the version.
+	RuntimeCommit string
 }
 
 // ScheduleNotifier is called after a scheduled task completes to deliver the
@@ -2848,6 +2854,19 @@ func (r *Runner) createProviderClient(provider string, cfg llm.ClientConfig) (ll
 	return providers.NewClient(provider, cfg)
 }
 
+// forgeVersionString formats the Forge binary/runtime version for the banner:
+// "v0.17.0 (commit: 51df9a4)" when a real commit is baked in, else just the
+// version. An empty version reads "dev"; the "none" sentinel (no -X commit)
+// suppresses the commit suffix. This is the FORGE binary version, distinct
+// from the agent's own forge.yaml version shown on the "Agent:" line.
+func (r *Runner) forgeVersionString() string {
+	v := defaultStr(r.cfg.RuntimeVersion, "dev")
+	if c := r.cfg.RuntimeCommit; c != "" && c != "none" {
+		return fmt.Sprintf("%s (commit: %s)", v, c)
+	}
+	return v
+}
+
 func (r *Runner) printBanner(proxyURL string) {
 	title := "Forge Dev Server"
 	if r.cfg.Host != "" {
@@ -2859,6 +2878,7 @@ func (r *Runner) printBanner(proxyURL string) {
 	fmt.Fprintf(os.Stderr, "  %s\n", title)
 	fmt.Fprintf(os.Stderr, "  ────────────────────────────────────────\n")
 	fmt.Fprintf(os.Stderr, "  Agent:      %s (v%s)\n", r.cfg.Config.AgentID, r.cfg.Config.Version)
+	fmt.Fprintf(os.Stderr, "  Forge:      %s\n", r.forgeVersionString())
 	fmt.Fprintf(os.Stderr, "  Framework:  %s\n", r.cfg.Config.Framework)
 	fmt.Fprintf(os.Stderr, "  Listen:     %s:%d\n", host, r.cfg.Port)
 	if r.cfg.MockTools {

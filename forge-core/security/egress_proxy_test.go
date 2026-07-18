@@ -3,6 +3,7 @@ package security
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"io"
 	"net"
 	"net/http"
@@ -251,16 +252,10 @@ func TestEgressProxyOnAttemptCallback(t *testing.T) {
 	proxy := NewEgressProxy(matcher, false)
 
 	var mu sync.Mutex
-	var calls []struct {
-		domain  string
-		allowed bool
-	}
-	proxy.OnAttempt = func(domain string, allowed bool) {
+	var calls []EgressAttempt
+	proxy.OnAttempt = func(a EgressAttempt) {
 		mu.Lock()
-		calls = append(calls, struct {
-			domain  string
-			allowed bool
-		}{domain, allowed})
+		calls = append(calls, a)
 		mu.Unlock()
 	}
 
@@ -297,8 +292,8 @@ func TestEgressProxyOnAttemptCallback(t *testing.T) {
 		t.Fatal("expected at least 1 callback call")
 	}
 	// First call should be the localhost (upstream is on localhost)
-	if !calls[0].allowed {
-		t.Errorf("first call should be allowed (localhost), got allowed=%v", calls[0].allowed)
+	if !calls[0].Allowed {
+		t.Errorf("first call should be allowed (localhost), got allowed=%v", calls[0].Allowed)
 	}
 }
 
@@ -342,5 +337,93 @@ func TestEgressProxyURL(t *testing.T) {
 	}
 	if proxy.ProxyURL() != proxyAddr {
 		t.Errorf("ProxyURL() = %q, want %q", proxy.ProxyURL(), proxyAddr)
+	}
+}
+
+// TestIdentityFromRequest covers the Proxy-Authorization decode that recovers
+// the task/invocation IDs the subprocess replays as Basic proxy creds (#338).
+func TestIdentityFromRequest(t *testing.T) {
+	basic := func(user, pass string) string {
+		return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
+	}
+	tests := []struct {
+		name     string
+		header   string
+		wantTask string
+		wantCorr string
+	}{
+		{"both ids", basic("task-123", "corr-abc"), "task-123", "corr-abc"},
+		{"task only, empty corr", basic("task-123", ""), "task-123", ""},
+		{"empty task, corr only", basic("", "corr-abc"), "", "corr-abc"},
+		{"case-insensitive scheme", "basic " + base64.StdEncoding.EncodeToString([]byte("t:c")), "t", "c"},
+		{"no header", "", "", ""},
+		{"wrong scheme", "Bearer abc", "", ""},
+		{"not base64", "Basic @@@notb64@@@", "", ""},
+		{"no colon separator", "Basic " + base64.StdEncoding.EncodeToString([]byte("nocolon")), "", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodGet, "http://example.com", nil)
+			if tc.header != "" {
+				req.Header.Set("Proxy-Authorization", tc.header)
+			}
+			got := identityFromRequest(req)
+			if got.taskID != tc.wantTask || got.correlationID != tc.wantCorr {
+				t.Errorf("identityFromRequest() = {task:%q corr:%q}, want {task:%q corr:%q}",
+					got.taskID, got.correlationID, tc.wantTask, tc.wantCorr)
+			}
+		})
+	}
+}
+
+// TestEgressProxyAttributesIdentity proves the end-to-end path: a client that
+// sends userinfo in the proxy URL (as the SkillCommandExecutor does) surfaces
+// its task/invocation IDs on the OnAttempt callback for both plain HTTP and the
+// HTTPS CONNECT tunnel (#338).
+func TestEgressProxyAttributesIdentity(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	matcher := NewDomainMatcher(ModeAllowlist, []string{upstreamURL.Hostname()})
+	proxy := NewEgressProxy(matcher, false)
+
+	var mu sync.Mutex
+	var got EgressAttempt
+	proxy.OnAttempt = func(a EgressAttempt) {
+		mu.Lock()
+		got = a
+		mu.Unlock()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	proxyAddr, err := proxy.Start(ctx)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer proxy.Stop() //nolint:errcheck
+
+	// Proxy URL carries the identity as userinfo — the client replays it as a
+	// Basic Proxy-Authorization header, exactly like proxyURLWithIdentity does.
+	proxyURL, _ := url.Parse(proxyAddr)
+	proxyURL.User = url.UserPassword("task-xyz", "corr-777")
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+
+	resp, err := client.Get(upstream.URL + "/test")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp.Body.Close() //nolint:errcheck
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got.TaskID != "task-xyz" {
+		t.Errorf("TaskID = %q, want %q", got.TaskID, "task-xyz")
+	}
+	if got.CorrelationID != "corr-777" {
+		t.Errorf("CorrelationID = %q, want %q", got.CorrelationID, "corr-777")
 	}
 }

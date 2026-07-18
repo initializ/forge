@@ -11,6 +11,8 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+
+	coreruntime "github.com/initializ/forge/forge-core/runtime"
 )
 
 func TestSkillCommandExecutor_OrgIDInjection(t *testing.T) {
@@ -243,5 +245,53 @@ func TestSkillCommandExecutor_OTelSubsetPassedThrough(t *testing.T) {
 		if strings.HasPrefix(line, "OTEL_EXPORTER_OTLP_HEADERS=") {
 			t.Errorf("OTEL_EXPORTER_OTLP_HEADERS leaked into subprocess env (carries auth tokens): %q", line)
 		}
+	}
+}
+
+// TestProxyURLWithIdentity covers the userinfo stamping that lets the egress
+// proxy attribute a subprocess request to its task/invocation (#338).
+func TestProxyURLWithIdentity(t *testing.T) {
+	const base = "http://127.0.0.1:54321"
+	tests := []struct {
+		name string
+		ctx  context.Context
+		want string
+	}{
+		{
+			name: "both ids stamped as userinfo",
+			ctx:  coreruntime.WithCorrelationID(coreruntime.WithTaskID(context.Background(), "task-1"), "corr-1"),
+			want: "http://task-1:corr-1@127.0.0.1:54321",
+		},
+		{
+			name: "task only",
+			ctx:  coreruntime.WithTaskID(context.Background(), "task-1"),
+			want: "http://task-1:@127.0.0.1:54321",
+		},
+		{
+			name: "no identity leaves base unchanged",
+			ctx:  context.Background(),
+			want: base,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := proxyURLWithIdentity(tc.ctx, base); got != tc.want {
+				t.Errorf("proxyURLWithIdentity() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSkillCommandExecutor_ProxyIdentityInjected proves the executor injects
+// the identity-bearing proxy URL into HTTP_PROXY when ctx carries task context.
+func TestSkillCommandExecutor_ProxyIdentityInjected(t *testing.T) {
+	e := &SkillCommandExecutor{ProxyURL: "http://127.0.0.1:9"}
+	ctx := coreruntime.WithCorrelationID(coreruntime.WithTaskID(context.Background(), "task-42"), "corr-42")
+	out, err := e.Run(ctx, "env", nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "HTTP_PROXY=http://task-42:corr-42@127.0.0.1:9") {
+		t.Errorf("expected identity-stamped HTTP_PROXY in subprocess env; got:\n%s", out)
 	}
 }

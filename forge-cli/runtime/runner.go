@@ -721,14 +721,21 @@ func (r *Runner) Run(ctx context.Context) error {
 		if (!security.InContainer() && egressCfg.Mode != security.ModeDevOpen) || browserActive {
 			matcher := security.NewDomainMatcher(egressCfg.Mode, egressCfg.AllDomains)
 			egressProxy = security.NewEgressProxy(matcher, allowPrivateIPs)
-			egressProxy.OnAttempt = func(domain string, allowed bool) {
+			egressProxy.OnAttempt = func(a security.EgressAttempt) {
 				event := coreruntime.AuditEgressAllowed
-				if !allowed {
+				if !a.Allowed {
 					event = coreruntime.AuditEgressBlocked
 				}
+				// #338 — task_id/correlation_id are recovered from the
+				// Proxy-Authorization creds the subprocess replays (see
+				// SkillCommandExecutor / identityFromRequest). Empty when the
+				// proxied binary ignores proxy credentials, matching the
+				// pre-#338 domain-only event.
 				auditLogger.Emit(coreruntime.AuditEvent{
-					Event:  event,
-					Fields: map[string]any{"domain": domain, "mode": string(egressCfg.Mode), "source": "proxy"},
+					Event:         event,
+					TaskID:        a.TaskID,
+					CorrelationID: a.CorrelationID,
+					Fields:        map[string]any{"domain": a.Domain, "mode": string(egressCfg.Mode), "source": "proxy"},
 				})
 			}
 			var pErr error

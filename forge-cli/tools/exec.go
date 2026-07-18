@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 
 	"github.com/initializ/forge/forge-core/llm/oauth"
+	coreruntime "github.com/initializ/forge/forge-core/runtime"
 )
 
 // otelEnvPassthroughPrefixes lists the OTel SDK env var prefixes / names
@@ -145,11 +147,18 @@ func (e *SkillCommandExecutor) Run(ctx context.Context, command string, args []s
 		env = append(env, "REVIEW_MODEL="+e.Model)
 	}
 	if e.ProxyURL != "" {
+		// #338 — stamp the task/invocation IDs into the proxy URL userinfo so
+		// the egress proxy can attribute each subprocess request back to its
+		// task in the audit log. HTTP clients replay userinfo as a Basic
+		// Proxy-Authorization header on every request/CONNECT; the proxy
+		// decodes it (identityFromRequest) and tags egress_allowed/blocked
+		// events. When ctx carries neither ID the base URL is used unchanged.
+		proxyURL := proxyURLWithIdentity(ctx, e.ProxyURL)
 		env = append(env,
-			"HTTP_PROXY="+e.ProxyURL,
-			"HTTPS_PROXY="+e.ProxyURL,
-			"http_proxy="+e.ProxyURL,
-			"https_proxy="+e.ProxyURL,
+			"HTTP_PROXY="+proxyURL,
+			"HTTPS_PROXY="+proxyURL,
+			"http_proxy="+proxyURL,
+			"https_proxy="+proxyURL,
 		)
 	}
 	// Issue #182 — propagate W3C trace context + curated OTel SDK env
@@ -196,6 +205,28 @@ func (e *SkillCommandExecutor) Run(ctx context.Context, command string, args []s
 	}
 
 	return stdout.String(), nil
+}
+
+// proxyURLWithIdentity embeds the request's task and correlation (invocation)
+// IDs as userinfo in the egress proxy URL. The subprocess's HTTP client replays
+// that userinfo as a Basic Proxy-Authorization header, letting the egress proxy
+// attribute each outbound request to its originating task/invocation in the
+// audit log (#338). Returns base unchanged when ctx carries neither ID, or when
+// base doesn't parse as a URL. url.UserPassword percent-encodes the IDs, and
+// the client decodes them before base64-encoding the Basic credential, so the
+// values round-trip verbatim to identityFromRequest on the proxy side.
+func proxyURLWithIdentity(ctx context.Context, base string) string {
+	taskID := coreruntime.TaskIDFromContext(ctx)
+	corrID := coreruntime.CorrelationIDFromContext(ctx)
+	if taskID == "" && corrID == "" {
+		return base
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return base
+	}
+	u.User = url.UserPassword(taskID, corrID)
+	return u.String()
 }
 
 // resolveOAuthToken loads and refreshes the OpenAI OAuth token.

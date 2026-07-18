@@ -74,9 +74,9 @@ func startProxy(t *testing.T, matcher *security.DomainMatcher) (string, *sync.Mu
 	proxy := security.NewEgressProxy(matcher, false)
 	mu := &sync.Mutex{}
 	attempts := map[string]bool{}
-	proxy.OnAttempt = func(domain string, allowed bool) {
+	proxy.OnAttempt = func(a security.EgressAttempt) {
 		mu.Lock()
-		attempts[domain] = allowed
+		attempts[a.Domain] = a.Allowed
 		mu.Unlock()
 	}
 	proxyURL, err := proxy.Start(context.Background())

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/base64"
 	"os"
 	"regexp"
 	"strings"
@@ -248,8 +249,15 @@ func TestSkillCommandExecutor_OTelSubsetPassedThrough(t *testing.T) {
 	}
 }
 
+// b64u is the separator-safe encoding proxyURLWithIdentity uses for the userinfo
+// halves (see #338 — a raw ':' in a task ID would otherwise mis-split the Basic
+// credential on the proxy side).
+func b64u(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
+
 // TestProxyURLWithIdentity covers the userinfo stamping that lets the egress
-// proxy attribute a subprocess request to its task/invocation (#338).
+// proxy attribute a subprocess request to its task/invocation (#338). The IDs
+// are base64url-encoded so a colon in a task ID can't collide with the Basic
+// credential separator.
 func TestProxyURLWithIdentity(t *testing.T) {
 	const base = "http://127.0.0.1:54321"
 	tests := []struct {
@@ -260,12 +268,17 @@ func TestProxyURLWithIdentity(t *testing.T) {
 		{
 			name: "both ids stamped as userinfo",
 			ctx:  coreruntime.WithCorrelationID(coreruntime.WithTaskID(context.Background(), "task-1"), "corr-1"),
-			want: "http://task-1:corr-1@127.0.0.1:54321",
+			want: "http://" + b64u("task-1") + ":" + b64u("corr-1") + "@127.0.0.1:54321",
 		},
 		{
 			name: "task only",
 			ctx:  coreruntime.WithTaskID(context.Background(), "task-1"),
-			want: "http://task-1:@127.0.0.1:54321",
+			want: "http://" + b64u("task-1") + ":@127.0.0.1:54321",
+		},
+		{
+			name: "colon-bearing task id survives (no mis-split)",
+			ctx:  coreruntime.WithCorrelationID(coreruntime.WithTaskID(context.Background(), "urn:task:1"), "corr-1"),
+			want: "http://" + b64u("urn:task:1") + ":" + b64u("corr-1") + "@127.0.0.1:54321",
 		},
 		{
 			name: "no identity leaves base unchanged",
@@ -291,7 +304,8 @@ func TestSkillCommandExecutor_ProxyIdentityInjected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(out, "HTTP_PROXY=http://task-42:corr-42@127.0.0.1:9") {
-		t.Errorf("expected identity-stamped HTTP_PROXY in subprocess env; got:\n%s", out)
+	want := "HTTP_PROXY=http://" + b64u("task-42") + ":" + b64u("corr-42") + "@127.0.0.1:9"
+	if !strings.Contains(out, want) {
+		t.Errorf("expected identity-stamped HTTP_PROXY %q in subprocess env; got:\n%s", want, out)
 	}
 }

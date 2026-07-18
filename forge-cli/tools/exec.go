@@ -3,6 +3,7 @@ package tools
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net/url"
 	"os"
@@ -212,9 +213,15 @@ func (e *SkillCommandExecutor) Run(ctx context.Context, command string, args []s
 // that userinfo as a Basic Proxy-Authorization header, letting the egress proxy
 // attribute each outbound request to its originating task/invocation in the
 // audit log (#338). Returns base unchanged when ctx carries neither ID, or when
-// base doesn't parse as a URL. url.UserPassword percent-encodes the IDs, and
-// the client decodes them before base64-encoding the Basic credential, so the
-// values round-trip verbatim to identityFromRequest on the proxy side.
+// base doesn't parse as a URL.
+//
+// The IDs are base64url-encoded before they go into the userinfo. The Basic
+// credential the client sends is base64(user:pass) with no internal escaping,
+// so a task_id containing a raw ':' (params.id is client-supplied) would
+// mis-split on the proxy side. base64url output is drawn from [A-Za-z0-9-_], so
+// it can never contain the ':' separator — identityFromRequest decodes each
+// half back to the verbatim ID. These are correlation identifiers, not secrets;
+// the encoding is for separator-safety, not confidentiality.
 func proxyURLWithIdentity(ctx context.Context, base string) string {
 	taskID := coreruntime.TaskIDFromContext(ctx)
 	corrID := coreruntime.CorrelationIDFromContext(ctx)
@@ -225,7 +232,8 @@ func proxyURLWithIdentity(ctx context.Context, base string) string {
 	if err != nil {
 		return base
 	}
-	u.User = url.UserPassword(taskID, corrID)
+	enc := base64.RawURLEncoding
+	u.User = url.UserPassword(enc.EncodeToString([]byte(taskID)), enc.EncodeToString([]byte(corrID)))
 	return u.String()
 }
 

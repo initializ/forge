@@ -223,7 +223,7 @@ func (t *CLIExecuteTool) Execute(ctx context.Context, args json.RawMessage) (str
 	}
 
 	// Security check 6: Env isolation
-	cmd.Env = t.buildEnv(input.Binary)
+	cmd.Env = t.buildEnv(ctx, input.Binary)
 
 	// R9 JIT credentials: if the runner wired a credentials.Injector,
 	// mint fresh scoped-down creds now, merge them into the subprocess
@@ -332,7 +332,9 @@ func stripEnvKeys(env []string, override map[string]string) []string {
 // and explicitly configured passthrough variables. When workDir is set,
 // HOME is overridden to workDir so subprocess ~ expansion stays confined.
 // The binary parameter scopes credential env vars to only the binaries that need them.
-func (t *CLIExecuteTool) buildEnv(binary string) []string {
+// ctx carries the task/invocation identity that is stamped into the egress
+// proxy URL so proxied subprocess egress can be attributed in the audit log (#338).
+func (t *CLIExecuteTool) buildEnv(ctx context.Context, binary string) []string {
 	realHome := os.Getenv("HOME")
 	homeVal := realHome
 	if t.workDir != "" {
@@ -374,11 +376,15 @@ func (t *CLIExecuteTool) buildEnv(binary string) []string {
 		}
 	}
 	if t.proxyURL != "" {
+		// #338 — stamp the task/invocation IDs into the proxy URL userinfo so
+		// the egress proxy can attribute this subprocess's egress to its task
+		// in the audit log (same mechanism as SkillCommandExecutor).
+		proxyURL := proxyURLWithIdentity(ctx, t.proxyURL)
 		env = append(env,
-			"HTTP_PROXY="+t.proxyURL,
-			"HTTPS_PROXY="+t.proxyURL,
-			"http_proxy="+t.proxyURL,
-			"https_proxy="+t.proxyURL,
+			"HTTP_PROXY="+proxyURL,
+			"HTTPS_PROXY="+proxyURL,
+			"http_proxy="+proxyURL,
+			"https_proxy="+proxyURL,
 		)
 	}
 

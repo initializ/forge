@@ -119,6 +119,10 @@ func (r *Runner) startMCPManager(
 		Audit:      auditLogger,
 		OAuth:      flow,
 		Platform:   r.cfg.Config.Platform,
+		// #332 — the standalone type: user resolver reads this shared store;
+		// the consent callback writes to it. nil unless enableStandaloneConsent
+		// created it (i.e. a standalone type: user server is configured).
+		SubjectStore: r.standaloneSubjectStore,
 	})
 	if err != nil {
 		return nil, err

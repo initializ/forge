@@ -98,6 +98,11 @@ type ServerDeps struct {
 	// Platform is the managed token-resolver wiring, required by servers
 	// with auth.type=platform. nil → no platform servers in this config.
 	Platform *types.PlatformConfig
+
+	// SubjectStore is the per-requesting-user token cache read by a
+	// STANDALONE type: user resolver (#332). Field-identical with
+	// ManagerDeps (they convert via ServerDeps(deps)).
+	SubjectStore SubjectTokenStore
 }
 
 // knownMCPAuthTypes is the closed set of accepted Auth.Type values.
@@ -186,11 +191,25 @@ func NewServer(spec types.MCPServer, deps ServerDeps) (*Server, error) {
 			if spec.Required {
 				return nil, fmt.Errorf("%w: server %q: auth.type=user cannot be required:true — delegated identity connects lazily after consent", ErrProtocolError, spec.Name)
 			}
-			// #317: the delegated token resolves via the platform token
-			// endpoint (per-user, {server, subject}) — so the platform block
-			// is the contract, same as type=platform.
-			if deps.Platform == nil || deps.Platform.TokenEndpoint == "" {
-				return nil, fmt.Errorf("%w: server %q: auth.type=user requires the top-level platform block (delegated tokens resolve via the platform token endpoint)", ErrProtocolError, spec.Name)
+			// Two delegated modes, selected by the platform block:
+			//   - MANAGED (#317): platform block present → the delegated token
+			//     resolves via the platform token endpoint (per-user
+			//     {server, subject}).
+			//   - STANDALONE (#332): no platform block → Forge runs the
+			//     per-user OAuth itself (grant authorization_code) and reads a
+			//     local SubjectStore the consent callback populates. Endpoints
+			//     + client_id must be explicit (no runtime discovery).
+			if deps.Platform != nil && deps.Platform.TokenEndpoint != "" {
+				break // managed — nothing more to validate here
+			}
+			if spec.Auth.Grant != "" && spec.Auth.Grant != grantAuthorizationCode {
+				return nil, fmt.Errorf("%w: server %q: standalone auth.type=user (no platform block) is authorization-code consent — grant must be authorization_code, got %q", ErrProtocolError, spec.Name, spec.Auth.Grant)
+			}
+			if spec.Auth.AuthorizeURL == "" || spec.Auth.TokenURL == "" || spec.Auth.ClientID == "" {
+				return nil, fmt.Errorf("%w: server %q: standalone auth.type=user requires explicit auth.authorize_url, auth.token_url, and auth.client_id (no runtime discovery), or add a platform block for managed delegation", ErrProtocolError, spec.Name)
+			}
+			if deps.SubjectStore == nil {
+				return nil, fmt.Errorf("%w: server %q: standalone auth.type=user requires a per-subject token store (ManagerDeps.SubjectStore) — the runtime wires it alongside the consent callback", ErrProtocolError, spec.Name)
 			}
 		}
 	}
@@ -709,11 +728,32 @@ func buildAuthFn(spec types.MCPServer, deps ServerDeps) AuthTokenFunc {
 		})
 		return src.Token
 	case "user":
-		// Delegated user identity (#317): resolve a per-REQUESTING-USER
-		// token from the platform token endpoint. Lazy by design — until a
-		// request carries an authenticated user, and until the platform has
-		// a grant for that user, this fails with ErrNoToken so the server
-		// never blocks startup.
+		// Delegated per-REQUESTING-USER identity. Lazy by design — until a
+		// request carries an authenticated user, and until a grant exists for
+		// that user, this fails with ErrNoToken (tripping the auth-required
+		// gate) so the server never blocks startup.
+		serverName := spec.Name
+		if deps.Platform == nil || deps.Platform.TokenEndpoint == "" {
+			// STANDALONE (#332): no platform. The token is minted by Forge's
+			// own consent loop and cached per-subject in SubjectStore; a miss
+			// is ErrNoToken so the gate parks the call until consent lands.
+			store := deps.SubjectStore
+			return func(ctx context.Context) (string, error) {
+				subject := delegatedSubject(ctx)
+				if subject == "" {
+					return "", fmt.Errorf("%w: server %q uses delegated user identity but no requesting user is in context — it connects lazily under a user's session, never at startup", ErrNoToken, serverName)
+				}
+				if store == nil {
+					return "", fmt.Errorf("%w: server %q: standalone delegated token store is not wired", ErrNoToken, serverName)
+				}
+				if tok, ok := store.Get(subject); ok {
+					return tok, nil
+				}
+				return "", fmt.Errorf("%w: no local grant for subject %q on server %q yet — awaiting standalone consent (#332)", ErrNoToken, subject, serverName)
+			}
+		}
+		// MANAGED (#317): resolve the per-user token from the platform token
+		// endpoint (per-user, {server, subject}).
 		ref := spec.Auth.Ref
 		if ref == "" {
 			ref = spec.Name
@@ -724,7 +764,6 @@ func buildAuthFn(spec types.MCPServer, deps ServerDeps) AuthTokenFunc {
 			Ref:           ref,
 			HTTPClient:    deps.HTTPClient,
 		})
-		serverName := spec.Name
 		return func(ctx context.Context) (string, error) {
 			subject := delegatedSubject(ctx)
 			if subject == "" {

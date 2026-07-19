@@ -90,7 +90,7 @@ type fakeCompleter struct {
 	err      error
 }
 
-func (f *fakeCompleter) complete(_, _, code string) error {
+func (f *fakeCompleter) complete(_ context.Context, _, _, code, _ string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++

@@ -60,6 +60,13 @@ type ManagerDeps struct {
 	// required by servers with auth.type=platform; otherwise may be nil.
 	// MUST stay field-identical with ServerDeps (type conversion below).
 	Platform *types.PlatformConfig
+
+	// SubjectStore is the per-requesting-user access-token cache used by a
+	// STANDALONE type: user server (no platform block, grant
+	// authorization_code, #332): the resolver reads it and the standalone
+	// consent callback writes to it. nil ⇒ no standalone delegated servers
+	// in this config. MUST stay field-identical with ServerDeps.
+	SubjectStore SubjectTokenStore
 }
 
 // NewManager constructs a Manager. Fails fast if config validation

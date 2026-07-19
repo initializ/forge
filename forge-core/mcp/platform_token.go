@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -229,6 +230,13 @@ func FetchAuthorizeURL(ctx context.Context, client *http.Client, rawEndpoint, ra
 	}
 	if out.AuthorizeURL == "" {
 		return "", fmt.Errorf("%w: platform authorize response carried no authorize_url", ErrProtocolError)
+	}
+	// Defense-in-depth: this URL flows straight to a clickable Slack button, so
+	// assert it's an absolute https URL — a misconfigured/compromised platform
+	// can't turn the bot into a phishing relay (mirrors the open-redirect check
+	// on /mcp/oauth/start). The platform is trusted, so this is a cheap guard.
+	if u, perr := url.Parse(out.AuthorizeURL); perr != nil || u.Scheme != "https" || u.Host == "" {
+		return "", fmt.Errorf("%w: platform authorize_url must be an absolute https URL, got %q", ErrProtocolError, out.AuthorizeURL)
 	}
 	return out.AuthorizeURL, nil
 }

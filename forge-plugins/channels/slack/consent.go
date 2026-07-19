@@ -218,34 +218,47 @@ func buildConsentPayload(req channels.ConsentPrompt, withCancel bool) map[string
 	}
 }
 
-// parseConsentCancel extracts {subject, server} from a Cancel-button click.
-// Pure + testable. ok=false for any interaction that isn't our Cancel button.
-func parseConsentCancel(payload []byte) (subject, server, channelID, msgTS string, ok bool) {
+// parseConsentCancel extracts {subject, server} + the clicking user from a
+// Cancel-button click. Pure + testable. ok=false for any interaction that isn't
+// our Cancel button.
+func parseConsentCancel(payload []byte) (subject, server, clickerID, channelID, msgTS string, ok bool) {
 	var in slackInteraction
 	if err := json.Unmarshal(payload, &in); err != nil {
-		return "", "", "", "", false
+		return "", "", "", "", "", false
 	}
 	if in.Type != "block_actions" || len(in.Actions) == 0 {
-		return "", "", "", "", false
+		return "", "", "", "", "", false
 	}
 	a := in.Actions[0]
 	if a.ActionID != consentCancelActionID {
-		return "", "", "", "", false
+		return "", "", "", "", "", false
 	}
 	var v consentCancelValue
 	if err := json.Unmarshal([]byte(a.Value), &v); err != nil || v.Server == "" {
-		return "", "", "", "", false
+		return "", "", "", "", "", false
 	}
-	return v.Subject, v.Server, in.Channel.ID, in.Message.TS, true
+	return v.Subject, v.Server, in.User.ID, in.Channel.ID, in.Message.TS, true
 }
 
 // handleConsentCancel routes a Cancel-button click to the wired canceler and
 // updates the message. Returns ok=false when the payload isn't our Cancel
 // button so the caller falls through to other interaction handlers.
+//
+// Clicker-identity guard: only the requesting user may cancel their own consent.
+// v1 delivers over DMs (only the subject sees the button), so this is latent —
+// but it fails closed once origin-thread delivery lands (a shared channel where
+// others could click Cancel and DoS a peer's parked call). The check needs the
+// clicker's email (users.info) — the same users:read.email scope the DM lookup
+// already requires — and fails OPEN only when the email can't be resolved (a
+// DM-only deployment without the scope has no cross-user exposure anyway).
 func (p *Plugin) handleConsentCancel(ctx context.Context, payload []byte) (handled bool, err error) {
-	subject, server, channelID, msgTS, ok := parseConsentCancel(payload)
+	subject, server, clickerID, channelID, msgTS, ok := parseConsentCancel(payload)
 	if !ok {
 		return false, nil
+	}
+	if email, rErr := p.resolveUserEmail(ctx, clickerID); rErr == nil && !strings.EqualFold(email, subject) {
+		p.updateApprovalMessage(channelID, msgTS, ":warning: Only the requesting user can cancel this authorization.")
+		return true, nil
 	}
 	if p.consentCanceler == nil {
 		return true, fmt.Errorf("consent cancel click for %s/%s but no canceler wired", subject, server)

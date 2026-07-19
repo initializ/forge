@@ -405,6 +405,11 @@ func runRun(cmd *cobra.Command, args []string) error {
 						})
 						return err
 					}
+					// Always publish the durable A2A-artifact link first, so a
+					// per-subject Slack failure (e.g. the email isn't in the
+					// workspace) still leaves the user a link on the task. Slack
+					// is an additive push on top.
+					runner.PublishConsentArtifact(taskID, subject, server, link, deadline)
 					return consentAdapter.DeliverConsent(ctx, corechannels.ConsentPrompt{
 						Subject:      subject,
 						Server:       server,

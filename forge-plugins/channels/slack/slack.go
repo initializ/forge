@@ -57,9 +57,18 @@ type Plugin struct {
 	chanIDCache map[string]string
 
 	// userEmailCache memoizes resolved user id → email for the DEFER approver
-	// allowlist (#313) so a repeated approver skips users.info.
+	// allowlist (#313) so a repeated approver skips users.info. userIDByEmail
+	// and dmChannel memoize the reverse (email → user id) and the opened DM
+	// channel for MCP consent DMs (#343). All guarded by userMu.
 	userMu         sync.Mutex
 	userEmailCache map[string]string
+	userIDByEmail  map[string]string
+	dmChannel      map[string]string // user id → opened DM channel id
+
+	// consentCanceler is wired by the runtime (SetConsentCanceler) so a
+	// "Cancel" click on an MCP consent prompt fails the parked call fast
+	// (#343). nil when consent delivery isn't wired.
+	consentCanceler channels.ConsentCanceler
 }
 
 // SetLogger wires a structured ops logger (channels.LoggerAware). Optional.

@@ -123,3 +123,51 @@ type ApprovalDeliverer interface {
 	// approver acts. The runtime sets this once at startup.
 	SetApprovalResolver(r ApprovalResolver)
 }
+
+// --- MCP delegated-consent (#343) delivery -----------------------------------
+
+// ConsentPrompt is a pending MCP delegated-consent prompt: a "Connect <server>"
+// login link to present to the requesting user so they can authorize the agent
+// to act as them. The runtime builds one when a type: user MCP call parks on
+// the auth-required gate (#330); a channel adapter presents it.
+//
+// Delivery is independent of who built the URL and who hosts the callback:
+// AuthorizeURL is opaque to the adapter (standalone → Forge-built; managed →
+// platform-supplied), so the same delivery code serves both modes.
+type ConsentPrompt struct {
+	Subject      string         // the requesting user (email preferred) — who to reach
+	Server       string         // MCP server name — for the prompt copy
+	AuthorizeURL string         // the login link the user opens (a URL button)
+	Deadline     time.Time      // the gate timeout — rendered as "expires …"
+	Origin       *ChannelOrigin // optional: reply in the origin thread if the request came via this channel
+}
+
+// ChannelOrigin locates where a request came from so consent can be presented
+// where the user is already talking (an in-thread reply) rather than a cold DM.
+// An adapter populates it on inbound; nil ⇒ the deliverer falls back to
+// reaching the Subject directly (e.g. Slack DM by email).
+type ChannelOrigin struct {
+	Adapter  string // e.g. "slack"
+	Channel  string // native channel / DM id
+	ThreadTS string // thread to reply in (optional)
+	UserID   string // native user id (skips an email lookup)
+}
+
+// ConsentCanceler is invoked by an adapter when the user cancels a delivered
+// consent prompt (e.g. a "Cancel" button). The runtime fails the parked call
+// fast instead of idling to the deadline. Wired via
+// ConsentDeliverer.SetConsentCanceler at startup; optional.
+type ConsentCanceler func(ctx context.Context, subject, server string) error
+
+// ConsentDeliverer is an OPTIONAL capability. A channel adapter that can present
+// an MCP consent login link to a specific user implements it (Slack via a DM /
+// in-thread Block Kit message, #343). Adapters that don't implement it simply
+// can't deliver consent prompts; the runtime falls back to publishing the link
+// on the A2A auth-required artifact.
+type ConsentDeliverer interface {
+	// DeliverConsent presents the consent prompt to req.Subject (or req.Origin).
+	DeliverConsent(ctx context.Context, req ConsentPrompt) error
+	// SetConsentCanceler wires the callback the adapter invokes when the user
+	// cancels. The runtime sets this once at startup; may be a no-op.
+	SetConsentCanceler(c ConsentCanceler)
+}

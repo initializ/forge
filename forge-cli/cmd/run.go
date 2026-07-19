@@ -380,6 +380,40 @@ func runRun(cmd *cobra.Command, args []string) error {
 					Target:  target,
 				})
 			})
+
+			// Wire up MCP delegated-consent delivery (#343): route a parked
+			// type: user call's "Connect <server>" link to the first active
+			// channel adapter that supports it (Slack DM to the subject). The
+			// link itself comes from runner.AuthorizeURL — standalone builds it,
+			// managed fetches it from the platform. When no consent-capable
+			// adapter is active, SetConsentDeliverer is not called and the link
+			// falls back to the A2A auth-required artifact (standalone) /
+			// mcp_auth_required audit event (platform-read).
+			for _, plugin := range activePlugins {
+				consentAdapter, ok := plugin.(corechannels.ConsentDeliverer)
+				if !ok {
+					continue
+				}
+				consentAdapter.SetConsentCanceler(func(ctx context.Context, subject, server string) error {
+					return postMCPConsent(ctx, agentURL, runner.AuthToken(), subject, server, false)
+				})
+				runner.SetConsentDeliverer(func(ctx context.Context, subject, server, taskID string, deadline time.Time) error {
+					link, err := runner.AuthorizeURL(ctx, subject, server)
+					if err != nil {
+						opsLog.Warn("mcp consent: building authorize URL failed", map[string]any{
+							"subject": subject, "server": server, "error": err.Error(),
+						})
+						return err
+					}
+					return consentAdapter.DeliverConsent(ctx, corechannels.ConsentPrompt{
+						Subject:      subject,
+						Server:       server,
+						AuthorizeURL: link,
+						Deadline:     deadline,
+					})
+				})
+				break // one deliverer; first consent-capable adapter wins
+			}
 		}
 	}
 
@@ -552,6 +586,32 @@ func postDeferDecision(ctx context.Context, agentURL, token string, d corechanne
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("decisions endpoint HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return nil
+}
+
+// postMCPConsent POSTs a consent resume/refuse signal to the agent's
+// POST /mcp/consent endpoint (#330) — the same endpoint a platform would call.
+// Used by the Slack "Cancel" button to fail a parked call fast (granted=false).
+// Topology-agnostic: works whether the channel adapter runs in-process or out.
+func postMCPConsent(ctx context.Context, agentURL, token, subject, server string, granted bool) error {
+	body, _ := json.Marshal(map[string]any{"subject": subject, "server": server, "granted": granted})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, agentURL+"/mcp/consent", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("mcp consent endpoint HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 	return nil
 }

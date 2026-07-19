@@ -39,8 +39,60 @@ type AuthorizeURLProvider func(ctx context.Context, subject, server string) (str
 // wires its own by default; a managed platform sets one that returns its
 // own authorize URL (its client_id/state/redirect_uri) so Forge never
 // constructs a managed URL from local config. Must be called before Run().
+// Takes precedence over the config-driven managed/standalone providers.
 func (r *Runner) SetAuthorizeURLProvider(fn AuthorizeURLProvider) {
 	r.authorizeURLProvider = fn
+}
+
+// AuthorizeURL returns the delegated-consent login link for {subject, server}
+// via the configured provider — standalone builds it locally, managed fetches
+// it from the platform, an embedder may inject its own. The consent deliverer
+// (e.g. Slack, #343) calls this to populate the prompt. Errors when no provider
+// is wired (delivery then falls back to the mcp_auth_required audit event).
+func (r *Runner) AuthorizeURL(ctx context.Context, subject, server string) (string, error) {
+	if r.authorizeURLProvider == nil {
+		return "", fmt.Errorf("no authorize-URL provider configured: set platform.authorize_endpoint (managed), a standalone type:user server, or SetAuthorizeURLProvider")
+	}
+	return r.authorizeURLProvider(ctx, subject, server)
+}
+
+// enableManagedConsentProvider wires the managed (platform-fetched) authorize-URL
+// provider (#343): when a platform block sets authorize_endpoint and at least
+// one type: user server exists, Forge fetches the consent link from the platform
+// (which owns the client_id/redirect_uri/state and hosts the callback) and only
+// delivers it. No-op when an embedder or standalone already set a provider, or
+// when there's nothing to serve. egressClient routes the fetch through the
+// allowlist. Managed mode wires ONLY the provider — the platform hosts the
+// callback and brokers the token, so there is no local completer/store here.
+func (r *Runner) enableManagedConsentProvider(egressClient *http.Client) {
+	if r.authorizeURLProvider != nil {
+		return
+	}
+	p := r.cfg.Config.Platform
+	if p == nil || p.AuthorizeEndpoint == "" {
+		return
+	}
+	hasUser := false
+	for _, s := range r.cfg.Config.MCP.Servers {
+		if s.Auth != nil && s.Auth.Type == "user" {
+			hasUser = true
+			break
+		}
+	}
+	if !hasUser {
+		return
+	}
+	client := egressClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	r.authorizeURLProvider = func(ctx context.Context, subject, server string) (string, error) {
+		ref := server
+		if spec, ok := r.mcpServerSpec(server); ok && spec.Auth != nil && spec.Auth.Ref != "" {
+			ref = spec.Auth.Ref
+		}
+		return mcp.FetchAuthorizeURL(ctx, client, p.AuthorizeEndpoint, p.AgentIdentity, ref, subject)
+	}
 }
 
 // standaloneDelegatedServers returns the type: user MCP servers running in

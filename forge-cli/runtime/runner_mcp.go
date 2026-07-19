@@ -141,16 +141,22 @@ func (r *Runner) startMCPManager(
 	return mgr, nil
 }
 
-// platformResolverHost returns the platform token-resolver host for the
-// egress allowlist (auth.type=platform servers fetch tokens from it).
-// Empty when no platform block is configured.
+// platformResolverHost returns the platform resolver hosts for the egress
+// allowlist: the token endpoint (auth.type=platform/user fetch tokens from it)
+// and the authorize endpoint (managed consent fetches the login URL from it,
+// #343). Empty when no platform block is configured.
 func platformResolverHost(p *types.PlatformConfig) []string {
-	if p == nil || p.TokenEndpoint == "" {
+	if p == nil {
 		return nil
 	}
-	u, err := url.Parse(os.Expand(p.TokenEndpoint, os.Getenv))
-	if err != nil || u.Hostname() == "" {
-		return nil
+	var hosts []string
+	for _, ep := range []string{p.TokenEndpoint, p.AuthorizeEndpoint} {
+		if ep == "" {
+			continue
+		}
+		if u, err := url.Parse(os.Expand(ep, os.Getenv)); err == nil && u.Hostname() != "" {
+			hosts = append(hosts, u.Hostname())
+		}
 	}
-	return []string{u.Hostname()}
+	return hosts
 }

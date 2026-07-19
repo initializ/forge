@@ -190,3 +190,60 @@ func TestStandaloneConsent_NotWiredWhenManaged(t *testing.T) {
 	// Sanity: the helper wouldn't create the in-memory store either.
 	_ = mcp.NewInMemorySubjectTokenStore
 }
+
+// TestManagedConsentProvider_FetchesFromPlatform proves that in platform mode
+// with authorize_endpoint set, Runner.AuthorizeURL fetches the consent link
+// from the platform (#343) — and that the standalone loop stays unwired.
+func TestManagedConsentProvider_FetchesFromPlatform(t *testing.T) {
+	var gotBody map[string]string
+	plat := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		_ = json.NewDecoder(req.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"authorize_url": "https://platform.example/idp/authorize?state=managed"})
+	}))
+	defer plat.Close()
+
+	r := &Runner{
+		logger: nopLogger{},
+		cfg: RunnerConfig{Config: &types.ForgeConfig{
+			Platform: &types.PlatformConfig{
+				TokenEndpoint:     "https://platform.example/token",
+				AuthorizeEndpoint: plat.URL,
+				AgentIdentity:     "agent-cred",
+			},
+			MCP: types.MCPConfig{Servers: []types.MCPServer{{
+				Name: "atl", Auth: &types.MCPAuth{Type: "user", Ref: "mcp.atl"},
+			}}},
+		}},
+	}
+	r.enableStandaloneConsent(plat.Client())      // no-op (managed)
+	r.enableManagedConsentProvider(plat.Client()) // wires the provider
+
+	if r.standaloneSubjectStore != nil || r.callbackCompleter != nil {
+		t.Error("managed mode must not host a local callback/store")
+	}
+	url, err := r.AuthorizeURL(context.Background(), "alice@corp.com", "atl")
+	if err != nil {
+		t.Fatalf("AuthorizeURL: %v", err)
+	}
+	if url != "https://platform.example/idp/authorize?state=managed" {
+		t.Errorf("url = %q, want the platform-supplied URL", url)
+	}
+	if gotBody["server"] != "mcp.atl" || gotBody["subject"] != "alice@corp.com" {
+		t.Errorf("platform request = %+v, want {server: ref, subject}", gotBody)
+	}
+}
+
+// TestAuthorizeURLProvider_EmbedderPrecedence: an explicitly-set provider wins
+// over both standalone and managed config.
+func TestAuthorizeURLProvider_EmbedderPrecedence(t *testing.T) {
+	r := standaloneRunner(t, "https://idp.example/token")
+	r.SetAuthorizeURLProvider(func(context.Context, string, string) (string, error) {
+		return "https://embedder.example/custom", nil
+	})
+	r.enableManagedConsentProvider(http.DefaultClient) // must not override
+	url, err := r.AuthorizeURL(context.Background(), "alice@corp.com", "atl")
+	if err != nil || url != "https://embedder.example/custom" {
+		t.Fatalf("AuthorizeURL = %q,%v, want the embedder override", url, err)
+	}
+}

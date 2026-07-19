@@ -30,12 +30,14 @@ connected their Atlassian / Linear / etc. account yet).
 
 ## 1. Deploy-time — forge.yaml
 
-Mark each delegated MCP server `auth.type: user` and point Forge at the
-platform token resolver:
+Mark each delegated MCP server `auth.type: user` and wire the platform block.
+The gate activates automatically for `type: user` servers.
 
 ```yaml
 platform:
-  token_endpoint: https://platform.internal/agents/{id}/mcp/token   # your resolver
+  token_endpoint:     https://platform.internal/agents/{id}/mcp/token      # returns the access token
+  authorize_endpoint: https://platform.internal/agents/{id}/mcp/authorize  # returns the consent login URL (#343)
+  agent_identity:     ${FORGE_PLATFORM_TOKEN}   # Bearer the agent sends on BOTH calls
 
 mcp:
   servers:
@@ -45,10 +47,22 @@ mcp:
       required: false                 # MUST be false — no user exists at startup
       auth:
         type: user                    # delegated per-user identity; activates the gate
-        ref: atlassian-registry-entry # platform tool-registry key the resolver authorizes against
+        ref: atlassian-registry-entry # platform tool-registry key BOTH endpoints authorize against
       tools:
         allow: ["*"]                  # or an explicit allowlist (default-deny)
 ```
+
+- **`token_endpoint`** (required) — where Forge fetches the per-user access
+  token. See [§2](#2-the-two-platform-endpoints).
+- **`authorize_endpoint`** (optional) — where Forge fetches the consent **login
+  URL** so it can deliver the prompt itself (e.g. over Slack). Omit it if the
+  **platform** delivers the prompt instead (see [§4](#4-two-delivery-models)).
+- **`agent_identity`** — the agent's platform credential, sent as
+  `Authorization: Bearer …` on both calls (the platform injects it as a pod
+  secret; `${VAR}` is expanded at request time, so rotation needs no restart).
+
+To let Forge deliver over Slack, also start the adapter — `forge run --with
+slack` — with bot scopes `chat:write`, `users:read.email`, `im:write`.
 
 Invariants the runtime enforces:
 
@@ -57,10 +71,53 @@ Invariants the runtime enforces:
 | `type: user` must not be `required: true` | Delegated identity is lazy — there is no user at boot, so the server can't be a startup gate. |
 | No `token_store_path`, no `forge mcp login` for `type: user` | The token is materialized by your `token_endpoint`, keyed `{server, subject}` — never stored on disk by the agent. |
 | The gate attaches to every MCP tool automatically | It only trips on an `ErrNoToken` from the per-user resolver, so non-delegated servers are unaffected — nothing to disable. |
+| Both endpoint hosts are auto-merged into the egress allowlist | Forge's outbound calls to them ride the same allowlist as the rest of the agent. |
 
 Remove those MCP tools from any DEFER policy that was standing in for consent.
 
-## 2. Detect a pending consent
+## 2. The two platform endpoints
+
+The platform implements two HTTP endpoints. Both take the **same** request shape
+— `POST` with `Authorization: Bearer <agent_identity>`, `Org-Id` / `Workspace-Id`
+tenancy headers (from `FORGE_ORG_ID` / `FORGE_WORKSPACE_ID`, when set), and a JSON
+body `{"server": "<ref>", "subject": "<email>"}` — and are keyed on the same
+`{ref, subject}` so you can correlate them.
+
+### `token_endpoint` — provide the token
+
+```http
+POST {token_endpoint}
+Authorization: Bearer <agent_identity>
+{ "server": "atlassian-registry-entry", "subject": "user@corp.com" }
+```
+
+| Response | Meaning |
+|----------|---------|
+| `200 {"access_token": "…", "expires_in": 3600}` | The delegated access token for this user. Forge caches it per-subject (`expires_in` seconds; default 5 min if omitted). **Return only a short-lived access token — never the refresh token** (it stays in your vault). |
+| `401` / `403` / `404` | **No grant for this user yet** → Forge treats it as `ErrNoToken`, which trips the auth-required gate and parks the call. This is the signal that starts the consent flow. |
+| other non-200 | Protocol error — the call fails (not parked). |
+
+### `authorize_endpoint` — provide the authorization URL
+
+```http
+POST {authorize_endpoint}
+Authorization: Bearer <agent_identity>
+{ "server": "atlassian-registry-entry", "subject": "user@corp.com" }
+
+→ 200 { "authorize_url": "https://auth.atlassian.com/authorize?client_id=<yours>&redirect_uri=<your-callback>&state=<yours>&…" }
+```
+
+- You build the URL with **your own** `client_id`, `redirect_uri` (pointing at
+  **your** callback), `state`, PKCE, and scopes. Forge treats it as **opaque** —
+  it only delivers it.
+- Because `redirect_uri` is yours, the browser lands back at **your** callback:
+  you receive the authorization `code`, exchange it, and vault the refresh token.
+  **Forge never sees the code or the refresh token.**
+- Must be an absolute `https://` URL (Forge rejects anything else before it
+  reaches a clickable button). Non-200 fails delivery (the call still surfaces
+  via `mcp_auth_required`).
+
+## 3. Detect a pending consent
 
 When a `type: user` call has no grant, the runtime surfaces the need three ways
 (no polling of internal state required):
@@ -84,20 +141,37 @@ MCP server name, `deadline` is the hard park window — **default 10 minutes**,
 after which the call fails with an auth-required error and the LLM sees a
 `no_token` result. Consume the audit stream and/or watch task status.
 
-## 3. Deliver consent, then resume
+## 4. Two delivery models
 
-The platform owns delivery, the OAuth callback, and token custody (managed
-mode). The end-to-end sequence:
+Presenting the link is independent of who receives the code — so you choose who
+**delivers** the "Connect" prompt. Token custody is the platform's either way.
+
+| | **Forge delivers (over Slack)** | **Platform delivers** |
+|---|---|---|
+| Who shows the link | Forge DMs the subject over its own Slack bot | Your platform (its Slack/console/email) |
+| Where the URL comes from | Forge `POST`s your **`authorize_endpoint`** | You build it internally — no `authorize_endpoint` needed |
+| Config | set `authorize_endpoint` + run `--with slack` | omit `authorize_endpoint`; consume `mcp_auth_required` |
+| Callback / refresh token | **yours** (the URL's `redirect_uri` is yours) | **yours** |
+
+Either way the link is **also** published on the task's A2A `auth-required`
+artifact as a durable record, so a UI/A2A client can render it and a per-subject
+Slack failure never strands the user.
+
+**End-to-end (Forge-delivers-over-Slack):**
 
 ```
 type: user call, no grant for subject
-  → resolver calls token_endpoint {server, subject} → no grant → ErrNoToken
+  → Forge POSTs token_endpoint {server, subject} → 401/403/404 → ErrNoToken
   → gate PARKS; task → auth-required; emit mcp_auth_required{subject, server, deadline}
-  → platform delivers consent to subject (Slack DM "Connect Atlassian", console…)
-  → subject completes OAuth; platform VAULTS the grant
+  → Forge POSTs authorize_endpoint {server, subject} → {authorize_url}
+  → Forge DMs the subject the "Connect" link (+ publishes it on the task artifact)
+  → subject signs in at YOUR callback → you exchange the code + VAULT the refresh token
   → platform: POST /mcp/consent {subject, server, granted:true}
   → gate resolves → parked call re-resolves → token_endpoint now returns a token → call proceeds
 ```
+
+(For the platform-delivers model, drop the two Forge lines: you deliver the
+prompt off the `mcp_auth_required` event and host the whole OAuth yourself.)
 
 The resume call:
 
@@ -127,8 +201,11 @@ Response codes:
 - **No token crosses the boundary.** Forge fetches the token itself via the
   delegated resolver (`POST {token_endpoint}` with `{server, subject}`) on
   re-resolution (AARM R10; `design-tool-registry.md` §18.5).
+- **Cancel = fast-fail.** In the Forge-delivers-over-Slack model, a "Cancel"
+  button posts `{granted:false}` to the same endpoint for you, so the parked
+  call fails immediately instead of idling to the deadline.
 
-## 4. Embedding Forge (optional)
+## 5. Embedding Forge (optional)
 
 The stock binary is fully drivable via the HTTP signals above. If you link Forge
 as a library and prefer push-delivery over consuming the audit stream, set the
@@ -154,11 +231,12 @@ are unchanged. See
 
 ## Migration checklist
 
-- [ ] `auth.type: user` + `ref` on the delegated servers; `required: false`; `platform.token_endpoint` set.
-- [ ] Remove those MCP tools from any DEFER policy that was standing in for consent.
+- [ ] `auth.type: user` + `ref` on the delegated servers; `required: false`; `platform.token_endpoint` + `agent_identity` set.
+- [ ] Implement `token_endpoint` — `200 {access_token, expires_in}` when granted, `401/403/404` when not (this trips the gate). Return **no refresh token**.
+- [ ] Choose a delivery model: **Forge-over-Slack** (set `authorize_endpoint` returning `{authorize_url}` + run `--with slack`) **or** platform-delivers (consume `mcp_auth_required`).
+- [ ] Point the authorize URL's `redirect_uri` at **your** callback → you exchange the code and **vault the refresh token**.
+- [ ] After vaulting, `POST /mcp/consent {subject, server, granted:true}` (authenticated) — **only after** `token_endpoint` can return the token.
 - [ ] Subscribe to `mcp_auth_required` / `mcp_auth_resolved` / `mcp_auth_timeout` (and/or watch task `auth-required`).
-- [ ] Wire consent delivery → OAuth → **vault grant** → authenticated `POST /mcp/consent`.
-- [ ] Ensure `token_endpoint` returns `{server, subject}` tokens **before** posting `granted: true`.
 - [ ] Keep DEFER for genuine per-action approve/reject.
 
 ## Related docs

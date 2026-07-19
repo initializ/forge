@@ -87,3 +87,4 @@ forge run                               # tools available as linear__create_issu
 - [CLI reference](./cli-reference.md) — every flag of every subcommand
 - [Audit events](./audit-events.md) — the seven event types and their fields
 - [Troubleshooting](./troubleshooting.md) — reason codes → fixes
+- [Delegated consent (platform integration)](./delegated-consent.md) — deploy `type: user` servers and drive the auth-required gate

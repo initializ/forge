@@ -161,6 +161,32 @@ func ValidateForgeConfig(cfg *types.ForgeConfig) *ValidationResult {
 
 	ValidateAuthConfig(cfg.Auth, r)
 	ValidateMCPConfig(cfg.MCP, r)
+	validateStandaloneDelegatedConsent(cfg, r)
 
 	return r
+}
+
+// validateStandaloneDelegatedConsent enforces the standalone (#332) rules for
+// auth.type=user servers that have NO platform block: without a platform token
+// endpoint, Forge runs the per-user OAuth itself, which needs explicit
+// endpoints + client_id (no runtime discovery) and the authorization_code
+// grant. Lives here (not in ValidateMCPConfig) because the standalone-vs-managed
+// distinction depends on the top-level platform block. Mirrors NewServer.
+func validateStandaloneDelegatedConsent(cfg *types.ForgeConfig, r *ValidationResult) {
+	managed := cfg.Platform != nil && cfg.Platform.TokenEndpoint != ""
+	if managed {
+		return
+	}
+	for i, s := range cfg.MCP.Servers {
+		if s.Auth == nil || s.Auth.Type != "user" {
+			continue
+		}
+		prefix := fmt.Sprintf("mcp.servers[%d] (%s)", i, s.Name)
+		if s.Auth.Grant != "" && s.Auth.Grant != "authorization_code" {
+			r.Errors = append(r.Errors, prefix+": standalone auth.type=user (no platform block) uses the authorization_code grant — remove grant or set it to authorization_code")
+		}
+		if s.Auth.AuthorizeURL == "" || s.Auth.TokenURL == "" || s.Auth.ClientID == "" {
+			r.Errors = append(r.Errors, prefix+": standalone auth.type=user requires explicit auth.authorize_url, auth.token_url, and auth.client_id (no runtime discovery) — or add a platform block for managed delegation")
+		}
+	}
 }

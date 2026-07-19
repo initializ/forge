@@ -1,7 +1,9 @@
 package runtime
 
 import (
+	"context"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,10 +28,18 @@ import (
 // stateBinding is what an issued OAuth `state` is bound to. The callback
 // must match all of it (modulo an empty session) to be honored.
 type stateBinding struct {
-	subject  string
-	server   string
-	session  string // the initiating session; callback must match (cross-session guard)
-	deadline time.Time
+	subject string
+	server  string
+	session string // the initiating session; callback must match (cross-session guard)
+	// verifier is the PKCE code_verifier minted when the authorize URL was
+	// built; the callback needs it to exchange the code (#332). Empty for
+	// managed flows (Forge never sees the code) or where PKCE isn't used.
+	verifier string
+	// authorizeURL is the IdP authorize URL this state was minted for. The
+	// GET /mcp/oauth/start endpoint redirects the browser here after setting
+	// the session cookie (#332). Empty when Forge doesn't front the redirect.
+	authorizeURL string
+	deadline     time.Time
 }
 
 // stateBinder issues single-use, expiring OAuth `state` values bound to the
@@ -56,7 +66,8 @@ func newStateBinder(ttl time.Duration) *stateBinder {
 }
 
 // Issue mints a cryptographically-random state bound to {subject, server,
-// session} and returns it for embedding in the authorize URL.
+// session} and returns it for embedding in the authorize URL. Used where the
+// caller doesn't front the redirect (no verifier/authorizeURL captured).
 func (s *stateBinder) Issue(subject, server, session string) (string, error) {
 	state, err := oauth.GenerateState()
 	if err != nil {
@@ -67,6 +78,38 @@ func (s *stateBinder) Issue(subject, server, session string) (string, error) {
 	s.sweepLocked() // opportunistic GC so abandoned flows don't accumulate
 	s.m[state] = stateBinding{subject: subject, server: server, session: session, deadline: s.now().Add(s.ttl)}
 	return state, nil
+}
+
+// Bind stores a fully-formed binding under a caller-provided state. The
+// standalone front-half (#332) generates the state itself (it must embed it in
+// the authorize URL before binding), then records the session, PKCE verifier,
+// and authorize URL here so GET /mcp/oauth/start can set the session cookie and
+// redirect, and GET /mcp/oauth/callback can complete the exchange.
+func (s *stateBinder) Bind(state, subject, server, session, verifier, authorizeURL string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sweepLocked()
+	s.m[state] = stateBinding{
+		subject: subject, server: server, session: session,
+		verifier: verifier, authorizeURL: authorizeURL,
+		deadline: s.now().Add(s.ttl),
+	}
+}
+
+// Peek returns the binding for state WITHOUT consuming it (unlike Consume),
+// for the GET /mcp/oauth/start redirect: the state is spent later, at the
+// callback. Returns ok=false for unknown or expired states.
+func (s *stateBinder) Peek(state string) (stateBinding, bool) {
+	if state == "" {
+		return stateBinding{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, ok := s.m[state]
+	if !ok || s.now().After(b.deadline) {
+		return stateBinding{}, false
+	}
+	return b, true
 }
 
 // Consume looks up and REMOVES the binding for state. It returns ok=false
@@ -100,12 +143,13 @@ func (s *stateBinder) sweepLocked() {
 	}
 }
 
-// CallbackCompleter exchanges an OAuth authorization code for a token and
-// stores it for {subject, server}, so the resumed call finds a grant. The
-// standalone interactive resolver provides one; when nil the loopback
-// callback is NOT registered (managed mode hosts its own callback and never
-// hands Forge a code).
-type CallbackCompleter func(subject, server, code string) error
+// CallbackCompleter exchanges an OAuth authorization code (with the PKCE
+// verifier bound to the state) for a token and stores it for {subject, server},
+// so the resumed call finds a grant. The standalone resolver provides one; when
+// nil the loopback callback is NOT registered (managed mode hosts its own
+// callback and never hands Forge a code). ctx is the request context so the
+// token exchange inherits a finite deadline.
+type CallbackCompleter func(ctx context.Context, subject, server, code, verifier string) error
 
 // sessionFromRequest extracts the caller's session id for the cross-session
 // check. Prefers an explicit forge session header; falls back to a session
@@ -123,9 +167,15 @@ func sessionFromRequest(r *http.Request) string {
 	return ""
 }
 
-// registerMCPCallbackEndpoint wires the standalone loopback callback. It is
+// registerMCPCallbackEndpoint wires the standalone consent endpoints. They are
 // registered ONLY when a CallbackCompleter is set (standalone interactive
-// mode); managed deployments never register it.
+// mode); managed deployments never register them.
+//
+//   - GET /mcp/oauth/start: the link Forge delivers. It sets the forge_session
+//     cookie (the producer the callback's mandatory session match requires) and
+//     redirects the browser to the IdP authorize URL.
+//   - GET /mcp/oauth/callback: the IdP redirect target. Validates state +
+//     session, exchanges the code, resumes the parked call.
 func (r *Runner) registerMCPCallbackEndpoint(srv *server.Server, auditLogger *coreruntime.AuditLogger) {
 	if r.authGateEngine == nil || r.callbackCompleter == nil {
 		return
@@ -133,8 +183,45 @@ func (r *Runner) registerMCPCallbackEndpoint(srv *server.Server, auditLogger *co
 	if r.stateBinder == nil {
 		r.stateBinder = newStateBinder(defaultStateTTL)
 	}
+	srv.RegisterHTTPHandler("GET /mcp/oauth/start", makeMCPStartHandler(r.stateBinder))
 	srv.RegisterHTTPHandler("GET /mcp/oauth/callback",
 		makeMCPCallbackHandler(r.stateBinder, r.authGateEngine, r.callbackCompleter, sessionFromRequest, auditLogger))
+}
+
+// forgeSessionCookie is the cookie name the callback's cross-session guard
+// reads (sessionFromRequest). The start endpoint is its only producer.
+const forgeSessionCookie = "forge_session"
+
+// makeMCPStartHandler serves GET /mcp/oauth/start?state=<state>. It is the
+// session producer for the standalone consent flow (#332): the callback
+// mandates a matching forge_session, and this is where the browser gets it.
+// The step is necessary because the user's browser only ever touches Forge at
+// the callback (after the IdP), so the cookie must be planted on an earlier
+// same-origin visit — this redirect.
+//
+// The session value lives ONLY in the server-side binding and the cookie, never
+// in a URL query, so it is never leaked to the IdP via Referer (unlike the
+// state, which round-trips through the IdP by design). SameSite=Lax lets the
+// cookie survive the top-level cross-site redirect back from the IdP.
+func makeMCPStartHandler(binder *stateBinder) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		state := req.URL.Query().Get("state")
+		b, ok := binder.Peek(state) // Peek, not Consume — the state is spent at the callback.
+		if !ok || b.authorizeURL == "" || b.session == "" {
+			http.Error(w, "invalid or expired consent link", http.StatusBadRequest)
+			return
+		}
+		http.SetCookie(w, &http.Cookie{
+			Name:     forgeSessionCookie,
+			Value:    b.session,
+			Path:     "/mcp/oauth/",
+			HttpOnly: true,
+			Secure:   req.TLS != nil || strings.EqualFold(req.Header.Get("X-Forwarded-Proto"), "https"),
+			SameSite: http.SameSiteLaxMode,
+			Expires:  b.deadline,
+		})
+		http.Redirect(w, req, b.authorizeURL, http.StatusFound)
+	}
 }
 
 // makeMCPCallbackHandler validates the state, enforces the session match,
@@ -180,8 +267,9 @@ func makeMCPCallbackHandler(
 		// Exchange the code for a token and store it for {subject, server}.
 		// Only AFTER this succeeds do we resume — resolving the gate with no
 		// grant would just re-park the call (delegation follows
-		// authorization: never resume before the grant exists).
-		if err := complete(b.subject, b.server, code); err != nil {
+		// authorization: never resume before the grant exists). The PKCE
+		// verifier bound to the state proves this is the same flow we started.
+		if err := complete(req.Context(), b.subject, b.server, code, b.verifier); err != nil {
 			http.Error(w, "authorization exchange failed", http.StatusBadGateway)
 			return
 		}

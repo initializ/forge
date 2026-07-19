@@ -110,6 +110,10 @@ type OAuthServerConfig struct {
 // grantClientCredentials is the 2-legged agent-principal grant (#324).
 const grantClientCredentials = "client_credentials"
 
+// grantAuthorizationCode is the 3-legged delegated grant — the default for
+// interactive OAuth and for standalone delegated consent (#332).
+const grantAuthorizationCode = "authorization_code"
+
 // storeKey returns the credential-store key for an MCP server.
 // Prefixed "MCP_" so MCP tokens are namespaced separately from LLM
 // provider tokens in the same encrypted file.
@@ -482,6 +486,14 @@ type refreshGroup struct {
 	done  chan struct{}
 	token string
 	err   error
+}
+
+// BuildAuthorizeURL assembles an OAuth 2.1 + PKCE (S256) authorize URL.
+// Exported for the standalone delegated-consent front-half (#332), which builds
+// the URL outside this package; the interactive Login path uses the unexported
+// form directly.
+func BuildAuthorizeURL(authorizeURL, clientID, redirectURI, state, challenge string, scopes []string) (string, error) {
+	return buildAuthorizeURL(authorizeURL, clientID, redirectURI, state, challenge, scopes)
 }
 
 // buildAuthorizeURL assembles the authorize-endpoint URL. Returns

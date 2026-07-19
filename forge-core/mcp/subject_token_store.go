@@ -30,6 +30,13 @@ type SubjectTokenStore interface {
 	Evict(subject string)
 }
 
+// NewInMemorySubjectTokenStore returns the default in-process
+// SubjectTokenStore. Exported for the standalone consent wiring (#332) to
+// create the shared store its resolver reads and its callback writes.
+func NewInMemorySubjectTokenStore() SubjectTokenStore {
+	return newMemSubjectTokenStore(0)
+}
+
 // memSubjectTokenStore is the default in-process SubjectTokenStore: a
 // per-subject map with early-refresh skew and an opportunistic sweep so it
 // can't grow unbounded with one-shot users, without a background goroutine.

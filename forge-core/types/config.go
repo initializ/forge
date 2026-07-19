@@ -495,6 +495,16 @@ type TracingYAML struct {
 // See issue #110 / FWS-10.
 type ServerConfig struct {
 	RateLimit RateLimitYAML `yaml:"rate_limit,omitempty"`
+
+	// PublicURL is the agent's externally-reachable base URL (scheme +
+	// host, no trailing slash), e.g. "https://agent.example.com". It is
+	// used to build the OAuth redirect_uri for standalone delegated
+	// consent (#332): <public_url>/mcp/oauth/callback must be reachable by
+	// the user's browser after IdP consent. When empty, the runtime falls
+	// back to the AGENT_URL env var. Only required for standalone
+	// type: user (authorization_code) MCP servers; managed deployments
+	// host their own callback and don't need it.
+	PublicURL string `yaml:"public_url,omitempty"`
 }
 
 // RateLimitYAML mirrors the runtime RateLimitConfig but lives in

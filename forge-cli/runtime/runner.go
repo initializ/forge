@@ -37,6 +37,7 @@ import (
 	"github.com/initializ/forge/forge-core/llm"
 	"github.com/initializ/forge/forge-core/llm/oauth"
 	"github.com/initializ/forge/forge-core/llm/providers"
+	"github.com/initializ/forge/forge-core/mcp"
 	"github.com/initializ/forge/forge-core/memory"
 	"github.com/initializ/forge/forge-core/observability"
 	coreruntime "github.com/initializ/forge/forge-core/runtime"
@@ -156,31 +157,33 @@ After editing, trace the failing input through your new code. Read the functions
 
 // Runner orchestrates the local A2A development server.
 type Runner struct {
-	cfg                  RunnerConfig
-	logger               coreruntime.Logger
-	cliExecTool          *clitools.CLIExecuteTool
-	modelConfig          *coreruntime.ModelConfig          // resolved model config (for banner)
-	derivedCLIConfig     *contract.DerivedCLIConfig        // auto-derived from skill requirements
-	derivedBrowserConfig *contract.DerivedBrowserConfig    // non-nil when a skill declares requires.capabilities: [browser] (#94)
-	browserManager       *browser.Manager                  // lazy Chromium owner; nil unless browser tools registered
-	skillGuardrails      *agentspec.SkillGuardrailRules    // runtime-parsed skill guardrails (fallback when no build artifact)
-	schedBackend         scheduler.Backend                 // schedule backend (nil until started); FileBackend in non-cluster deploys, KubernetesBackend (#162 part 2b) when running in-cluster with scheduler.backend=auto|kubernetes
-	startTime            time.Time                         // server start time (for /health uptime)
-	scheduleNotifier     ScheduleNotifier                  // optional: delivers cron results to channels
-	deferralNotifier     DeferralNotifier                  // optional: delivers DEFER approval requests to channels (#310)
-	authToken            string                            // resolved auth token (empty if --no-auth)
-	cancelRegistry       *coreruntime.CancellationRegistry // per-Runner in-flight cancellation registry (issue #88 / FWS-4)
-	auditSigningKey      *coreruntime.LoadedKey            // loaded once at startup; nil when signing is off (#213). Served on JWKS endpoint.
-	compression          *compress.Runtime                 // ctxzip compression runtime; nil when compression is disabled
-	intentEngine         *intent.Engine                    // R3 (#208) intent-alignment engine; nil when disabled
-	stepUpEngine         *stepup.Engine                    // R4b (#210) step-up authorization engine; nil when disabled
-	deferEngine          *deferengine.Engine               // R4c (#211) deferred-authorization engine; nil when disabled
-	authGateEngine       *authgate.Engine                  // R10 (#330) MCP auth-required gate; nil until an MCP manager with a type=user server is wired
-	consentDeliverer     ConsentDeliverer                  // optional: delivers MCP consent prompts to channels (#330); nil in standalone (no delivery yet)
-	callbackCompleter    CallbackCompleter                 // optional: standalone loopback code→token exchange (#330); nil ⇒ no loopback callback (managed hosts its own)
-	stateBinder          *stateBinder                      // standalone OAuth state binding (single-use/expiring/session-bound); lazily built with the callback endpoint
-	taskStore            *a2a.TaskStore                    // shared task store, populated once srv is built; read by defer hook when it fires
-	platformCommandGuard *coreruntime.PlatformCommandGuard // #238 (ASI02) operator-authored command deny, applied to every tool call; empty when no layer declares denied_command_patterns
+	cfg                    RunnerConfig
+	logger                 coreruntime.Logger
+	cliExecTool            *clitools.CLIExecuteTool
+	modelConfig            *coreruntime.ModelConfig          // resolved model config (for banner)
+	derivedCLIConfig       *contract.DerivedCLIConfig        // auto-derived from skill requirements
+	derivedBrowserConfig   *contract.DerivedBrowserConfig    // non-nil when a skill declares requires.capabilities: [browser] (#94)
+	browserManager         *browser.Manager                  // lazy Chromium owner; nil unless browser tools registered
+	skillGuardrails        *agentspec.SkillGuardrailRules    // runtime-parsed skill guardrails (fallback when no build artifact)
+	schedBackend           scheduler.Backend                 // schedule backend (nil until started); FileBackend in non-cluster deploys, KubernetesBackend (#162 part 2b) when running in-cluster with scheduler.backend=auto|kubernetes
+	startTime              time.Time                         // server start time (for /health uptime)
+	scheduleNotifier       ScheduleNotifier                  // optional: delivers cron results to channels
+	deferralNotifier       DeferralNotifier                  // optional: delivers DEFER approval requests to channels (#310)
+	authToken              string                            // resolved auth token (empty if --no-auth)
+	cancelRegistry         *coreruntime.CancellationRegistry // per-Runner in-flight cancellation registry (issue #88 / FWS-4)
+	auditSigningKey        *coreruntime.LoadedKey            // loaded once at startup; nil when signing is off (#213). Served on JWKS endpoint.
+	compression            *compress.Runtime                 // ctxzip compression runtime; nil when compression is disabled
+	intentEngine           *intent.Engine                    // R3 (#208) intent-alignment engine; nil when disabled
+	stepUpEngine           *stepup.Engine                    // R4b (#210) step-up authorization engine; nil when disabled
+	deferEngine            *deferengine.Engine               // R4c (#211) deferred-authorization engine; nil when disabled
+	authGateEngine         *authgate.Engine                  // R10 (#330) MCP auth-required gate; nil until an MCP manager with a type=user server is wired
+	consentDeliverer       ConsentDeliverer                  // optional: delivers MCP consent prompts to channels (#330); standalone auto-wires the A2A-artifact deliverer (#332)
+	callbackCompleter      CallbackCompleter                 // optional: standalone loopback code→token exchange (#330); nil ⇒ no loopback callback (managed hosts its own)
+	stateBinder            *stateBinder                      // standalone OAuth state binding (single-use/expiring/session-bound); lazily built with the callback endpoint
+	authorizeURLProvider   AuthorizeURLProvider              // supplies the consent link (#332 standalone builds it; managed platform supplies its own for #343)
+	standaloneSubjectStore mcp.SubjectTokenStore             // #332 shared per-subject token cache: standalone resolver reads, callback writes; nil unless a standalone type:user server exists
+	taskStore              *a2a.TaskStore                    // shared task store, populated once srv is built; read by defer hook when it fires
+	platformCommandGuard   *coreruntime.PlatformCommandGuard // #238 (ASI02) operator-authored command deny, applied to every tool call; empty when no layer declares denied_command_patterns
 }
 
 // NewRunner creates a Runner from the given config.
@@ -1041,6 +1044,14 @@ func (r *Runner) Run(ctx context.Context) error {
 					r.logger.Info("removed denied tools", map[string]any{"denied": removed})
 				}
 			}
+
+			// Standalone delegated consent (#332): when a type: user MCP
+			// server runs without a platform block, Forge drives the per-user
+			// OAuth itself. Wire the shared SubjectStore + callback completer +
+			// A2A-artifact deliverer BEFORE the manager starts (it needs the
+			// store) and before the consent endpoints register. No-op unless a
+			// standalone type: user server is configured.
+			r.enableStandaloneConsent(egressClient)
 
 			// Start MCP servers (Phase 1: HTTP-only) and register their
 			// discovered tools as namespaced "<server>__<tool>" entries.

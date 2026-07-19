@@ -117,6 +117,37 @@ Authorization: Bearer <agent_identity>
   reaches a clickable button). Non-200 fails delivery (the call still surfaces
   via `mcp_auth_required`).
 
+### Reference — curl
+
+The exact calls Forge makes (and the resume you make back). `FORGE_ORG_ID` /
+`FORGE_WORKSPACE_ID` are sent only when set.
+
+```bash
+# --- token_endpoint: provide the token -----------------------------------
+curl -sS -X POST "$TOKEN_ENDPOINT" \
+  -H "Authorization: Bearer $AGENT_IDENTITY" \
+  -H "Org-Id: $FORGE_ORG_ID" -H "Workspace-Id: $FORGE_WORKSPACE_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"server":"atlassian-registry-entry","subject":"user@corp.com"}'
+# 200 → {"access_token":"eyJ…","expires_in":3600}      # granted
+# 401 / 403 / 404 → (no body needed)                    # no grant yet → parks the call
+
+# --- authorize_endpoint: provide the authorization URL -------------------
+curl -sS -X POST "$AUTHORIZE_ENDPOINT" \
+  -H "Authorization: Bearer $AGENT_IDENTITY" \
+  -H "Org-Id: $FORGE_ORG_ID" -H "Workspace-Id: $FORGE_WORKSPACE_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"server":"atlassian-registry-entry","subject":"user@corp.com"}'
+# 200 → {"authorize_url":"https://auth.atlassian.com/authorize?client_id=<yours>&redirect_uri=<your-callback>&state=<yours>&code_challenge=<yours>&scope=…"}
+
+# --- resume: after you exchange the code + vault the refresh token --------
+curl -sS -X POST "$AGENT_URL/mcp/consent" \
+  -H "Authorization: Bearer $AGENT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"subject":"user@corp.com","server":"atlassian","granted":true}'
+# 200 resumes every parked call for {subject, server}; granted:false fails them fast
+```
+
 ## 3. Detect a pending consent
 
 When a `type: user` call has no grant, the runtime surfaces the need three ways

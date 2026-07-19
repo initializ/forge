@@ -203,6 +203,14 @@ const forgeSessionCookie = "forge_session"
 // in a URL query, so it is never leaked to the IdP via Referer (unlike the
 // state, which round-trips through the IdP by design). SameSite=Lax lets the
 // cookie survive the top-level cross-site redirect back from the IdP.
+//
+// Scope of the guarantee (see docs/mcp/configuration.md — Trust model): the
+// browser here is ANONYMOUS, and this plants the cookie for whoever holds the
+// link. So the session binding proves browser CONTINUITY across the round-trip
+// (a stolen state alone, replayed from a different browser, can't complete) —
+// it does NOT prove the completing user is the parked subject. The link is a
+// bearer capability; its real containment is authenticated-channel delivery +
+// single-use short-TTL state.
 func makeMCPStartHandler(binder *stateBinder) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		state := req.URL.Query().Get("state")
@@ -249,17 +257,24 @@ func makeMCPCallbackHandler(
 			http.Error(w, "invalid, expired, or already-used state", http.StatusBadRequest)
 			return
 		}
-		// Cross-session guard — MANDATORY. This endpoint is unauthenticated
+		// Session-continuity guard — MANDATORY. This endpoint is unauthenticated
 		// (a browser redirect carries no bearer token) and is registered on
 		// the network-exposed main server (cfg.Host, possibly 0.0.0.0), so
 		// the state binding is its ENTIRE security. Single-use + expiry alone
 		// would let anyone who obtains a state within its TTL complete the
-		// flow, so we additionally require the callback to land in the SAME
-		// session that started it. An empty bound session is a config/Issue-
-		// side bug (a network-exposed flow must bind a session) and is
-		// rejected fail-closed rather than silently downgrading to
-		// single-use+expiry. A future loopback-bound variant that wanted to
-		// relax this would bind the listener to localhost.
+		// flow from a DIFFERENT browser, so we additionally require the callback
+		// to land in the SAME browser that started it (the forge_session cookie
+		// planted at /start). An empty bound session is a config/Issue-side bug
+		// (a network-exposed flow must bind a session) and is rejected
+		// fail-closed rather than silently downgrading to single-use+expiry.
+		//
+		// What this does NOT guarantee (see docs/mcp/configuration.md — Trust
+		// model): in standalone mode the browser is anonymous, so this proves
+		// browser continuity across the IdP round-trip, NOT that the completing
+		// user is b.subject. Containment against a leaked link is
+		// authenticated-channel delivery + the short single-use TTL, not this
+		// cookie. A future loopback-bound variant would bind the listener to
+		// localhost; the tamper-proof alternative verifies IdP userinfo == subject.
 		if b.session == "" || sessionOf(req) != b.session {
 			http.Error(w, "state/session mismatch", http.StatusBadRequest)
 			return

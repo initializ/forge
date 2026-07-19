@@ -136,10 +136,37 @@ func TestDeliverConsent_OriginThread(t *testing.T) {
 	}
 }
 
-func TestHandleConsentCancel_InvokesCanceler(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
+// cancelSlack serves users.info returning clickerEmail, so the clicker-identity
+// guard can be exercised.
+func cancelSlack(t *testing.T, clickerEmail string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/users.info") {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true, "user": map[string]any{"profile": map[string]any{"email": clickerEmail}},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	}))
+}
+
+func cancelPayload(t *testing.T) []byte {
+	t.Helper()
+	val, _ := json.Marshal(consentCancelValue{Subject: "alice@corp.com", Server: "atlassian"})
+	payload, _ := json.Marshal(map[string]any{
+		"type":    "block_actions",
+		"user":    map[string]any{"id": "U1"},
+		"channel": map[string]any{"id": "D999"},
+		"message": map[string]any{"ts": "1699.1"},
+		"actions": []any{map[string]any{"action_id": consentCancelActionID, "value": string(val)}},
+	})
+	return payload
+}
+
+func TestHandleConsentCancel_InvokesCanceler(t *testing.T) {
+	srv := cancelSlack(t, "alice@corp.com") // clicker IS the subject
 	defer srv.Close()
 
 	var gotSubject, gotServer string
@@ -151,16 +178,8 @@ func TestHandleConsentCancel_InvokesCanceler(t *testing.T) {
 		return nil
 	})
 
-	val, _ := json.Marshal(consentCancelValue{Subject: "alice@corp.com", Server: "atlassian"})
-	payload, _ := json.Marshal(map[string]any{
-		"type":    "block_actions",
-		"user":    map[string]any{"id": "U1"},
-		"channel": map[string]any{"id": "D999"},
-		"message": map[string]any{"ts": "1699.1"},
-		"actions": []any{map[string]any{"action_id": consentCancelActionID, "value": string(val)}},
-	})
 	// Routed through the shared block-action dispatch.
-	if err := p.handleBlockAction(context.Background(), payload); err != nil {
+	if err := p.handleBlockAction(context.Background(), cancelPayload(t)); err != nil {
 		t.Fatalf("handleBlockAction: %v", err)
 	}
 	if gotSubject != "alice@corp.com" || gotServer != "atlassian" {
@@ -168,10 +187,33 @@ func TestHandleConsentCancel_InvokesCanceler(t *testing.T) {
 	}
 }
 
+// A different user clicking Cancel (only reachable once origin-thread delivery
+// lands) must NOT cancel the subject's parked call.
+func TestHandleConsentCancel_RejectsNonSubject(t *testing.T) {
+	srv := cancelSlack(t, "mallory@corp.com") // clicker is NOT the subject
+	defer srv.Close()
+
+	called := false
+	p := New()
+	p.apiBase = srv.URL
+	p.botToken = "xoxb-test"
+	p.SetConsentCanceler(func(_ context.Context, _, _ string) error {
+		called = true
+		return nil
+	})
+
+	if err := p.handleBlockAction(context.Background(), cancelPayload(t)); err != nil {
+		t.Fatalf("handleBlockAction: %v", err)
+	}
+	if called {
+		t.Error("a non-subject Cancel click must not cancel the parked call")
+	}
+}
+
 // A non-consent block action (e.g. an approval button) must not be swallowed by
 // the consent-cancel handler.
 func TestHandleConsentCancel_IgnoresOthers(t *testing.T) {
-	if _, _, _, _, ok := parseConsentCancel([]byte(`{"type":"block_actions","actions":[{"action_id":"forge_defer_approve","value":"task-1"}]}`)); ok {
+	if _, _, _, _, _, ok := parseConsentCancel([]byte(`{"type":"block_actions","actions":[{"action_id":"forge_defer_approve","value":"task-1"}]}`)); ok {
 		t.Error("an approval action must not parse as a consent cancel")
 	}
 }

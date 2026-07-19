@@ -136,8 +136,14 @@ connection** — the same bot the agent already runs. Two config pieces:
 - **A running Slack adapter** (`forge run --with slack`) — Forge DMs the subject
   the link (resolving the Slack user by email via `users.lookupByEmail` →
   `conversations.open`). Requires the bot scopes `chat:write`,
-  `users:read.email`, and `im:write`. When no consent-capable channel is active,
-  delivery falls back to the audit event / A2A artifact.
+  `users:read.email`, and `im:write`.
+
+The login link is **always published on the task's A2A `auth-required`
+artifact** as a durable record; Slack (when active) is an **additive push** on
+top. So a per-subject Slack failure (e.g. the email isn't in the workspace, or
+`users.lookupByEmail` is missing a scope) still leaves the user a clickable link
+on the task — it's logged, never fatal, and the parked call still resumes when
+the callback lands.
 
 After the user consents at the platform's callback, the platform resumes the
 parked call with `POST /mcp/consent {subject, server, granted:true}`. A Slack

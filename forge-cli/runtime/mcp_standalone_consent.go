@@ -248,33 +248,42 @@ func tokenTTL(tok *oauth.Token) time.Duration {
 	return 5 * time.Minute
 }
 
-// standaloneConsentDeliverer is the ConsentDeliverer that "delivers" the login
-// link in-band: it builds the link and writes it onto the parked task's
-// auth-required artifact so a UI/A2A client renders a clickable prompt. Channel
-// (Slack) delivery is #343; this is the platform-free default.
-func (r *Runner) standaloneConsentDeliverer(ctx context.Context, subject, server, taskID string, deadline time.Time) error {
-	link, err := r.authorizeURLProvider(ctx, subject, server)
-	if err != nil {
-		return err
-	}
-	if r.taskStore == nil {
-		return fmt.Errorf("standalone consent: no task store to publish the auth-required artifact")
+// PublishConsentArtifact writes the "Connect <server>" login link onto the
+// parked task's auth-required artifact — a DURABLE record a UI/A2A client can
+// render. It is the always-on backstop: channel delivery (Slack, #343) is an
+// additive push on top of it, so a per-subject channel failure never leaves the
+// user without a link. nil-safe (no task store / empty link ⇒ no-op).
+func (r *Runner) PublishConsentArtifact(taskID, subject, server, authorizeURL string, deadline time.Time) {
+	if r.taskStore == nil || taskID == "" || authorizeURL == "" {
+		return
 	}
 	r.SetStatus(taskID, a2a.TaskStatus{
 		State: a2a.TaskStateAuthRequired,
 		Message: &a2a.Message{
 			Role: a2a.MessageRoleAgent,
 			Parts: []a2a.Part{
-				a2a.NewTextPart(fmt.Sprintf("Authorization required: connect %s (as %s). Open this link to continue: %s", server, subject, link)),
+				a2a.NewTextPart(fmt.Sprintf("Authorization required: connect %s (as %s). Open this link to continue: %s", server, subject, authorizeURL)),
 				a2a.NewDataPart(map[string]any{
 					"type":          "mcp_auth_required",
 					"server":        server,
 					"subject":       subject,
-					"authorize_url": link,
+					"authorize_url": authorizeURL,
 					"expires_at":    deadline.UTC().Format(time.RFC3339),
 				}),
 			},
 		},
 	})
+}
+
+// standaloneConsentDeliverer is the ConsentDeliverer used when no channel
+// adapter is active: it builds the link and publishes it on the task artifact.
+// (When Slack is active, cmd/run.go's deliverer publishes the same artifact and
+// additionally DMs the user.)
+func (r *Runner) standaloneConsentDeliverer(ctx context.Context, subject, server, taskID string, deadline time.Time) error {
+	link, err := r.authorizeURLProvider(ctx, subject, server)
+	if err != nil {
+		return err
+	}
+	r.PublishConsentArtifact(taskID, subject, server, link, deadline)
 	return nil
 }

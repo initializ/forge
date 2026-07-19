@@ -84,6 +84,7 @@ and never reaches the agent. Both types use the top-level `platform` block:
 platform:
   token_endpoint: ${INITIALIZ_TOKEN_ENDPOINT}   # ${VAR}-expanded at use
   agent_identity: ${FORGE_PLATFORM_TOKEN}       # the agent's platform credential
+  authorize_endpoint: ${INITIALIZ_AUTHORIZE_ENDPOINT}  # optional: consent-link resolver (#343)
 
 mcp:
   servers:
@@ -114,8 +115,35 @@ mcp:
   established lazily on the first call. See [Materialized tool schemas](#materialized-tool-schemas-317).
 - **`ref`** names the platform tool-registry entry the token is authorized
   against (defaults to the server name).
-- **Egress:** the platform token-endpoint host is auto-merged into the
-  allowlist.
+- **Egress:** the platform token-endpoint (and `authorize_endpoint`) hosts are
+  auto-merged into the allowlist.
+
+##### Delivering the consent prompt (managed, #343)
+
+When a `type: user` call parks awaiting consent, Forge can present a
+"Connect `<server>`" login link to the requesting user **over its own Slack
+connection** — the same bot the agent already runs. Two config pieces:
+
+- **`platform.authorize_endpoint`** — where Forge fetches the login URL.
+  Forge POSTs `{"server": <ref>, "subject": <email>}` (same Bearer + tenancy
+  headers as `token_endpoint`) and the platform returns
+  `{"authorize_url": "https://…"}`. The platform builds that URL with **its own**
+  `client_id` / `redirect_uri` / `state` and **hosts the callback**, so the
+  authorization `code` and refresh token land at the platform, never at Forge
+  (managed invariant). Forge treats the URL as opaque and only delivers it.
+  Unset ⇒ no managed link; the parked call still surfaces via the
+  `mcp_auth_required` audit event.
+- **A running Slack adapter** (`forge run --with slack`) — Forge DMs the subject
+  the link (resolving the Slack user by email via `users.lookupByEmail` →
+  `conversations.open`). Requires the bot scopes `chat:write`,
+  `users:read.email`, and `im:write`. When no consent-capable channel is active,
+  delivery falls back to the audit event / A2A artifact.
+
+After the user consents at the platform's callback, the platform resumes the
+parked call with `POST /mcp/consent {subject, server, granted:true}`. A Slack
+"Cancel" button fails the call fast (`granted:false`). Delivery is decoupled from
+token custody — the same Slack path serves standalone (Forge-built URL) and
+managed (platform-supplied URL).
 
 > **Per-user connection isolation.** For `type: user`, Forge establishes one
 > MCP **connection per requesting user** — the connection's `initialize` runs

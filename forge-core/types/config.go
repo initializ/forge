@@ -628,6 +628,16 @@ type PlatformConfig struct {
 	// AgentIdentity is the agent's platform credential (typically
 	// ${FORGE_PLATFORM_TOKEN}), sent as the Bearer on token requests.
 	AgentIdentity string `yaml:"agent_identity"`
+	// AuthorizeEndpoint is the platform's consent-URL resolver for managed
+	// delegated consent (#343): when a type: user call needs consent, Forge
+	// POSTs {"server": <ref>, "subject": <email>} here (same auth + tenancy
+	// headers as TokenEndpoint) and the platform returns
+	// {"authorize_url": "https://…"} — a login URL it built with ITS OWN
+	// client_id / redirect_uri / state (Forge treats it as opaque and only
+	// delivers it, e.g. a Slack DM). Optional: unset ⇒ Forge can't fetch a
+	// managed consent link, so managed Slack delivery is disabled (the parked
+	// call still surfaces via the mcp_auth_required audit event).
+	AuthorizeEndpoint string `yaml:"authorize_endpoint,omitempty"`
 }
 
 // MCPAuth declares the authentication mechanism for an MCP server.

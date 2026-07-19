@@ -172,6 +172,67 @@ func doPlatformTokenRequest(ctx context.Context, client *http.Client, rawEndpoin
 	return out.AccessToken, ttl, resp.StatusCode, nil
 }
 
+// FetchAuthorizeURL asks the platform for a delegated-consent login URL for
+// {ref, subject} (managed mode, #343). It POSTs the same shape + auth + tenancy
+// headers as the token endpoint — Bearer agent identity, Org-Id/Workspace-Id —
+// and expects {"authorize_url": "https://…"} back. The platform builds that URL
+// with its own client_id / redirect_uri / state; Forge treats it as opaque and
+// only delivers it (e.g. a Slack DM). Endpoint + identity are ${VAR}-expanded at
+// request time. Any non-200 is surfaced as an error (there's no "not yet" state
+// here — either the platform can mint a consent URL or it can't).
+func FetchAuthorizeURL(ctx context.Context, client *http.Client, rawEndpoint, rawIdentity, ref, subject string) (string, error) {
+	endpoint := expandEnvVars(rawEndpoint)
+	identity := expandEnvVars(rawIdentity)
+	if endpoint == "" {
+		return "", fmt.Errorf("%w: platform.authorize_endpoint is empty (or its env var is unset)", ErrProtocolError)
+	}
+	if identity == "" {
+		return "", fmt.Errorf("%w: platform.agent_identity is empty (or its env var is unset)", ErrProtocolError)
+	}
+	if subject == "" {
+		return "", fmt.Errorf("%w: a consent URL requires a requesting-user subject", ErrNoToken)
+	}
+	body, err := json.Marshal(map[string]string{"server": ref, "subject": subject})
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(body)))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+identity)
+	if org := os.Getenv("FORGE_ORG_ID"); org != "" {
+		req.Header.Set("Org-Id", org)
+	}
+	if ws := os.Getenv("FORGE_WORKSPACE_ID"); ws != "" {
+		req.Header.Set("Workspace-Id", ws)
+	}
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("%w: platform authorize-url request failed: %v", ErrTransportUnavailable, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("%w: platform authorize endpoint returned %d for server %q (subject %q)", ErrProtocolError, resp.StatusCode, ref, subject)
+	}
+	var out struct {
+		AuthorizeURL string `json:"authorize_url"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return "", fmt.Errorf("%w: parsing platform authorize response: %v", ErrProtocolError, err)
+	}
+	if out.AuthorizeURL == "" {
+		return "", fmt.Errorf("%w: platform authorize response carried no authorize_url", ErrProtocolError)
+	}
+	return out.AuthorizeURL, nil
+}
+
 // delegatedTokenSource is the managed resolver for auth.type=user (#317):
 // a per-REQUESTING-USER access token from the platform token endpoint
 // (delegated body {server, subject}), cached per subject so distinct users

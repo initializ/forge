@@ -1052,6 +1052,12 @@ func (r *Runner) Run(ctx context.Context) error {
 			// store) and before the consent endpoints register. No-op unless a
 			// standalone type: user server is configured.
 			r.enableStandaloneConsent(egressClient)
+			// Managed delegated consent (#343): in platform mode Forge fetches
+			// the consent link from platform.authorize_endpoint and delivers it
+			// (e.g. over Slack). Provider only — the platform hosts the callback
+			// and token custody. No-op unless authorize_endpoint + a type: user
+			// server are configured.
+			r.enableManagedConsentProvider(egressClient)
 
 			// Start MCP servers (Phase 1: HTTP-only) and register their
 			// discovered tools as namespaced "<server>__<tool>" entries.

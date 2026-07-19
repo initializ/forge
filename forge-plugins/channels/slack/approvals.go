@@ -353,6 +353,13 @@ func (p *Plugin) handleInteractive(ctx context.Context, payload []byte) error {
 // reason-less reject only if the modal can't be opened, so a reject is never
 // lost to a transient views.open failure).
 func (p *Plugin) handleBlockAction(ctx context.Context, payload []byte) error {
+	// MCP consent Cancel (#343) shares the block_actions envelope; route it
+	// first. The Connect button is a URL button — its click also arrives here
+	// but parses as neither Cancel nor approval, so it's ignored (the browser
+	// opened the link).
+	if handled, err := p.handleConsentCancel(ctx, payload); handled {
+		return err
+	}
 	dec, userID, channelID, msgTS, triggerID, ok := parseApprovalInteraction(payload)
 	if !ok {
 		return nil // not a forge approval interaction; ignore quietly

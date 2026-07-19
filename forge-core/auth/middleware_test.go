@@ -136,6 +136,17 @@ func TestMiddleware(t *testing.T) {
 			wantStatus: http.StatusOK,
 		},
 		{
+			// #332: the standalone consent "start" hop is opened by the user's
+			// ANONYMOUS browser (a link click, no bearer token) — it MUST bypass
+			// auth or the flow dies at its first hop. Its authenticity is the
+			// session-bound state it Peeks, not a token.
+			name:       "GET /mcp/oauth/start is public (anonymous browser link click)",
+			opts:       MiddlewareOptions{Chain: chain, SkipPaths: DefaultSkipPaths()},
+			method:     "GET",
+			path:       "/mcp/oauth/start",
+			wantStatus: http.StatusOK,
+		},
+		{
 			// #330: the consent RESUME signal is the opposite — the managed
 			// platform authenticates when it posts it, so it must NOT be
 			// exempt. Guards against accidentally skip-listing both together.

@@ -33,22 +33,32 @@ func DefaultSkipPaths() map[string]bool {
 		"GET /.well-known/agent.json":      true,
 		"GET /healthz":                     true,
 		"GET /health":                      true,
-		// The standalone MCP OAuth callback (#330) is a browser redirect
-		// FROM the IdP — it carries no bearer token, so it must bypass auth
-		// or the middleware 401s it before the handler runs. Its authenticity
-		// is the single-use, session-bound OAuth `state` it validates, not a
-		// bearer token. Exempt unconditionally: it is registered only in
-		// standalone mode (a CallbackCompleter is set); in managed mode the
-		// path is unregistered and a request just 404s after the skip. NOTE
-		// the contrast with POST /mcp/consent, which is deliberately NOT
-		// exempt — the managed platform authenticates when it posts the
-		// resume signal.
+		// The standalone MCP OAuth endpoints (#330/#332) are browser hops
+		// that carry no bearer token, so they must bypass auth or the
+		// middleware 401s them before the handler runs:
+		//
+		//   - GET /mcp/oauth/start: the "Connect" link the user's ANONYMOUS
+		//     browser opens first; it plants the session cookie and redirects
+		//     to the IdP. Its authenticity rests on the Peek'd session-bound
+		//     state (it rejects any binding lacking authorizeURL+session), and
+		//     it is not an open redirect — b.authorizeURL is server-built from
+		//     config, reachable only via a Forge-minted state.
+		//   - GET /mcp/oauth/callback: the redirect FROM the IdP; authenticity
+		//     is the single-use, session-bound state it validates.
+		//
+		// Both are registered ONLY in standalone mode (a CallbackCompleter is
+		// set); in managed mode the paths are unregistered and a request just
+		// 404s after the skip. NOTE the contrast with POST /mcp/consent, which
+		// is deliberately NOT exempt — the managed platform authenticates when
+		// it posts the resume signal.
+		"GET /mcp/oauth/start":                 true,
 		"GET /mcp/oauth/callback":              true,
 		"OPTIONS /":                            true,
 		"OPTIONS /.well-known/agent-card.json": true,
 		"OPTIONS /.well-known/agent.json":      true,
 		"OPTIONS /healthz":                     true,
 		"OPTIONS /health":                      true,
+		"OPTIONS /mcp/oauth/start":             true,
 		"OPTIONS /mcp/oauth/callback":          true,
 	}
 }

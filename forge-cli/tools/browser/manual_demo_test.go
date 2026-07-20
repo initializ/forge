@@ -49,7 +49,7 @@ func TestManualBrowseDemo(t *testing.T) {
 	// Allowlist exactly the target host (plus its www/apex sibling), so this
 	// demonstrates real egress enforcement, not dev-open.
 	matcher := security.NewDomainMatcher(security.ModeAllowlist, []string{u.Hostname()})
-	proxy := security.NewEgressProxy(matcher, false)
+	proxy := security.NewEgressProxy(matcher, false, nil)
 	proxy.OnAttempt = func(a security.EgressAttempt) {
 		verdict := "ALLOW"
 		if !a.Allowed {

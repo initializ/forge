@@ -109,6 +109,30 @@ The `allowPrivateIPs` setting is resolved with this precedence:
 
 Cloud metadata (`169.254.169.254`) is **always** blocked regardless of the `allowPrivateIPs` setting.
 
+### Narrow Private-CIDR Allowlist (issue #337 preparation)
+
+`allow_private_ips: true` opens **all** RFC 1918 / link-local / CGNAT / ULA ranges at once — the right choice for a Kubernetes pod that talks to any service in the mesh, but too wide for an agent that only needs to reach one internal database.
+
+`allowed_private_cidrs` narrows that: when `allow_private_ips` is false (or unset), IPs falling inside any listed CIDR bypass the private-block, and everything else private stays blocked.
+
+```yaml
+egress:
+  mode: allowlist
+  allow_private_ips: false                # keep RFC 1918 blocked wholesale
+  allowed_private_cidrs:                  # ...but open these two slices
+    - 10.20.0.0/16                        # internal databases
+    - 172.16.42.0/24                      # message brokers
+```
+
+Invariants (checked by tests):
+
+- **Always-blocked ranges (cloud metadata `169.254.169.254`, loopback, `0.0.0.0/8`) stay blocked** even if an operator lists a CIDR that would otherwise contain them. No allowlist punches a hole in these.
+- **`allow_private_ips: true` supersedes** the CIDR list — the boolean means "all private allowed" and the list is redundant. A warning in that case is a good future addition, but the effective policy is safe (superset).
+- **Invalid CIDR strings fail at config-load time**, not at first dial. `Resolve()` validates each entry via `net.ParseCIDR`; bare IPs (missing `/mask`) are rejected because the config intent is range-level exemption.
+- CIDRs are consulted by both the in-process `EgressEnforcer` (Go clients) and the subprocess `EgressProxy` (skill scripts) — one policy, two enforcement paths.
+
+Companion feature for #337: raw-TCP egress (databases, message brokers) requires this narrow-private mechanism to be reachable in the first place. Landing the CIDR allowlist first (this PR) unblocks the SOCKS5-based TCP path (follow-up PR) without opening RFC 1918 wholesale.
+
 ## Runtime Egress Enforcer
 
 The `EgressEnforcer` (`forge-core/security/egress_enforcer.go`) is an `http.RoundTripper` that wraps a `SafeTransport`. Every outbound HTTP request from in-process Go code (builtins like `http_request`, `web_search`, LLM API calls) passes through it.
@@ -307,9 +331,13 @@ egress:
     - slack
     - telegram
   allow_private_ips: false          # default: auto-detect from container env
+  allowed_private_cidrs:            # narrow private-IP allowlist (see above)
+    - 10.20.0.0/16
 ```
 
 The `allow_private_ips` field controls whether RFC 1918 addresses are allowed through the SafeDialer. When omitted, it defaults to `true` inside containers (detected via `KUBERNETES_SERVICE_HOST` or `/.dockerenv`) and `false` otherwise. Cloud metadata (`169.254.169.254`) is always blocked.
+
+`allowed_private_cidrs` (added in issue #337) is a narrower alternative: it lets you reach a specific slice of the private-IP space (e.g. only the internal-database subnet) without opening RFC 1918 wholesale. See "Narrow Private-CIDR Allowlist" above.
 
 ## Production vs Development
 

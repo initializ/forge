@@ -27,4 +27,8 @@ type EgressConfig struct {
 	ToolDomains     []string      `json:"tool_domains,omitempty"`    // inferred from tools
 	AllDomains      []string      `json:"all_domains,omitempty"`     // deduplicated union
 	AllowPrivateIPs bool          `json:"allow_private_ips,omitempty"`
+	// AllowedPrivateCIDRs is the resolved list of CIDR strings. Callers
+	// should run these through ParsePrivateCIDRs to obtain the []*net.IPNet
+	// the SafeDialer/EgressProxy constructors expect.
+	AllowedPrivateCIDRs []string `json:"allowed_private_cidrs,omitempty"`
 }

@@ -51,7 +51,7 @@ func (s *EgressStage) Execute(ctx context.Context, bc *pipeline.BuildContext) er
 	// time out depending on which side notices first.
 	allowed = append(allowed, security.LLMProviderDomains(bc.Config)...)
 
-	resolved, err := security.Resolve(cfg.Profile, cfg.Mode, allowed, toolNames, cfg.Capabilities)
+	resolved, err := security.Resolve(cfg.Profile, cfg.Mode, allowed, toolNames, cfg.Capabilities, nil)
 	if err != nil {
 		return fmt.Errorf("resolving egress: %w", err)
 	}

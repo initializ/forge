@@ -145,26 +145,37 @@ func (f *Flow) buildAuthURL(pkce *PKCEParams, state string) string {
 }
 
 // openBrowser opens the given URL in the default browser.
-//
-// Windows note: `cmd /c start <url>` treats `&` as the shell "AND"
-// separator, truncating any URL that has more than one query
-// parameter — the OpenAI OAuth authorize URL has eight, so the
-// browser opens with only `?response_type=code` and OpenAI's auth
-// server returns a generic `unknown_error`. `rundll32
-// url.dll,FileProtocolHandler` opens URLs through the Windows shell
-// API without invoking cmd's parser, so `&` in query strings stays
-// intact across Windows Terminal / PowerShell / cmd.exe.
 func openBrowser(url string) error {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", url)
-	case "linux":
-		cmd = exec.Command("xdg-open", url)
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
-	default:
+	cmd := browserCommand(runtime.GOOS, url)
+	if cmd == nil {
 		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
 	}
 	return cmd.Start()
+}
+
+// browserCommand builds (but does not start) the platform launcher for
+// url, so the selection table is unit-testable — a shell-truncation
+// regression is invisible to a URL-shape test. Returns nil for an
+// unsupported GOOS. The url is always passed as a single argument,
+// never through a shell, so `&` in query strings survives.
+//
+// Windows note: `cmd /c start <url>` treats `&` as the shell "AND"
+// separator, truncating any URL that has more than one query
+// parameter — the OpenAI OAuth authorize URL has eight, so the browser
+// opens with only `?response_type=code` and OpenAI's auth server
+// returns a generic `unknown_error`. `rundll32
+// url.dll,FileProtocolHandler` opens URLs through the Windows shell API
+// without invoking cmd's parser, so `&` stays intact across Windows
+// Terminal / PowerShell / cmd.exe.
+func browserCommand(goos, url string) *exec.Cmd {
+	switch goos {
+	case "darwin":
+		return exec.Command("open", url)
+	case "linux":
+		return exec.Command("xdg-open", url)
+	case "windows":
+		return exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		return nil
+	}
 }

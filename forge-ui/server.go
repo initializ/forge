@@ -206,16 +206,30 @@ func corsMiddleware(next http.Handler) http.Handler {
 
 // openBrowser opens the default browser to the given URL.
 func openBrowser(url string) {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", url)
-	case "linux":
-		cmd = exec.Command("xdg-open", url)
-	case "windows":
-		cmd = exec.Command("cmd", "/c", "start", url)
-	default:
-		return
+	if cmd := browserCommand(runtime.GOOS, url); cmd != nil {
+		_ = cmd.Start()
 	}
-	_ = cmd.Start()
+}
+
+// browserCommand builds (but does not start) the platform launcher for
+// url, so the selection table is unit-testable. The url is always a
+// single argument, never parsed by a shell. Returns nil for an
+// unsupported GOOS.
+//
+// Windows uses `rundll32 url.dll,FileProtocolHandler` rather than
+// `cmd /c start`: cmd treats `&` as a command separator and truncates
+// any URL with multiple query params (the OAuth launcher in
+// forge-core/llm/oauth was fixed the same way). Latent here today — the
+// dashboard URL has no params — but a footgun the moment one is added.
+func browserCommand(goos, url string) *exec.Cmd {
+	switch goos {
+	case "darwin":
+		return exec.Command("open", url)
+	case "linux":
+		return exec.Command("xdg-open", url)
+	case "windows":
+		return exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		return nil
+	}
 }

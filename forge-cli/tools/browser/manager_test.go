@@ -44,7 +44,7 @@ func requireChromium(t *testing.T) string {
 // trivial expression. Returns nil only if the browser genuinely started.
 func probeBrowserLaunch(bin string) error {
 	matcher := security.NewDomainMatcher(security.ModeAllowlist, nil)
-	proxy := security.NewEgressProxy(matcher, false)
+	proxy := security.NewEgressProxy(matcher, false, nil)
 	proxyURL, err := proxy.Start(context.Background())
 	if err != nil {
 		return err
@@ -71,7 +71,7 @@ func probeBrowserLaunch(bin string) error {
 // OnAttempt calls. Returns the proxy URL and the attempts map (guarded by mu).
 func startProxy(t *testing.T, matcher *security.DomainMatcher) (string, *sync.Mutex, map[string]bool) {
 	t.Helper()
-	proxy := security.NewEgressProxy(matcher, false)
+	proxy := security.NewEgressProxy(matcher, false, nil)
 	mu := &sync.Mutex{}
 	attempts := map[string]bool{}
 	proxy.OnAttempt = func(a security.EgressAttempt) {

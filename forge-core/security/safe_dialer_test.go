@@ -30,7 +30,7 @@ func TestSafeDialerBlocksPrivateResolution(t *testing.T) {
 		},
 	}
 
-	sd := NewSafeDialer(resolver, false)
+	sd := NewSafeDialer(resolver, false, nil)
 	_, err := sd.SafeDialContext(context.Background(), "tcp", "internal.example.com:80")
 	if err == nil {
 		t.Fatal("expected error for domain resolving to private IP")
@@ -47,7 +47,7 @@ func TestSafeDialerAllowsPrivateWhenConfigured(t *testing.T) {
 		},
 	}
 
-	sd := NewSafeDialer(resolver, true)
+	sd := NewSafeDialer(resolver, true, nil)
 	// This will fail at the dial stage (no actual service), but should
 	// pass IP validation
 	_, err := sd.SafeDialContext(context.Background(), "tcp", "service.cluster.local:80")
@@ -67,7 +67,7 @@ func TestSafeDialerBlocksMetadataAlways(t *testing.T) {
 	}
 
 	// Even with allowPrivate=true, metadata must be blocked
-	sd := NewSafeDialer(resolver, true)
+	sd := NewSafeDialer(resolver, true, nil)
 	_, err := sd.SafeDialContext(context.Background(), "tcp", "metadata.internal:80")
 	if err == nil {
 		t.Fatal("expected error for metadata IP")
@@ -84,7 +84,7 @@ func TestSafeDialerBlocksLoopbackAlways(t *testing.T) {
 		},
 	}
 
-	sd := NewSafeDialer(resolver, true)
+	sd := NewSafeDialer(resolver, true, nil)
 	_, err := sd.SafeDialContext(context.Background(), "tcp", "loopback.example.com:80")
 	if err == nil {
 		t.Fatal("expected error for loopback IP")
@@ -104,7 +104,7 @@ func TestSafeDialerBlocksMixedIPs(t *testing.T) {
 		},
 	}
 
-	sd := NewSafeDialer(resolver, false)
+	sd := NewSafeDialer(resolver, false, nil)
 	_, err := sd.SafeDialContext(context.Background(), "tcp", "mixed.example.com:80")
 	if err == nil {
 		t.Fatal("expected error when any resolved IP is blocked")
@@ -119,7 +119,7 @@ func TestSafeDialerDNSFailure(t *testing.T) {
 		addrs: map[string][]net.IPAddr{},
 	}
 
-	sd := NewSafeDialer(resolver, false)
+	sd := NewSafeDialer(resolver, false, nil)
 	_, err := sd.SafeDialContext(context.Background(), "tcp", "nonexistent.example.com:80")
 	if err == nil {
 		t.Fatal("expected error for DNS failure")
@@ -127,7 +127,7 @@ func TestSafeDialerDNSFailure(t *testing.T) {
 }
 
 func TestSafeDialerIPLiteral(t *testing.T) {
-	sd := NewSafeDialer(nil, false)
+	sd := NewSafeDialer(nil, false, nil)
 
 	// Blocked IP literal
 	_, err := sd.SafeDialContext(context.Background(), "tcp", "169.254.169.254:80")
@@ -140,7 +140,7 @@ func TestSafeDialerIPLiteral(t *testing.T) {
 }
 
 func TestSafeDialerRejectsNonStandardIP(t *testing.T) {
-	sd := NewSafeDialer(nil, false)
+	sd := NewSafeDialer(nil, false, nil)
 
 	_, err := sd.SafeDialContext(context.Background(), "tcp", "0x7f000001:80")
 	if err == nil {
@@ -152,10 +152,83 @@ func TestSafeDialerRejectsNonStandardIP(t *testing.T) {
 }
 
 func TestSafeDialerInvalidAddress(t *testing.T) {
-	sd := NewSafeDialer(nil, false)
+	sd := NewSafeDialer(nil, false, nil)
 
 	_, err := sd.SafeDialContext(context.Background(), "tcp", "no-port")
 	if err == nil {
 		t.Fatal("expected error for invalid address")
 	}
+}
+
+// TestSafeDialer_PrivateCIDRAllowlist covers the vend-time integration:
+// a hostname resolving into a private CIDR listed under allowedPrivateCIDRs
+// should pass the IP check (dial still fails on unreachable target, which
+// is fine — we only assert we get past the block, not that the connection
+// succeeds).
+func TestSafeDialer_PrivateCIDRAllowlist(t *testing.T) {
+	cidrs, err := ParsePrivateCIDRs([]string{"10.20.0.0/16"})
+	if err != nil {
+		t.Fatalf("ParsePrivateCIDRs: %v", err)
+	}
+
+	t.Run("resolved IP inside listed CIDR passes IP check", func(t *testing.T) {
+		resolver := &mockResolver{
+			addrs: map[string][]net.IPAddr{
+				"db.internal": {{IP: net.ParseIP("10.20.0.5")}},
+			},
+		}
+		sd := NewSafeDialer(resolver, false, cidrs)
+		_, err := sd.SafeDialContext(context.Background(), "tcp", "db.internal:5432")
+		// Dial will fail (nothing listening at 10.20.0.5), but the failure
+		// must not be from the IP block — that's the invariant we care about.
+		if err != nil && strings.Contains(err.Error(), "blocked IP") {
+			t.Errorf("CIDR-listed private IP should pass IP check, got: %v", err)
+		}
+	})
+
+	t.Run("resolved IP outside listed CIDR stays blocked", func(t *testing.T) {
+		resolver := &mockResolver{
+			addrs: map[string][]net.IPAddr{
+				"other.internal": {{IP: net.ParseIP("10.99.0.5")}},
+			},
+		}
+		sd := NewSafeDialer(resolver, false, cidrs)
+		_, err := sd.SafeDialContext(context.Background(), "tcp", "other.internal:5432")
+		if err == nil {
+			t.Fatal("expected block for private IP outside CIDR list")
+		}
+		if !strings.Contains(err.Error(), "blocked IP") {
+			t.Errorf("expected 'blocked IP' error, got: %v", err)
+		}
+	})
+
+	t.Run("cloud metadata cannot be opened via CIDR list", func(t *testing.T) {
+		// Even if an operator lists 169.254.0.0/16, metadata IP stays blocked.
+		metadataCIDRs, err := ParsePrivateCIDRs([]string{"169.254.0.0/16"})
+		if err != nil {
+			t.Fatalf("ParsePrivateCIDRs: %v", err)
+		}
+		resolver := &mockResolver{
+			addrs: map[string][]net.IPAddr{
+				"metadata": {{IP: net.ParseIP("169.254.169.254")}},
+			},
+		}
+		sd := NewSafeDialer(resolver, false, metadataCIDRs)
+		_, err = sd.SafeDialContext(context.Background(), "tcp", "metadata:80")
+		if err == nil {
+			t.Fatal("metadata IP must NEVER be reachable via CIDR list")
+		}
+		if !strings.Contains(err.Error(), "blocked IP") {
+			t.Errorf("expected 'blocked IP' error, got: %v", err)
+		}
+	})
+
+	t.Run("IP literal inside listed CIDR passes IP check", func(t *testing.T) {
+		// This exercises the ParseIP path (no DNS lookup).
+		sd := NewSafeDialer(nil, false, cidrs)
+		_, err := sd.SafeDialContext(context.Background(), "tcp", "10.20.0.5:5432")
+		if err != nil && strings.Contains(err.Error(), "blocked IP") {
+			t.Errorf("CIDR-listed private IP literal should pass, got: %v", err)
+		}
+	})
 }

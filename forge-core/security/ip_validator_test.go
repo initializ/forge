@@ -2,6 +2,7 @@ package security
 
 import (
 	"net"
+	"strings"
 	"testing"
 )
 
@@ -87,9 +88,9 @@ func TestIsBlockedIP(t *testing.T) {
 			if tt.ip != "" {
 				ip = net.ParseIP(tt.ip)
 			}
-			got := IsBlockedIP(ip, tt.allowPrivate)
+			got := IsBlockedIP(ip, tt.allowPrivate, nil)
 			if got != tt.blocked {
-				t.Errorf("IsBlockedIP(%v, %v) = %v, want %v", ip, tt.allowPrivate, got, tt.blocked)
+				t.Errorf("IsBlockedIP(%v, %v, nil) = %v, want %v", ip, tt.allowPrivate, got, tt.blocked)
 			}
 		})
 	}
@@ -139,12 +140,141 @@ func TestIsBlockedIPv6Transition(t *testing.T) {
 			if ip == nil {
 				t.Fatalf("failed to parse IP %q", tt.ip)
 			}
-			got := IsBlockedIP(ip, tt.allowPrivate)
+			got := IsBlockedIP(ip, tt.allowPrivate, nil)
 			if got != tt.blocked {
-				t.Errorf("IsBlockedIP(%v, %v) = %v, want %v", ip, tt.allowPrivate, got, tt.blocked)
+				t.Errorf("IsBlockedIP(%v, %v, nil) = %v, want %v", ip, tt.allowPrivate, got, tt.blocked)
 			}
 		})
 	}
+}
+
+// mustParseCIDRs is a test helper that panics on invalid input — makes each
+// row of a table test one-liner readable without repeating error handling.
+func mustParseCIDRs(t *testing.T, cidrs ...string) []*net.IPNet {
+	t.Helper()
+	parsed, err := ParsePrivateCIDRs(cidrs)
+	if err != nil {
+		t.Fatalf("ParsePrivateCIDRs(%v): %v", cidrs, err)
+	}
+	return parsed
+}
+
+// TestIsBlockedIP_PrivateCIDRAllowlist covers the new narrow-private path:
+// an operator lists specific private CIDRs to reach (e.g. only 10.20.0.0/16)
+// without opening RFC 1918 wholesale.
+func TestIsBlockedIP_PrivateCIDRAllowlist(t *testing.T) {
+	tests := []struct {
+		name         string
+		ip           string
+		allowPrivate bool
+		cidrs        []*net.IPNet
+		blocked      bool
+	}{
+		{
+			name:    "private IP inside listed CIDR is permitted",
+			ip:      "10.20.0.5",
+			cidrs:   mustParseCIDRs(t, "10.20.0.0/16"),
+			blocked: false,
+		},
+		{
+			name:    "private IP outside listed CIDR stays blocked",
+			ip:      "10.99.0.5",
+			cidrs:   mustParseCIDRs(t, "10.20.0.0/16"),
+			blocked: true,
+		},
+		{
+			name:    "unrelated RFC 1918 range not in list stays blocked",
+			ip:      "192.168.1.1",
+			cidrs:   mustParseCIDRs(t, "10.20.0.0/16"),
+			blocked: true,
+		},
+		{
+			name:    "multiple CIDRs — hit on second one",
+			ip:      "172.16.42.5",
+			cidrs:   mustParseCIDRs(t, "10.0.0.0/8", "172.16.0.0/12"),
+			blocked: false,
+		},
+		{
+			name:         "allowPrivate=true supersedes CIDR list (all private allowed)",
+			ip:           "192.168.1.1",
+			allowPrivate: true,
+			cidrs:        nil,
+			blocked:      false,
+		},
+		// Always-blocked ranges MUST NOT be opened via the CIDR list.
+		{
+			name:    "metadata IP stays blocked even if CIDR list opens it",
+			ip:      "169.254.169.254",
+			cidrs:   mustParseCIDRs(t, "169.254.0.0/16"),
+			blocked: true,
+		},
+		{
+			name:    "loopback stays blocked even if CIDR list opens it",
+			ip:      "127.0.0.1",
+			cidrs:   mustParseCIDRs(t, "127.0.0.0/8"),
+			blocked: true,
+		},
+		// Empty CIDR list = pre-CIDR default behavior.
+		{
+			name:    "nil CIDR list = default block-all-private",
+			ip:      "10.0.0.1",
+			cidrs:   nil,
+			blocked: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ip := net.ParseIP(tt.ip)
+			if ip == nil {
+				t.Fatalf("failed to parse IP %q", tt.ip)
+			}
+			got := IsBlockedIP(ip, tt.allowPrivate, tt.cidrs)
+			if got != tt.blocked {
+				t.Errorf("IsBlockedIP(%v, %v, %v) = %v, want %v",
+					ip, tt.allowPrivate, tt.cidrs, got, tt.blocked)
+			}
+		})
+	}
+}
+
+func TestParsePrivateCIDRs(t *testing.T) {
+	t.Run("nil input returns nil", func(t *testing.T) {
+		got, err := ParsePrivateCIDRs(nil)
+		if err != nil {
+			t.Fatalf("ParsePrivateCIDRs(nil): %v", err)
+		}
+		if got != nil {
+			t.Errorf("expected nil, got %v", got)
+		}
+	})
+
+	t.Run("valid CIDRs parse", func(t *testing.T) {
+		got, err := ParsePrivateCIDRs([]string{"10.0.0.0/8", "172.16.0.0/12"})
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("expected 2 CIDRs, got %d", len(got))
+		}
+	})
+
+	t.Run("invalid CIDR errors with the offending value", func(t *testing.T) {
+		_, err := ParsePrivateCIDRs([]string{"10.0.0.0/8", "not-a-cidr"})
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "not-a-cidr") {
+			t.Errorf("error should name the bad CIDR, got: %v", err)
+		}
+	})
+
+	t.Run("bare IP without /mask is rejected", func(t *testing.T) {
+		_, err := ParsePrivateCIDRs([]string{"10.0.0.1"})
+		if err == nil {
+			t.Fatal("bare IPs must be rejected — the config takes CIDR ranges")
+		}
+	})
 }
 
 func TestValidateHostIP(t *testing.T) {

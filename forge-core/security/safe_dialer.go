@@ -16,22 +16,28 @@ type Resolver interface {
 // SafeDialer validates resolved IPs before establishing connections,
 // preventing DNS rebinding and SSRF via post-resolution checks.
 type SafeDialer struct {
-	resolver     Resolver
-	dialer       net.Dialer
-	allowPrivate bool
+	resolver            Resolver
+	dialer              net.Dialer
+	allowPrivate        bool
+	allowedPrivateCIDRs []*net.IPNet
 }
 
 // NewSafeDialer creates a SafeDialer. If resolver is nil, net.DefaultResolver
 // is used. Set allowPrivateIPs to true in container environments where RFC 1918
-// addresses are used for inter-service communication.
-func NewSafeDialer(resolver Resolver, allowPrivateIPs bool) *SafeDialer {
+// addresses are used for inter-service communication. allowedPrivateCIDRs is
+// a narrower alternative: when allowPrivateIPs is false, IPs falling inside
+// any of these CIDRs bypass the private-block (but always-blocked ranges —
+// cloud metadata, loopback — still win unconditionally). Pass nil for the
+// pre-CIDR default behavior.
+func NewSafeDialer(resolver Resolver, allowPrivateIPs bool, allowedPrivateCIDRs []*net.IPNet) *SafeDialer {
 	if resolver == nil {
 		resolver = net.DefaultResolver
 	}
 	return &SafeDialer{
-		resolver:     resolver,
-		dialer:       net.Dialer{Timeout: 10 * time.Second},
-		allowPrivate: allowPrivateIPs,
+		resolver:            resolver,
+		dialer:              net.Dialer{Timeout: 10 * time.Second},
+		allowPrivate:        allowPrivateIPs,
+		allowedPrivateCIDRs: allowedPrivateCIDRs,
 	}
 }
 
@@ -51,7 +57,7 @@ func (s *SafeDialer) SafeDialContext(ctx context.Context, network, addr string) 
 
 	// If it's an IP literal, validate and dial directly
 	if ip := net.ParseIP(host); ip != nil {
-		if IsBlockedIP(ip, s.allowPrivate) {
+		if IsBlockedIP(ip, s.allowPrivate, s.allowedPrivateCIDRs) {
 			return nil, fmt.Errorf("safe dialer: blocked IP %s", ip)
 		}
 		return s.dialer.DialContext(ctx, network, addr)
@@ -68,7 +74,7 @@ func (s *SafeDialer) SafeDialContext(ctx context.Context, network, addr string) 
 
 	// Validate ALL resolved IPs — reject if ANY is blocked
 	for _, a := range addrs {
-		if IsBlockedIP(a.IP, s.allowPrivate) {
+		if IsBlockedIP(a.IP, s.allowPrivate, s.allowedPrivateCIDRs) {
 			return nil, fmt.Errorf("safe dialer: domain %q resolved to blocked IP %s", host, a.IP)
 		}
 	}
@@ -79,9 +85,10 @@ func (s *SafeDialer) SafeDialContext(ctx context.Context, network, addr string) 
 }
 
 // NewSafeTransport creates an http.Transport that uses SafeDialer for all
-// connections. If resolver is nil, net.DefaultResolver is used.
-func NewSafeTransport(resolver Resolver, allowPrivateIPs bool) *http.Transport {
-	sd := NewSafeDialer(resolver, allowPrivateIPs)
+// connections. If resolver is nil, net.DefaultResolver is used. See
+// NewSafeDialer for the semantics of allowedPrivateCIDRs.
+func NewSafeTransport(resolver Resolver, allowPrivateIPs bool, allowedPrivateCIDRs []*net.IPNet) *http.Transport {
+	sd := NewSafeDialer(resolver, allowPrivateIPs, allowedPrivateCIDRs)
 	return &http.Transport{
 		DialContext:           sd.SafeDialContext,
 		MaxIdleConns:          100,

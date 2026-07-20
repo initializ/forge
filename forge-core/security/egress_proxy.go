@@ -47,13 +47,15 @@ type egressIdentity struct {
 }
 
 // NewEgressProxy creates a new EgressProxy that validates domains using the
-// given DomainMatcher. Call Start to bind and begin serving.
-func NewEgressProxy(matcher *DomainMatcher, allowPrivateIPs bool) *EgressProxy {
-	sd := NewSafeDialer(nil, allowPrivateIPs)
+// given DomainMatcher. Call Start to bind and begin serving. allowedPrivateCIDRs
+// narrows the private-IP block: when allowPrivateIPs is false, IPs inside any
+// of the listed CIDRs bypass the private block. Pass nil for pre-CIDR defaults.
+func NewEgressProxy(matcher *DomainMatcher, allowPrivateIPs bool, allowedPrivateCIDRs []*net.IPNet) *EgressProxy {
+	sd := NewSafeDialer(nil, allowPrivateIPs, allowedPrivateCIDRs)
 	return &EgressProxy{
 		matcher:       matcher,
 		safeDialer:    sd,
-		safeTransport: NewSafeTransport(nil, allowPrivateIPs),
+		safeTransport: NewSafeTransport(nil, allowPrivateIPs, allowedPrivateCIDRs),
 	}
 }
 

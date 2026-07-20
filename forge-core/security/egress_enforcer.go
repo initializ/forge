@@ -3,6 +3,7 @@ package security
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 )
@@ -13,24 +14,27 @@ type egressClientKey struct{}
 // EgressEnforcer is an http.RoundTripper that validates outbound requests
 // against a domain allowlist before forwarding them to the base transport.
 type EgressEnforcer struct {
-	base            http.RoundTripper
-	matcher         *DomainMatcher
-	AllowPrivateIPs bool
-	OnAttempt       func(ctx context.Context, domain string, allowed bool)
+	base                http.RoundTripper
+	matcher             *DomainMatcher
+	AllowPrivateIPs     bool
+	AllowedPrivateCIDRs []*net.IPNet
+	OnAttempt           func(ctx context.Context, domain string, allowed bool)
 }
 
 // NewEgressEnforcer creates a new EgressEnforcer wrapping the given base transport.
 // If base is nil, a SafeTransport is used instead of http.DefaultTransport.
 // Domains may include wildcard prefixes (e.g. "*.github.com") which match any subdomain.
-func NewEgressEnforcer(base http.RoundTripper, mode EgressMode, domains []string, allowPrivateIPs bool) *EgressEnforcer {
+// allowedPrivateCIDRs narrows the SafeDialer's private-IP block; see NewSafeDialer.
+func NewEgressEnforcer(base http.RoundTripper, mode EgressMode, domains []string, allowPrivateIPs bool, allowedPrivateCIDRs []*net.IPNet) *EgressEnforcer {
 	if base == nil {
-		base = NewSafeTransport(nil, allowPrivateIPs)
+		base = NewSafeTransport(nil, allowPrivateIPs, allowedPrivateCIDRs)
 	}
 
 	return &EgressEnforcer{
-		base:            base,
-		matcher:         NewDomainMatcher(mode, domains),
-		AllowPrivateIPs: allowPrivateIPs,
+		base:                base,
+		matcher:             NewDomainMatcher(mode, domains),
+		AllowPrivateIPs:     allowPrivateIPs,
+		AllowedPrivateCIDRs: allowedPrivateCIDRs,
 	}
 }
 

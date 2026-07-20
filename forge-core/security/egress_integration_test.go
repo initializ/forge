@@ -20,7 +20,7 @@ func TestEgressEnforcerIntegration(t *testing.T) {
 	defer ts.Close()
 
 	// Build an enforcer that allows only localhost (test server is localhost)
-	enforcer := NewEgressEnforcer(http.DefaultTransport, ModeAllowlist, []string{"api.openai.com"}, false)
+	enforcer := NewEgressEnforcer(http.DefaultTransport, ModeAllowlist, []string{"api.openai.com"}, false, nil)
 
 	var attemptLog []struct {
 		domain  string
@@ -78,7 +78,7 @@ func TestEgressEnforcerDenyAllIntegration(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	enforcer := NewEgressEnforcer(http.DefaultTransport, ModeDenyAll, nil, false)
+	enforcer := NewEgressEnforcer(http.DefaultTransport, ModeDenyAll, nil, false, nil)
 	client := &http.Client{Transport: enforcer}
 
 	// Localhost should still work even in deny-all
@@ -90,7 +90,7 @@ func TestEgressEnforcerDenyAllIntegration(t *testing.T) {
 }
 
 func TestEgressEnforcerWildcardIntegration(t *testing.T) {
-	enforcer := NewEgressEnforcer(http.DefaultTransport, ModeAllowlist, []string{"*.example.com"}, false)
+	enforcer := NewEgressEnforcer(http.DefaultTransport, ModeAllowlist, []string{"*.example.com"}, false, nil)
 
 	var attempts []struct {
 		domain  string

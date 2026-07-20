@@ -11,8 +11,11 @@ func DefaultProfile() EgressProfile { return ProfileStrict }
 // DefaultMode returns the default egress mode.
 func DefaultMode() EgressMode { return ModeDenyAll }
 
-// Resolve builds an EgressConfig from profile, mode, explicit domains, tool names, and capabilities.
-func Resolve(profile, mode string, explicitDomains, toolNames, capabilities []string) (*EgressConfig, error) {
+// Resolve builds an EgressConfig from profile, mode, explicit domains, tool
+// names, capabilities, and (optionally) the raw allowed_private_cidrs list
+// from forge.yaml. CIDR entries are validated here so a bad string fails at
+// config-load time, not at first-dial. Pass nil for pre-CIDR defaults.
+func Resolve(profile, mode string, explicitDomains, toolNames, capabilities, allowedPrivateCIDRs []string) (*EgressConfig, error) {
 	p := EgressProfile(profile)
 	if p == "" {
 		p = DefaultProfile()
@@ -29,9 +32,18 @@ func Resolve(profile, mode string, explicitDomains, toolNames, capabilities []st
 		return nil, err
 	}
 
+	// Validate CIDRs early. We throw away the parsed value here; callers
+	// re-parse via ParsePrivateCIDRs when they need []*net.IPNet. This keeps
+	// EgressConfig JSON-serializable (net.IPNet is not) while still failing
+	// closed on invalid config.
+	if _, err := ParsePrivateCIDRs(allowedPrivateCIDRs); err != nil {
+		return nil, fmt.Errorf("egress: %w", err)
+	}
+
 	cfg := &EgressConfig{
-		Profile: p,
-		Mode:    m,
+		Profile:             p,
+		Mode:                m,
+		AllowedPrivateCIDRs: allowedPrivateCIDRs,
 	}
 
 	switch m {

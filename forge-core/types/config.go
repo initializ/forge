@@ -871,6 +871,12 @@ type EgressRef struct {
 	AllowedDomains  []string `yaml:"allowed_domains,omitempty"`
 	Capabilities    []string `yaml:"capabilities,omitempty"` // capability bundles (e.g., "slack", "telegram")
 	AllowPrivateIPs *bool    `yaml:"allow_private_ips,omitempty"`
+	// AllowedPrivateCIDRs opens a narrow slice of the private-IP space
+	// (e.g. "10.20.0.0/16") without opening RFC 1918 wholesale via
+	// AllowPrivateIPs. Ignored when AllowPrivateIPs is true (that already
+	// permits all private ranges). Always-blocked ranges (cloud metadata,
+	// loopback) remain blocked regardless of what's listed here.
+	AllowedPrivateCIDRs []string `yaml:"allowed_private_cidrs,omitempty"`
 }
 
 // SkillsRef references a skills definition file.

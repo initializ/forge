@@ -662,6 +662,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		egressDomains,
 		egressToolNames,
 		r.cfg.Config.Egress.Capabilities,
+		r.cfg.Config.Egress.AllowedPrivateCIDRs,
 	)
 	if egressErr != nil {
 		r.logger.Warn("failed to resolve egress config, using default", map[string]any{"error": egressErr.Error()})
@@ -675,7 +676,16 @@ func (r *Runner) Run(ctx context.Context) error {
 			allowPrivateIPs = true
 		}
 
-		enforcer := security.NewEgressEnforcer(nil, egressCfg.Mode, egressCfg.AllDomains, allowPrivateIPs)
+		// Parse the CIDR allowlist here so the enforcer and proxy share one
+		// resolved slice. Resolve() already validated the strings, so this
+		// only fails on an internal programming error.
+		allowedPrivateCIDRs, cidrErr := security.ParsePrivateCIDRs(egressCfg.AllowedPrivateCIDRs)
+		if cidrErr != nil {
+			r.logger.Warn("failed to parse allowed_private_cidrs, ignoring", map[string]any{"error": cidrErr.Error()})
+			allowedPrivateCIDRs = nil
+		}
+
+		enforcer := security.NewEgressEnforcer(nil, egressCfg.Mode, egressCfg.AllDomains, allowPrivateIPs, allowedPrivateCIDRs)
 		enforcer.OnAttempt = func(ctx context.Context, domain string, allowed bool) {
 			event := coreruntime.AuditEgressAllowed
 			if !allowed {
@@ -723,7 +733,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		browserActive := r.derivedBrowserConfig != nil
 		if (!security.InContainer() && egressCfg.Mode != security.ModeDevOpen) || browserActive {
 			matcher := security.NewDomainMatcher(egressCfg.Mode, egressCfg.AllDomains)
-			egressProxy = security.NewEgressProxy(matcher, allowPrivateIPs)
+			egressProxy = security.NewEgressProxy(matcher, allowPrivateIPs, allowedPrivateCIDRs)
 			egressProxy.OnAttempt = func(a security.EgressAttempt) {
 				event := coreruntime.AuditEgressAllowed
 				if !a.Allowed {

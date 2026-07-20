@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -58,6 +59,48 @@ func TestBuildAuthURL_MultipleParamsAreIntact(t *testing.T) {
 	if amps := strings.Count(authURL, "&"); amps < 7 {
 		t.Errorf("expected ≥7 `&` separators (multi-param URL); got %d — URL: %s",
 			amps, authURL)
+	}
+}
+
+// TestBrowserCommand pins the platform→launcher selection — the exact
+// line the Windows fix changes, which no URL-shape test can see (a
+// shell truncation is invisible until the browser opens). It asserts
+// each GOOS builds the expected argv AND that the multi-`&` URL rides
+// as a single, un-split argument — the invariant `cmd /c start`
+// violated on Windows by letting cmd's parser eat everything after the
+// first `&`.
+func TestBrowserCommand(t *testing.T) {
+	const multiParam = "https://auth.openai.com/authorize?response_type=code&client_id=x&scope=a+b&state=s"
+	cases := []struct {
+		goos string
+		args []string // full argv incl. arg0; nil = unsupported → nil cmd
+	}{
+		{"darwin", []string{"open", multiParam}},
+		{"linux", []string{"xdg-open", multiParam}},
+		{"windows", []string{"rundll32", "url.dll,FileProtocolHandler", multiParam}},
+		{"plan9", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.goos, func(t *testing.T) {
+			cmd := browserCommand(tc.goos, multiParam)
+			if tc.args == nil {
+				if cmd != nil {
+					t.Fatalf("unsupported %s must yield nil, got %v", tc.goos, cmd.Args)
+				}
+				return
+			}
+			if cmd == nil {
+				t.Fatalf("%s yielded nil command", tc.goos)
+			}
+			if !reflect.DeepEqual(cmd.Args, tc.args) {
+				t.Fatalf("%s argv = %v, want %v", tc.goos, cmd.Args, tc.args)
+			}
+			// The URL must survive as exactly one trailing argument —
+			// no shell, no splitting on `&`.
+			if last := cmd.Args[len(cmd.Args)-1]; last != multiParam {
+				t.Errorf("%s: URL arg mutated/split: got %q, want %q", tc.goos, last, multiParam)
+			}
+		})
 	}
 }
 

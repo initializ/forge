@@ -1094,12 +1094,12 @@ description: Weather data skill      # required, one-line summary
 metadata:
   forge:
     requires:
-      bins: [curl]                   # binaries that must be in PATH
+      bins: [curl, jq]               # binaries that must be in PATH
       env:
-        required: [WEATHER_API_KEY]
+        required: []                 # keyless: wttr.in needs no API key
         one_of: []
         optional: []
-    egress_domains: [api.openweathermap.org]
+    egress_domains: [wttr.in]
     denied_tools: [http_request]     # tools this skill must NOT use
     timeout_hint: 60                 # suggested execution timeout in seconds
 ---

@@ -31,6 +31,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&themeOverride, "theme", "", "TUI color theme: dark, light, or auto")
 
 	rootCmd.AddCommand(initCmd)
+	rootCmd.AddCommand(tryCmd)
 	rootCmd.AddCommand(validateCmd)
 	rootCmd.AddCommand(buildCmd)
 	rootCmd.AddCommand(runCmd)

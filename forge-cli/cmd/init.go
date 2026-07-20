@@ -47,6 +47,15 @@ type initOptions struct {
 	AuthMethod     string // "apikey" or "oauth"
 	Compression    bool   // reversible context compression (ctxzip) — compression.enabled in forge.yaml
 
+	// OutputDir overrides the scaffold target directory. Empty falls back
+	// to ./<AgentID> (the classic `forge init` layout). `forge try` sets
+	// this to an ephemeral temp dir (or ./forge-quickstart under --keep).
+	OutputDir string
+	// Preset marks a non-wizard scaffold (e.g. `forge try`). It stops
+	// scaffold() before the "Created …" banner and the auto-run of
+	// `forge run` — the caller drives the agent itself, in-process.
+	Preset bool
+
 	// A2A auth chain (from the wizard's Authentication step or CLI flags).
 	AuthMode        string         // "", "none", "oidc", "http_verifier", "custom"
 	AuthSettings    map[string]any // provider-specific settings block
@@ -695,6 +704,9 @@ func scaffold(opts *initOptions) error {
 	normalizeCustomProvider(opts)
 
 	dir := filepath.Join(".", opts.AgentID)
+	if opts.OutputDir != "" {
+		dir = opts.OutputDir
+	}
 
 	// Check if directory already exists
 	if !opts.Force {
@@ -813,6 +825,12 @@ func scaffold(opts *initOptions) error {
 				}
 			}
 		}
+	}
+
+	// Preset scaffolds (e.g. `forge try`) drive the agent in-process; stop
+	// before the banner and the auto-run of `forge run` below.
+	if opts.Preset {
+		return nil
 	}
 
 	fmt.Printf("\nCreated agent project in ./%s\n", opts.AgentID)

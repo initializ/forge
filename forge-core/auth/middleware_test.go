@@ -288,18 +288,17 @@ func TestMiddleware_IdentityIsAttachedToContext(t *testing.T) {
 	}
 }
 
-// §19 P3 on-behalf-of graft: a channel adapter authenticating with the
-// internal loopback token may assert the human sender via X-Forge-Channel-*
-// headers; any other provider's identity must ignore them (spoof guard).
+// §19 P3 on-behalf-of graft: only the RUNTIME-MINTED loopback identity
+// (MarkRuntimeInternal — an unexported marker no YAML path can set) may have
+// the human sender grafted from X-Forge-Channel-* headers. A config-declared
+// `source: internal` without the marker, or any other provider, must ignore
+// them (spoof guard, review #356 M1).
 func TestMiddleware_ChannelOnBehalfOf(t *testing.T) {
-	run := func(t *testing.T, source string, wantGraft bool) {
+	run := func(t *testing.T, identity Identity, wantGraft bool) {
 		t.Helper()
 		const token = "obo-token"
 		opts := MiddlewareOptions{
-			Chain: NewChainProvider(&tokenProvider{
-				expected: token,
-				identity: Identity{UserID: "forge-internal", Source: source},
-			}),
+			Chain:     NewChainProvider(&tokenProvider{expected: token, identity: identity}),
 			SkipPaths: DefaultSkipPaths(),
 		}
 		var gotID *Identity
@@ -319,19 +318,51 @@ func TestMiddleware_ChannelOnBehalfOf(t *testing.T) {
 			if gotID.Email != "mk@example.com" || gotID.UserID != "U0456" || gotID.Source != "channel:slack" {
 				t.Errorf("graft not applied: %+v", gotID)
 			}
-		} else if gotID.Email != "" || gotID.UserID != "forge-internal" || gotID.Source != source {
-			t.Errorf("non-internal identity must ignore OBO headers, got %+v", gotID)
+		} else if gotID.Email != "" || gotID.UserID != identity.UserID || gotID.Source != identity.Source {
+			t.Errorf("unmarked identity must ignore OBO headers, got %+v", gotID)
 		}
 	}
-	t.Run("internal source grafts", func(t *testing.T) { run(t, "internal", true) })
-	t.Run("other source ignores headers", func(t *testing.T) { run(t, "oidc", false) })
+	t.Run("runtime-marked loopback grafts", func(t *testing.T) {
+		run(t, MarkRuntimeInternal(Identity{UserID: "forge-internal", Source: "internal"}), true)
+	})
+	t.Run("config-claimed source internal without marker ignores headers", func(t *testing.T) {
+		run(t, Identity{UserID: "dev-user", Source: "internal"}, false)
+	})
+	t.Run("other provider ignores headers", func(t *testing.T) {
+		run(t, Identity{UserID: "alice", Source: "oidc"}, false)
+	})
 }
 
 func TestApplyChannelOnBehalfOf_NoHeadersPassThrough(t *testing.T) {
-	id := &Identity{UserID: "forge-internal", Source: "internal"}
+	id := MarkRuntimeInternal(Identity{UserID: "forge-internal", Source: "internal"})
 	req := httptest.NewRequest("POST", "/", nil)
-	if got := applyChannelOnBehalfOf(id, req); got != id {
+	if got := applyChannelOnBehalfOf(&id, req); got != &id {
 		t.Errorf("no headers must return the identity unchanged, got %+v", got)
+	}
+}
+
+// The grafted identity carries NO scoping and is not itself runtime-internal:
+// org/workspace/groups/claims are zeroed by construction, even if the loopback
+// identity ever gains them (review #356 L2).
+func TestApplyChannelOnBehalfOf_ZeroesScopes(t *testing.T) {
+	id := MarkRuntimeInternal(Identity{
+		UserID:      "forge-internal",
+		Source:      "internal",
+		OrgID:       "org_x",
+		WorkspaceID: "ws-1",
+		Groups:      []string{"admins"},
+		Claims:      map[string]any{"scope": "everything"},
+	})
+	req := httptest.NewRequest("POST", "/", nil)
+	req.Header.Set("X-Forge-Channel-User", "U0456")
+	req.Header.Set("X-Forge-Channel-Email", "mk@example.com")
+	req.Header.Set("X-Forge-Channel", "slack")
+	got := applyChannelOnBehalfOf(&id, req)
+	if got.OrgID != "" || got.WorkspaceID != "" || got.Groups != nil || got.Claims != nil {
+		t.Errorf("grafted identity must carry no scoping, got %+v", got)
+	}
+	if got.IsRuntimeInternal() {
+		t.Error("grafted identity must not remain runtime-internal")
 	}
 }
 

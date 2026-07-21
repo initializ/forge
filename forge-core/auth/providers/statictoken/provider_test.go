@@ -3,6 +3,7 @@ package statictoken_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -209,5 +210,22 @@ func TestFactory_UsesTokenEnv(t *testing.T) {
 	}
 	if _, err := p.Verify(context.Background(), "via-env", nil); err != nil {
 		t.Errorf("env-resolved token rejected: %v", err)
+	}
+}
+
+// The YAML/settings factory path rejects the reserved loopback Source; the
+// runtime's direct New() keeps it (review #356 — a user provider must not
+// masquerade as the loopback in audit trails; the on-behalf-of graft trusts
+// an unexported marker regardless).
+func TestFactoryRejectsReservedInternalSource(t *testing.T) {
+	_, err := auth.Build(statictoken.ProviderName, map[string]any{
+		"token":    "dev-token",
+		"identity": map[string]any{"source": "internal"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("factory must reject identity.source internal, got err=%v", err)
+	}
+	if _, err := statictoken.New(statictoken.Config{Token: "t", Identity: auth.Identity{Source: "internal"}}); err != nil {
+		t.Fatalf("direct New (runtime loopback path) must still allow it: %v", err)
 	}
 }

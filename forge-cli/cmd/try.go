@@ -8,11 +8,13 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/initializ/forge/forge-cli/config"
+	"github.com/initializ/forge/forge-cli/runtime"
 	"github.com/initializ/forge/forge-core/llm/oauth"
 	"github.com/initializ/forge/forge-core/types"
 	"github.com/spf13/cobra"
@@ -108,10 +110,84 @@ func runTry(cmd *cobra.Command, args []string) error {
 
 	printTrySummary(cmd, cfg, opts)
 
-	// Phase 3 drives the REPL / --once turn here. Phase 1 stops after the
-	// agent loads and its summary prints.
+	sess, err := runtime.NewLocalSession(cmd.Context(), runtime.LocalSessionOptions{
+		Config:       cfg,
+		WorkDir:      dir,
+		EnvOverrides: res.EnvOverrides,
+		Verbose:      false,
+	})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = sess.Close() }()
+
+	// Ctrl-C cancels the in-flight turn (executor cancels at the next
+	// iteration / tool boundary) and ends the loop.
+	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
+	defer stop()
+
+	// --once: run a single turn (or, for an empty prompt, just load + exit).
+	if flags.onceSet {
+		if strings.TrimSpace(flags.once) != "" {
+			if err := tryOneTurn(ctx, sess, out, flags.once); err != nil {
+				return err
+			}
+		}
+	} else {
+		if err := tryREPL(ctx, sess, cmd, flags); err != nil {
+			return err
+		}
+	}
+
 	if flags.keep {
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "\n  Kept the demo agent in ./forge-quickstart\n")
+		_, _ = fmt.Fprintf(out, "\n  Kept the demo agent in ./forge-quickstart\n")
+	}
+	return nil
+}
+
+// tryOneTurn runs a single non-interactive turn and prints the reply.
+func tryOneTurn(ctx context.Context, sess *runtime.LocalSession, out io.Writer, prompt string) error {
+	reply, err := sess.RunTurn(ctx, prompt, nil) // Phase 4 wires the progress emitter
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(out, "\nagent › %s\n", reply)
+	return nil
+}
+
+// tryREPL reads one prompt per line and runs a turn each, keeping history in
+// the session. It exits on /exit, /quit, Ctrl-D (EOF), or a cancelled context.
+// An optional positional prompt seeds the first turn.
+func tryREPL(ctx context.Context, sess *runtime.LocalSession, cmd *cobra.Command, flags tryFlags) error {
+	out := cmd.OutOrStdout()
+	scanner := bufio.NewScanner(cmd.InOrStdin())
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	pending := strings.TrimSpace(flags.prompt)
+	for {
+		if pending == "" {
+			_, _ = fmt.Fprint(out, "\nyou › ")
+			if !scanner.Scan() {
+				break // Ctrl-D / EOF
+			}
+			pending = strings.TrimSpace(scanner.Text())
+		}
+		if pending == "" {
+			continue
+		}
+		if pending == "/exit" || pending == "/quit" {
+			break
+		}
+		reply, err := sess.RunTurn(ctx, pending, nil) // Phase 4 wires the progress emitter
+		pending = ""
+		if err != nil {
+			if ctx.Err() != nil {
+				break // cancelled mid-turn
+			}
+			_, _ = fmt.Fprintf(out, "\n  error: %v\n", err)
+			continue
+		}
+		_, _ = fmt.Fprintf(out, "\nagent › %s\n", reply)
 	}
 	return nil
 }

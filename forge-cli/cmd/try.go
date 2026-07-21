@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/initializ/forge/forge-cli/config"
 	"github.com/initializ/forge/forge-cli/internal/tryview"
 	"github.com/initializ/forge/forge-cli/runtime"
@@ -29,7 +30,7 @@ import (
 // server, no secrets on disk. See issue #350.
 var tryCmd = &cobra.Command{
 	Use:   "try [prompt]",
-	Short: "Talk to a live agent in your terminal — no build, no cluster",
+	Short: "Talk to a live agent in your terminal: no build, no cluster",
 	Long: "Scaffold a keyless demo agent and chat with it in your terminal, watching every " +
 		"tool call and egress check as it runs. The workspace is ephemeral unless you pass " +
 		"--keep, which writes it to ./forge-quickstart so you can make it your own.",
@@ -80,8 +81,12 @@ func parseTryFlags(cmd *cobra.Command, args []string) tryFlags {
 func runTry(cmd *cobra.Command, args []string) error {
 	flags := parseTryFlags(cmd, args)
 	out := cmd.OutOrStdout()
+	color := term.IsTerminal(int(os.Stdout.Fd())) && os.Getenv("NO_COLOR") == ""
+	accent := tryAccent(color)
 
 	interactive := term.IsTerminal(int(os.Stdin.Fd()))
+	printTryHeader(out, accent)
+
 	res, err := resolveTryProvider(cmd.Context(), flags, os.Stdin, out, interactive)
 	if err != nil {
 		return err
@@ -124,7 +129,6 @@ func runTry(cmd *cobra.Command, args []string) error {
 
 	// Visible-loop renderer: inline tool/egress/guardrail lines from the
 	// agent's own audit stream. --quiet hides it; --audit shows full NDJSON.
-	color := term.IsTerminal(int(os.Stdout.Fd())) && os.Getenv("NO_COLOR") == ""
 	renderer := tryview.New(out, flags.quiet, flags.audit, color)
 	sess.AuditLogger().AddSink(renderer)
 
@@ -140,15 +144,17 @@ func runTry(cmd *cobra.Command, args []string) error {
 				return err
 			}
 		}
-	} else {
-		if err := tryREPL(ctx, sess, renderer, cmd, flags); err != nil {
-			return err
+		if flags.keep {
+			_, _ = fmt.Fprintf(out, "\n  Kept the demo agent in %s\n", accent("./forge-quickstart"))
 		}
+		return nil
 	}
 
-	if flags.keep {
-		_, _ = fmt.Fprintf(out, "\n  Kept the demo agent in ./forge-quickstart\n")
+	printTrySuggestions(out)
+	if err := tryREPL(ctx, sess, renderer, cmd, flags); err != nil {
+		return err
 	}
+	printTryGraduation(out, accent, flags.keep)
 	return nil
 }
 
@@ -253,6 +259,54 @@ func printTrySummary(cmd *cobra.Command, cfg *types.ForgeConfig, opts *initOptio
 		parts = append(parts, "tools: "+strings.Join(opts.BuiltinTools, ", "))
 	}
 	_, _ = fmt.Fprintf(out, "  %s\n", strings.Join(parts, " · "))
+}
+
+// trySuggestions are the starter prompts shown before the interactive REPL.
+// All three stay within the keyless egress allowlist (weather via wttr.in,
+// plus the math + time builtins), so none dead-ends on a blocked domain.
+var trySuggestions = []string{
+	"what's the weather in Tokyo?",
+	"what's 17% of 4,200?",
+	"what time is it in UTC?",
+}
+
+// printTryHeader prints the two-line intro banner.
+func printTryHeader(out io.Writer, accent func(string) string) {
+	_, _ = fmt.Fprintf(out, "\n  %s: talking to a live agent in your terminal.\n", accent("forge try"))
+	_, _ = fmt.Fprintf(out, "  No build, no cluster. Ctrl-D or /exit to quit.\n\n")
+}
+
+// printTrySuggestions lists the starter prompts.
+func printTrySuggestions(out io.Writer) {
+	_, _ = fmt.Fprintf(out, "\n  Try:  %s\n", trySuggestions[0])
+	for _, s := range trySuggestions[1:] {
+		_, _ = fmt.Fprintf(out, "        %s\n", s)
+	}
+}
+
+// printTryGraduation frames the delight on exit and points the user up the
+// ladder — keep the demo, run it as a service, or package it.
+func printTryGraduation(out io.Writer, accent func(string) string, kept bool) {
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out, "  You just ran an agent whose every tool call and egress you can see and audit.")
+	if kept {
+		_, _ = fmt.Fprintf(out, "  It's yours in %s: edit skills/, run it with %s, or deploy with %s.\n",
+			accent("./forge-quickstart"), accent("forge serve"), accent("forge package"))
+		return
+	}
+	_, _ = fmt.Fprintf(out, "  Want to keep it and make it yours?  ->  %s   (writes ./forge-quickstart)\n", accent("forge try --keep"))
+	_, _ = fmt.Fprintf(out, "  Then edit skills/, run it as a service with %s, or deploy with %s.\n",
+		accent("forge serve"), accent("forge package"))
+}
+
+// tryAccent returns an orange styler for command tokens, or an identity
+// function when color is disabled (non-TTY / NO_COLOR).
+func tryAccent(color bool) func(string) string {
+	if !color {
+		return func(s string) string { return s }
+	}
+	st := lipgloss.NewStyle().Foreground(lipgloss.Color("#f97316"))
+	return func(s string) string { return st.Render(s) }
 }
 
 // tryResolution is the outcome of credential auto-resolution: which provider

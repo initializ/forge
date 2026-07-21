@@ -1033,6 +1033,11 @@ guardrails_path: guardrails.json
 
 ## 15. How to create an agent
 
+For a first taste, `forge try` scaffolds a keyless demo agent and drops you into
+a chat with the tool/egress loop rendered inline (ephemeral by default;
+`forge try --keep` writes it to `./forge-quickstart`). The pipeline below is for
+building your own from scratch.
+
 ```bash
 # 1. Scaffold
 forge init my-agent --model-provider anthropic --channels slack --non-interactive

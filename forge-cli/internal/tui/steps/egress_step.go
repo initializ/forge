@@ -182,10 +182,9 @@ func inferSource(domain string, ctx *tui.WizardContext) string {
 
 	// Skill domains
 	skillDomains := map[string]string{
-		"api.github.com":         "github skill",
-		"github.com":             "github skill",
-		"api.openweathermap.org": "weather skill",
-		"api.weatherapi.com":     "weather skill",
+		"api.github.com": "github skill",
+		"github.com":     "github skill",
+		"wttr.in":        "weather skill",
 	}
 	if src, ok := skillDomains[domain]; ok {
 		return src

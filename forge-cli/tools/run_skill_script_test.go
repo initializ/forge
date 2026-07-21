@@ -26,7 +26,7 @@ func runScript(t *testing.T, root, skill, path string, args map[string]any) stri
 	t.Helper()
 	argsJSON, _ := json.Marshal(args)
 	in, _ := json.Marshal(map[string]any{"skill": skill, "path": path, "args": json.RawMessage(argsJSON)})
-	out, err := NewRunSkillScriptTool(root, "", nil).Execute(context.Background(), in)
+	out, err := NewRunSkillScriptTool(root, "", "", nil).Execute(context.Background(), in)
 	if err != nil {
 		t.Fatalf("Execute(%s): %v", path, err)
 	}
@@ -148,7 +148,7 @@ func TestRunSkillScript_ArgsMustBeObject(t *testing.T) {
 	writeSkillScript(t, root, "owl", "scripts/x.sh", "#!/usr/bin/env bash\necho '{}'\n")
 	for _, badArgs := range []string{`"hello"`, `42`, `[1,2]`, `true`} {
 		in := `{"skill":"owl","path":"scripts/x.sh","args":` + badArgs + `}`
-		out, err := NewRunSkillScriptTool(root, "", nil).Execute(context.Background(), json.RawMessage(in))
+		out, err := NewRunSkillScriptTool(root, "", "", nil).Execute(context.Background(), json.RawMessage(in))
 		if err != nil {
 			t.Fatalf("Execute: %v", err)
 		}

@@ -79,7 +79,8 @@ type SkillCommandExecutor struct {
 	Timeout  time.Duration
 	WorkDir  string   // agent working directory — script paths are relative to this
 	EnvVars  []string // extra env var names to pass through (e.g., "TAVILY_API_KEY")
-	ProxyURL string   // egress proxy URL (e.g., "http://127.0.0.1:54321")
+	ProxyURL string   // HTTP egress proxy URL (e.g., "http://127.0.0.1:54321")
+	SOCKSURL string   // SOCKS5 egress proxy URL (e.g., "socks5h://127.0.0.1:54322"); empty when raw-TCP egress disabled
 	Model    string   // configured LLM model name — passed as REVIEW_MODEL to skill scripts
 }
 
@@ -160,6 +161,22 @@ func (e *SkillCommandExecutor) Run(ctx context.Context, command string, args []s
 			"HTTPS_PROXY="+proxyURL,
 			"http_proxy="+proxyURL,
 			"https_proxy="+proxyURL,
+		)
+	}
+	if e.SOCKSURL != "" {
+		// #337 — raw-TCP egress for databases / message brokers via SOCKS5.
+		// `socks5h://` (with h) forces server-side hostname resolution: the
+		// proxy needs the hostname string to run the allowlist check and
+		// record the audit event. Clients that pre-resolve to an IP would
+		// launder the target past the domain matcher.
+		//
+		// No identity injection here: SOCKS5v5 (no-auth) has no channel for
+		// per-request credentials — task/correlation attribution is HTTP-only.
+		// This is a known limitation documented in the egress-control doc.
+		env = append(env,
+			"ALL_PROXY="+e.SOCKSURL,
+			"all_proxy="+e.SOCKSURL,
+			"SOCKS_PROXY="+e.SOCKSURL,
 		)
 	}
 	// Issue #182 — propagate W3C trace context + curated OTel SDK env

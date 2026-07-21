@@ -68,6 +68,7 @@ func Compile(req CompileRequest) (*CompileResult, error) {
 		toolNames,
 		nil, // capabilities resolved from profile
 		req.Config.Egress.AllowedPrivateCIDRs,
+		req.Config.Egress.AllowedTCP,
 	)
 	if err != nil {
 		return nil, err

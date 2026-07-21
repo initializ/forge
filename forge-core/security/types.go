@@ -31,4 +31,8 @@ type EgressConfig struct {
 	// should run these through ParsePrivateCIDRs to obtain the []*net.IPNet
 	// the SafeDialer/EgressProxy constructors expect.
 	AllowedPrivateCIDRs []string `json:"allowed_private_cidrs,omitempty"`
+	// AllowedTCP is the resolved raw-TCP allowlist (`host:port` entries).
+	// Callers pass this to NewTCPMatcher when wiring the EgressProxy's
+	// SOCKS5 listener. Nil / empty → no SOCKS5 listener is bound.
+	AllowedTCP []string `json:"allowed_tcp,omitempty"`
 }

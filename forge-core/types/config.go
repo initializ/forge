@@ -877,6 +877,13 @@ type EgressRef struct {
 	// permits all private ranges). Always-blocked ranges (cloud metadata,
 	// loopback) remain blocked regardless of what's listed here.
 	AllowedPrivateCIDRs []string `yaml:"allowed_private_cidrs,omitempty"`
+	// AllowedTCP is the raw-TCP allowlist for the SOCKS5 egress path
+	// (databases, message brokers — the #337 use cases). Entries have the
+	// shape `host:port` or `host:*`; host supports the same exact +
+	// `*.suffix` wildcard rules as AllowedDomains. HTTP/HTTPS is still
+	// governed by AllowedDomains — this list is only consulted for the
+	// raw-TCP path. When empty, no SOCKS5 listener is bound.
+	AllowedTCP []string `yaml:"allowed_tcp,omitempty"`
 }
 
 // SkillsRef references a skills definition file.

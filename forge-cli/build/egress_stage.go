@@ -51,14 +51,14 @@ func (s *EgressStage) Execute(ctx context.Context, bc *pipeline.BuildContext) er
 	// time out depending on which side notices first.
 	allowed = append(allowed, security.LLMProviderDomains(bc.Config)...)
 
-	// Pass allowed_private_cidrs through so `forge build` validates the
-	// strings at build time (same fail-loud posture as `forge run`). The
-	// build artifacts themselves (`GenerateAllowlistJSON`,
-	// `GenerateK8sNetworkPolicy`) don't consume the CIDRs — runtime IP
-	// enforcement re-resolves from raw config — but a typo in
-	// `allowed_private_cidrs` should fail the build, not sail through and
-	// trip only on first `forge run`. (#348 review nit 1.)
-	resolved, err := security.Resolve(cfg.Profile, cfg.Mode, allowed, toolNames, cfg.Capabilities, cfg.AllowedPrivateCIDRs)
+	// Pass allowed_private_cidrs and allowed_tcp through so `forge build`
+	// validates the strings at build time (same fail-loud posture as
+	// `forge run`). The build artifacts themselves (`GenerateAllowlistJSON`,
+	// `GenerateK8sNetworkPolicy`) don't consume either list — runtime
+	// enforcement re-resolves from raw config — but a typo should fail the
+	// build, not sail through and trip only on first `forge run`.
+	// (#348 review nit 1, extended to allowed_tcp for #337.)
+	resolved, err := security.Resolve(cfg.Profile, cfg.Mode, allowed, toolNames, cfg.Capabilities, cfg.AllowedPrivateCIDRs, cfg.AllowedTCP)
 	if err != nil {
 		return fmt.Errorf("resolving egress: %w", err)
 	}

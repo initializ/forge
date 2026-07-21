@@ -97,6 +97,20 @@ func (r *Router) forwardToA2A(ctx context.Context, event *channels.ChannelEvent)
 	if r.bearerToken != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+r.bearerToken)
 	}
+	// On-behalf-of assertion (§19 P3): the bearer above is the runtime's own
+	// loopback token, but the TASK belongs to the human who sent the channel
+	// message. The auth middleware grafts these onto the verified identity —
+	// honored only for the internal loopback source, so an external caller
+	// can't spoof them (see auth.applyChannelOnBehalfOf).
+	if event.UserID != "" {
+		httpReq.Header.Set("X-Forge-Channel-User", event.UserID)
+	}
+	if event.UserEmail != "" {
+		httpReq.Header.Set("X-Forge-Channel-Email", event.UserEmail)
+	}
+	if event.Channel != "" {
+		httpReq.Header.Set("X-Forge-Channel", event.Channel)
+	}
 	// Inject the W3C traceparent + baggage from the calling context onto
 	// the outbound HTTP request so the A2A server's a2a.tasks/send span
 	// nests under the calling channel.<adapter>.deliver span instead of

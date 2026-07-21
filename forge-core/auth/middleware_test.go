@@ -288,6 +288,53 @@ func TestMiddleware_IdentityIsAttachedToContext(t *testing.T) {
 	}
 }
 
+// §19 P3 on-behalf-of graft: a channel adapter authenticating with the
+// internal loopback token may assert the human sender via X-Forge-Channel-*
+// headers; any other provider's identity must ignore them (spoof guard).
+func TestMiddleware_ChannelOnBehalfOf(t *testing.T) {
+	run := func(t *testing.T, source string, wantGraft bool) {
+		t.Helper()
+		const token = "obo-token"
+		opts := MiddlewareOptions{
+			Chain: NewChainProvider(&tokenProvider{
+				expected: token,
+				identity: Identity{UserID: "forge-internal", Source: source},
+			}),
+			SkipPaths: DefaultSkipPaths(),
+		}
+		var gotID *Identity
+		handler := Middleware(opts)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			gotID = IdentityFromContext(r.Context())
+		}))
+		req := httptest.NewRequest("POST", "/", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("X-Forge-Channel-User", "U0456")
+		req.Header.Set("X-Forge-Channel-Email", "mk@example.com")
+		req.Header.Set("X-Forge-Channel", "slack")
+		handler.ServeHTTP(httptest.NewRecorder(), req)
+		if gotID == nil {
+			t.Fatal("identity not attached")
+		}
+		if wantGraft {
+			if gotID.Email != "mk@example.com" || gotID.UserID != "U0456" || gotID.Source != "channel:slack" {
+				t.Errorf("graft not applied: %+v", gotID)
+			}
+		} else if gotID.Email != "" || gotID.UserID != "forge-internal" || gotID.Source != source {
+			t.Errorf("non-internal identity must ignore OBO headers, got %+v", gotID)
+		}
+	}
+	t.Run("internal source grafts", func(t *testing.T) { run(t, "internal", true) })
+	t.Run("other source ignores headers", func(t *testing.T) { run(t, "oidc", false) })
+}
+
+func TestApplyChannelOnBehalfOf_NoHeadersPassThrough(t *testing.T) {
+	id := &Identity{UserID: "forge-internal", Source: "internal"}
+	req := httptest.NewRequest("POST", "/", nil)
+	if got := applyChannelOnBehalfOf(id, req); got != id {
+		t.Errorf("no headers must return the identity unchanged, got %+v", got)
+	}
+}
+
 func TestMiddleware_OnAuthReceivesIdentityAndError(t *testing.T) {
 	const goodToken = "good"
 	wantID := Identity{UserID: "alice", Source: "test_token"}

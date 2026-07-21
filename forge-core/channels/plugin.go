@@ -43,9 +43,16 @@ type ChannelConfig struct {
 // ChannelEvent is the normalized representation of an inbound message
 // from any supported platform.
 type ChannelEvent struct {
-	Channel     string          `json:"channel"`
-	WorkspaceID string          `json:"workspace_id"`
-	UserID      string          `json:"user_id"`
+	Channel     string `json:"channel"`
+	WorkspaceID string `json:"workspace_id"`
+	UserID      string `json:"user_id"`
+	// UserEmail is the sender's resolved email (e.g. Slack users.info,
+	// cached), when the adapter can determine it. It rides to the A2A server
+	// as the task's on-behalf-of identity so delegated (auth.type=user) MCP
+	// tools key consent + per-user tokens on the HUMAN who sent the message,
+	// not the runtime's loopback identity (field-hit 2026-07-21: a consent DM
+	// addressed to "forge-internal"). Best-effort — empty when unresolvable.
+	UserEmail   string          `json:"user_email,omitempty"`
 	ThreadID    string          `json:"thread_id,omitempty"`
 	MessageID   string          `json:"message_id,omitempty"` // per-message ID for reply targeting
 	Message     string          `json:"message"`

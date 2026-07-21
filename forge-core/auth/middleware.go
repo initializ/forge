@@ -225,10 +225,52 @@ func Middleware(opts MiddlewareOptions) func(http.Handler) http.Handler {
 
 			notifyAuth(opts.OnAuth, r, identity, nil, kind)
 
+			// Graft AFTER the auth span/notify (which record the transport
+			// credential truthfully) but BEFORE the handler ctx, so the task
+			// executes as the asserted human.
+			identity = applyChannelOnBehalfOf(identity, r)
+
 			ctx := WithIdentity(r.Context(), identity)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// applyChannelOnBehalfOf grafts a channel-asserted sender onto the verified
+// identity (§19 P3). A channel adapter authenticates its internal A2A POST
+// with the runtime's own loopback static token, but the TASK belongs to the
+// human who typed the message — the channel router asserts that sender via
+// X-Forge-Channel-User / X-Forge-Channel-Email / X-Forge-Channel headers.
+//
+// TRUST RULE: honored ONLY when the verified identity's Source is "internal"
+// (the loopback provider). That token is minted per-process and never leaves
+// the pod, so only the in-pod adapter can present it — an external caller on
+// any other provider cannot spoof the headers into an identity. The graft
+// keeps org/workspace claims empty (scoping stays with the runtime); without
+// it every channel-originated task runs as the loopback identity and
+// delegated (auth.type=user) MCP tools key consent + per-user tokens on
+// "forge-internal" (field-hit 2026-07-21).
+func applyChannelOnBehalfOf(id *Identity, r *http.Request) *Identity {
+	if id == nil || id.Source != "internal" {
+		return id
+	}
+	user := strings.TrimSpace(r.Header.Get("X-Forge-Channel-User"))
+	email := strings.TrimSpace(r.Header.Get("X-Forge-Channel-Email"))
+	if user == "" && email == "" {
+		return id
+	}
+	adapter := strings.TrimSpace(r.Header.Get("X-Forge-Channel"))
+	if adapter == "" {
+		adapter = "channel"
+	}
+	out := *id
+	out.UserID = user
+	if out.UserID == "" {
+		out.UserID = email
+	}
+	out.Email = email
+	out.Source = "channel:" + adapter
+	return &out
 }
 
 // refineTokenKind upgrades the audit token_kind from the pre-verify

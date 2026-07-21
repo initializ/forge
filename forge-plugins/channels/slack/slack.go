@@ -475,6 +475,19 @@ func (p *Plugin) readLoop(ctx context.Context, conn *websocket.Conn, handler cha
 			event.Message = stripBotMention(event.Message, p.botUserID)
 		}
 
+		// Attribute the task to the SENDER (§19 P3): resolve their email
+		// (users.info, #313 cache) so the runtime executes the task as that
+		// user — delegated (auth.type=user) MCP tools key consent + per-user
+		// tokens on this subject. Best-effort: unresolved leaves the loopback
+		// identity, and delegated tools then can't identify the consenting
+		// user (field-hit 2026-07-21: consent DM addressed to
+		// "forge-internal").
+		if email, eErr := p.resolveUserEmail(ctx, event.UserID); eErr == nil {
+			event.UserEmail = email
+		} else {
+			fmt.Printf("  slack: sender email unresolved for %s: %v — delegated tools won't know the user\n", event.UserID, eErr)
+		}
+
 		go func() {
 			// Open channel.slack.deliver around the full per-message
 			// pipeline (parse + thread context fetch + internal A2A

@@ -50,6 +50,14 @@ type Identity struct {
 	WorkspaceID string   `json:"workspace_id,omitempty"`
 	Groups      []string `json:"groups,omitempty"`
 
+	// runtimeInternal marks an identity minted IN-PROCESS by the runtime's own
+	// loopback provider (the channel-adapter token). It is the trust anchor
+	// for the channel on-behalf-of graft (applyChannelOnBehalfOf): unexported,
+	// so no YAML/JSON/settings path can set it — a user-configured
+	// static_token with `identity: {source: internal}` does NOT become an
+	// impersonation oracle (review #356). Set only via MarkRuntimeInternal.
+	runtimeInternal bool
+
 	// Claims carries the provider-specific raw payload (typically the
 	// full JWT claim set for the oidc provider — including custom
 	// issuer-specific claims). Treat this as an escape hatch for
@@ -160,3 +168,19 @@ var (
 	ErrProviderUnavailable   = errors.New("auth: provider unavailable")
 	ErrProviderNotConfigured = errors.New("auth: provider not configured")
 )
+
+// MarkRuntimeInternal returns a copy of id marked as minted by the runtime's
+// own in-process loopback provider. The marker is unexported — reachable only
+// through this constructor, never from YAML/JSON — and is what the channel
+// on-behalf-of graft trusts (see applyChannelOnBehalfOf). Call it ONLY where
+// the runtime mints its per-process loopback identity.
+func MarkRuntimeInternal(id Identity) Identity {
+	id.runtimeInternal = true
+	return id
+}
+
+// IsRuntimeInternal reports whether id was minted by the runtime's in-process
+// loopback provider (via MarkRuntimeInternal).
+func (id *Identity) IsRuntimeInternal() bool {
+	return id != nil && id.runtimeInternal
+}

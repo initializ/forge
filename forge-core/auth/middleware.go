@@ -242,16 +242,20 @@ func Middleware(opts MiddlewareOptions) func(http.Handler) http.Handler {
 // human who typed the message — the channel router asserts that sender via
 // X-Forge-Channel-User / X-Forge-Channel-Email / X-Forge-Channel headers.
 //
-// TRUST RULE: honored ONLY when the verified identity's Source is "internal"
-// (the loopback provider). That token is minted per-process and never leaves
-// the pod, so only the in-pod adapter can present it — an external caller on
-// any other provider cannot spoof the headers into an identity. The graft
-// keeps org/workspace claims empty (scoping stays with the runtime); without
-// it every channel-originated task runs as the loopback identity and
-// delegated (auth.type=user) MCP tools key consent + per-user tokens on
-// "forge-internal" (field-hit 2026-07-21).
+// TRUST RULE: honored ONLY for the runtime-minted loopback identity, checked
+// via the unexported runtimeInternal marker (MarkRuntimeInternal) — NOT the
+// config-settable Source string, so a user-configured static_token declaring
+// `identity: {source: internal}` grants nothing (review #356 M1). The
+// loopback token is minted per-process and never leaves the pod, so only the
+// in-pod adapter can present it — an external caller on any other provider
+// cannot spoof the headers into an identity. The graft zeroes org/workspace/
+// group/claim scopes explicitly (scoping stays with the runtime, enforced
+// here rather than assumed from the loopback identity being bare — #356 L2);
+// without the graft every channel-originated task runs as the loopback
+// identity and delegated (auth.type=user) MCP tools key consent + per-user
+// tokens on "forge-internal" (field-hit 2026-07-21).
 func applyChannelOnBehalfOf(id *Identity, r *http.Request) *Identity {
-	if id == nil || id.Source != "internal" {
+	if !id.IsRuntimeInternal() {
 		return id
 	}
 	user := strings.TrimSpace(r.Header.Get("X-Forge-Channel-User"))
@@ -263,13 +267,14 @@ func applyChannelOnBehalfOf(id *Identity, r *http.Request) *Identity {
 	if adapter == "" {
 		adapter = "channel"
 	}
-	out := *id
-	out.UserID = user
+	out := Identity{
+		UserID: user,
+		Email:  email,
+		Source: "channel:" + adapter,
+	}
 	if out.UserID == "" {
 		out.UserID = email
 	}
-	out.Email = email
-	out.Source = "channel:" + adapter
 	return &out
 }
 

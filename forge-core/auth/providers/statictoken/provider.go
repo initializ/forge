@@ -128,6 +128,15 @@ func init() {
 		if err := auth.UnmarshalSettings(settings, &cfg); err != nil {
 			return nil, err
 		}
+		// "internal" is the runtime loopback's descriptive Source. The
+		// on-behalf-of graft trusts an unexported marker (not this string),
+		// so claiming it grants nothing — but reject it anyway so a user
+		// provider can't masquerade as the loopback in audit trails
+		// (review #356). The runtime's own loopback bypasses this factory
+		// (direct New()).
+		if cfg.Identity.Source == "internal" {
+			return nil, fmt.Errorf("identity.source %q is reserved for the runtime loopback", "internal")
+		}
 		return New(cfg)
 	})
 }

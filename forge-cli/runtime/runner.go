@@ -3066,10 +3066,10 @@ func (r *Runner) resolveAuth(auditLogger *coreruntime.AuditLogger) (auth.Middlew
 	if r.authToken != "" {
 		loopback, err := statictoken.New(statictoken.Config{
 			Token: r.authToken,
-			Identity: auth.Identity{
+			Identity: auth.MarkRuntimeInternal(auth.Identity{
 				UserID: "forge-internal",
 				Source: "internal",
-			},
+			}),
 		})
 		if err != nil {
 			return auth.MiddlewareOptions{}, fmt.Errorf("loopback static_token: %w", err)
@@ -3287,10 +3287,10 @@ func buildLegacyAuthChain(internalToken, authURL, authOrgID string) (auth.Provid
 	if internalToken != "" {
 		loopback, err := statictoken.New(statictoken.Config{
 			Token: internalToken,
-			Identity: auth.Identity{
+			Identity: auth.MarkRuntimeInternal(auth.Identity{
 				UserID: "forge-internal",
 				Source: "internal",
-			},
+			}),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("static_token provider: %w", err)

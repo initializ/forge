@@ -275,6 +275,60 @@ func TestParsePrivateCIDRs(t *testing.T) {
 			t.Fatal("bare IPs must be rejected — the config takes CIDR ranges")
 		}
 	})
+
+	// #348 review nit 2 — silent widening was the concrete risk:
+	// net.ParseCIDR("10.20.0.5/16") returns 10.20.0.0/16 without error,
+	// which turns an operator's "single host" intent into a whole /16.
+	// We reject those explicitly and the error message names both fixes
+	// (the range and the /32 single-host form) so the log line is
+	// actionable without a second look at the code.
+	t.Run("non-canonical CIDR with host bits set is rejected (IPv4)", func(t *testing.T) {
+		_, err := ParsePrivateCIDRs([]string{"10.20.0.5/16"})
+		if err == nil {
+			t.Fatal("host-bits-set CIDR must be rejected (silent widening prevention)")
+		}
+		// Error should name both the widened range and the single-host form.
+		msg := err.Error()
+		if !strings.Contains(msg, "10.20.0.5/16") {
+			t.Errorf("error should quote the bad input, got: %v", err)
+		}
+		if !strings.Contains(msg, "10.20.0.0/16") {
+			t.Errorf("error should suggest the range fix, got: %v", err)
+		}
+		if !strings.Contains(msg, "10.20.0.5/32") {
+			t.Errorf("error should suggest the single-host fix, got: %v", err)
+		}
+	})
+
+	t.Run("non-canonical CIDR with host bits set is rejected (IPv6)", func(t *testing.T) {
+		_, err := ParsePrivateCIDRs([]string{"2001:db8::1/32"})
+		if err == nil {
+			t.Fatal("host-bits-set IPv6 CIDR must be rejected")
+		}
+		if !strings.Contains(err.Error(), "/128") {
+			t.Errorf("IPv6 error should suggest /128 single-host form, got: %v", err)
+		}
+	})
+
+	t.Run("canonical CIDR (network address) is accepted", func(t *testing.T) {
+		got, err := ParsePrivateCIDRs([]string{"10.20.0.0/16", "2001:db8::/32"})
+		if err != nil {
+			t.Fatalf("canonical entries should pass: %v", err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("expected 2 CIDRs, got %d", len(got))
+		}
+	})
+
+	t.Run("single-host /32 is accepted (canonical)", func(t *testing.T) {
+		got, err := ParsePrivateCIDRs([]string{"10.20.0.5/32"})
+		if err != nil {
+			t.Fatalf("single-host /32 should pass: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("expected 1 CIDR, got %d", len(got))
+		}
+	})
 }
 
 func TestValidateHostIP(t *testing.T) {

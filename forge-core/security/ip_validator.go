@@ -151,19 +151,41 @@ func isBlockedIPv6Transition(ip net.IP, allowPrivate bool, allowedPrivateCIDRs [
 // Returns an error naming the first invalid entry. Entries must be canonical
 // CIDR notation (e.g. "10.0.0.0/8"); bare IPs are rejected — the intent is
 // range-level exemption, not per-host holes.
+//
+// Non-canonical entries with host bits set (e.g. "10.20.0.5/16") are
+// rejected too. `net.ParseCIDR` silently masks those to the network
+// (10.20.0.0/16), which is the "wider than intended" direction — an operator
+// who wrote "10.20.0.5/16" expecting a single host would instead get the
+// whole /16 allowed. Failing loud here forces the operator to either write
+// "10.20.0.5/32" (single host — explicit) or "10.20.0.0/16" (the range they
+// really meant). #348 review nit 2.
 func ParsePrivateCIDRs(cidrs []string) ([]*net.IPNet, error) {
 	if len(cidrs) == 0 {
 		return nil, nil
 	}
 	out := make([]*net.IPNet, 0, len(cidrs))
 	for _, s := range cidrs {
-		_, n, err := net.ParseCIDR(s)
+		ip, n, err := net.ParseCIDR(s)
 		if err != nil {
 			return nil, fmt.Errorf("invalid CIDR %q: %w", s, err)
+		}
+		if !ip.Equal(n.IP) {
+			return nil, fmt.Errorf("non-canonical CIDR %q: host bits are set — use %q for the range or %q for a single host",
+				s, n.String(), ip.String()+singleHostMask(ip))
 		}
 		out = append(out, n)
 	}
 	return out, nil
+}
+
+// singleHostMask returns the /32 (IPv4) or /128 (IPv6) suffix that turns a
+// bare IP into a single-host CIDR. Used only in error messages so the fix
+// the operator needs is obvious in the log line.
+func singleHostMask(ip net.IP) string {
+	if ip.To4() != nil {
+		return "/32"
+	}
+	return "/128"
 }
 
 func bytesEqual(a, b []byte) bool {

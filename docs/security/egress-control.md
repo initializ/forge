@@ -128,7 +128,8 @@ Invariants (checked by tests):
 
 - **Always-blocked ranges (cloud metadata `169.254.169.254`, loopback, `0.0.0.0/8`) stay blocked** even if an operator lists a CIDR that would otherwise contain them. No allowlist punches a hole in these.
 - **`allow_private_ips: true` supersedes** the CIDR list — the boolean means "all private allowed" and the list is redundant. A warning in that case is a good future addition, but the effective policy is safe (superset).
-- **Invalid CIDR strings fail at config-load time**, not at first dial. `Resolve()` validates each entry via `net.ParseCIDR`; bare IPs (missing `/mask`) are rejected because the config intent is range-level exemption.
+- **Invalid CIDR strings fail at config-load time**, not at first dial. `Resolve()` validates each entry via `net.ParseCIDR`; bare IPs (missing `/mask`) are rejected because the config intent is range-level exemption. **Non-canonical entries with host bits set** (e.g. `10.20.0.5/16`) are also rejected — Go's `net.ParseCIDR` silently masks those to the network (widening from a single host to a /16), which is the security-wrong direction. Write `10.20.0.5/32` (single host) or `10.20.0.0/16` (range) — never the ambiguous mix.
+- **Both `forge build` and `forge run` validate the CIDR strings** — a typo trips the build, not just the first launch.
 - CIDRs are consulted by both the in-process `EgressEnforcer` (Go clients) and the subprocess `EgressProxy` (skill scripts) — one policy, two enforcement paths.
 
 Companion feature for #337: raw-TCP egress (databases, message brokers) requires this narrow-private mechanism to be reachable in the first place. Landing the CIDR allowlist first (this PR) unblocks the SOCKS5-based TCP path (follow-up PR) without opening RFC 1918 wholesale.

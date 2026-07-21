@@ -48,7 +48,6 @@ type tryFlags struct {
 	onceSet  bool // whether --once was explicitly set (distinguishes "" from unset)
 	quiet    bool
 	audit    bool
-	yes      bool
 	prompt   string // optional positional first prompt
 }
 
@@ -59,7 +58,6 @@ func init() {
 	tryCmd.Flags().String("once", "", "run a single prompt non-interactively, then exit")
 	tryCmd.Flags().Bool("quiet", false, "hide the inline tool/egress loop lines")
 	tryCmd.Flags().Bool("audit", false, "show the full NDJSON audit event stream")
-	tryCmd.Flags().Bool("yes", false, "assume yes to prompts (non-interactive)")
 }
 
 func parseTryFlags(cmd *cobra.Command, args []string) tryFlags {
@@ -71,7 +69,6 @@ func parseTryFlags(cmd *cobra.Command, args []string) tryFlags {
 	f.onceSet = cmd.Flags().Changed("once")
 	f.quiet, _ = cmd.Flags().GetBool("quiet")
 	f.audit, _ = cmd.Flags().GetBool("audit")
-	f.yes, _ = cmd.Flags().GetBool("yes")
 	if len(args) > 0 {
 		f.prompt = args[0]
 	}
@@ -177,17 +174,35 @@ func tryOneTurn(ctx context.Context, sess *runtime.LocalSession, renderer *tryvi
 // prints after the reply.
 func tryREPL(ctx context.Context, sess *runtime.LocalSession, renderer *tryview.Renderer, cmd *cobra.Command, flags tryFlags) error {
 	out := cmd.OutOrStdout()
-	scanner := bufio.NewScanner(cmd.InOrStdin())
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	// Read stdin on a goroutine so the prompt is cancellable: a blocking
+	// scanner.Scan() can't observe ctx, so Ctrl-C (via signal.NotifyContext)
+	// would otherwise hang at "you ›" until Enter. The goroutine leaks at most
+	// one pending read when we return, which is harmless as the process exits.
+	lines := make(chan string)
+	eof := make(chan struct{})
+	go func() {
+		scanner := bufio.NewScanner(cmd.InOrStdin())
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			lines <- scanner.Text()
+		}
+		close(eof)
+	}()
 
 	pending := strings.TrimSpace(flags.prompt)
 	for {
 		if pending == "" {
 			_, _ = fmt.Fprint(out, "\nyou › ")
-			if !scanner.Scan() {
-				break // Ctrl-D / EOF
+			select {
+			case <-ctx.Done():
+				_, _ = fmt.Fprintln(out)
+				return nil // Ctrl-C
+			case <-eof:
+				return nil // Ctrl-D / EOF
+			case line := <-lines:
+				pending = strings.TrimSpace(line)
 			}
-			pending = strings.TrimSpace(scanner.Text())
 		}
 		if pending == "" {
 			continue
@@ -446,8 +461,11 @@ func tryPicker(flags tryFlags, in io.Reader, out io.Writer) (tryResolution, erro
 	}
 }
 
-// pasteKeyResolution prompts for a provider and a masked API key, held only in
-// memory (written to disk solely under --keep, via the scaffold env path).
+// pasteKeyResolution prompts for a provider and a masked API key. The key is
+// held only in memory for this session (via res.EnvOverrides consumed by
+// NewLocalSession) and is never written to disk — not even under --keep, whose
+// scaffold env is always empty. A kept agent therefore has no credential on
+// disk; a later `forge serve` there needs the env var set by hand.
 func pasteKeyResolution(flags tryFlags, out io.Writer) (tryResolution, error) {
 	_, _ = fmt.Fprint(out, "  Provider (openai / anthropic / gemini): ")
 	prov, _ := bufio.NewReader(os.Stdin).ReadString('\n')

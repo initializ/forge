@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/initializ/forge/forge-cli/config"
+	"github.com/initializ/forge/forge-cli/internal/tryview"
 	"github.com/initializ/forge/forge-cli/runtime"
 	"github.com/initializ/forge/forge-core/llm/oauth"
 	"github.com/initializ/forge/forge-core/types"
@@ -121,6 +122,12 @@ func runTry(cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = sess.Close() }()
 
+	// Visible-loop renderer: inline tool/egress/guardrail lines from the
+	// agent's own audit stream. --quiet hides it; --audit shows full NDJSON.
+	color := term.IsTerminal(int(os.Stdout.Fd())) && os.Getenv("NO_COLOR") == ""
+	renderer := tryview.New(out, flags.quiet, flags.audit, color)
+	sess.AuditLogger().AddSink(renderer)
+
 	// Ctrl-C cancels the in-flight turn (executor cancels at the next
 	// iteration / tool boundary) and ends the loop.
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
@@ -129,12 +136,12 @@ func runTry(cmd *cobra.Command, args []string) error {
 	// --once: run a single turn (or, for an empty prompt, just load + exit).
 	if flags.onceSet {
 		if strings.TrimSpace(flags.once) != "" {
-			if err := tryOneTurn(ctx, sess, out, flags.once); err != nil {
+			if err := tryOneTurn(ctx, sess, renderer, out, flags.once); err != nil {
 				return err
 			}
 		}
 	} else {
-		if err := tryREPL(ctx, sess, cmd, flags); err != nil {
+		if err := tryREPL(ctx, sess, renderer, cmd, flags); err != nil {
 			return err
 		}
 	}
@@ -145,20 +152,24 @@ func runTry(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// tryOneTurn runs a single non-interactive turn and prints the reply.
-func tryOneTurn(ctx context.Context, sess *runtime.LocalSession, out io.Writer, prompt string) error {
-	reply, err := sess.RunTurn(ctx, prompt, nil) // Phase 4 wires the progress emitter
+// tryOneTurn runs a single non-interactive turn and prints the reply, then the
+// compact audit summary.
+func tryOneTurn(ctx context.Context, sess *runtime.LocalSession, renderer *tryview.Renderer, out io.Writer, prompt string) error {
+	reply, err := sess.RunTurn(ctx, prompt, nil)
 	if err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(out, "\nagent › %s\n", reply)
+	renderer.FlushSummary()
 	return nil
 }
 
 // tryREPL reads one prompt per line and runs a turn each, keeping history in
 // the session. It exits on /exit, /quit, Ctrl-D (EOF), or a cancelled context.
-// An optional positional prompt seeds the first turn.
-func tryREPL(ctx context.Context, sess *runtime.LocalSession, cmd *cobra.Command, flags tryFlags) error {
+// An optional positional prompt seeds the first turn. The renderer prints the
+// inline loop (via the audit sink) during each turn; the compact summary
+// prints after the reply.
+func tryREPL(ctx context.Context, sess *runtime.LocalSession, renderer *tryview.Renderer, cmd *cobra.Command, flags tryFlags) error {
 	out := cmd.OutOrStdout()
 	scanner := bufio.NewScanner(cmd.InOrStdin())
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -178,7 +189,7 @@ func tryREPL(ctx context.Context, sess *runtime.LocalSession, cmd *cobra.Command
 		if pending == "/exit" || pending == "/quit" {
 			break
 		}
-		reply, err := sess.RunTurn(ctx, pending, nil) // Phase 4 wires the progress emitter
+		reply, err := sess.RunTurn(ctx, pending, nil)
 		pending = ""
 		if err != nil {
 			if ctx.Err() != nil {
@@ -188,6 +199,7 @@ func tryREPL(ctx context.Context, sess *runtime.LocalSession, cmd *cobra.Command
 			continue
 		}
 		_, _ = fmt.Fprintf(out, "\nagent › %s\n", reply)
+		renderer.FlushSummary()
 	}
 	return nil
 }

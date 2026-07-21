@@ -23,6 +23,18 @@ func TestRouter_ForwardToA2A_Success(t *testing.T) {
 			t.Errorf("expected method tasks/send, got %s", req.Method)
 		}
 
+		// §19 P3: the sender rides as on-behalf-of headers so the A2A
+		// server's auth middleware attributes the task to the human.
+		if got := r.Header.Get("X-Forge-Channel-User"); got != "U456" {
+			t.Errorf("X-Forge-Channel-User = %q, want U456", got)
+		}
+		if got := r.Header.Get("X-Forge-Channel-Email"); got != "mk@example.com" {
+			t.Errorf("X-Forge-Channel-Email = %q, want mk@example.com", got)
+		}
+		if got := r.Header.Get("X-Forge-Channel"); got != "test" {
+			t.Errorf("X-Forge-Channel = %q, want test", got)
+		}
+
 		var params a2a.SendTaskParams
 		if err := json.Unmarshal(req.Params, &params); err != nil {
 			t.Fatalf("decoding params: %v", err)
@@ -55,6 +67,7 @@ func TestRouter_ForwardToA2A_Success(t *testing.T) {
 		Channel:     "test",
 		WorkspaceID: "W123",
 		UserID:      "U456",
+		UserEmail:   "mk@example.com",
 		Message:     "hello agent",
 	}
 

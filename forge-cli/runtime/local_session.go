@@ -112,7 +112,9 @@ func NewLocalSession(ctx context.Context, opts LocalSessionOptions) (*LocalSessi
 		proxyStop()
 		return nil, fmt.Errorf("registering builtin tools: %w", err)
 	}
-	r.registerSkillTools(reg, proxyURL)
+	// socksURL is empty: the keyless demo has no raw-TCP allowlist, so the
+	// SOCKS5 listener is never started (see buildTryEgress).
+	r.registerSkillTools(reg, proxyURL, "")
 
 	llmClient, err := r.buildLLMClient(mc)
 	if err != nil {
@@ -202,18 +204,6 @@ func (r *Runner) buildTryEgress(ctx context.Context, envVars map[string]string, 
 	domains = append(domains, security.LLMProviderDomains(r.cfg.Config)...)
 	domains = append(domains, security.LLMProviderEnvDomains(envVars)...)
 
-	egressCfg, err := security.Resolve(
-		r.cfg.Config.Egress.Profile,
-		r.cfg.Config.Egress.Mode,
-		domains,
-		nil,
-		r.cfg.Config.Egress.Capabilities,
-	)
-	if err != nil {
-		r.logger.Warn("egress resolve failed; using unenforced client", map[string]any{"error": err.Error()})
-		return http.DefaultClient, "", noop
-	}
-
 	allowPrivateIPs := false
 	if r.cfg.Config.Egress.AllowPrivateIPs != nil {
 		allowPrivateIPs = *r.cfg.Config.Egress.AllowPrivateIPs
@@ -221,7 +211,34 @@ func (r *Runner) buildTryEgress(ctx context.Context, envVars map[string]string, 
 		allowPrivateIPs = true
 	}
 
-	enforcer := security.NewEgressEnforcer(nil, egressCfg.Mode, egressCfg.AllDomains, allowPrivateIPs)
+	egressCfg, err := security.Resolve(
+		r.cfg.Config.Egress.Profile,
+		r.cfg.Config.Egress.Mode,
+		domains,
+		nil,
+		r.cfg.Config.Egress.Capabilities,
+		r.cfg.Config.Egress.AllowedPrivateCIDRs, // #348
+		r.cfg.Config.Egress.AllowedTCP,          // #355 (empty on the keyless demo)
+	)
+	if err != nil {
+		// Fail CLOSED: an allowlist enforcer with no allowed domains blocks all
+		// egress, rather than handing back an unenforced http.DefaultClient. A
+		// future config change that makes Resolve fail must not silently drop
+		// egress enforcement on this security path.
+		r.logger.Warn("egress resolve failed; denying all egress", map[string]any{"error": err.Error()})
+		denyAll := security.NewEgressEnforcer(nil, security.ModeAllowlist, nil, allowPrivateIPs, nil)
+		return &http.Client{Transport: observability.WrapHTTPTransport(denyAll)}, "", noop
+	}
+
+	// Parse the CIDR allowlist once so the enforcer and proxy share the slice
+	// (Resolve already validated the strings). Mirrors Run().
+	allowedPrivateCIDRs, cidrErr := security.ParsePrivateCIDRs(egressCfg.AllowedPrivateCIDRs)
+	if cidrErr != nil {
+		r.logger.Warn("failed to parse allowed_private_cidrs, ignoring", map[string]any{"error": cidrErr.Error()})
+		allowedPrivateCIDRs = nil
+	}
+
+	enforcer := security.NewEgressEnforcer(nil, egressCfg.Mode, egressCfg.AllDomains, allowPrivateIPs, allowedPrivateCIDRs)
 	enforcer.OnAttempt = func(ctx context.Context, domain string, allowed bool) {
 		audit.EmitFromContext(ctx, coreruntime.AuditEvent{
 			Event:         egressEvent(allowed),
@@ -237,7 +254,7 @@ func (r *Runner) buildTryEgress(ctx context.Context, envVars map[string]string, 
 		return egressClient, "", noop
 	}
 	matcher := security.NewDomainMatcher(egressCfg.Mode, egressCfg.AllDomains)
-	proxy := security.NewEgressProxy(matcher, allowPrivateIPs)
+	proxy := security.NewEgressProxy(matcher, allowPrivateIPs, allowedPrivateCIDRs)
 	proxy.OnAttempt = func(a security.EgressAttempt) {
 		audit.Emit(coreruntime.AuditEvent{
 			Event:         egressEvent(a.Allowed),

@@ -23,19 +23,31 @@ Forge is the open-source runtime for Anthropic's Agent Skills standard — built
 
 ## Quick Start
 
+Talk to a working agent, and watch it use a tool, in under 60 seconds:
+
 ```bash
-# Install (pick one)
-brew install initializ/tap/forge
-curl -sSL https://raw.githubusercontent.com/initializ/forge/main/install.sh | bash
-
-# Create and run an agent
-forge init my-agent && cd my-agent && forge run
-
-# Connect to Slack
-forge run --with slack
+brew install initializ/tap/forge && forge try
 ```
 
-See [Quick Start](docs/getting-started/quick-start.md) for the full walkthrough, or [Installation](docs/getting-started/installation.md) for all methods.
+`forge try` scaffolds a keyless demo agent, finds whatever model credential you
+already have, and drops you into a chat whose every tool call and egress check
+renders inline:
+
+```
+you › what's the weather in Tokyo, should I pack an umbrella?
+
+  ▸ tool   weather_current(location=Tokyo)
+  ▸ egress wttr.in   ✓ allowed
+  ◂ 18C, light rain this evening
+
+agent › 18C in Tokyo with light rain tonight. Yes, take the umbrella.
+```
+
+Then build your own: `forge try --keep` graduates the demo to `./forge-quickstart`.
+
+See [Quick Start](docs/getting-started/quick-start.md) for the walkthrough,
+[Ship to Production](docs/getting-started/ship-to-production.md) for the full
+pipeline, or [Installation](docs/getting-started/installation.md) for all methods.
 
 ## How It Works
 
@@ -73,7 +85,8 @@ You write a `SKILL.md`. Forge compiles it into a secure, runnable agent with egr
 
 | Document | Description |
 |----------|-------------|
-| [Quick Start](docs/getting-started/quick-start.md) | Get an agent running in 60 seconds |
+| [Quick Start](docs/getting-started/quick-start.md) | Talk to an agent in 60 seconds with `forge try` |
+| [Ship to Production](docs/getting-started/ship-to-production.md) | The full init, build, package, deploy pipeline |
 | [Installation](docs/getting-started/installation.md) | Homebrew, binary, and Windows install |
 | [Architecture](docs/core-concepts/how-forge-works.md) | System design, module layout, and data flows |
 

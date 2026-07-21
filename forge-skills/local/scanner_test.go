@@ -38,7 +38,7 @@ metadata:
       bins:
         - curl
     egress_domains:
-      - api.openweathermap.org
+      - wttr.in
 ---
 ## Tool: weather_current
 Get current weather.

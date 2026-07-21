@@ -1098,10 +1098,10 @@ metadata:
     requires:
       bins: [curl]                   # binaries that must be in PATH
       env:
-        required: [WEATHER_API_KEY]
+        required: []
         one_of: []
         optional: []
-    egress_domains: [api.openweathermap.org]
+    egress_domains: [wttr.in]
     denied_tools: [http_request]     # tools this skill must NOT use
     timeout_hint: 60                 # suggested execution timeout in seconds
 ---

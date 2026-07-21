@@ -603,6 +603,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	var egressClient *http.Client
 	var egressProxy *security.EgressProxy
 	var proxyURL string
+	var socksURL string
 	egressToolNames := make([]string, len(r.cfg.Config.Tools))
 	for i, t := range r.cfg.Config.Tools {
 		egressToolNames[i] = t.Name
@@ -672,6 +673,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		egressToolNames,
 		r.cfg.Config.Egress.Capabilities,
 		r.cfg.Config.Egress.AllowedPrivateCIDRs,
+		r.cfg.Config.Egress.AllowedTCP,
 	)
 	if egressErr != nil {
 		r.logger.Warn("failed to resolve egress config, using default", map[string]any{"error": egressErr.Error()})
@@ -743,6 +745,17 @@ func (r *Runner) Run(ctx context.Context) error {
 		if (!security.InContainer() && egressCfg.Mode != security.ModeDevOpen) || browserActive {
 			matcher := security.NewDomainMatcher(egressCfg.Mode, egressCfg.AllDomains)
 			egressProxy = security.NewEgressProxy(matcher, allowPrivateIPs, allowedPrivateCIDRs)
+
+			// #337 — install the port-aware raw-TCP matcher. Empty list =>
+			// SOCKS5 listener stays disabled (no extra port bound). The
+			// Resolve() step above already validated the entries; a parse
+			// failure here would be an internal invariant break.
+			if tcpMatcher, tcpErr := security.NewTCPMatcher(egressCfg.AllowedTCP); tcpErr != nil {
+				r.logger.Warn("failed to build tcp allowlist, raw-TCP egress disabled", map[string]any{"error": tcpErr.Error()})
+			} else {
+				egressProxy.SetTCPMatcher(tcpMatcher)
+			}
+
 			egressProxy.OnAttempt = func(a security.EgressAttempt) {
 				event := coreruntime.AuditEgressAllowed
 				if !a.Allowed {
@@ -772,7 +785,14 @@ func (r *Runner) Run(ctx context.Context) error {
 				}
 				egressProxy = nil
 			} else {
-				r.logger.Info("egress proxy started", map[string]any{"url": proxyURL})
+				// #337 — capture the SOCKS5 URL for env injection into skill
+				// subprocesses. Empty when raw-TCP egress wasn't configured.
+				socksURL = egressProxy.SOCKSURL()
+				fields := map[string]any{"http_url": proxyURL}
+				if socksURL != "" {
+					fields["socks_url"] = socksURL
+				}
+				r.logger.Info("egress proxy started", fields)
 			}
 		}
 	}
@@ -949,7 +969,7 @@ func (r *Runner) Run(ctx context.Context) error {
 				if r.derivedCLIConfig != nil {
 					envPass = r.derivedCLIConfig.EnvPassthrough
 				}
-				rss := clitools.NewRunSkillScriptTool(r.cfg.WorkDir, proxyURL, envPass)
+				rss := clitools.NewRunSkillScriptTool(r.cfg.WorkDir, proxyURL, socksURL, envPass)
 				if regErr := reg.Register(rss); regErr != nil {
 					r.logger.Warn("failed to register run_skill_script", map[string]any{"error": regErr.Error()})
 				}
@@ -1019,7 +1039,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 
 			// Register skill tools from skill files
-			r.registerSkillTools(reg, proxyURL)
+			r.registerSkillTools(reg, proxyURL, socksURL)
 
 			// Remove denied tools from the registry. The effective deny
 			// list is the union of forge.yaml's denies (via the derived
@@ -3435,8 +3455,10 @@ func (r *Runner) resolveBinarySkillPath(entry contract.SkillEntry) (string, erro
 }
 
 // registerSkillTools scans skill files for skill entries that have associated
+// skill:run commands and registers them as tools. socksURL is the raw-TCP
+// SOCKS5 egress URL — empty when raw-TCP egress isn't configured.
 // scripts. Each script-backed skill is registered as a first-class tool in the registry.
-func (r *Runner) registerSkillTools(reg *tools.Registry, proxyURL string) {
+func (r *Runner) registerSkillTools(reg *tools.Registry, proxyURL string, socksURL string) {
 	matches := r.discoverSkillFiles()
 
 	var registered int
@@ -3500,6 +3522,7 @@ func (r *Runner) registerSkillTools(reg *tools.Registry, proxyURL string) {
 				WorkDir:  r.cfg.WorkDir,
 				EnvVars:  envVars,
 				ProxyURL: proxyURL,
+				SOCKSURL: socksURL,
 				Model:    modelName,
 			}
 

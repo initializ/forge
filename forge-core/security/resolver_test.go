@@ -5,7 +5,7 @@ import (
 )
 
 func TestResolve_DenyAll(t *testing.T) {
-	cfg, err := Resolve("strict", "deny-all", nil, nil, nil, nil)
+	cfg, err := Resolve("strict", "deny-all", nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -21,7 +21,7 @@ func TestResolve_DenyAll(t *testing.T) {
 }
 
 func TestResolve_DevOpen(t *testing.T) {
-	cfg, err := Resolve("permissive", "dev-open", nil, nil, nil, nil)
+	cfg, err := Resolve("permissive", "dev-open", nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestResolve_Allowlist(t *testing.T) {
 	explicit := []string{"api.example.com", "data.example.com"}
 	tools := []string{"web_search", "github_api"}
 
-	cfg, err := Resolve("standard", "allowlist", explicit, tools, nil, nil)
+	cfg, err := Resolve("standard", "allowlist", explicit, tools, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestResolve_Allowlist(t *testing.T) {
 }
 
 func TestResolve_Defaults(t *testing.T) {
-	cfg, err := Resolve("", "", nil, nil, nil, nil)
+	cfg, err := Resolve("", "", nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -75,14 +75,14 @@ func TestResolve_Defaults(t *testing.T) {
 }
 
 func TestResolve_InvalidProfile(t *testing.T) {
-	_, err := Resolve("invalid", "deny-all", nil, nil, nil, nil)
+	_, err := Resolve("invalid", "deny-all", nil, nil, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for invalid profile")
 	}
 }
 
 func TestResolve_InvalidMode(t *testing.T) {
-	_, err := Resolve("strict", "invalid", nil, nil, nil, nil)
+	_, err := Resolve("strict", "invalid", nil, nil, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for invalid mode")
 	}
@@ -115,7 +115,7 @@ func TestInferToolDomains_Unknown(t *testing.T) {
 
 func TestResolve_AllowlistWithCapabilities(t *testing.T) {
 	explicit := []string{"api.example.com"}
-	cfg, err := Resolve("standard", "allowlist", explicit, nil, []string{"slack"}, nil)
+	cfg, err := Resolve("standard", "allowlist", explicit, nil, []string{"slack"}, nil, nil)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestResolve_AllowlistWithCapabilities(t *testing.T) {
 }
 
 func TestResolve_AllowlistTelegramCapability(t *testing.T) {
-	cfg, err := Resolve("standard", "allowlist", nil, nil, []string{"telegram"}, nil)
+	cfg, err := Resolve("standard", "allowlist", nil, nil, []string{"telegram"}, nil, nil)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestResolve_AllowlistTelegramCapability(t *testing.T) {
 }
 
 func TestResolve_CapabilitiesIgnoredForDenyAll(t *testing.T) {
-	cfg, err := Resolve("strict", "deny-all", nil, nil, []string{"slack"}, nil)
+	cfg, err := Resolve("strict", "deny-all", nil, nil, []string{"slack"}, nil, nil)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestResolve_CapabilitiesIgnoredForDenyAll(t *testing.T) {
 func TestResolve_ValidatesAllowedPrivateCIDRs(t *testing.T) {
 	t.Run("valid CIDRs pass through", func(t *testing.T) {
 		cfg, err := Resolve("standard", "allowlist", nil, nil, nil,
-			[]string{"10.20.0.0/16", "172.16.42.0/24"})
+			[]string{"10.20.0.0/16", "172.16.42.0/24"}, nil)
 		if err != nil {
 			t.Fatalf("Resolve: %v", err)
 		}
@@ -186,19 +186,51 @@ func TestResolve_ValidatesAllowedPrivateCIDRs(t *testing.T) {
 
 	t.Run("invalid CIDR fails Resolve", func(t *testing.T) {
 		_, err := Resolve("standard", "allowlist", nil, nil, nil,
-			[]string{"10.20.0.0/16", "not-a-cidr"})
+			[]string{"10.20.0.0/16", "not-a-cidr"}, nil)
 		if err == nil {
 			t.Fatal("expected error for invalid CIDR")
 		}
 	})
 
 	t.Run("nil CIDR list is fine", func(t *testing.T) {
-		cfg, err := Resolve("strict", "deny-all", nil, nil, nil, nil)
+		cfg, err := Resolve("strict", "deny-all", nil, nil, nil, nil, nil)
 		if err != nil {
 			t.Fatalf("Resolve: %v", err)
 		}
 		if cfg.AllowedPrivateCIDRs != nil {
 			t.Errorf("expected nil AllowedPrivateCIDRs, got %v", cfg.AllowedPrivateCIDRs)
+		}
+	})
+}
+
+// TestResolve_ValidatesAllowedTCP mirrors the CIDR check for the raw-TCP
+// allowlist: bad host:port entries must fail at config-load, not on first
+// SOCKS5 dial. See #337.
+func TestResolve_ValidatesAllowedTCP(t *testing.T) {
+	t.Run("valid entries pass through", func(t *testing.T) {
+		cfg, err := Resolve("standard", "allowlist", nil, nil, nil, nil,
+			[]string{"db.internal:5432", "*.brokers.internal:9092", "metrics.internal:*"})
+		if err != nil {
+			t.Fatalf("Resolve: %v", err)
+		}
+		if len(cfg.AllowedTCP) != 3 {
+			t.Errorf("AllowedTCP = %v, want 3 entries", cfg.AllowedTCP)
+		}
+	})
+
+	t.Run("invalid host:port fails Resolve", func(t *testing.T) {
+		_, err := Resolve("standard", "allowlist", nil, nil, nil, nil,
+			[]string{"db.internal:not-a-port"})
+		if err == nil {
+			t.Fatal("expected error for invalid host:port")
+		}
+	})
+
+	t.Run("missing port fails Resolve", func(t *testing.T) {
+		_, err := Resolve("standard", "allowlist", nil, nil, nil, nil,
+			[]string{"db.internal"})
+		if err == nil {
+			t.Fatal("expected error for missing :port")
 		}
 	})
 }

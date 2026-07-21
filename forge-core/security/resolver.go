@@ -12,10 +12,11 @@ func DefaultProfile() EgressProfile { return ProfileStrict }
 func DefaultMode() EgressMode { return ModeDenyAll }
 
 // Resolve builds an EgressConfig from profile, mode, explicit domains, tool
-// names, capabilities, and (optionally) the raw allowed_private_cidrs list
-// from forge.yaml. CIDR entries are validated here so a bad string fails at
-// config-load time, not at first-dial. Pass nil for pre-CIDR defaults.
-func Resolve(profile, mode string, explicitDomains, toolNames, capabilities, allowedPrivateCIDRs []string) (*EgressConfig, error) {
+// names, capabilities, and (optionally) the raw allowed_private_cidrs and
+// allowed_tcp lists from forge.yaml. All list entries are validated here so
+// a bad string fails at config-load time, not at first-dial. Pass nil for
+// pre-CIDR / pre-TCP defaults.
+func Resolve(profile, mode string, explicitDomains, toolNames, capabilities, allowedPrivateCIDRs, allowedTCP []string) (*EgressConfig, error) {
 	p := EgressProfile(profile)
 	if p == "" {
 		p = DefaultProfile()
@@ -39,11 +40,17 @@ func Resolve(profile, mode string, explicitDomains, toolNames, capabilities, all
 	if _, err := ParsePrivateCIDRs(allowedPrivateCIDRs); err != nil {
 		return nil, fmt.Errorf("egress: %w", err)
 	}
+	// Same posture for raw-TCP entries — invalid host:port trips at
+	// config-load, not at first SOCKS5 dial.
+	if _, err := NewTCPMatcher(allowedTCP); err != nil {
+		return nil, fmt.Errorf("egress: %w", err)
+	}
 
 	cfg := &EgressConfig{
 		Profile:             p,
 		Mode:                m,
 		AllowedPrivateCIDRs: allowedPrivateCIDRs,
+		AllowedTCP:          allowedTCP,
 	}
 
 	switch m {

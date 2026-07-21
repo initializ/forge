@@ -28,16 +28,19 @@ import (
 type RunSkillScriptTool struct {
 	workDir  string
 	proxyURL string
+	socksURL string
 	envVars  []string
 	timeout  time.Duration
 }
 
 // NewRunSkillScriptTool constructs the tool rooted at the agent working
 // directory, wired to the egress proxy and the skill env passthrough.
-func NewRunSkillScriptTool(workDir, proxyURL string, envVars []string) *RunSkillScriptTool {
+// socksURL is the raw-TCP SOCKS5 egress URL (empty when unconfigured).
+func NewRunSkillScriptTool(workDir, proxyURL, socksURL string, envVars []string) *RunSkillScriptTool {
 	return &RunSkillScriptTool{
 		workDir:  workDir,
 		proxyURL: proxyURL,
+		socksURL: socksURL,
 		envVars:  envVars,
 		timeout:  120 * time.Second,
 	}
@@ -113,6 +116,7 @@ func (t *RunSkillScriptTool) Execute(ctx context.Context, args json.RawMessage) 
 		WorkDir:  dir,
 		EnvVars:  t.envVars,
 		ProxyURL: t.proxyURL,
+		SOCKSURL: t.socksURL,
 	}
 	out, runErr := exec.Run(ctx, interp, []string{input.Path, jsonArgs}, nil)
 	if runErr != nil {

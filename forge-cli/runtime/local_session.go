@@ -57,6 +57,14 @@ func NewLocalSession(ctx context.Context, opts LocalSessionOptions) (*LocalSessi
 		WorkDir: opts.WorkDir,
 		Host:    "127.0.0.1",
 		Verbose: opts.Verbose,
+		// Capture tool args + results so the visible-loop renderer can show
+		// the call preview and a short result. Redact scrubs vendor secrets
+		// before they reach the audit stream.
+		AuditPayloadCapture: coreruntime.AuditPayloadCapture{
+			ToolArgs:   true,
+			ToolResult: true,
+			Redact:     true,
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -81,7 +89,11 @@ func NewLocalSession(ctx context.Context, opts LocalSessionOptions) (*LocalSessi
 		_ = os.Setenv(k, v)
 	}
 
-	audit := coreruntime.NewAuditLoggerFromConfig(r.cfg.AuditExport)
+	// Discard base sink: `forge try` shows the audit stream through the
+	// visible-loop renderer (attached by the caller as an extra sink), not
+	// as raw NDJSON on stderr. The renderer's --audit mode re-enables the
+	// full stream.
+	audit := coreruntime.NewAuditLogger(io.Discard)
 
 	// Resolve the model first — registerSkillTools reads r.modelConfig.
 	mc := coreruntime.ResolveModelConfig(opts.Config, envVars, r.cfg.ProviderOverride)

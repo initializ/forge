@@ -108,6 +108,40 @@ func TestTCPMatcher_Empty(t *testing.T) {
 	}
 }
 
+// TestTCPMatcher_IPv6Literal pins the fix from the #355 review:
+// bracketed IPv6 literals in the config must round-trip to the
+// unbracketed form that the SOCKS5 IPv6 ATYP path produces at runtime
+// (`net.IP(buf).String()` → `::1`, no brackets). Pre-fix the entry was
+// stored with brackets and never matched, silently denying legitimate
+// IPv6 targets.
+func TestTCPMatcher_IPv6Literal(t *testing.T) {
+	t.Run("bracketed loopback IPv6 matches unbracketed runtime form", func(t *testing.T) {
+		m, err := NewTCPMatcher([]string{"[::1]:5432"})
+		if err != nil {
+			t.Fatalf("NewTCPMatcher: %v", err)
+		}
+		if !m.IsAllowed("::1", "5432") {
+			t.Error("[::1]:5432 should match runtime host ::1 on port 5432")
+		}
+		if m.IsAllowed("[::1]", "5432") {
+			t.Error("bracketed host at runtime must not match — SOCKS5 never produces brackets")
+		}
+		if m.IsAllowed("::1", "5433") {
+			t.Error("port granularity holds for IPv6 targets too")
+		}
+	})
+
+	t.Run("bracketed IPv6 with any-port", func(t *testing.T) {
+		m, err := NewTCPMatcher([]string{"[2001:db8::1]:*"})
+		if err != nil {
+			t.Fatalf("NewTCPMatcher: %v", err)
+		}
+		if !m.IsAllowed("2001:db8::1", "5432") {
+			t.Error("bracketed IPv6 with :* should match any port")
+		}
+	})
+}
+
 func TestTCPMatcher_InvalidEntries(t *testing.T) {
 	cases := []struct {
 		name  string

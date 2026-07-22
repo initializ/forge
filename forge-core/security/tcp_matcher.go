@@ -2,6 +2,7 @@ package security
 
 import (
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 )
@@ -112,18 +113,31 @@ func (m *TCPMatcher) Empty() bool {
 
 // parseTCPEntry splits `host:port` and validates both sides. Port `*` is
 // permitted (any-port on that host).
+//
+// IPv6 literals must be bracketed (`[::1]:5432`) — brackets are stripped
+// during parse so the stored host matches what the SOCKS5 IPv6 ATYP path
+// produces (`net.IP(buf).String()` yields `::1` without brackets). This
+// closes the doc/functionality gap flagged in the #355 review: pre-fix,
+// `[::1]:5432` was stored with brackets and never matched at runtime.
 func parseTCPEntry(raw string) (host, port string, err error) {
 	if raw == "" {
 		return "", "", fmt.Errorf("tcp allowlist: empty entry")
 	}
-	// SplitN on the LAST colon so IPv6 literals in brackets could be supported
-	// later without a rewrite. For now, IPv6 must be bracketed: `[::1]:5432`.
-	i := strings.LastIndex(raw, ":")
-	if i < 0 {
-		return "", "", fmt.Errorf("tcp allowlist: entry %q missing :port (use host:port or host:*)", raw)
+	// Special-case wildcard port: `net.SplitHostPort` treats `*` as a valid
+	// port string (it doesn't validate numeric), so we can lean on it for
+	// bracket-handling on the host portion. `[::1]:*` → ("::1", "*").
+	// `db.internal:*` → ("db.internal", "*"). Wildcard host with wildcard
+	// port `*.brokers.internal:*` also splits correctly — the `*.` prefix
+	// is opaque to SplitHostPort.
+	host, port, err = net.SplitHostPort(raw)
+	if err != nil {
+		// Reword to name the offending entry so the operator sees which
+		// config line failed. SplitHostPort's default error strings don't
+		// include the input.
+		return "", "", fmt.Errorf("tcp allowlist: entry %q: %w (use host:port or host:*, bracket IPv6 like [::1]:5432)", raw, err)
 	}
-	host = strings.TrimSpace(raw[:i])
-	port = strings.TrimSpace(raw[i+1:])
+	host = strings.TrimSpace(host)
+	port = strings.TrimSpace(port)
 	if host == "" {
 		return "", "", fmt.Errorf("tcp allowlist: entry %q has empty host", raw)
 	}

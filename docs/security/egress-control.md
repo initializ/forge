@@ -165,6 +165,10 @@ egress:
 
 Bare host (no `:port`) is rejected at config-load. Ports outside 1–65535 are rejected. HTTP-side `allowed_hosts` entries are ALSO reachable via SOCKS5 (either matcher can allow a target) — no need to duplicate.
 
+**Read `allowed_hosts` carefully once SOCKS5 is on.** The HTTP-side allowlist is **port-agnostic**: a hostname listed in `allowed_hosts` for HTTPS use is reachable over SOCKS5 on *any* port. Listing `api.stripe.com` for HTTPS also grants `api.stripe.com:22`, `api.stripe.com:3389`, etc. via the raw-TCP path. SafeDialer still bounds the IPs it resolves to (no cloud-metadata, no unlisted-private), so it's not an SSRF hole — but it may be wider than the operator's HTTPS-only mental model. If you need port-narrow control on an HTTP hostname, remove it from `allowed_hosts` and add explicit `allowed_tcp: [api.stripe.com:443]` instead. Matches pre-existing HTTP CONNECT behavior (CONNECT also checks hostname-only), so this isn't newly introduced — but it's newly exposed to arbitrary TCP protocols.
+
+**IPv6 targets** must be bracketed in the config (`[::1]:5432` or `[2001:db8::1]:6379`). Wildcard hosts (`*.suffix`) are IPv4-hostname patterns — IPv6 literal wildcards aren't supported (there's no meaningful "suffix" for an IP literal).
+
 **Env injection for skill subprocesses:**
 
 The runner sets these env vars alongside the existing `HTTP_PROXY`/`HTTPS_PROXY`:

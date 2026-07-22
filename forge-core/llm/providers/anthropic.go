@@ -150,13 +150,16 @@ func (c *AnthropicClient) ChatStream(ctx context.Context, req *llm.ChatRequest) 
 func (c *AnthropicClient) setHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("anthropic-version", "2023-06-01")
-	// When the SigV4 transport is wrapped on the client, the
-	// Authorization header is what authenticates the request — the
-	// x-api-key header MUST NOT be sent, both because it isn't
-	// validated upstream and because it would be included in the
-	// SigV4 signed-headers set and complicate proxy debugging.
-	// Issue #202 Phase 2.
-	if c.authScheme != llm.AuthSchemeAWSSigV4 {
+	// The native x-api-key header is suppressed for two schemes:
+	//   - aws_sigv4 (#202): the SigV4 transport writes Authorization
+	//     instead; a stray x-api-key would join the signed-headers set
+	//     and confuse the upstream verifier.
+	//   - apikey_header_only: the gateway owns provider auth and injects
+	//     the real upstream credential; sending Forge's gateway key as
+	//     x-api-key would reach the provider and 401 (or block a Kong
+	//     `add`-header injection).
+	// Every other scheme (including apikey_header) keeps the native header.
+	if c.authScheme != llm.AuthSchemeAWSSigV4 && c.authScheme != llm.AuthSchemeAPIKeyHeaderOnly {
 		req.Header.Set("x-api-key", c.apiKey)
 	}
 	setGatewayAPIKeyHeader(req, c.authScheme, c.authHeaderName, c.apiKey)

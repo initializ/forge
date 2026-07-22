@@ -158,6 +158,17 @@ model:
 
 The key comes from the usual `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` env var. `auth_scheme` applies to the **primary model only** — a fallback routed through the same gateway authenticates with its provider-native header. `forge validate` rejects an unrecognized `auth_scheme` and an `auth_header_name` that collides with a native auth header (`Authorization` / `x-api-key`), so a typo surfaces as a config error rather than the silent 401 this scheme exists to fix. Issue #302.
 
+**Additive vs. suppress-native.** `apikey_header` keeps sending the provider-native header alongside the gateway header. That's correct when the gateway **replaces** the upstream credential (Kong `request-transformer` `replace`, or `ai-proxy` with `allow_override: true`) or when the key itself is a valid provider key. But when the gateway **adds** the native header only if absent (Kong `request-transformer` `add`), Forge's native header blocks the injection and the provider 401s on the gateway key. For that case use `model.auth_scheme: apikey_header_only`, which sends the gateway header but **suppresses** the provider-native `x-api-key` / `Authorization` (mirroring how `aws_sigv4` skips it), so the gateway is the sole injector of the real upstream credential:
+
+```yaml
+model:
+  provider: anthropic
+  name: claude-sonnet-4-20250514
+  base_url: https://kong-gateway.internal/anthropic   # no trailing /v1 — Forge appends /v1/messages
+  auth_scheme: apikey_header_only
+  # auth_header_name: x-gateway-key                    # optional; default: apikey
+```
+
 > **Kong operators:** `key-auth` defaults to `hide_credentials: false`, which forwards the `apikey` header **upstream** — the credential then transits in a header that conventional redaction tooling (which knows `Authorization` / `x-api-key`) won't scrub. Set `hide_credentials: true` on the Kong plugin so it strips the key before proxying. (Forge's own trace redactor matches key values by shape, so opt-in content capture is already covered.)
 
 ### Fallback Chains

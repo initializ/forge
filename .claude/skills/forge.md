@@ -273,6 +273,8 @@ Credentials read from `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSI
 
 `model.auth_scheme: apikey_header` sends the API key in a gateway header **in addition to** the provider-native header (`x-api-key` / `Authorization: Bearer`), for gateways whose auth plugin reads a fixed header name — e.g. Kong AI Gateway `key-auth`, which reads `apikey` and ignores the provider headers (otherwise every call 401s with `No API key found in request`). Additive, so safe against non-gateway endpoints. Header name defaults to `apikey`, overridable via `model.auth_header_name` (e.g. `x-gateway-key`) for custom `key_names`. Key comes from the usual `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`. Additive header set in `forge-core/llm/providers/auth_scheme.go` (`setGatewayAPIKeyHeader`), wired in both providers' `setHeaders`. Applies to the **primary model only** (fallbacks use their provider-native header). `forge validate` rejects an unknown `auth_scheme` and an `auth_header_name` that collides with `Authorization` / `x-api-key` (the helper also refuses to overwrite a native header as defense-in-depth), and warns when `auth_scheme` is set on a non-openai/anthropic provider that ignores it. Issue #302.
 
+`model.auth_scheme: apikey_header_only` is the same gateway header but **suppresses** the provider-native header (mirrors `aws_sigv4`), so Forge's gateway key never reaches the provider's `x-api-key` / `Authorization`. Use it when the gateway *injects* the real upstream credential itself — Kong `request-transformer` `add` (which won't overwrite an existing header) is blocked by an additive native header, so the provider 401s on the gateway key. `apikey_header` = gateway *replaces*/passes through; `apikey_header_only` = gateway *adds*. Same validation + `auth_header_name` rules apply.
+
 Token usage and request IDs are captured per provider at the call site
 and folded into the `llm_call` audit event (FWS-3) and into the
 per-invocation `LLMUsageAccumulator` so the response headers + the
@@ -921,9 +923,9 @@ model:
   name: gpt-4o
   base_url: ""                       # override the provider's default API host (#139)
   organization_id: org-xxx           # OpenAI enterprise org
-  auth_scheme: ""                    # "" (default) | x_api_key | bearer | aws_sigv4 (#202) | apikey_header (#302)
+  auth_scheme: ""                    # "" (default) | x_api_key | bearer | aws_sigv4 (#202) | apikey_header (#302) | apikey_header_only
   aws_region: ""                     # required when auth_scheme: aws_sigv4
-  auth_header_name: ""               # apikey_header custom header; default "apikey" (#302)
+  auth_header_name: ""               # apikey_header[_only] custom header; default "apikey" (#302)
   fallbacks:
     - provider: anthropic
       name: claude-sonnet-4-20250514

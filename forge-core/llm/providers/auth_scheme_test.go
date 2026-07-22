@@ -233,6 +233,71 @@ func TestAPIKeyHeaderScheme_NoopOffPath(t *testing.T) {
 	}
 }
 
+// --- apikey_header_only: gateway header, native suppressed ----------------
+
+// TestAnthropicClient_APIKeyHeaderOnlySuppressesXAPIKey pins the new scheme on
+// the Anthropic side: the gateway `apikey` header carries the key and the
+// native x-api-key is NOT sent, so Forge's gateway key never reaches Anthropic
+// (the gateway injects the real upstream key). anthropic-version still rides.
+func TestAnthropicClient_APIKeyHeaderOnlySuppressesXAPIKey(t *testing.T) {
+	c := NewAnthropicClient(llm.ClientConfig{
+		APIKey:     "kong-consumer-key",
+		Model:      "claude-test",
+		AuthScheme: llm.AuthSchemeAPIKeyHeaderOnly,
+	})
+	req, _ := http.NewRequest(http.MethodPost, "https://kong.example/v1/messages", nil)
+	c.setHeaders(req)
+
+	if got := req.Header.Get("x-api-key"); got != "" {
+		t.Errorf("apikey_header_only leaked native x-api-key: %q", got)
+	}
+	if got := req.Header.Get("apikey"); got != "kong-consumer-key" {
+		t.Errorf("apikey_header_only did not set the gateway header: %q", got)
+	}
+	if got := req.Header.Get("anthropic-version"); got != "2023-06-01" {
+		t.Errorf("anthropic-version dropped under apikey_header_only: %q", got)
+	}
+}
+
+// TestOpenAIClient_APIKeyHeaderOnlySuppressesBearer mirrors the above for
+// OpenAI: the gateway header carries the key, Authorization: Bearer is absent.
+func TestOpenAIClient_APIKeyHeaderOnlySuppressesBearer(t *testing.T) {
+	c := NewOpenAIClient(llm.ClientConfig{
+		APIKey:     "kong-consumer-key",
+		Model:      "gpt-test",
+		AuthScheme: llm.AuthSchemeAPIKeyHeaderOnly,
+	})
+	req, _ := http.NewRequest(http.MethodPost, "https://kong.example/v1/chat/completions", nil)
+	c.setHeaders(req)
+
+	if got := req.Header.Get("Authorization"); got != "" {
+		t.Errorf("apikey_header_only leaked native Authorization: %q", got)
+	}
+	if got := req.Header.Get("apikey"); got != "kong-consumer-key" {
+		t.Errorf("apikey_header_only did not set the gateway header: %q", got)
+	}
+}
+
+// TestAPIKeyHeaderOnly_CustomHeaderName confirms auth_header_name is honored
+// under the suppress-native scheme too.
+func TestAPIKeyHeaderOnly_CustomHeaderName(t *testing.T) {
+	c := NewOpenAIClient(llm.ClientConfig{
+		APIKey:         "kong-key",
+		Model:          "gpt-test",
+		AuthScheme:     llm.AuthSchemeAPIKeyHeaderOnly,
+		AuthHeaderName: "x-gateway-key",
+	})
+	req, _ := http.NewRequest(http.MethodPost, "https://kong.example/v1/chat/completions", nil)
+	c.setHeaders(req)
+
+	if got := req.Header.Get("x-gateway-key"); got != "kong-key" {
+		t.Errorf("custom auth_header_name not honored under apikey_header_only: %q", got)
+	}
+	if got := req.Header.Get("Authorization"); got != "" {
+		t.Errorf("native Authorization must stay suppressed: %q", got)
+	}
+}
+
 // TestAPIKeyHeaderScheme_NeverClobbersNativeHeader is the defense-in-depth
 // guard (#303 review): even if a ClientConfig sets auth_header_name to a
 // native auth header (which `forge validate` rejects), the helper must NOT

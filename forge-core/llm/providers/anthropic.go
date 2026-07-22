@@ -99,20 +99,23 @@ func (c *AnthropicClient) Chat(ctx context.Context, req *llm.ChatRequest) (*llm.
 	}
 	c.setHeaders(httpReq)
 
+	// The request uses the raw URL (so any userinfo becomes Basic auth); every
+	// place the URL is recorded uses the sanitized form (no leaked password).
+	safeEndpoint := sanitizeEndpoint(endpoint)
 	resp, err := c.client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("anthropic request to %s: %w", endpoint, err)
+		return nil, fmt.Errorf("anthropic request to %s: %w", safeEndpoint, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("anthropic error (status %d) calling %s: %s", resp.StatusCode, endpoint, string(respBody))
+		return nil, fmt.Errorf("anthropic error (status %d) calling %s: %s", resp.StatusCode, safeEndpoint, string(respBody))
 	}
 
 	result, err := c.parseAnthropicResponse(resp.Body)
 	if result != nil {
-		result.Endpoint = endpoint
+		result.Endpoint = safeEndpoint
 	}
 	return result, err
 }
@@ -125,21 +128,23 @@ func (c *AnthropicClient) ChatStream(ctx context.Context, req *llm.ChatRequest) 
 		return nil, fmt.Errorf("marshalling request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/messages", bytes.NewReader(data))
+	endpoint := c.baseURL + "/v1/messages"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
 	c.setHeaders(httpReq)
 
+	safeEndpoint := sanitizeEndpoint(endpoint)
 	resp, err := c.client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("anthropic stream request: %w", err)
+		return nil, fmt.Errorf("anthropic stream request to %s: %w", safeEndpoint, err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		return nil, fmt.Errorf("anthropic stream error (status %d): %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("anthropic stream error (status %d) calling %s: %s", resp.StatusCode, safeEndpoint, string(respBody))
 	}
 
 	ch := make(chan llm.StreamDelta, 32)

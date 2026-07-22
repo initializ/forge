@@ -99,6 +99,9 @@ func (c *ResponsesClient) Chat(ctx context.Context, req *llm.ChatRequest) (*llm.
 		result.Message.ToolCalls = append(result.Message.ToolCalls, *toolCallMap[id])
 	}
 
+	// Record the invoked URL on the aggregated response so streaming
+	// (OAuth/Responses) llm_call events carry fields.url, same as Chat.
+	result.Endpoint = sanitizeEndpoint(c.baseURL + "/responses")
 	return result, nil
 }
 
@@ -110,21 +113,23 @@ func (c *ResponsesClient) ChatStream(ctx context.Context, req *llm.ChatRequest) 
 		return nil, fmt.Errorf("marshalling request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/responses", bytes.NewReader(data))
+	endpoint := c.baseURL + "/responses"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
 	c.setHeaders(httpReq)
 
+	safeEndpoint := sanitizeEndpoint(endpoint)
 	resp, err := c.client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("responses api stream request: %w", err)
+		return nil, fmt.Errorf("responses api stream request to %s: %w", safeEndpoint, err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		return nil, fmt.Errorf("responses api stream error (status %d): %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("responses api stream error (status %d) calling %s: %s", resp.StatusCode, safeEndpoint, string(respBody))
 	}
 
 	ch := make(chan llm.StreamDelta, 32)

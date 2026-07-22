@@ -76,6 +76,16 @@ func ResolveModelConfig(cfg *types.ForgeConfig, envVars map[string]string, provi
 		}
 	}
 
+	// forge.yaml model.base_url points the client at a custom endpoint or
+	// gateway. Applied before the env overrides below so a per-deploy
+	// *_BASE_URL env var can still override it. Previously this field only fed
+	// the build-time egress allowlist and never reached the client, so a
+	// configured gateway URL was silently ignored (the client fell back to the
+	// provider's public host).
+	if cfg.Model.BaseURL != "" {
+		mc.Client.BaseURL = cfg.Model.BaseURL
+	}
+
 	// Apply base URL overrides
 	if u := envVars["OPENAI_BASE_URL"]; u != "" && mc.Provider == "openai" {
 		mc.Client.BaseURL = u

@@ -223,6 +223,52 @@ func TestResolveModelConfig_APIKeyHeaderSchemeCarriesOver(t *testing.T) {
 	}
 }
 
+// TestResolveModelConfig_BaseURLFromYAML pins that model.base_url in forge.yaml
+// reaches the client (previously it only fed the egress allowlist and was
+// silently dropped, so a configured gateway URL was ignored).
+func TestResolveModelConfig_BaseURLFromYAML(t *testing.T) {
+	cfg := &types.ForgeConfig{
+		Model: types.ModelRef{
+			Provider: "anthropic",
+			Name:     "claude-opus-4-8",
+			BaseURL:  "https://kong.internal/anthropic",
+		},
+	}
+	envVars := map[string]string{"ANTHROPIC_API_KEY": "sk-test"}
+
+	mc := ResolveModelConfig(cfg, envVars, "")
+	if mc == nil {
+		t.Fatal("expected non-nil ModelConfig")
+	}
+	if mc.Client.BaseURL != "https://kong.internal/anthropic" {
+		t.Errorf("BaseURL = %q, want the forge.yaml gateway URL", mc.Client.BaseURL)
+	}
+}
+
+// TestResolveModelConfig_EnvBaseURLOverridesYAML pins the precedence: an
+// *_BASE_URL env var overrides model.base_url so a per-deploy override wins.
+func TestResolveModelConfig_EnvBaseURLOverridesYAML(t *testing.T) {
+	cfg := &types.ForgeConfig{
+		Model: types.ModelRef{
+			Provider: "anthropic",
+			Name:     "claude-opus-4-8",
+			BaseURL:  "https://yaml.internal/anthropic",
+		},
+	}
+	envVars := map[string]string{
+		"ANTHROPIC_API_KEY":  "sk-test",
+		"ANTHROPIC_BASE_URL": "https://env.internal/anthropic",
+	}
+
+	mc := ResolveModelConfig(cfg, envVars, "")
+	if mc == nil {
+		t.Fatal("expected non-nil ModelConfig")
+	}
+	if mc.Client.BaseURL != "https://env.internal/anthropic" {
+		t.Errorf("BaseURL = %q, want the env override to win", mc.Client.BaseURL)
+	}
+}
+
 func TestResolveModelConfig_OrgIDEnvOverridesYAML(t *testing.T) {
 	cfg := &types.ForgeConfig{
 		Model: types.ModelRef{

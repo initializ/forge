@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -81,6 +83,60 @@ func (t *SkillTool) Execute(ctx context.Context, args json.RawMessage) (string, 
 	return t.executor.Run(ctx, t.command, finalArgs, nil)
 }
 
+// splitTopLevel splits on commas that are not inside parentheses, so a
+// "(type, required)" annotation stays attached to its parameter.
+func splitTopLevel(s string) []string {
+	var parts []string
+	depth, start := 0, 0
+	for i, r := range s {
+		switch r {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				parts = append(parts, s[start:i])
+				start = i + 1
+			}
+		}
+	}
+	return append(parts, s[start:])
+}
+
+// schemaPropertyKeyRe is the LLM providers' tool input_schema property-key
+// constraint (Anthropic: ^[a-zA-Z0-9_.-]{1,64}$ — the strictest in use). A
+// single violating key makes the provider reject the ENTIRE messages request,
+// bricking every call the agent makes — not just the one tool (field-hit
+// 2026-07-22: a skill param named "pod name" → 400 on every task).
+var schemaPropertyKeyRe = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,64}$`)
+
+// InvalidSchemaPropertyKeys returns the top-level property keys of a tool
+// input schema that violate the provider constraint, sorted for deterministic
+// messages. Nil/unparseable schemas and schemas without properties return nil
+// (nothing to validate — the provider accepts an empty object schema).
+func InvalidSchemaPropertyKeys(schema json.RawMessage) []string {
+	if len(schema) == 0 {
+		return nil
+	}
+	var doc struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(schema, &doc); err != nil {
+		return nil
+	}
+	var bad []string
+	for k := range doc.Properties {
+		if !schemaPropertyKeyRe.MatchString(k) {
+			bad = append(bad, k)
+		}
+	}
+	sort.Strings(bad)
+	return bad
+}
+
 // InputSpecToSchema converts a skill InputSpec string (e.g. "input (string), model (string)")
 // into a JSON Schema object. The first parameter is marked as required.
 // Falls back to an open schema if parsing fails.
@@ -98,7 +154,13 @@ func InputSpecToSchema(spec string) json.RawMessage {
 	properties := make(map[string]prop)
 	var required []string
 
-	parts := strings.Split(spec, ",")
+	// Split on top-level commas only: the platform materializer (and common
+	// hand-authoring) writes "`pod_name` (string, required), `ns` (string)" —
+	// a naive split breaks inside the parens and manufactures a bogus
+	// "required)" property, and the backticks ride into the schema key. Both
+	// violate the LLM provider's property-key pattern and brick every call
+	// (field-hit 2026-07-22).
+	parts := splitTopLevel(spec)
 	for i, part := range parts {
 		part = strings.TrimSpace(part)
 		if part == "" {
@@ -107,7 +169,7 @@ func InputSpecToSchema(spec string) json.RawMessage {
 
 		// Parse "name (type)" or "name (type, required)"
 		name, typeStr, hasParen := strings.Cut(part, "(")
-		name = strings.TrimSpace(name)
+		name = strings.Trim(strings.TrimSpace(name), "`\"'")
 		if !hasParen {
 			// No type info, treat as string
 			if name != "" {

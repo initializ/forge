@@ -76,7 +76,8 @@ func (c *OpenAIClient) Chat(ctx context.Context, req *llm.ChatRequest) (*llm.Cha
 		return nil, fmt.Errorf("marshalling request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(data))
+	endpoint := c.baseURL + "/chat/completions"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
@@ -84,16 +85,20 @@ func (c *OpenAIClient) Chat(ctx context.Context, req *llm.ChatRequest) (*llm.Cha
 
 	resp, err := c.client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("openai request: %w", err)
+		return nil, fmt.Errorf("openai request to %s: %w", endpoint, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("openai error (status %d): %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("openai error (status %d) calling %s: %s", resp.StatusCode, endpoint, string(respBody))
 	}
 
-	return c.parseOpenAIResponse(resp.Body)
+	result, err := c.parseOpenAIResponse(resp.Body)
+	if result != nil {
+		result.Endpoint = endpoint
+	}
+	return result, err
 }
 
 // ChatStream sends a streaming chat completion request.

@@ -2551,6 +2551,13 @@ func (r *Runner) registerAuditHooks(hooks *coreruntime.HookRegistry, auditLogger
 		// default (metadata-only) posture so the emitted event's
 		// `fields` key omits cleanly.
 		var fields map[string]any
+		// The invoked URL is metadata, not payload (auth is header-based, so
+		// the URL carries no secret) — record it ALWAYS so the actual endpoint
+		// the agent hit is auditable even when payload capture is disabled.
+		// Essential for debugging gateway/base-URL routing.
+		if hctx.Response != nil && hctx.Response.Endpoint != "" {
+			fields = map[string]any{"url": hctx.Response.Endpoint}
+		}
 		if capture.LLMMessages && len(hctx.Messages) > 0 {
 			if fields == nil {
 				fields = map[string]any{}

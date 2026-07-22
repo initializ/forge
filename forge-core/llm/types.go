@@ -64,6 +64,10 @@ type ChatResponse struct {
 	Message      ChatMessage `json:"message"`
 	Usage        UsageInfo   `json:"usage"`
 	FinishReason string      `json:"finish_reason"`
+	// Endpoint is the URL the client POSTed to (base URL + provider path).
+	// Set by the provider client so the llm_call audit event can record the
+	// invoked path even when payload capture is off. Internal only (json:"-").
+	Endpoint string `json:"-"`
 }
 
 // StreamDelta represents a single chunk in a streaming response.

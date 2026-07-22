@@ -92,7 +92,8 @@ func (c *AnthropicClient) Chat(ctx context.Context, req *llm.ChatRequest) (*llm.
 		return nil, fmt.Errorf("marshalling request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/messages", bytes.NewReader(data))
+	endpoint := c.baseURL + "/v1/messages"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
@@ -100,16 +101,20 @@ func (c *AnthropicClient) Chat(ctx context.Context, req *llm.ChatRequest) (*llm.
 
 	resp, err := c.client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("anthropic request: %w", err)
+		return nil, fmt.Errorf("anthropic request to %s: %w", endpoint, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("anthropic error (status %d): %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("anthropic error (status %d) calling %s: %s", resp.StatusCode, endpoint, string(respBody))
 	}
 
-	return c.parseAnthropicResponse(resp.Body)
+	result, err := c.parseAnthropicResponse(resp.Body)
+	if result != nil {
+		result.Endpoint = endpoint
+	}
+	return result, err
 }
 
 // ChatStream sends a streaming messages request.

@@ -2567,6 +2567,24 @@ func (r *Runner) registerAuditHooks(hooks *coreruntime.HookRegistry, auditLogger
 		return nil
 	})
 
+	// A failed LLM call must reach the audit stream, not just pod logs
+	// (#361): the loop's OnError fires with Provider/Model/LLMCallDuration
+	// populated ONLY on the LLM error path (tool errors carry ToolName
+	// instead, loop errors neither), so that's the discriminator.
+	hooks.Register(coreruntime.OnError, func(ctx context.Context, hctx *coreruntime.HookContext) error {
+		if hctx.Error == nil || hctx.Provider == "" {
+			return nil
+		}
+		auditLogger.EmitLLMCall(ctx, coreruntime.LLMCallAuditArgs{
+			Model:     hctx.Model,
+			Provider:  hctx.Provider,
+			Duration:  hctx.LLMCallDuration,
+			Failed:    true,
+			ErrorText: hctx.Error.Error(),
+		})
+		return nil
+	})
+
 	hooks.Register(coreruntime.AfterLLMCall, func(ctx context.Context, hctx *coreruntime.HookContext) error {
 		var usage coreruntime.LLMUsage
 		var requestID string

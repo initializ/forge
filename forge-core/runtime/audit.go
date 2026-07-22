@@ -100,6 +100,11 @@ const (
 	// cancelled mid-flight; carries partial usage counts captured up to
 	// the cancellation point. See issue #87 / FWS-3.
 	AuditLLMCallCancelled = "llm_call_cancelled"
+	// AuditLLMCallFailed records a provider/gateway-rejected or errored LLM
+	// call (#361). Without it a failing call is invisible to the audit
+	// stream — an agent whose every task 400s at the provider showed
+	// nothing but healthy pre-failure llm_call rows (field-hit 2026-07-22).
+	AuditLLMCallFailed = "llm_call_failed"
 
 	// Credential events (governance R9). Emitted per BeforeToolExec
 	// when a JIT credential is materialized for a tool call, and again
@@ -963,6 +968,13 @@ type LLMCallAuditArgs struct {
 	// Used for streaming calls aborted mid-flight; partial usage counts are
 	// still carried.
 	Cancelled bool
+	// Failed flips the emitted event to llm_call_failed (#361): the provider
+	// or gateway errored/rejected the call. ErrorText carries the bounded
+	// error detail (e.g. an input_schema validation message) into
+	// fields.error so the failure reason reaches the audit stream, not just
+	// pod logs. Failed takes precedence over Cancelled.
+	Failed    bool
+	ErrorText string
 	// Fields carries optional extra metadata to fold into the emitted
 	// event's `fields` map. Populated by the runner's hook layer when
 	// AuditPayloadCapture has any flag enabled (issue #91 / FWS-8):
@@ -1001,6 +1013,15 @@ func (a *AuditLogger) EmitLLMCall(ctx context.Context, args LLMCallAuditArgs) {
 	if args.Cancelled {
 		evt.Event = AuditLLMCallCancelled
 	}
+	if args.Failed {
+		evt.Event = AuditLLMCallFailed
+		if args.ErrorText != "" {
+			if args.Fields == nil {
+				args.Fields = map[string]any{}
+			}
+			args.Fields["error"] = boundedErrorText(args.ErrorText)
+		}
+	}
 	in, out := args.Usage.InputTokens, args.Usage.OutputTokens
 	evt.InputTokens = &in
 	evt.OutputTokens = &out
@@ -1013,6 +1034,17 @@ func (a *AuditLogger) EmitLLMCall(ctx context.Context, args LLMCallAuditArgs) {
 		evt.Fields = args.Fields
 	}
 	a.EmitFromContext(ctx, evt)
+}
+
+// boundedErrorText caps a provider error string for the audit event so a
+// pathological error body can't bloat the stream. 512 bytes carries the
+// useful part of every provider validation message seen in practice.
+func boundedErrorText(s string) string {
+	const capBytes = 512
+	if len(s) <= capBytes {
+		return s
+	}
+	return s[:capBytes] + "…"
 }
 
 // EmitToolExec emits a tool_exec audit event tagged with the tool

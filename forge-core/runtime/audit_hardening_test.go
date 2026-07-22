@@ -299,3 +299,52 @@ var _ = func() bool {
 	_ = (*atomic.Int64)(&c)
 	return true
 }()
+
+// ─── llm_call_failed (#361) ──────────────────────────────────────────
+
+// A failed LLM call must land in the audit stream as llm_call_failed with the
+// bounded error detail — pre-#361 the error lived only in pod logs, so an
+// agent whose every call the provider rejected looked audit-silent
+// (field-hit 2026-07-22).
+func TestEmitLLMCall_FailedVariant(t *testing.T) {
+	var buf bytes.Buffer
+	audit := NewAuditLogger(&buf)
+	long := strings.Repeat("x", 600)
+	audit.EmitLLMCall(context.Background(), LLMCallAuditArgs{
+		Model: "gpt-4o", Provider: "openai", Duration: 42 * time.Millisecond,
+		Failed: true, ErrorText: "anthropic error (status 400): input_schema.properties bad key " + long,
+	})
+
+	var evt AuditEvent
+	if err := json.Unmarshal(buf.Bytes(), &evt); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if evt.Event != AuditLLMCallFailed {
+		t.Fatalf("event = %q, want llm_call_failed", evt.Event)
+	}
+	errText, _ := evt.Fields["error"].(string)
+	if !strings.Contains(errText, "input_schema.properties") {
+		t.Fatalf("fields.error missing detail: %q", errText)
+	}
+	if len(errText) > 520 {
+		t.Fatalf("error text not bounded: %d bytes", len(errText))
+	}
+	if evt.Model != "gpt-4o" || evt.Provider != "openai" {
+		t.Fatalf("attribution lost: %+v", evt)
+	}
+	if evt.DurationMs == nil || *evt.DurationMs != 42 {
+		t.Fatalf("duration lost: %+v", evt.DurationMs)
+	}
+	// Failed takes precedence over Cancelled.
+	buf.Reset()
+	audit.EmitLLMCall(context.Background(), LLMCallAuditArgs{
+		Model: "m", Provider: "p", Failed: true, Cancelled: true, ErrorText: "e",
+	})
+	var evt2 AuditEvent
+	if err := json.Unmarshal(buf.Bytes(), &evt2); err != nil {
+		t.Fatalf("decode2: %v", err)
+	}
+	if evt2.Event != AuditLLMCallFailed {
+		t.Fatalf("Failed must win over Cancelled, got %q", evt2.Event)
+	}
+}

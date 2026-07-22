@@ -12,6 +12,7 @@ metadata:
     requires:
       bins:
         - curl
+        - jq
       env:
         required: []
         one_of: []

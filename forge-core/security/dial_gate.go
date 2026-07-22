@@ -78,9 +78,14 @@ func (p *EgressProxy) validateAndDialWithIdentity(ctx context.Context, host, por
 	// Localhost fires an "allowed" audit event so downstream audit consumers
 	// see the CONNECT attempt (with task/correlation IDs on the HTTP path).
 	// Matches the pre-refactor behavior of `checkDomain` + `fireCallback`.
+	//
+	// Ctx-symmetry with the non-localhost path (#355 review nit): dial via
+	// `Dialer.DialContext` so a cancelled ctx (agent tool timeout, session
+	// shutdown) cuts the dial the same way it does through SafeDialer.
 	if IsLocalhost(host) {
 		p.fireAttemptRaw(auditDomain, true, id)
-		return net.DialTimeout("tcp", net.JoinHostPort(host, port), dialTimeout)
+		d := &net.Dialer{Timeout: dialTimeout}
+		return d.DialContext(ctx, "tcp", net.JoinHostPort(host, port))
 	}
 
 	if err := ValidateHostIP(host); err != nil {

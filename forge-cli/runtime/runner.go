@@ -3559,6 +3559,18 @@ func (r *Runner) registerSkillTools(reg *tools.Registry, proxyURL string, socksU
 				st = tools.NewSkillTool(entry.Name, entry.Description, entry.InputSpec, scriptPath, skillExec)
 			}
 
+			// Last-line schema guard (field-hit 2026-07-22): a property key
+			// outside the provider constraint makes the provider reject the
+			// ENTIRE request — registering this one tool would brick every
+			// LLM call the agent makes. Skip it loudly instead; the skill's
+			// SKILL.md needs the param renamed (platform skills: rebuild
+			// after fixing; the platform normalizes new drafts).
+			if bad := tools.InvalidSchemaPropertyKeys(st.InputSchema()); len(bad) > 0 {
+				r.logger.Error("skipping skill tool: input schema property keys violate the LLM provider pattern ^[a-zA-Z0-9_.-]{1,64}$ — registering it would fail every LLM call", map[string]any{
+					"skill": entry.Name, "invalid_keys": bad,
+				})
+				continue
+			}
 			if err := reg.Register(st); err != nil {
 				r.logger.Warn("failed to register skill tool", map[string]any{
 					"skill": entry.Name, "error": err.Error(),

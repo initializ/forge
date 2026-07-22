@@ -335,6 +335,15 @@ func (r *Runner) Run(ctx context.Context) error {
 		return fmt.Errorf("secret validation failed: %w", err)
 	}
 
+	// Merge non-secret model-config env keys (base URLs, provider/model
+	// overrides, region) from the process environment. LoadEnvFile only reads
+	// the .env file and overlaySecrets only fetches secret keys, so keys a
+	// deployment injects into the pod env — e.g. ANTHROPIC_BASE_URL pointing at
+	// a gateway — would otherwise never reach ResolveModelConfig, silently
+	// falling back to the provider's public host. .env / secrets already loaded
+	// above win; this only fills what's missing.
+	mergeModelConfigEnv(envVars)
+
 	// Apply model override
 	if r.cfg.ModelOverride != "" {
 		envVars["MODEL_NAME"] = r.cfg.ModelOverride
@@ -4182,6 +4191,38 @@ func (r *Runner) resolveEmbedder(mc *coreruntime.ModelConfig) llm.Embedder {
 	}
 
 	return embedder
+}
+
+// modelConfigEnvKeys are the NON-secret env vars ResolveModelConfig /
+// resolveFallbacks read (base URLs, provider/model overrides, org, region,
+// fallback list). They aren't in builtinSecretKeys (those are credentials) and
+// EnvProvider.List() returns nil, so they never enter the secret overlay. In a
+// deployed pod they arrive via the process environment (e.g. a platform injects
+// ANTHROPIC_BASE_URL for a gateway). mergeModelConfigEnv makes them reachable.
+var modelConfigEnvKeys = []string{
+	"OPENAI_BASE_URL",
+	"ANTHROPIC_BASE_URL",
+	"OLLAMA_BASE_URL",
+	"FORGE_MODEL_PROVIDER",
+	"MODEL_NAME",
+	"OPENAI_ORG_ID",
+	"AWS_REGION",
+	"FORGE_MODEL_FALLBACKS",
+}
+
+// mergeModelConfigEnv fills any model-config key absent from envVars from the
+// process environment. Existing values (from .env / secrets) are not
+// overwritten, preserving the ".env wins" precedence — os.Environ is the
+// lowest-priority fallback, which is exactly the deployed-pod case.
+func mergeModelConfigEnv(envVars map[string]string) {
+	for _, k := range modelConfigEnvKeys {
+		if _, ok := envVars[k]; ok {
+			continue
+		}
+		if v := os.Getenv(k); v != "" {
+			envVars[k] = v
+		}
+	}
 }
 
 // builtinSecretKeys is the set of forge-internal secret keys whose purpose

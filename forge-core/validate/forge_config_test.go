@@ -57,6 +57,29 @@ func TestValidateForgeConfig_AuthScheme(t *testing.T) {
 		}
 	})
 
+	t.Run("apikey_header_only is valid and honors auth_header_name", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Model.AuthScheme = "apikey_header_only"
+		cfg.Model.AuthHeaderName = "x-gateway-key"
+		r := ValidateForgeConfig(cfg)
+		if !r.IsValid() {
+			t.Fatalf("expected valid, got errors: %v", r.Errors)
+		}
+		if hasSubstr(r.Warnings, "auth_header_name is set but auth_scheme") {
+			t.Errorf("auth_header_name must apply to apikey_header_only, got warnings=%v", r.Warnings)
+		}
+	})
+
+	t.Run("apikey_header_only header collision errors", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Model.AuthScheme = "apikey_header_only"
+		cfg.Model.AuthHeaderName = "x-api-key" // collides with native
+		r := ValidateForgeConfig(cfg)
+		if r.IsValid() || !hasSubstr(r.Errors, "collides with a native auth header") {
+			t.Fatalf("expected a collision error, got errors=%v", r.Errors)
+		}
+	})
+
 	t.Run("unknown scheme errors", func(t *testing.T) {
 		cfg := validConfig()
 		cfg.Model.AuthScheme = "apikey_headr" // typo

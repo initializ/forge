@@ -133,10 +133,14 @@ func (c *OpenAIClient) ChatStream(ctx context.Context, req *llm.ChatRequest) (<-
 
 func (c *OpenAIClient) setHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
-	// When AuthScheme=aws_sigv4 the SigV4 transport will stamp the
-	// Authorization header itself; don't pre-populate a Bearer token
-	// that would be replaced and confuse trace logs. Issue #202 Phase 2.
-	if c.apiKey != "" && c.authScheme != llm.AuthSchemeAWSSigV4 {
+	// The native Authorization: Bearer header is suppressed for two schemes:
+	//   - aws_sigv4 (#202): the SigV4 transport stamps Authorization itself;
+	//     a pre-populated Bearer would be replaced and confuse trace logs.
+	//   - apikey_header_only: the gateway owns provider auth and injects the
+	//     real upstream credential; sending Forge's gateway key as Bearer
+	//     would reach the provider and 401 (or block a Kong `add` injection).
+	// Every other scheme (including apikey_header) keeps the native header.
+	if c.apiKey != "" && c.authScheme != llm.AuthSchemeAWSSigV4 && c.authScheme != llm.AuthSchemeAPIKeyHeaderOnly {
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 	if c.orgID != "" {

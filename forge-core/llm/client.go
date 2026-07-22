@@ -14,9 +14,26 @@ const (
 	// a fixed header name — e.g. Kong AI Gateway's key-auth, which reads
 	// `apikey` and ignores `Authorization` / `x-api-key`. Additive, so it
 	// is safe to enable against non-gateway endpoints too (issue #302).
+	//
+	// Use this when the gateway either replaces the native header upstream
+	// (Kong request-transformer `replace`, or ai-proxy with
+	// allow_override=true) or the key is itself a valid provider key that
+	// passes through.
 	AuthSchemeAPIKeyHeader = "apikey_header"
 
-	// DefaultAPIKeyHeaderName is the header AuthSchemeAPIKeyHeader uses
+	// AuthSchemeAPIKeyHeaderOnly sends the API key ONLY in the gateway
+	// header and SUPPRESSES the provider-native header (`x-api-key` /
+	// `Authorization`), mirroring how aws_sigv4 skips the native header.
+	// The gateway owns provider auth: it must inject the real upstream
+	// credential itself. Use this when the gateway ADDS the native header
+	// (Kong request-transformer `add`, which won't overwrite an existing
+	// one) — sending the native header from Forge would block that
+	// injection and the provider would 401 on the gateway key (issue #349
+	// follow-up: Kong `add`-injection). The gateway key never reaches the
+	// provider's native auth header.
+	AuthSchemeAPIKeyHeaderOnly = "apikey_header_only"
+
+	// DefaultAPIKeyHeaderName is the header the apikey_header schemes use
 	// when AuthHeaderName is unset — Kong key-auth's default key_names.
 	DefaultAPIKeyHeaderName = "apikey"
 )
@@ -54,7 +71,9 @@ type ClientConfig struct {
 	// AuthScheme == "apikey_header" ADDITIONALLY sends APIKey in the
 	// AuthHeaderName header (default "apikey") alongside the native
 	// header, for gateways like Kong that read a fixed key header
-	// (issue #302).
+	// (issue #302). AuthScheme == "apikey_header_only" sends APIKey in the
+	// gateway header but SUPPRESSES the native header, for gateways that
+	// inject the real upstream credential themselves.
 	AuthScheme string
 	AWSRegion  string
 

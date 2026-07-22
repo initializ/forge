@@ -20,9 +20,9 @@ model:
   name: "gpt-4o"                    # Model name
   base_url: ""                      # Override the provider's default API host (issue #139)
   organization_id: "org-xxx"        # OpenAI Organization ID (enterprise, optional)
-  auth_scheme: ""                   # "" (default) / "x_api_key" / "bearer" / "aws_sigv4" (#202) / "apikey_header" (#302)
+  auth_scheme: ""                   # "" (default) / "x_api_key" / "bearer" / "aws_sigv4" (#202) / "apikey_header" (#302) / "apikey_header_only"
   aws_region: ""                    # Required when auth_scheme: aws_sigv4 — issue #202
-  auth_header_name: ""              # apikey_header custom header name; default "apikey" — issue #302
+  auth_header_name: ""              # apikey_header[_only] custom header name; default "apikey" — issue #302
   fallbacks:                        # Fallback providers (optional)
     - provider: "anthropic"
       name: "claude-sonnet-4-20250514"
@@ -49,6 +49,14 @@ model:
 # Additive, so safe against non-gateway endpoints. auth_scheme applies to
 # the PRIMARY model only — fallbacks authenticate with their provider-native
 # header. Issue #302.
+#
+# auth_scheme: apikey_header_only is the same gateway header but SUPPRESSES
+# the provider-native header (x-api-key / Authorization), mirroring aws_sigv4.
+# Use it when the gateway injects the real upstream credential itself — e.g.
+# Kong request-transformer `add` (which won't overwrite an existing header):
+# sending the native header from Forge would carry the gateway key through to
+# the provider and 401. Pick apikey_header when the gateway REPLACES the
+# native header (or the key passes through); apikey_header_only when it ADDS.
 
 tools:
   - name: "web_search"

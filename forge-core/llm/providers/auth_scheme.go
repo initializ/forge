@@ -7,19 +7,23 @@ import (
 	"github.com/initializ/forge/forge-core/llm"
 )
 
-// setGatewayAPIKeyHeader implements the "apikey_header" outbound auth
-// scheme (issue #302). When selected it sends the API key in a gateway
-// header IN ADDITION TO the provider-native header, so an API gateway
-// whose auth plugin reads a fixed header — e.g. Kong AI Gateway's
-// key-auth, which reads `apikey` and ignores Authorization / x-api-key —
-// authenticates the request while the upstream provider still receives
-// (or has Kong inject) its native header.
+// setGatewayAPIKeyHeader implements the gateway-header auth schemes
+// (issue #302). It sends the API key in a gateway header so an API
+// gateway whose auth plugin reads a fixed header — e.g. Kong AI
+// Gateway's key-auth, which reads `apikey` and ignores Authorization /
+// x-api-key — authenticates the request. It fires for both:
+//
+//   - "apikey_header": gateway header IN ADDITION TO the provider-native
+//     header (the native header still rides; the gateway replaces it
+//     upstream, or the key passes through).
+//   - "apikey_header_only": gateway header only; the caller suppresses
+//     the native header (the gateway injects the real upstream credential).
 //
 // The header name defaults to llm.DefaultAPIKeyHeaderName ("apikey") and
 // is overridable via ModelRef.auth_header_name for gateways with custom
 // key_names. No-op for every other scheme, and when apiKey is empty.
 func setGatewayAPIKeyHeader(req *http.Request, authScheme, headerName, apiKey string) {
-	if authScheme != llm.AuthSchemeAPIKeyHeader || apiKey == "" {
+	if (authScheme != llm.AuthSchemeAPIKeyHeader && authScheme != llm.AuthSchemeAPIKeyHeaderOnly) || apiKey == "" {
 		return
 	}
 	if headerName == "" {

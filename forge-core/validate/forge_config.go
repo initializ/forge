@@ -16,16 +16,24 @@ var kebabCasePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 // LLM auth). "" / x_api_key / bearer all resolve to the provider-native
 // header; aws_sigv4 (#202) and apikey_header (#302) are the active schemes.
 var knownModelAuthSchemes = map[string]bool{
-	"":                         true,
-	"x_api_key":                true,
-	"bearer":                   true,
-	llm.AuthSchemeAWSSigV4:     true,
-	llm.AuthSchemeAPIKeyHeader: true,
+	"":                             true,
+	"x_api_key":                    true,
+	"bearer":                       true,
+	llm.AuthSchemeAWSSigV4:         true,
+	llm.AuthSchemeAPIKeyHeader:     true,
+	llm.AuthSchemeAPIKeyHeaderOnly: true,
 }
 
-// nativeAuthHeaders are the provider-native auth headers apikey_header must
-// not overwrite (case-insensitive).
+// nativeAuthHeaders are the provider-native auth headers the gateway schemes
+// must not overwrite (case-insensitive).
 var nativeAuthHeaders = map[string]bool{"authorization": true, "x-api-key": true}
+
+// isGatewayScheme reports whether s sends the key in a gateway header (and so
+// honors auth_header_name): apikey_header (additive) or apikey_header_only
+// (native suppressed).
+func isGatewayScheme(s string) bool {
+	return s == llm.AuthSchemeAPIKeyHeader || s == llm.AuthSchemeAPIKeyHeaderOnly
+}
 
 var (
 	agentIDPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
@@ -93,24 +101,25 @@ func ValidateForgeConfig(cfg *types.ForgeConfig) *ValidationResult {
 	// silently degrades to native-headers-only — reproducing the exact 401
 	// the apikey_header scheme exists to fix — so reject it here.
 	if s := cfg.Model.AuthScheme; !knownModelAuthSchemes[s] {
-		r.Errors = append(r.Errors, fmt.Sprintf("model.auth_scheme %q is not recognized (known: x_api_key, bearer, aws_sigv4, apikey_header)", s))
+		r.Errors = append(r.Errors, fmt.Sprintf("model.auth_scheme %q is not recognized (known: x_api_key, bearer, aws_sigv4, apikey_header, apikey_header_only)", s))
 	}
 	// Only the openai and anthropic clients honor auth_scheme; warn if it's
 	// set on a provider that will silently ignore it.
-	if s := cfg.Model.AuthScheme; (s == llm.AuthSchemeAWSSigV4 || s == llm.AuthSchemeAPIKeyHeader) &&
+	if s := cfg.Model.AuthScheme; (s == llm.AuthSchemeAWSSigV4 || s == llm.AuthSchemeAPIKeyHeader || s == llm.AuthSchemeAPIKeyHeaderOnly) &&
 		cfg.Model.Provider != "" && cfg.Model.Provider != "openai" && cfg.Model.Provider != "anthropic" {
 		r.Warnings = append(r.Warnings, fmt.Sprintf("model.auth_scheme %q only affects the openai and anthropic clients; provider %q ignores it", s, cfg.Model.Provider))
 	}
-	// apikey_header's custom header must not collide with a native auth
-	// header, or it would overwrite the provider's Bearer / x-api-key with
-	// the raw key — breaking auth in a maximally confusing way (#303 review).
-	if cfg.Model.AuthScheme == llm.AuthSchemeAPIKeyHeader && cfg.Model.AuthHeaderName != "" &&
+	// The gateway header must not collide with a native auth header, or it
+	// would overwrite the provider's Bearer / x-api-key with the raw key —
+	// breaking auth in a maximally confusing way (#303 review). Applies to
+	// both gateway schemes.
+	if isGatewayScheme(cfg.Model.AuthScheme) && cfg.Model.AuthHeaderName != "" &&
 		nativeAuthHeaders[strings.ToLower(cfg.Model.AuthHeaderName)] {
 		r.Errors = append(r.Errors, fmt.Sprintf("model.auth_header_name %q collides with a native auth header; choose a distinct gateway header (e.g. apikey, x-gateway-key)", cfg.Model.AuthHeaderName))
 	}
-	// auth_header_name only applies to apikey_header.
-	if cfg.Model.AuthHeaderName != "" && cfg.Model.AuthScheme != llm.AuthSchemeAPIKeyHeader {
-		r.Warnings = append(r.Warnings, `model.auth_header_name is set but auth_scheme is not "apikey_header"; it will be ignored`)
+	// auth_header_name only applies to the gateway schemes.
+	if cfg.Model.AuthHeaderName != "" && !isGatewayScheme(cfg.Model.AuthScheme) {
+		r.Warnings = append(r.Warnings, `model.auth_header_name is set but auth_scheme is not "apikey_header" / "apikey_header_only"; it will be ignored`)
 	}
 
 	if cfg.Framework != "" && !knownFrameworks[cfg.Framework] {

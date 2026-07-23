@@ -10,6 +10,7 @@ import (
 	"os"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/trace"
 )
@@ -973,6 +974,12 @@ type LLMCallAuditArgs struct {
 	// error detail (e.g. an input_schema validation message) into
 	// fields.error so the failure reason reaches the audit stream, not just
 	// pod logs. Failed takes precedence over Cancelled.
+	//
+	// Privacy: fields.error is NOT subject to the payload-capture toggle
+	// (an operator who disabled capture still needs failure reasons), so it
+	// is ALWAYS secret-scrubbed (RedactSecrets) and capped at 512B — a
+	// provider that echoes a request fragment in an error body can't leak a
+	// credential into the stream (review #362).
 	Failed    bool
 	ErrorText string
 	// Fields carries optional extra metadata to fold into the emitted
@@ -1036,15 +1043,23 @@ func (a *AuditLogger) EmitLLMCall(ctx context.Context, args LLMCallAuditArgs) {
 	a.EmitFromContext(ctx, evt)
 }
 
-// boundedErrorText caps a provider error string for the audit event so a
-// pathological error body can't bloat the stream. 512 bytes carries the
-// useful part of every provider validation message seen in practice.
+// boundedErrorText prepares a provider error string for fields.error:
+// ALWAYS secret-scrubbed — unlike prompt_messages/completion_text this field
+// bypasses the payload-capture gate, so redaction can't be optional — then
+// capped at 512 bytes on a rune boundary (a byte-slice cut could emit
+// invalid UTF-8 into the audit JSON). 512 bytes carries the useful part of
+// every provider validation message seen in practice.
 func boundedErrorText(s string) string {
+	s = RedactSecrets(s)
 	const capBytes = 512
 	if len(s) <= capBytes {
 		return s
 	}
-	return s[:capBytes] + "…"
+	cut := capBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
 }
 
 // EmitToolExec emits a tool_exec audit event tagged with the tool

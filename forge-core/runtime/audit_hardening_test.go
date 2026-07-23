@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // Regression tests for FWS-8 (issue #91): sequence numbers + schema
@@ -335,6 +336,28 @@ func TestEmitLLMCall_FailedVariant(t *testing.T) {
 	if evt.DurationMs == nil || *evt.DurationMs != 42 {
 		t.Fatalf("duration lost: %+v", evt.DurationMs)
 	}
+	// fields.error is ALWAYS secret-scrubbed (bypasses the capture gate) and
+	// truncation never splits a rune (review #362).
+	buf.Reset()
+	audit.EmitLLMCall(context.Background(), LLMCallAuditArgs{
+		Model: "m", Provider: "p", Failed: true,
+		ErrorText: "auth failed for key sk-ant-abcdefghij0123456789xy: " + strings.Repeat("é", 400),
+	})
+	var evt3 AuditEvent
+	if err := json.Unmarshal(buf.Bytes(), &evt3); err != nil {
+		t.Fatalf("decode3: %v", err)
+	}
+	err3, _ := evt3.Fields["error"].(string)
+	if strings.Contains(err3, "sk-ant-") {
+		t.Fatalf("secret not redacted from fields.error: %q", err3)
+	}
+	if !strings.Contains(err3, RedactionMarker) {
+		t.Fatalf("redaction marker missing: %q", err3)
+	}
+	if !utf8.ValidString(err3) {
+		t.Fatal("truncation produced invalid UTF-8")
+	}
+
 	// Failed takes precedence over Cancelled.
 	buf.Reset()
 	audit.EmitLLMCall(context.Background(), LLMCallAuditArgs{

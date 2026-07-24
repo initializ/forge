@@ -166,6 +166,13 @@ When a `type: user` call has no grant, the runtime surfaces the need three ways
    ```
 
 3. Resolution emits **`mcp_auth_resolved`**; expiry emits **`mcp_auth_timeout`**.
+   Both are emitted **once**, by the resuming gate, and carry the parked call's
+   `correlation_id` / `task_id` / `seq` so they group under the original
+   invocation (#366) — the resume channels (loopback callback, `POST /mcp/consent`)
+   no longer emit a second, unattributed copy. The only exception is a *late*
+   grant that lands after the call already timed out: with no in-flight
+   invocation to attribute to, the callback records an unattributed
+   `mcp_auth_resolved{via:loopback_callback,late:true}`.
 
 `subject` is the user's email (falls back to the opaque user ID), `server` is the
 MCP server name, `deadline` is the hard park window — **default 10 minutes**,

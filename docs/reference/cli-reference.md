@@ -126,6 +126,36 @@ See [Authentication](../security/authentication.md) for the full auth provider r
 
 ---
 
+## `forge try`
+
+Talk to a working demo agent in your terminal in under 60 seconds — no build, no cluster, no config. Scaffolds a keyless demo agent (the native forge LLM executor + the `weather` skill + `http_request`/`datetime_now`/`math_calculate` builtins) into a throwaway workspace, resolves whatever model credential is available, and drops you into a chat whose tool calls and egress checks render inline. See the [Quick Start](../getting-started/quick-start.md) for the full walkthrough.
+
+```bash
+# Interactive: resolves a credential, then chat
+forge try
+
+# One-shot (CI / docs / a quick check)
+forge try --once "what's 17% of 4,200?"
+
+# Keep the demo agent to make it your own (writes ./forge-quickstart)
+forge try --keep
+```
+
+| Flag | Description |
+|------|-------------|
+| `--provider` | Model provider: `openai`, `anthropic`, `gemini`, or `ollama`. Skips auto-resolution. |
+| `--model` | Model name (defaults to the provider's default). |
+| `--once <prompt>` | Run a single prompt non-interactively, then exit. |
+| `--keep` | Write the demo agent to `./forge-quickstart` instead of an auto-cleaned temp dir. |
+| `--quiet` | Hide the inline tool/egress loop lines. |
+| `--audit` | Show the full NDJSON audit event stream instead of the compact summary. |
+
+**Credential resolution order:** explicit `--provider`/`--model` → env key (`ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `GEMINI_API_KEY`) → saved OpenAI OAuth session → local [Ollama](https://ollama.com) daemon → interactive picker (sign in with OpenAI, paste a key, or use Ollama). Nothing is written to disk unless you pass `--keep`; a pasted key is held in memory only. Use [`forge auth logout`](#forge-auth) to clear a saved OAuth session and re-show the picker.
+
+The demo runs the same runtime as `forge run` (tool registry, egress enforcement, audit + progress hooks) in-process — no A2A server, daemon, or port binding. Exit with `/exit`, Ctrl-D, or Ctrl-C.
+
+---
+
 ## `forge compression`
 
 Inspect context compression state.

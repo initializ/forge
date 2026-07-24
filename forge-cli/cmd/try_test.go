@@ -78,7 +78,7 @@ func TestQuickstartPreset_ScaffoldsValidConfig(t *testing.T) {
 
 func TestResolveTryProvider_FlagsWin(t *testing.T) {
 	res, err := resolveTryProvider(context.Background(),
-		tryFlags{provider: "anthropic", model: "claude-x"}, nil, io.Discard, false)
+		tryFlags{provider: "anthropic", model: "claude-x"}, nil, io.Discard, false, false)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestResolveTryProvider_EnvPrecedence(t *testing.T) {
 	// Anthropic is preferred over OpenAI when both are set.
 	t.Setenv("ANTHROPIC_API_KEY", "sk-a")
 	t.Setenv("OPENAI_API_KEY", "sk-o")
-	res, err := resolveTryProvider(context.Background(), tryFlags{}, nil, io.Discard, false)
+	res, err := resolveTryProvider(context.Background(), tryFlags{}, nil, io.Discard, false, false)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestResolveTryProvider_Ollama(t *testing.T) {
 	defer func() { _ = ln.Close() }()
 	t.Setenv("OLLAMA_HOST", ln.Addr().String())
 
-	res, err := resolveTryProvider(context.Background(), tryFlags{}, nil, io.Discard, false)
+	res, err := resolveTryProvider(context.Background(), tryFlags{}, nil, io.Discard, false, false)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestResolveTryProvider_NoCredsNonInteractive(t *testing.T) {
 	isolateCreds(t)
 	t.Setenv("OLLAMA_HOST", "127.0.0.1:1") // unreachable
 
-	_, err := resolveTryProvider(context.Background(), tryFlags{}, nil, io.Discard, false)
+	_, err := resolveTryProvider(context.Background(), tryFlags{}, nil, io.Discard, false, false)
 	if err == nil {
 		t.Fatal("want an error when no credential is available and no TTY")
 	}

@@ -887,6 +887,7 @@ Full reference: `docs/reference/cli-reference.md`.
 
 | Subcommand | Purpose | Key flags |
 |---|---|---|
+| `forge try` | Instant demo: scaffold a keyless demo agent (native executor + `weather` skill + safe builtins) into a temp dir and chat in-process with the tool/egress loop rendered inline. No server/build. Credential auto-resolved (flags → env key → OpenAI OAuth → Ollama → picker); nothing on disk unless `--keep`. Same runtime as `forge run`, no A2A server | `--provider`, `--model`, `--once <prompt>`, `--keep`, `--quiet`, `--audit` |
 | `forge init` | Scaffold a new agent: `forge.yaml`, `.env`, `SKILL.md`, `guardrails.json`. Interactive TUI by default; `--non-interactive` for CI | `--model-provider`, `--model-name`, `--channels`, `--auth`, `--from-skills`, `--compression` |
 | `forge build` | Run the build pipeline → `.forge-output/agent.json` + container Dockerfile + K8s manifests + (optional) signature | `--output-dir`, `--sign` |
 | `forge validate` | Lint `forge.yaml` + SKILL.md. `--platform-policy=PATH` lints a policy file standalone | `--strict`, `--command-compat`, `--platform-policy` |
@@ -899,7 +900,7 @@ Full reference: `docs/reference/cli-reference.md`.
 | `forge tool list \| describe` | Enumerate registered tools, show schemas | |
 | `forge channel add \| list \| status \| serve \| disable \| enable` | Channel adapters; disable/enable edit the user policy layer by default; `--system` retargets `/etc/forge/policy.yaml` | `--with`, `--system` |
 | `forge secret set \| get \| list \| delete` | Encrypted secrets | |
-| `forge auth show-token \| mint-token \| secret-yaml` | Operator UX for the internal bearer token at `<root>/.forge/runtime.token` (same token channel adapters + K8s CronJob trigger pods use). `secret-yaml` prints a ready-to-apply K8s Secret manifest sourced from the local token; `mint-token` is for first-deploy bootstrap. `forge.agent.id` label always tracks `forge.yaml` `agent_id`, never the `--name` override. (#162 part 1, PR #168) | `--namespace`, `--name` |
+| `forge auth show-token \| mint-token \| secret-yaml \| logout` | Operator UX for the internal bearer token at `<root>/.forge/runtime.token` (same token channel adapters + K8s CronJob trigger pods use). `secret-yaml` prints a ready-to-apply K8s Secret manifest sourced from the local token; `mint-token` is for first-deploy bootstrap. `logout [provider]` clears a stored LLM OAuth credential (default openai) so the next `forge init`/`forge try` re-prompts sign-in — laptop/dev only, **refuses inside an agent runtime** (container or `FORGE_PLATFORM_TOKEN` set). `forge.agent.id` label always tracks `forge.yaml` `agent_id`, never the `--name` override. (#162 part 1, PR #168) | `--namespace`, `--name` |
 | `forge key generate \| sign \| verify` | Ed25519 build artifact signing | |
 | `forge skills add \| list \| validate \| audit` | Registry: install, search, validate binary/env deps, security audit `--embedded` | `--category`, `--tags`, `--embedded` |
 | `forge mcp list \| test \| login \| logout` | Manage MCP servers + OAuth tokens | `--call <tool>`, `--args '<json>'` |

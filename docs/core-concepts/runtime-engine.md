@@ -211,6 +211,16 @@ Executor selection happens in `runner.go` based on framework type and configurat
 
 ## Running Modes
 
+### `forge try` — In-Process Demo
+
+`forge try` runs the demo agent **in-process** — no HTTP server, daemon, or port binding. It builds the same `LLMExecutor` `forge run` uses (built-in tool registry, egress-enforced client + subprocess proxy, audit + progress hooks, provider client) via a trimmed bootstrap (`forge-cli/runtime/local_session.go`) and drives it from a stdin REPL, one turn per line, with conversation history held in memory (the executor `Store` is nil, so nothing persists). It's the 60-second on-ramp; see the [Quick Start](../getting-started/quick-start.md) and the [`forge try` CLI reference](../reference/cli-reference.md#forge-try).
+
+```bash
+forge try                                   # interactive
+forge try --once "what's 17% of 4,200?"     # one-shot
+forge try --keep                            # graduate to ./forge-quickstart
+```
+
 ### `forge run` — Foreground Server
 
 Run the agent as a foreground HTTP server. Used for development and container deployments.

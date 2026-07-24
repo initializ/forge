@@ -51,6 +51,22 @@ func TestAuthLogout_NothingToDo(t *testing.T) {
 	}
 }
 
+// TestAuthLogout_RejectsTraversalProvider pins that an unknown / path-traversal
+// provider arg is rejected before it reaches the credential store's
+// provider->path mapping (which would otherwise delete <arg>.json anywhere).
+func TestAuthLogout_RejectsTraversalProvider(t *testing.T) {
+	oauth.SetCredentialsDir(t.TempDir())
+	t.Cleanup(func() { oauth.SetCredentialsDir("") })
+	t.Setenv("FORGE_PLATFORM_TOKEN", "")
+
+	for _, bad := range []string{"../../../../tmp/x", "openai/../../etc/x", "google", "x"} {
+		err := runAuthLogout(authLogoutCmd, []string{bad})
+		if err == nil || !strings.Contains(err.Error(), "unknown provider") {
+			t.Errorf("logout %q: want unknown-provider rejection, got %v", bad, err)
+		}
+	}
+}
+
 // TestAuthLogout_RefusesInAgentRuntime is the guard: with a platform token set
 // (a managed deployment), logout refuses and does NOT touch the credential.
 func TestAuthLogout_RefusesInAgentRuntime(t *testing.T) {

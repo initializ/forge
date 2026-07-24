@@ -45,6 +45,15 @@ func runAuthLogout(cmd *cobra.Command, args []string) error {
 		provider = strings.ToLower(strings.TrimSpace(args[0]))
 	}
 
+	// Validate against the known providers BEFORE the value reaches the
+	// credential store, whose provider->path mapping is
+	// filepath.Join(dir, provider+".json") with no sanitization — so an
+	// unchecked arg like "../../../../tmp/x" would delete /tmp/x.json. Same
+	// whitelist the paste-key path uses.
+	if _, ok := providerKeyEnv[provider]; !ok {
+		return fmt.Errorf("unknown provider %q (use openai, anthropic, or gemini)", provider)
+	}
+
 	if reason, denied := deniedInAgentRuntime(); denied {
 		return fmt.Errorf("refusing to log out %s: %s. "+
 			"`auth logout` is a laptop/dev command; a deployed agent uses an injected "+
@@ -52,7 +61,10 @@ func runAuthLogout(cmd *cobra.Command, args []string) error {
 	}
 
 	out := cmd.OutOrStdout()
-	if tok, _ := oauth.LoadCredentials(provider); tok == nil {
+	// Only report "nothing to do" when the store is DEFINITIVELY empty. On a
+	// read error (e.g. a corrupt token file) fall through to delete so logout
+	// still clears it, rather than silently leaving it in place.
+	if tok, err := oauth.LoadCredentials(provider); err == nil && tok == nil {
 		_, _ = fmt.Fprintf(out, "No %s credential stored; nothing to do.\n", provider)
 		return nil
 	}

@@ -185,7 +185,7 @@ func (r *Runner) registerMCPCallbackEndpoint(srv *server.Server, auditLogger *co
 	}
 	srv.RegisterHTTPHandler("GET /mcp/oauth/start", makeMCPStartHandler(r.stateBinder))
 	srv.RegisterHTTPHandler("GET /mcp/oauth/callback",
-		makeMCPCallbackHandler(r.stateBinder, r.authGateEngine, r.callbackCompleter, sessionFromRequest, auditLogger))
+		makeMCPCallbackHandler(r.stateBinder, r.authGateEngine, r.callbackCompleter, sessionFromRequest, auditLogger, r.seqRegistry))
 }
 
 // forgeSessionCookie is the cookie name the callback's cross-session guard
@@ -241,6 +241,7 @@ func makeMCPCallbackHandler(
 	complete CallbackCompleter,
 	sessionOf func(*http.Request) string,
 	auditLogger *coreruntime.AuditLogger,
+	seqRegistry *coreruntime.SequenceRegistry,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		q := req.URL.Query()
@@ -279,24 +280,42 @@ func makeMCPCallbackHandler(
 			http.Error(w, "state/session mismatch", http.StatusBadRequest)
 			return
 		}
+		// Attribute the completion egress (code->token exchange) to the parked
+		// invocation still waiting on this gate (#366). The gate carries the
+		// invocation's (correlation_id, task_id); its seq counter is still
+		// registered because the parked call hasn't returned. Seed the ctx so
+		// the token-exchange egress joins the invocation's audit + seq chain
+		// instead of surfacing as an unattributed event on the browser request.
+		ctx := req.Context()
+		if h, ok := engine.Peek(b.subject, b.server); ok {
+			sp := h.Spec()
+			ctx = coreruntime.WithCorrelationID(coreruntime.WithTaskID(ctx, sp.TaskID), sp.CorrelationID)
+			if c := seqRegistry.Get(sp.CorrelationID, sp.TaskID); c != nil {
+				ctx = coreruntime.WithSequenceCounter(ctx, c)
+			}
+		}
 		// Exchange the code for a token and store it for {subject, server}.
 		// Only AFTER this succeeds do we resume — resolving the gate with no
 		// grant would just re-park the call (delegation follows
 		// authorization: never resume before the grant exists). The PKCE
 		// verifier bound to the state proves this is the same flow we started.
-		if err := complete(req.Context(), b.subject, b.server, code, b.verifier); err != nil {
+		if err := complete(ctx, b.subject, b.server, code, b.verifier); err != nil {
 			http.Error(w, "authorization exchange failed", http.StatusBadGateway)
 			return
 		}
 		// Grant exists now → wake every call parked on {subject, server}.
-		// A missing gate (call already timed out / was canceled) is benign:
-		// the token is stored, so a fresh call will just succeed.
-		_ = engine.Resolve(b.subject, b.server, authgate.DecisionGranted)
-		if auditLogger != nil {
+		// When a waiter is present the waking gate (mcpAuthGate.Await) emits the
+		// ATTRIBUTED mcp_auth_resolved for the resumed call — so we don't emit
+		// here (#366: avoid the unattributed duplicate). A missing gate (the
+		// original call already timed out / was canceled) is benign — the token
+		// is stored for a fresh call — but there's no in-flight invocation to
+		// attribute to, so record that late grant here (unattributed by nature).
+		if err := engine.Resolve(b.subject, b.server, authgate.DecisionGranted); err != nil && auditLogger != nil {
 			auditLogger.Emit(coreruntime.AuditEvent{
 				Event: coreruntime.EventMCPAuthResolved,
 				Fields: map[string]any{
-					"server": b.server, "subject": b.subject, "via": "loopback_callback",
+					"server": b.server, "subject": b.subject,
+					"via": "loopback_callback", "late": true,
 				},
 			})
 		}

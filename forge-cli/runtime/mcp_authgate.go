@@ -60,7 +60,7 @@ func (g *mcpAuthGate) Await(ctx context.Context, server string) error {
 	taskID := coreruntime.TaskIDFromContext(ctx)
 	correlationID := coreruntime.CorrelationIDFromContext(ctx)
 
-	handle, first, err := g.engine.Await(subject, server, authgate.Spec{TaskID: taskID})
+	handle, first, err := g.engine.Await(subject, server, authgate.Spec{TaskID: taskID, CorrelationID: correlationID})
 	if err != nil {
 		return fmt.Errorf("%w: %v", mcp.ErrNoToken, err)
 	}
@@ -221,15 +221,12 @@ func makeMCPConsentHandler(engine *authgate.Engine, auditLogger *coreruntime.Aud
 			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 			return
 		}
-		if auditLogger != nil {
-			auditLogger.Emit(coreruntime.AuditEvent{
-				Event: coreruntime.EventMCPAuthResolved,
-				Fields: map[string]any{
-					"server": serverName, "subject": subject,
-					"decision": string(decision), "via": "consent_endpoint",
-				},
-			})
-		}
+		// The waking gate (mcpAuthGate.Await) emits the ATTRIBUTED terminal
+		// event for the resumed call — mcp_auth_resolved on grant,
+		// mcp_auth_timeout on refusal. Don't emit a duplicate here (#366): Peek
+		// above guarantees a waiter existed, and a resolved event for a refusal
+		// (decision=timeout) would be misleading. The HTTP 200 is the caller's
+		// confirmation.
 		writeJSON(w, http.StatusOK, map[string]any{
 			"subject": subject, "server": serverName, "decision": string(decision),
 		})

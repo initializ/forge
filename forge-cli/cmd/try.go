@@ -494,7 +494,7 @@ func tryPicker(flags tryFlags, in io.Reader, out io.Writer, color bool) (tryReso
 			Label:    "Using OpenAI (signed in).",
 		}, nil
 	case "2":
-		return pasteKeyResolution(flags, out)
+		return pasteKeyResolution(flags, out, color)
 	case "3":
 		model := modelOrDefault("ollama", flags.model)
 		return tryResolution{
@@ -512,21 +512,34 @@ func tryPicker(flags tryFlags, in io.Reader, out io.Writer, color bool) (tryReso
 // NewLocalSession) and is never written to disk — not even under --keep, whose
 // scaffold env is always empty. A kept agent therefore has no credential on
 // disk; a later `forge serve` there needs the env var set by hand.
-func pasteKeyResolution(flags tryFlags, out io.Writer) (tryResolution, error) {
-	_, _ = fmt.Fprint(out, "  Provider (openai / anthropic / gemini): ")
-	prov, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-	provider := strings.ToLower(strings.TrimSpace(prov))
-	keyEnv, ok := providerKeyEnv[provider]
-	if !ok {
-		return tryResolution{}, fmt.Errorf("unsupported provider %q for a pasted key", provider)
+func pasteKeyResolution(flags tryFlags, out io.Writer, color bool) (tryResolution, error) {
+	// Colored shortname chips: [o] OpenAI  [a] Anthropic  [g] Gemini.
+	chip := func(short, name, hex string) string {
+		if !color {
+			return fmt.Sprintf("[%s] %s", short, name)
+		}
+		st := lipgloss.NewStyle().Foreground(lipgloss.Color(hex)).Bold(true)
+		return st.Render("["+short+"]") + " " + lipgloss.NewStyle().Foreground(lipgloss.Color(hex)).Render(name)
 	}
+	_, _ = fmt.Fprintf(out, "  Provider:  %s   %s   %s\n",
+		chip("o", "OpenAI", "#10a37f"),    // OpenAI green
+		chip("a", "Anthropic", "#d97757"), // Anthropic clay
+		chip("g", "Gemini", "#4285f4"),    // Google blue
+	)
+	_, _ = fmt.Fprintf(out, "  %s ", tryAccent(color)("❯"))
+
+	prov, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	provider, ok := providerFromInput(prov)
+	if !ok {
+		return tryResolution{}, fmt.Errorf("unrecognized provider %q; use o/a/g or openai/anthropic/gemini", strings.TrimSpace(prov))
+	}
+	keyEnv := providerKeyEnv[provider]
 	_, _ = fmt.Fprint(out, "  API key: ")
-	raw, err := term.ReadPassword(int(os.Stdin.Fd()))
-	_, _ = fmt.Fprintln(out)
+	raw, err := readMaskedLine(out)
 	if err != nil {
 		return tryResolution{}, fmt.Errorf("reading key: %w", err)
 	}
-	key := strings.TrimSpace(string(raw))
+	key := strings.TrimSpace(raw)
 	if key == "" {
 		return tryResolution{}, fmt.Errorf("empty API key")
 	}
@@ -536,6 +549,69 @@ func pasteKeyResolution(flags tryFlags, out io.Writer) (tryResolution, error) {
 		Label:        fmt.Sprintf("Using %s (pasted key).", provider),
 		EnvOverrides: map[string]string{keyEnv: key},
 	}, nil
+}
+
+// readMaskedLine reads a secret from stdin, echoing a • per character so a
+// paste is visibly registered (a plain ReadPassword shows nothing, making it
+// hard to tell whether anything was pasted). Handles backspace and Ctrl-C;
+// falls back to a silent read when the terminal can't be put in raw mode
+// (non-TTY / piped input).
+func readMaskedLine(out io.Writer) (string, error) {
+	fd := int(os.Stdin.Fd())
+	oldState, err := term.MakeRaw(fd)
+	if err != nil {
+		raw, rerr := term.ReadPassword(fd)
+		_, _ = fmt.Fprintln(out)
+		return string(raw), rerr
+	}
+	defer func() { _ = term.Restore(fd, oldState) }()
+
+	var buf []byte
+	b := make([]byte, 1)
+	for {
+		n, rerr := os.Stdin.Read(b)
+		if n > 0 {
+			switch c := b[0]; c {
+			case '\r', '\n':
+				_, _ = fmt.Fprint(out, "\r\n")
+				return string(buf), nil
+			case 3: // Ctrl-C
+				_, _ = fmt.Fprint(out, "\r\n")
+				return "", fmt.Errorf("cancelled")
+			case 127, 8: // backspace / delete
+				if len(buf) > 0 {
+					buf = buf[:len(buf)-1]
+					_, _ = fmt.Fprint(out, "\b \b")
+				}
+			default:
+				if c >= 32 { // printable
+					buf = append(buf, c)
+					_, _ = fmt.Fprint(out, "•")
+				}
+			}
+		}
+		if rerr != nil {
+			_, _ = fmt.Fprint(out, "\r\n")
+			if len(buf) > 0 {
+				return string(buf), nil
+			}
+			return "", rerr
+		}
+	}
+}
+
+// providerFromInput maps a paste-key provider answer to its canonical name,
+// accepting the shortname (o/a/g) or the full name (openai/anthropic/gemini).
+func providerFromInput(s string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "o", "openai":
+		return "openai", true
+	case "a", "anthropic":
+		return "anthropic", true
+	case "g", "gemini":
+		return "gemini", true
+	}
+	return "", false
 }
 
 // providerKeyEnv maps a provider to its API-key environment variable.

@@ -581,7 +581,7 @@ documented inline:
 
 | Site | Why plain `Emit` |
 |---|---|
-| Egress proxy `OnAttempt` with `source=proxy` | Subprocess HTTP `CONNECT` has no Go ctx tying back to the A2A request, so it can't use `EmitFromContext`. Since #338 it still recovers `task_id` + `correlation_id` out-of-band from the `Proxy-Authorization` creds and sets them on the event manually; seq + trace cross-link remain unavailable (no ctx). |
+| Egress proxy `OnAttempt` with `source=proxy` | Subprocess HTTP `CONNECT` has no Go ctx tying back to the A2A request, so it can't use `EmitFromContext`. Since #338 it recovers `task_id` + `correlation_id` out-of-band from the `Proxy-Authorization` creds and sets them on the event manually. Since #341 it **also carries a correct `seq`**: the runner registers each invocation's live sequence counter in a `SequenceRegistry` keyed by `(correlation_id, task_id)`, and the proxy `OnAttempt` advances that same counter via `SequenceRegistry.NextSequenceFor` — so proxy events now join the gap-detectable seq chain of their invocation. A miss (startup, or a subprocess with no creds) leaves `seq` at 0 (omitted), never a wrong/duplicate value. Only the trace cross-link (`trace_id`/`span_id`) remains unavailable, since that still needs the ctx's active span. |
 | MCP server startup events (`mcp_server_started` / `_failed` / `_degraded`) | Pre-invocation; no scope |
 | Scheduler tick (`schedule_fire` / `schedule_complete` / `schedule_skip` / `schedule_modify`) | Runs on its own timer outside any A2A request |
 | Startup banners (`policy_loaded`, `agent_card_published`, `audit_export_status`) | Pre-invocation; no scope |

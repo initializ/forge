@@ -129,6 +129,24 @@ func TestResolveTryProvider_NoCredsNonInteractive(t *testing.T) {
 	}
 }
 
+func TestProviderFromInput(t *testing.T) {
+	ok := map[string]string{
+		"o": "openai", "openai": "openai", "OpenAI": "openai",
+		"a": "anthropic", "anthropic": "anthropic",
+		"g": "gemini", " Gemini ": "gemini",
+	}
+	for in, want := range ok {
+		if got, valid := providerFromInput(in); !valid || got != want {
+			t.Errorf("providerFromInput(%q) = %q,%v; want %q,true", in, got, valid, want)
+		}
+	}
+	for _, bad := range []string{"", "x", "gpt", "claude"} {
+		if _, valid := providerFromInput(bad); valid {
+			t.Errorf("providerFromInput(%q) should be invalid", bad)
+		}
+	}
+}
+
 func TestTryWorkspace(t *testing.T) {
 	t.Run("keep targets cwd, no cleanup", func(t *testing.T) {
 		dir, cleanup, err := tryWorkspace(true)

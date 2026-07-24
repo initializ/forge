@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 )
 
@@ -84,4 +85,77 @@ func EnsureSequenceCounter(ctx context.Context) context.Context {
 		return ctx
 	}
 	return WithSequenceCounter(ctx, new(SequenceCounter))
+}
+
+// SequenceRegistry maps a live per-invocation SequenceCounter to its
+// (correlation_id, task_id) key so events emitted OUTSIDE the request
+// goroutine's context can advance the SAME counter and stamp a correct,
+// gap-free seq. Two emitters need this:
+//
+//   - The egress proxy (#341): a separate 127.0.0.1 forward proxy with no
+//     request ctx. It recovers (correlation_id, task_id) from the subprocess
+//     Proxy-Authorization creds (#338) and looks the counter up here.
+//   - The MCP consent-resume paths (#366): the loopback OAuth callback and the
+//     platform POST /mcp/consent run on a detached browser/platform request;
+//     they recover the parked call's (correlation_id, task_id) and seed a ctx
+//     from the registered counter so the completion egress is seq'd + attributed.
+//
+// The counter is registered at request entry (alongside EnsureSequenceCounter)
+// and evicted at invocation_complete. A miss returns 0 (the event stays
+// seq-less rather than carrying a wrong or duplicated number).
+type SequenceRegistry struct {
+	mu sync.Mutex
+	m  map[string]*SequenceCounter
+}
+
+// NewSequenceRegistry returns an empty registry.
+func NewSequenceRegistry() *SequenceRegistry {
+	return &SequenceRegistry{m: make(map[string]*SequenceCounter)}
+}
+
+func seqRegistryKey(correlationID, taskID string) string {
+	return correlationID + "\x00" + taskID
+}
+
+// Register records the counter under (correlationID, taskID). No-op on a nil
+// registry/counter or an all-empty key.
+func (r *SequenceRegistry) Register(correlationID, taskID string, c *SequenceCounter) {
+	if r == nil || c == nil || (correlationID == "" && taskID == "") {
+		return
+	}
+	r.mu.Lock()
+	r.m[seqRegistryKey(correlationID, taskID)] = c
+	r.mu.Unlock()
+}
+
+// Get returns the counter for (correlationID, taskID), or nil if none is
+// registered.
+func (r *SequenceRegistry) Get(correlationID, taskID string) *SequenceCounter {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	c := r.m[seqRegistryKey(correlationID, taskID)]
+	r.mu.Unlock()
+	return c
+}
+
+// Evict drops the registration for (correlationID, taskID).
+func (r *SequenceRegistry) Evict(correlationID, taskID string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	delete(r.m, seqRegistryKey(correlationID, taskID))
+	r.mu.Unlock()
+}
+
+// NextSequenceFor advances the registered counter for (correlationID, taskID)
+// and returns the new seq, or 0 when no counter is registered (so the caller
+// JSON-omits the field rather than emitting a wrong/duplicate seq).
+func (r *SequenceRegistry) NextSequenceFor(correlationID, taskID string) int64 {
+	if c := r.Get(correlationID, taskID); c != nil {
+		return c.Add(1)
+	}
+	return 0
 }

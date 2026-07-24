@@ -82,9 +82,9 @@ func runTry(cmd *cobra.Command, args []string) error {
 	accent := tryAccent(color)
 
 	interactive := term.IsTerminal(int(os.Stdin.Fd()))
-	printTryHeader(out, accent)
+	printTryHeader(out, accent, color)
 
-	res, err := resolveTryProvider(cmd.Context(), flags, os.Stdin, out, interactive)
+	res, err := resolveTryProvider(cmd.Context(), flags, os.Stdin, out, interactive, color)
 	if err != nil {
 		return err
 	}
@@ -285,8 +285,41 @@ var trySuggestions = []string{
 	"what time is it in UTC?",
 }
 
-// printTryHeader prints the two-line intro banner.
-func printTryHeader(out io.Writer, accent func(string) string) {
+// forgeLogo renders the FORGE block wordmark with a vertical orange gradient
+// (plain, uncolored, when color is off — a non-TTY / NO_COLOR).
+func forgeLogo(color bool) string {
+	lines := []string{
+		`███████╗ ██████╗ ██████╗  ██████╗ ███████╗`,
+		`██╔════╝██╔═══██╗██╔══██╗██╔════╝ ██╔════╝`,
+		`█████╗  ██║   ██║██████╔╝██║  ███╗█████╗  `,
+		`██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝  `,
+		`██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗`,
+		`╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝`,
+	}
+	// Bright at the top, warm at the base — the forge-heat gradient.
+	shades := []string{"#fdba74", "#fb923c", "#f97316", "#f97316", "#ea580c", "#c2410c"}
+	var b strings.Builder
+	b.WriteByte('\n')
+	for i, ln := range lines {
+		row := "  " + ln
+		if color {
+			row = lipgloss.NewStyle().Foreground(lipgloss.Color(shades[i])).Render(row)
+		}
+		b.WriteString(row)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// printTryHeader prints the branded intro: the FORGE logo + tagline in a color
+// terminal, or a compact one-liner when color is off.
+func printTryHeader(out io.Writer, accent func(string) string, color bool) {
+	if color {
+		_, _ = fmt.Fprint(out, forgeLogo(true))
+		_, _ = fmt.Fprintf(out, "  %s\n\n",
+			tryDim(true)("talking to a live agent in your terminal. No build, no cluster. Ctrl-D or /exit to quit."))
+		return
+	}
 	_, _ = fmt.Fprintf(out, "\n  %s: talking to a live agent in your terminal.\n", accent("forge try"))
 	_, _ = fmt.Fprintf(out, "  No build, no cluster. Ctrl-D or /exit to quit.\n\n")
 }
@@ -324,6 +357,15 @@ func tryAccent(color bool) func(string) string {
 	return func(s string) string { return st.Render(s) }
 }
 
+// tryDim returns a muted-grey styler, or an identity function when color is off.
+func tryDim(color bool) func(string) string {
+	if !color {
+		return func(s string) string { return s }
+	}
+	st := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))
+	return func(s string) string { return st.Render(s) }
+}
+
 // tryResolution is the outcome of credential auto-resolution: which provider
 // and model to run, a human label for the startup summary, and any credential
 // env vars to inject for the in-process run (paste-key picker path only).
@@ -349,7 +391,7 @@ var errNoTryCredential = errors.New(
 // interactive picker (TTY) -> actionable error (no TTY). It does not add a new
 // credential store; it layers an ordering policy over the runner's existing
 // resolution.
-func resolveTryProvider(ctx context.Context, flags tryFlags, in io.Reader, out io.Writer, interactive bool) (tryResolution, error) {
+func resolveTryProvider(ctx context.Context, flags tryFlags, in io.Reader, out io.Writer, interactive, color bool) (tryResolution, error) {
 	// 1. Explicit flags win.
 	if flags.provider != "" {
 		model := modelOrDefault(flags.provider, flags.model)
@@ -398,7 +440,7 @@ func resolveTryProvider(ctx context.Context, flags tryFlags, in io.Reader, out i
 	if !interactive {
 		return tryResolution{}, errNoTryCredential
 	}
-	return tryPicker(flags, in, out)
+	return tryPicker(flags, in, out, color)
 }
 
 // modelOrDefault returns the explicit model if set, else the provider default.
@@ -429,12 +471,16 @@ func ollamaReachable(ctx context.Context) bool {
 
 // tryPicker is the fallback shown only when nothing is auto-detected and a TTY
 // is present: sign in with OpenAI, paste a key, or use local Ollama.
-func tryPicker(flags tryFlags, in io.Reader, out io.Writer) (tryResolution, error) {
-	_, _ = fmt.Fprintln(out, "\n  No model credential found. How would you like to connect?")
-	_, _ = fmt.Fprintln(out, "    1) Sign in with OpenAI (recommended)")
-	_, _ = fmt.Fprintln(out, "    2) Paste an API key")
-	_, _ = fmt.Fprintln(out, "    3) Use local Ollama")
-	_, _ = fmt.Fprint(out, "  > ")
+func tryPicker(flags tryFlags, in io.Reader, out io.Writer, color bool) (tryResolution, error) {
+	accent := tryAccent(color)
+	dim := tryDim(color)
+	num := func(n string) string { return accent("[" + n + "]") }
+
+	_, _ = fmt.Fprintf(out, "\n  No model credential found. How would you like to connect?\n\n")
+	_, _ = fmt.Fprintf(out, "    %s  Sign in with OpenAI   %s\n", num("1"), dim("(recommended)"))
+	_, _ = fmt.Fprintf(out, "    %s  Paste an API key\n", num("2"))
+	_, _ = fmt.Fprintf(out, "    %s  Use local Ollama\n", num("3"))
+	_, _ = fmt.Fprintf(out, "\n  %s ", accent("❯"))
 
 	choice, _ := bufio.NewReader(in).ReadString('\n')
 	switch strings.TrimSpace(choice) {

@@ -171,6 +171,7 @@ type Runner struct {
 	deferralNotifier       DeferralNotifier                  // optional: delivers DEFER approval requests to channels (#310)
 	authToken              string                            // resolved auth token (empty if --no-auth)
 	cancelRegistry         *coreruntime.CancellationRegistry // per-Runner in-flight cancellation registry (issue #88 / FWS-4)
+	seqRegistry            *coreruntime.SequenceRegistry     // per-invocation seq counters keyed by (correlation_id, task_id) so out-of-band emitters (egress proxy #341, MCP consent-resume #366) stamp a correct seq
 	auditSigningKey        *coreruntime.LoadedKey            // loaded once at startup; nil when signing is off (#213). Served on JWKS endpoint.
 	compression            *compress.Runtime                 // ctxzip compression runtime; nil when compression is disabled
 	intentEngine           *intent.Engine                    // R3 (#208) intent-alignment engine; nil when disabled
@@ -205,6 +206,7 @@ func NewRunner(cfg RunnerConfig) (*Runner, error) {
 		cfg:            cfg,
 		logger:         logger,
 		cancelRegistry: coreruntime.NewCancellationRegistry(),
+		seqRegistry:    coreruntime.NewSequenceRegistry(),
 	}, nil
 }
 
@@ -770,7 +772,13 @@ func (r *Runner) Run(ctx context.Context) error {
 					Event:         event,
 					TaskID:        a.TaskID,
 					CorrelationID: a.CorrelationID,
-					Fields:        map[string]any{"domain": a.Domain, "mode": string(egressCfg.Mode), "source": "proxy"},
+					// #341 — recover the invocation's live seq counter by the
+					// (correlation_id, task_id) the subprocess replayed (#338),
+					// so proxy events join the same gap-detectable seq chain as
+					// in-process egress. 0 (omitempty) when the invocation isn't
+					// registered (startup, or a subprocess with no creds).
+					Sequence: r.seqRegistry.NextSequenceFor(a.CorrelationID, a.TaskID),
+					Fields:   map[string]any{"domain": a.Domain, "mode": string(egressCfg.Mode), "source": "proxy"},
 				})
 			}
 			var pErr error
@@ -1644,6 +1652,8 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 		// EnsureSequenceCounter installs a fresh one if missing
 		// (--no-auth path / direct test invocations).
 		ctx = coreruntime.EnsureSequenceCounter(ctx)
+		// #341/#366: expose the seq counter to out-of-band emitters (egress proxy, MCP consent-resume).
+		defer r.registerInvocationSeq(ctx)()
 		sseAcc := coreruntime.NewLLMUsageAccumulator()
 		ctx = coreruntime.WithLLMUsageAccumulator(ctx, sseAcc)
 		defer func() {
@@ -1848,6 +1858,19 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 	})
 }
 
+// registerInvocationSeq exposes this invocation's sequence counter by
+// (correlation_id, task_id) so events emitted outside the request goroutine —
+// the egress proxy (#341) and the MCP consent-resume paths (#366) — can advance
+// the SAME counter and stamp a correct, gap-free seq. Call it after the
+// correlation id, task id, and sequence counter are on ctx; defer the returned
+// evict closure so the registration is dropped at the invocation boundary.
+func (r *Runner) registerInvocationSeq(ctx context.Context) func() {
+	corr := coreruntime.CorrelationIDFromContext(ctx)
+	task := coreruntime.TaskIDFromContext(ctx)
+	r.seqRegistry.Register(corr, task, coreruntime.SequenceCounterFromContext(ctx))
+	return func() { r.seqRegistry.Evict(corr, task) }
+}
+
 // executeTask is the shared task execution pipeline used by both JSON-RPC and REST handlers.
 func (r *Runner) executeTask(
 	ctx context.Context,
@@ -1870,6 +1893,8 @@ func (r *Runner) executeTask(
 	// session_start lands seq=2 (#174); installs a fresh one when
 	// missing (--no-auth path / direct test invocations).
 	ctx = coreruntime.EnsureSequenceCounter(ctx)
+	// #341/#366: expose the seq counter to out-of-band emitters (egress proxy, MCP consent-resume).
+	defer r.registerInvocationSeq(ctx)()
 	// Per-invocation usage accumulator so AfterLLMCall hooks can fold
 	// each call's tokens/duration into running totals the response
 	// handler reads back for X-Forge-* headers + the
@@ -2181,6 +2206,8 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 		// installSequenceCounterMiddleware put on ctx before auth ran
 		// (#174); install fresh on the --no-auth path.
 		ctx = coreruntime.EnsureSequenceCounter(ctx)
+		// #341/#366: expose the seq counter to out-of-band emitters (egress proxy, MCP consent-resume).
+		defer r.registerInvocationSeq(ctx)()
 		// Pull workflow correlation headers (issue #86 / FWS-2) before
 		// the accumulator setup so invocation_complete inherits workflow
 		// tagging via EmitFromContext.

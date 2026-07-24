@@ -80,6 +80,11 @@ type Spec struct {
 	// one consent serves them all.
 	TaskID  string
 	Session string
+	// CorrelationID is the invocation id of the request that first tripped the
+	// gate. It travels with the first waiter so the resume paths (the loopback
+	// OAuth callback, POST /mcp/consent) can attribute the completion egress +
+	// audit back to the still-in-flight parked invocation (#366).
+	CorrelationID string
 }
 
 // Handle is a pending gate. Executors obtain one from Engine.Await and

@@ -532,9 +532,16 @@ forge auth secret-yaml --name custom-secret-name
 # Common one-liner: populate the Secret a `forge package` deploy
 # expects from the local runtime.token.
 forge auth secret-yaml | kubectl apply -f -
+
+# Remove a stored LLM OAuth credential (default: openai) so the next
+# `forge init` / `forge try` prompts you to sign in again.
+forge auth logout
+forge auth logout openai
 ```
 
 The `forge.agent.id` label on the generated Secret is always sourced from `forge.yaml`'s `agent_id` (or the `"forge-agent"` fallback), never from the `--name` override — so operators using `--name` to match an existing cluster convention still see telemetry and label-selectors keyed on the real agent ID.
+
+`forge auth logout` is an operator/laptop command: it deletes the OAuth credential from `~/.forge/credentials` and the encrypted store, and **refuses to run inside an agent runtime** — a container, or when `FORGE_PLATFORM_TOKEN` is set. A deployed agent authenticates with an injected API key or platform token, not the OAuth credential store, so there is nothing there for the runtime to log out of; the refusal is defense-in-depth so Forge is never the tool an agent shells out to in order to wipe an operator's credential.
 
 ---
 

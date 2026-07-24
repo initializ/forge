@@ -117,7 +117,7 @@ func runTry(cmd *cobra.Command, args []string) error {
 		Config:       cfg,
 		WorkDir:      dir,
 		EnvOverrides: res.EnvOverrides,
-		Verbose:      false,
+		Verbose:      verbose, // global -v/--verbose; un-silences the runner logger
 	})
 	if err != nil {
 		return err

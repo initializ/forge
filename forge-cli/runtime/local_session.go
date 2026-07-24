@@ -36,7 +36,15 @@ type LocalSession struct {
 	proxyStop    func()
 	history      []a2a.Message
 	taskID       string
+	// lastErr captures the real error behind the executor's canned
+	// "something went wrong" fallback (loop.go returns a user-friendly string
+	// and stashes the cause only on the OnError hook). Set per turn.
+	lastErr *errBox
 }
+
+// errBox holds the most recent LLM error seen by the OnError hook. RunTurn is
+// synchronous (one turn at a time), so no locking is needed.
+type errBox struct{ err error }
 
 // LocalSessionOptions configure an in-process `forge try` session.
 type LocalSessionOptions struct {
@@ -126,6 +134,17 @@ func NewLocalSession(ctx context.Context, opts LocalSessionOptions) (*LocalSessi
 	r.registerAuditHooks(hooks, audit)
 	r.registerProgressHooks(hooks)
 
+	// Capture the real LLM error: the executor logs it via the OnError hook and
+	// then returns a canned "something went wrong" string, so without this the
+	// actual provider failure (e.g. an OAuth/gateway 4xx) is invisible.
+	eb := &errBox{}
+	hooks.Register(coreruntime.OnError, func(_ context.Context, hctx *coreruntime.HookContext) error {
+		if hctx.Error != nil {
+			eb.err = hctx.Error
+		}
+		return nil
+	})
+
 	executor := coreruntime.NewLLMExecutor(coreruntime.LLMExecutorConfig{
 		Client:       llmClient,
 		Tools:        reg,
@@ -143,6 +162,7 @@ func NewLocalSession(ctx context.Context, opts LocalSessionOptions) (*LocalSessi
 		egressClient: egressClient,
 		proxyStop:    proxyStop,
 		taskID:       "forge-try",
+		lastErr:      eb,
 	}, nil
 }
 
@@ -158,8 +178,14 @@ func (s *LocalSession) RunTurn(ctx context.Context, prompt string, progress core
 	task := &a2a.Task{ID: s.taskID, History: s.history}
 	userMsg := &a2a.Message{Role: a2a.MessageRoleUser, Parts: []a2a.Part{a2a.NewTextPart(prompt)}}
 
+	s.lastErr.err = nil // reset; the OnError hook fills it if the LLM call fails
 	resp, err := s.executor.Execute(ctx, task, userMsg)
 	if err != nil {
+		// Prefer the real cause the OnError hook captured over the executor's
+		// canned "something went wrong" string.
+		if s.lastErr.err != nil {
+			return "", s.lastErr.err
+		}
 		return "", err
 	}
 	s.history = append(s.history, *userMsg)

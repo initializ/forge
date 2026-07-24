@@ -6,10 +6,32 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/initializ/forge/forge-cli/config"
 )
+
+// TestQuickstartPreset_NoPlaceholderCredential pins that the preset scaffold
+// writes NO provider-key placeholder. A placeholder in .env would be loaded by
+// NewLocalSession, shadow the real runtime credential (OAuth / env / paste),
+// and get sent to the provider as an invalid key.
+func TestQuickstartPreset_NoPlaceholderCredential(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "quickstart")
+	opts := quickstartPreset("openai", "gpt-5.4")
+	opts.OutputDir = dir
+	opts.Force = true
+	if err := scaffold(opts); err != nil {
+		t.Fatalf("scaffold: %v", err)
+	}
+	env, _ := os.ReadFile(filepath.Join(dir, ".env"))
+	if strings.Contains(string(env), "your-api-key-here") {
+		t.Errorf(".env carries a placeholder credential that would shadow runtime resolution:\n%s", env)
+	}
+	if strings.Contains(string(env), "OPENAI_API_KEY") {
+		t.Errorf(".env must not scaffold OPENAI_API_KEY for the preset:\n%s", env)
+	}
+}
 
 // TestQuickstartPreset_ScaffoldsValidConfig runs the demo preset through the
 // real scaffold path and asserts the generated forge.yaml is valid and keyless.

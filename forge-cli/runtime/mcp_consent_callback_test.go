@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	coreruntime "github.com/initializ/forge/forge-core/runtime"
 	"github.com/initializ/forge/forge-core/security/authgate"
 )
 
@@ -100,7 +101,7 @@ func (f *fakeCompleter) complete(_ context.Context, _, _, code, _ string) error 
 
 func newCallback(t *testing.T, binder *stateBinder, engine *authgate.Engine, comp *fakeCompleter) http.HandlerFunc {
 	t.Helper()
-	return makeMCPCallbackHandler(binder, engine, comp.complete, sessionFromRequest, nil)
+	return makeMCPCallbackHandler(binder, engine, comp.complete, sessionFromRequest, nil, coreruntime.NewSequenceRegistry())
 }
 
 // The happy path: valid state + code → exchange runs → the parked call
@@ -137,6 +138,51 @@ func TestMCPCallback_HappyPath_ResumesGate(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("callback did not resume the parked call")
+	}
+}
+
+// #366: the callback attributes the completion egress to the still-parked
+// invocation — the completer's ctx carries the parked (correlation_id, task_id)
+// and shares the invocation's registered seq counter.
+func TestMCPCallback_SeedsInvocationContext(t *testing.T) {
+	binder := newStateBinder(time.Hour)
+	engine := authgate.New()
+
+	// Park a call carrying a known invocation identity (as Await sets it).
+	handle, _, err := engine.Await("alice@corp.com", "atl",
+		authgate.Spec{Timeout: time.Hour, TaskID: "task-1", CorrelationID: "corr-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _, _ = handle.WaitCtx(context.Background()) }()
+
+	// The invocation's seq counter is registered while it's parked.
+	reg := coreruntime.NewSequenceRegistry()
+	reg.Register("corr-1", "task-1", new(coreruntime.SequenceCounter))
+
+	var gotCtx context.Context
+	comp := func(ctx context.Context, _, _, _, _ string) error { gotCtx = ctx; return nil }
+
+	state, _ := binder.Issue("alice@corp.com", "atl", "sess-1")
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/mcp/oauth/callback?state="+state+"&code=c", nil)
+	req.Header.Set("X-Forge-Session", "sess-1")
+	makeMCPCallbackHandler(binder, engine, comp, sessionFromRequest, nil, reg)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("callback → %d, want 200", rec.Code)
+	}
+	if gotCtx == nil {
+		t.Fatal("completer was not called")
+	}
+	if got := coreruntime.CorrelationIDFromContext(gotCtx); got != "corr-1" {
+		t.Errorf("completion ctx correlation = %q, want corr-1 (attributed to the parked invocation)", got)
+	}
+	if got := coreruntime.TaskIDFromContext(gotCtx); got != "task-1" {
+		t.Errorf("completion ctx task = %q, want task-1", got)
+	}
+	if n := coreruntime.NextSequence(gotCtx); n != 1 {
+		t.Errorf("completion ctx seq = %d, want 1 (shares the registered invocation counter)", n)
 	}
 }
 

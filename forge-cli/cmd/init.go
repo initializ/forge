@@ -1235,6 +1235,15 @@ func defaultModelNameForProvider(provider string) string {
 func buildEnvVars(opts *initOptions) []envVarEntry {
 	var vars []envVarEntry
 
+	// Preset scaffolds (forge try) resolve the model credential at runtime
+	// from the OAuth store / process env / paste-key, so they write NO provider
+	// key. A placeholder here (`your-api-key-here`) would be loaded from .env,
+	// shadow the real credential, and get sent to the provider as an invalid
+	// key — the exact failure #350 review hit on a fresh OpenAI sign-in.
+	if opts.Preset {
+		return vars
+	}
+
 	// Provider key
 	switch opts.ModelProvider {
 	case "openai":

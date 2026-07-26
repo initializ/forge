@@ -234,12 +234,28 @@ func TestValidateMCPConfig(t *testing.T) {
 			wantErrs: []string{"invalid tool name"},
 		},
 		{
-			name: "deny tool name with hyphen rejected",
+			// Hyphenated names are the MCP-ecosystem norm (Calendly:
+			// users-get_current_user, event_types-list_event_types, …)
+			// and match the spec's SHOULD pattern. Rejecting them bricked
+			// agents at startup whose allow-lists carried the server's
+			// real tool names.
+			name: "tool names with hyphens accepted",
 			cfg: types.MCPConfig{Servers: []types.MCPServer{{
 				Name: "x", Transport: "http", URL: "http://x",
-				Tools: types.MCPToolFilter{Allow: []string{"good"}, Deny: []string{"bad-tool"}},
+				Tools: types.MCPToolFilter{
+					Allow: []string{"users-get_current_user", "scheduling_links-create_single_use_scheduling_link"},
+					Deny:  []string{"meetings-cancel_event"},
+				},
 			}}},
-			wantErrs: []string{"invalid tool name"},
+			wantErrs: nil,
+		},
+		{
+			name: "tool name with double underscore still rejected",
+			cfg: types.MCPConfig{Servers: []types.MCPServer{{
+				Name: "x", Transport: "http", URL: "http://x",
+				Tools: types.MCPToolFilter{Allow: []string{"foo__bar"}},
+			}}},
+			wantErrs: []string{"reserved for MCP namespacing"},
 		},
 		{
 			name: "tool in both allow and deny",

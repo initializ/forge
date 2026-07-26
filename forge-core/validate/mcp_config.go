@@ -15,10 +15,15 @@ import (
 // ≤31 chars.
 var mcpServerNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,30}$`)
 
-// MCP tool name format. Allowed in Tools.Allow / Tools.Deny. Names
-// containing "__" are reserved for the namespaced runtime form
-// "<server>__<tool>"; here we only validate the bare tool name.
-var mcpToolNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_]{1,64}$`)
+// MCP tool name format. Allowed in Tools.Allow / Tools.Deny. Matches the
+// MCP spec's SHOULD pattern for tool names (`^[a-zA-Z0-9_-]{1,128}$`) —
+// real servers expose hyphenated names (Calendly's users-get_current_user,
+// event_types-list_event_types, …), and rejecting the hyphen bricked any
+// agent at startup whose allow-list carried the server's genuine tool
+// names. Names containing "__" are reserved for the namespaced runtime
+// form "<server>__<tool>" and rejected by a separate check; single "-"
+// or "_" pose no conflict with that separator.
+var mcpToolNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
 
 // knownMCPTransports is the closed set of accepted transport values.
 // Phase 1: HTTP only. Stdio is on the roadmap.

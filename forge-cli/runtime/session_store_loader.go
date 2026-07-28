@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"os"
+	"time"
 
 	coreruntime "github.com/initializ/forge/forge-core/runtime"
 )
@@ -35,6 +36,34 @@ const (
 // misconfiguration: rather than silently drop session persistence, we
 // warn (single-line fix in the manifest) and fall back to the file
 // backend by returning nil.
+// selectSessionStore picks the session-memory backend (#243, #372). A
+// configured REMOTE store is used unconditionally — it is explicit
+// platform-wired persistence, so it must not be gated behind
+// memory.persistence (an agent whose forge.yaml left persistence off, common
+// for CI/BYO images where the platform injects FORGE_SESSION_STORE=remote,
+// otherwise silently dropped ALL session history). The local FILE store is
+// used only when memPersistence is on. Returns (nil, nil) when neither
+// applies. storeDesc is the log/observability descriptor.
+func selectSessionStore(memPersistence bool, agentID, cfgMode, cfgURL, sessionsDir string, logger coreruntime.Logger) (coreruntime.SessionStore, map[string]any) {
+	if remote := buildRemoteSessionStore(agentID, cfgMode, cfgURL, logger); remote != nil {
+		return remote, map[string]any{"backend": "remote"}
+	}
+	if !memPersistence {
+		return nil, nil
+	}
+	memStore, err := coreruntime.NewMemoryStore(sessionsDir)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("failed to create memory store, persistence disabled", map[string]any{"error": err.Error()})
+		}
+		return nil, nil
+	}
+	if deleted, _ := memStore.Cleanup(7 * 24 * time.Hour); deleted > 0 && logger != nil {
+		logger.Info("cleaned up old sessions", map[string]any{"deleted": deleted})
+	}
+	return memStore, map[string]any{"backend": "file", "sessions_dir": sessionsDir}
+}
+
 func buildRemoteSessionStore(agentID, cfgMode, cfgURL string, logger coreruntime.Logger) coreruntime.SessionStore {
 	mode := cfgMode
 	if v := os.Getenv(EnvSessionStore); v != "" {

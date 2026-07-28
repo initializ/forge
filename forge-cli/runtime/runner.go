@@ -1304,44 +1304,30 @@ func (r *Runner) Run(ctx context.Context) error {
 					if os.Getenv("FORGE_MEMORY_PERSISTENCE") == "false" {
 						memPersistence = false
 					}
-					if memPersistence {
+					{
 						// Select the session-memory backend (issue #243).
 						// Remote (opt-in) pushes snapshots to the platform
 						// session service so stateless pods resume any task on
 						// any replica; file (default) keeps today's local
-						// .forge/sessions. buildSessionStore returns the remote
-						// store when configured, else nil to signal "use file".
-						var sessionStore coreruntime.SessionStore
-						var storeDesc map[string]any
-
-						if remote := buildRemoteSessionStore(
+						// .forge/sessions. buildRemoteSessionStore returns the
+						// remote store when configured, else nil to signal "use
+						// file".
+						// A remote session store is EXPLICIT platform-wired
+						// persistence — selectSessionStore builds it
+						// independent of the memPersistence gate (#372); the
+						// gate now governs only the local file fallback.
+						sessDir := r.cfg.Config.Memory.SessionsDir
+						if sessDir == "" {
+							sessDir = filepath.Join(r.cfg.WorkDir, ".forge", "sessions")
+						}
+						sessionStore, storeDesc := selectSessionStore(
+							memPersistence,
 							r.cfg.Config.AgentID,
 							r.cfg.Config.Memory.SessionStore,
 							r.cfg.Config.Memory.SessionStoreURL,
+							sessDir,
 							r.logger,
-						); remote != nil {
-							sessionStore = remote
-							storeDesc = map[string]any{"backend": "remote"}
-						} else {
-							sessDir := r.cfg.Config.Memory.SessionsDir
-							if sessDir == "" {
-								sessDir = filepath.Join(r.cfg.WorkDir, ".forge", "sessions")
-							}
-							memStore, storeErr := coreruntime.NewMemoryStore(sessDir)
-							if storeErr != nil {
-								r.logger.Warn("failed to create memory store, persistence disabled", map[string]any{
-									"error": storeErr.Error(),
-								})
-							} else {
-								// Clean up old sessions on startup (7-day TTL).
-								deleted, _ := memStore.Cleanup(7 * 24 * time.Hour)
-								if deleted > 0 {
-									r.logger.Info("cleaned up old sessions", map[string]any{"deleted": deleted})
-								}
-								sessionStore = memStore
-								storeDesc = map[string]any{"backend": "file", "sessions_dir": sessDir}
-							}
-						}
+						)
 
 						if sessionStore != nil {
 							compactor := coreruntime.NewCompactor(coreruntime.CompactorConfig{

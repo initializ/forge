@@ -41,3 +41,38 @@ func TestBuildRemoteSessionStore(t *testing.T) {
 		})
 	}
 }
+
+// #372: a configured remote session store must be selected even when
+// memPersistence is off — an agent whose forge.yaml left persistence off
+// (common for CI/BYO images, where the platform injects
+// FORGE_SESSION_STORE=remote) otherwise dropped all session history.
+func TestSelectSessionStore_RemoteIgnoresPersistenceGate(t *testing.T) {
+	t.Setenv(EnvSessionStore, sessionStoreRemote)
+	t.Setenv(EnvSessionStoreURL, "http://agent-builder.svc:8080/api/v1/agent-sessions")
+	t.Setenv(EnvPlatformToken, "tok-platform")
+
+	// memPersistence=false must NOT stop the remote store from engaging.
+	store, desc := selectSessionStore(false, "fundraise", "", "", t.TempDir(), nil)
+	if store == nil {
+		t.Fatal("remote store must engage independent of memPersistence (#372)")
+	}
+	if desc["backend"] != "remote" {
+		t.Fatalf("backend = %v, want remote", desc["backend"])
+	}
+}
+
+// Without a remote store configured, the local file store still respects the
+// memPersistence gate.
+func TestSelectSessionStore_FileGatedOnPersistence(t *testing.T) {
+	t.Setenv(EnvSessionStore, "")
+	t.Setenv(EnvSessionStoreURL, "")
+	t.Setenv(EnvPlatformToken, "")
+
+	if store, _ := selectSessionStore(false, "a", "", "", t.TempDir(), nil); store != nil {
+		t.Fatal("file store must NOT build when memPersistence is off")
+	}
+	store, desc := selectSessionStore(true, "a", "", "", t.TempDir(), nil)
+	if store == nil || desc["backend"] != "file" {
+		t.Fatalf("file store must build when memPersistence is on: store=%v desc=%v", store, desc)
+	}
+}

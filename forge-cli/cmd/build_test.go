@@ -107,3 +107,24 @@ entrypoint: ""
 		t.Fatal("expected error for invalid config")
 	}
 }
+
+// TestParseLocalBins_NameValidation pins the --local-bin name check
+// (PR #374 follow-up): the name flows verbatim into the .local-bins/
+// path, the Dockerfile COPY, and the .dockerignore negation.
+func TestParseLocalBins_NameValidation(t *testing.T) {
+	tmp := t.TempDir()
+	binPath := filepath.Join(tmp, "somebin")
+	if err := os.WriteFile(binPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := parseLocalBins([]string{"forge=" + binPath}); err != nil {
+		t.Errorf("valid name rejected: %v", err)
+	}
+
+	for _, name := range []string{"../escape", "..", ".", "a/b", "bad\nname", "*", "!x"} {
+		if _, err := parseLocalBins([]string{name + "=" + binPath}); err == nil {
+			t.Errorf("name %q should be rejected", name)
+		}
+	}
+}

@@ -156,3 +156,77 @@ func TestDockerfile_NoLongerCopiesDeadCompiledArtifacts(t *testing.T) {
 		}
 	}
 }
+
+// TestDockerignore_ReincludesLocalBinOverrides pins the --local-bin fix:
+// the generated Dockerfile COPYs each local bin override straight from
+// .local-bins/ in the build context, so the blanket .local-bins/ exclusion
+// must be followed by a !.local-bins/<name> negation per override
+// (last match wins) or the docker build fails with "not found".
+func TestDockerignore_ReincludesLocalBinOverrides(t *testing.T) {
+	tmpDir := t.TempDir()
+	outDir := filepath.Join(tmpDir, "output")
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	bc := pipeline.NewBuildContext(pipeline.PipelineOptions{WorkDir: tmpDir, OutputDir: outDir})
+	bc.Config = &types.ForgeConfig{AgentID: "test", Version: "1.0.0"}
+	bc.Config.Package.BinOverrides = map[string]types.BinOverride{
+		"jq": {LocalPath: "/usr/bin/jq"},
+	}
+	bc.LocalBins = map[string]string{"forge": "/usr/local/bin/forge"}
+	bc.Spec = &agentspec.AgentSpec{AgentID: "test"}
+
+	s := &DockerfileStage{}
+	if err := s.writeDockerignore(bc); err != nil {
+		t.Fatalf("writeDockerignore: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(outDir, ".dockerignore"))
+	if err != nil {
+		t.Fatalf("reading .dockerignore: %v", err)
+	}
+	got := string(data)
+
+	// The blanket exclusion stays (keeps unrelated stash content out)…
+	if !strings.Contains(got, ".local-bins/\n") {
+		t.Errorf(".dockerignore lost the .local-bins/ exclusion. Full content:\n%s", got)
+	}
+	// …and every override is re-included after it, config and CLI alike.
+	for _, name := range []string{"forge", "jq"} {
+		neg := "!.local-bins/" + name + "\n"
+		if !strings.Contains(got, neg) {
+			t.Errorf(".dockerignore is missing negation %q. Full content:\n%s", neg, got)
+		}
+		if strings.Index(got, neg) < strings.Index(got, ".local-bins/\n") {
+			t.Errorf("negation %q must come after the .local-bins/ exclusion. Full content:\n%s", neg, got)
+		}
+	}
+}
+
+// TestDockerignore_NoLocalBins_KeepsPlainExclusion guards the default path:
+// without overrides no negations are emitted.
+func TestDockerignore_NoLocalBins_KeepsPlainExclusion(t *testing.T) {
+	tmpDir := t.TempDir()
+	outDir := filepath.Join(tmpDir, "output")
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	bc := pipeline.NewBuildContext(pipeline.PipelineOptions{WorkDir: tmpDir, OutputDir: outDir})
+	bc.Config = &types.ForgeConfig{AgentID: "test", Version: "1.0.0"}
+	bc.Spec = &agentspec.AgentSpec{AgentID: "test"}
+
+	s := &DockerfileStage{}
+	if err := s.writeDockerignore(bc); err != nil {
+		t.Fatalf("writeDockerignore: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(outDir, ".dockerignore"))
+	if err != nil {
+		t.Fatalf("reading .dockerignore: %v", err)
+	}
+	if strings.Contains(string(data), "!.local-bins/") {
+		t.Errorf(".dockerignore must not contain negations without local bin overrides. Full content:\n%s", string(data))
+	}
+}

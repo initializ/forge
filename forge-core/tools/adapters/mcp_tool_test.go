@@ -343,3 +343,91 @@ func (b *safeBuf) String() string {
 	defer b.mu.Store(0)
 	return b.buf.String()
 }
+
+// gateStub records Await calls and returns a scripted outcome. nil err ⇒
+// "granted" (caller retries); non-nil ⇒ give up.
+type gateStub struct {
+	calls   atomic.Int32
+	err     error
+	onAwait func() // optional side effect on grant (e.g. flip the client to succeed)
+}
+
+func (g *gateStub) Await(context.Context, string) error {
+	g.calls.Add(1)
+	if g.onAwait != nil {
+		g.onAwait()
+	}
+	return g.err
+}
+
+// TestMCPTool_Execute_CallTimeNoToken_Parks is the forge#376 regression: an
+// ErrNoToken raised by CallTool (per-request auth transports — the token is
+// attached per frame, so the 403 lands on tools/call, not at establish) must
+// route through the auth gate and retry, exactly like an establish-time
+// ErrNoToken. Before the fix this path never consulted the gate and failed
+// hard with reason=no_token.
+func TestMCPTool_Execute_CallTimeNoToken_Parks(t *testing.T) {
+	t.Parallel()
+	// Client 403s on the first CallTool, succeeds after consent (the gate's
+	// onAwait flips it), modelling "grant now exists → retry resolves it".
+	c := &mockClient{err: mcp.ErrNoToken}
+	gate := &gateStub{onAwait: func() {
+		c.err = nil
+		c.res = &mcp.CallToolResult{Content: []mcp.ToolContent{{Type: "text", Text: "ok-after-consent"}}}
+	}}
+	a := newAdapter(t, c, func(m *MCPTool) { m.authGate = gate })
+
+	got, err := a.Execute(context.Background(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("expected park+retry to succeed, got err=%v", err)
+	}
+	if gate.calls.Load() != 1 {
+		t.Fatalf("auth gate consulted %d times, want 1 (a call-time no-token must park)", gate.calls.Load())
+	}
+	if got != "ok-after-consent" {
+		t.Fatalf("got %q, want the post-consent retry result", got)
+	}
+}
+
+// TestMCPTool_Execute_CallTimeNoToken_GateGivesUp: when Await returns an error
+// (timeout / cancel / no requesting user), the call fails as no_token — no
+// second CallTool, no regression from prior fail-hard behavior.
+func TestMCPTool_Execute_CallTimeNoToken_GateGivesUp(t *testing.T) {
+	t.Parallel()
+	c := &mockClient{err: mcp.ErrNoToken}
+	gate := &gateStub{err: errors.New("consent timed out")}
+	a := newAdapter(t, c, func(m *MCPTool) { m.authGate = gate })
+
+	if _, err := a.Execute(context.Background(), json.RawMessage(`{}`)); err == nil {
+		t.Fatal("a gate give-up must surface as an error")
+	}
+	if gate.calls.Load() != 1 {
+		t.Fatalf("gate consulted %d times, want exactly 1", gate.calls.Load())
+	}
+}
+
+// TestMCPTool_Execute_CallTimeError_NoSpuriousPark: a NON-ErrNoToken CallTool
+// error returns immediately without touching the gate.
+func TestMCPTool_Execute_CallTimeError_NoSpuriousPark(t *testing.T) {
+	t.Parallel()
+	c := &mockClient{err: errors.New("upstream 500")}
+	gate := &gateStub{}
+	a := newAdapter(t, c, func(m *MCPTool) { m.authGate = gate })
+
+	if _, err := a.Execute(context.Background(), json.RawMessage(`{}`)); err == nil {
+		t.Fatal("a non-auth CallTool error must surface")
+	}
+	if gate.calls.Load() != 0 {
+		t.Fatalf("gate consulted %d times for a non-auth error, want 0", gate.calls.Load())
+	}
+}
+
+// TestMCPTool_Execute_NoGate_NoTokenSurfaces: with no gate wired, a call-time
+// ErrNoToken surfaces as before (nil-gate safety).
+func TestMCPTool_Execute_NoGate_NoTokenSurfaces(t *testing.T) {
+	t.Parallel()
+	a := newAdapter(t, &mockClient{err: mcp.ErrNoToken})
+	if _, err := a.Execute(context.Background(), json.RawMessage(`{}`)); !errors.Is(err, mcp.ErrNoToken) {
+		t.Fatalf("want ErrNoToken to surface with no gate, got %v", err)
+	}
+}

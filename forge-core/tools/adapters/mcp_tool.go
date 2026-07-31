@@ -198,29 +198,37 @@ func (m *MCPTool) Execute(ctx context.Context, args json.RawMessage) (string, er
 	correlationID := runtime.CorrelationIDFromContext(ctx)
 
 	m.emitCall(correlationID, len(args))
-	// Resolve the connection for THIS call's requesting user (#317). A
-	// static resolver returns the shared client (unchanged); a per-subject
-	// pool returns that user's own connection, establishing it lazily.
-	client, err := m.resolveClient(ctx)
+	// resolveAndCall runs the whole resolve→call sequence for THIS request.
+	// ErrNoToken can surface from EITHER half: the per-subject connection
+	// establish (transports that authenticate at initialize) OR CallTool
+	// itself (transports that attach the token per-request and only 403 on
+	// the tools/call frame — Atlassian and most OAuth MCP servers). The auth
+	// gate (#330) must catch both, so it wraps the whole sequence rather than
+	// just resolveClient (the call-time case previously slipped past the gate
+	// and failed hard with reason=no_token — forge#376).
+	resolveAndCall := func() (*mcp.CallToolResult, error) {
+		client, err := m.resolveClient(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return client.CallTool(ctx, m.descriptor.Name, args)
+	}
+
+	res, err := resolveAndCall()
 	if err != nil && m.authGate != nil && errors.Is(err, mcp.ErrNoToken) {
 		// No grant yet for this user (#330). Rather than fail the call, park
-		// the executor and let the user consent; on a granted resume,
-		// re-resolve — the delegated path now finds the grant and the
-		// per-user connection establishes. A gate error (timeout / cancel /
-		// no requesting user) means give up; it flows to the emit+return
-		// below and classifies like the underlying ErrNoToken.
+		// the executor and let the user consent; on a granted resume, retry
+		// the full resolve→call — the delegated path now finds the grant, the
+		// per-user connection establishes, and the tool call goes through. A
+		// gate error (timeout / cancel / no requesting user) means give up;
+		// it flows to the emit+return below and classifies like the
+		// underlying ErrNoToken.
 		if gateErr := m.authGate.Await(ctx, m.server); gateErr != nil {
 			err = gateErr
 		} else {
-			client, err = m.resolveClient(ctx)
+			res, err = resolveAndCall()
 		}
 	}
-	if err != nil {
-		durMs := time.Since(start).Milliseconds()
-		m.emitResult(correlationID, durMs, 0, false, classifyToolErr(err))
-		return "", fmt.Errorf("mcp %s/%s: %w", m.server, m.descriptor.Name, err)
-	}
-	res, err := client.CallTool(ctx, m.descriptor.Name, args)
 	durMs := time.Since(start).Milliseconds()
 
 	if err != nil {

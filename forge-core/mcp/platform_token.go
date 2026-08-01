@@ -33,6 +33,17 @@ const platformTokenSkew = 30 * time.Second
 // defaultPlatformTokenTTL applies when the endpoint omits expires_in.
 const defaultPlatformTokenTTL = 5 * time.Minute
 
+// delegatedTokenMaxTTL caps how long a per-USER (delegated) access token is
+// cached, independent of the provider's longer lifetime (Atlassian ≈ 1h). The
+// platform is the grant authority — a disconnect deletes the grant there but
+// can't reach this in-memory cache — so we re-validate against the platform at
+// least this often. After a disconnect the next re-fetch (≤ this window) gets
+// ErrNoToken and the call is denied/parked, instead of the agent acting as a
+// revoked user for the full token lifetime (#380). Agent-principal (platform-
+// mode) tokens are NOT capped here — that grant is org registration, not a
+// per-user connection a user disconnects.
+const delegatedTokenMaxTTL = 5 * time.Minute
+
 type platformTokenSource struct {
 	endpoint string // raw, ${VAR}-expandable
 	identity string // raw, ${VAR}-expandable
@@ -303,6 +314,11 @@ func (d *delegatedTokenSource) TokenForSubject(ctx context.Context, subject stri
 		return "", fmt.Errorf("%w: platform token endpoint returned %d for server %q (subject %q)", ErrProtocolError, status, d.ref, subject)
 	}
 
+	// Cap the cache lifetime so a platform-side disconnect is enforced within
+	// delegatedTokenMaxTTL, not the provider token's full lifetime (#380).
+	if ttl > delegatedTokenMaxTTL {
+		ttl = delegatedTokenMaxTTL
+	}
 	d.store.Put(subject, tok, ttl)
 	return tok, nil
 }

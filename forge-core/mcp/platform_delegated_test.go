@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/initializ/forge/forge-core/auth"
 	"github.com/initializ/forge/forge-core/types"
@@ -115,5 +116,47 @@ func TestBuildAuthFn_User_ResolvesSubjectFromContext(t *testing.T) {
 	// No user in ctx → lazy auth-required.
 	if _, err := authFn(context.Background()); !errors.Is(err, ErrNoToken) {
 		t.Fatalf("no user in ctx must fail lazily with ErrNoToken, got: %v", err)
+	}
+}
+
+// ttlSpyStore records the ttl passed to Put, so a test can assert the cap.
+type ttlSpyStore struct {
+	lastTTL time.Duration
+	toks    map[string]string
+}
+
+func (s *ttlSpyStore) Get(subject string) (string, bool) {
+	t, ok := s.toks[subject]
+	return t, ok
+}
+func (s *ttlSpyStore) Put(subject, token string, ttl time.Duration) {
+	s.lastTTL = ttl
+	if s.toks == nil {
+		s.toks = map[string]string{}
+	}
+	s.toks[subject] = token
+}
+func (s *ttlSpyStore) Evict(subject string) { delete(s.toks, subject) }
+
+// TestDelegatedTokenSource_CachesCappedTTL is the #380 fix: a platform
+// disconnect can't reach forge's in-memory cache, so the delegated token is
+// cached for at most delegatedTokenMaxTTL — well under the provider's ~1h
+// expires_in — forcing re-validation against the platform (the grant
+// authority) within that window.
+func TestDelegatedTokenSource_CachesCappedTTL(t *testing.T) {
+	srv := delegatedServer(t, nil, "") // stub returns expires_in: 3600 (1h)
+	defer srv.Close()
+
+	spy := &ttlSpyStore{}
+	d := newDelegatedTokenSource(PlatformSourceConfig{
+		TokenEndpoint: srv.URL, AgentIdentity: "agent-cred", Ref: "atlassian",
+		HTTPClient: srv.Client(), SubjectStore: spy,
+	})
+	if _, err := d.TokenForSubject(context.Background(), "alice@corp.com"); err != nil {
+		t.Fatalf("TokenForSubject: %v", err)
+	}
+	if spy.lastTTL != delegatedTokenMaxTTL {
+		t.Fatalf("cached ttl = %s, want the cap %s (provider expires_in 1h must be clamped)",
+			spy.lastTTL, delegatedTokenMaxTTL)
 	}
 }

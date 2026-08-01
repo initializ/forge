@@ -308,21 +308,24 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 		}
 	}
 
-	// Append the new user message, but skip if the recovered session
-	// already ends with an identical user message (avoids duplicates
-	// when users retry after a premature loop exit).
+	// Append the new user message, but skip a genuine duplicate: a recovered
+	// session whose TRAILING message is an identical user turn — the
+	// premature-loop-exit case where the turn was persisted but never
+	// answered, so a retry resends it.
+	//
+	// The dedup MUST be trailing-only. An identical user turn EARLIER in
+	// history that was already answered (the session ends in an assistant
+	// message) is NOT a duplicate — the user is legitimately re-running the
+	// same request (e.g. after connecting a delegated MCP account). Matching
+	// the last user message anywhere dropped that re-run, so the loop
+	// replayed the poisoned transcript and repeated the last answer without
+	// re-attempting tools (#378).
 	newMsg := a2aMessageToLLM(*msg)
 	if recovered {
 		msgs := mem.Messages()
-		// Find the last user message in the recovered session.
-		lastUserIdx := -1
-		for j := len(msgs) - 1; j >= 0; j-- {
-			if msgs[j].Role == llm.RoleUser {
-				lastUserIdx = j
-				break
-			}
-		}
-		if lastUserIdx < 0 || msgs[lastUserIdx].Content != newMsg.Content {
+		n := len(msgs)
+		trailingDup := n > 0 && msgs[n-1].Role == llm.RoleUser && msgs[n-1].Content == newMsg.Content
+		if !trailingDup {
 			mem.Append(newMsg)
 		}
 	} else {

@@ -351,3 +351,104 @@ func strconvItoa(n int) string {
 	}
 	return string(buf[i:])
 }
+
+// TestExecute_RecoveredSession_VerbatimReRunIsAppended is the #378 regression:
+// a recovered session that was ALREADY ANSWERED (ends in an assistant turn)
+// plus an identical incoming user message must APPEND the message and re-enter
+// the loop. The old dedup matched the last user message anywhere in history,
+// so a verbatim re-run (same text) was dropped — the loop replayed the
+// answered transcript and repeated the last reply without re-attempting tools
+// (field: a failed Jira exec never recovered after the account was connected).
+func TestExecute_RecoveredSession_VerbatimReRunIsAppended(t *testing.T) {
+	store, err := NewMemoryStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewMemoryStore: %v", err)
+	}
+	const prompt = "give me top 3 open tickets under INIT Project"
+	// Seed an ANSWERED session: user asked, agent refused (ends in assistant).
+	if err := store.Save(&SessionData{
+		TaskID: "rerun", Messages: []llm.ChatMessage{
+			{Role: llm.RoleUser, Content: prompt},
+			{Role: llm.RoleAssistant, Content: "Jira access isn't connected yet."},
+		},
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	var captured []llm.ChatMessage
+	client := &mockLLMClient{chatFunc: func(_ context.Context, req *llm.ChatRequest) (*llm.ChatResponse, error) {
+		if captured == nil {
+			captured = req.Messages
+		}
+		return &llm.ChatResponse{
+			Message:      llm.ChatMessage{Role: llm.RoleAssistant, Content: "here are the tickets"},
+			FinishReason: "stop",
+		}, nil
+	}}
+	exec := NewLLMExecutor(LLMExecutorConfig{
+		Client: client, MaxIterations: 5, ModelName: "test", Provider: "openai", Store: store,
+	})
+	task := &a2a.Task{ID: "rerun"}
+	msg := &a2a.Message{Role: a2a.MessageRoleUser, Parts: []a2a.Part{{Kind: a2a.PartKindText, Text: prompt}}}
+	if _, err := exec.Execute(context.Background(), task, msg); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	// The loop must have seen the re-run as the TRAILING turn — otherwise the
+	// model is prompted to continue from its own last (refusal) message.
+	if len(captured) == 0 {
+		t.Fatal("the loop never called the model on a recovered re-run")
+	}
+	last := captured[len(captured)-1]
+	if last.Role != llm.RoleUser || last.Content != prompt {
+		t.Fatalf("recovered re-run not appended: last message is %s/%q, want user/%q\nfull: %s",
+			last.Role, last.Content, prompt, summarizeRoles(captured))
+	}
+}
+
+// TestExecute_RecoveredSession_TrailingUserDupSkipped is the no-regression
+// guard: a session ending in a USER turn (premature loop exit — persisted but
+// never answered) plus an identical incoming message must NOT duplicate that
+// turn (the case the dedup was written for).
+func TestExecute_RecoveredSession_TrailingUserDupSkipped(t *testing.T) {
+	store, err := NewMemoryStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewMemoryStore: %v", err)
+	}
+	const prompt = "summarize the repo"
+	if err := store.Save(&SessionData{
+		TaskID: "dup", Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: prompt}},
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	var captured []llm.ChatMessage
+	client := &mockLLMClient{chatFunc: func(_ context.Context, req *llm.ChatRequest) (*llm.ChatResponse, error) {
+		if captured == nil {
+			captured = req.Messages
+		}
+		return &llm.ChatResponse{
+			Message:      llm.ChatMessage{Role: llm.RoleAssistant, Content: "done"},
+			FinishReason: "stop",
+		}, nil
+	}}
+	exec := NewLLMExecutor(LLMExecutorConfig{
+		Client: client, MaxIterations: 5, ModelName: "test", Provider: "openai", Store: store,
+	})
+	task := &a2a.Task{ID: "dup"}
+	msg := &a2a.Message{Role: a2a.MessageRoleUser, Parts: []a2a.Part{{Kind: a2a.PartKindText, Text: prompt}}}
+	if _, err := exec.Execute(context.Background(), task, msg); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	users := 0
+	for _, m := range captured {
+		if m.Role == llm.RoleUser && m.Content == prompt {
+			users++
+		}
+	}
+	if users != 1 {
+		t.Fatalf("trailing-user duplicate must be skipped: saw %d copies of the prompt\nfull: %s",
+			users, summarizeRoles(captured))
+	}
+}

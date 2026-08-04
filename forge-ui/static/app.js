@@ -608,17 +608,31 @@ function useChatStream(agentId) {
                 return [...prev, { role: 'agent', content: agentText, tools: [...currentTools], isStreaming: true }];
               });
             } else if (eventType === 'progress') {
-              // Tool execution progress
+              // Tool execution progress. The agent carries the tool name and
+              // phase in task metadata (progress_tool / progress_phase) and
+              // the human-readable line as a text part — NOT as a data part.
+              const meta = parsed.metadata || {};
+              const toolName = meta.progress_tool || '';
+              // Backend phases are "tool_start" / "tool_end"; ToolCard wants
+              // the bare "start" / "end".
+              const toolPhase = meta.progress_phase === 'tool_end' ? 'end'
+                : meta.progress_phase === 'tool_start' ? 'start'
+                : '';
+              let toolMessage = '';
               const status = parsed.status || parsed;
               if (status.message && status.message.parts) {
                 for (const part of status.message.parts) {
-                  if (part.kind === 'data' && part.data) {
-                    const toolInfo = part.data;
-                    currentTools = [...currentTools.filter(t =>
-                      !(t.name === toolInfo.name && t.phase === 'start')
-                    ), toolInfo];
+                  if (part.kind === 'text' && part.text) {
+                    toolMessage = part.text;
                   }
                 }
+              }
+              if (toolName) {
+                // Replace this tool's pending start entry with the end entry;
+                // tools execute sequentially so start/end never interleave.
+                currentTools = [...currentTools.filter(t =>
+                  !(t.name === toolName && t.phase === 'start')
+                ), { name: toolName, phase: toolPhase, message: toolMessage }];
               }
               // Update messages in real-time to show tool progress
               setMessages(prev => {

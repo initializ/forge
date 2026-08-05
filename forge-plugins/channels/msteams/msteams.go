@@ -722,7 +722,7 @@ func (p *Plugin) SendResponse(event *channels.ChannelEvent, response *a2a.Messag
 	summary := ""
 	full := text
 	if response != nil {
-		summary = response.Summary
+		summary = markdown.StripCompressionMarkers(response.Summary)
 	}
 	if summary == "" {
 		summary, full = markdown.SplitSummaryAndReport(text)

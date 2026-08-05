@@ -641,7 +641,7 @@ func (p *Plugin) SendResponse(event *channels.ChannelEvent, response *a2a.Messag
 
 		// File uploaded — prefer the runtime-generated summary when available,
 		// otherwise fall back to head-truncating the LLM text.
-		summary := response.Summary
+		summary := markdown.StripCompressionMarkers(response.Summary)
 		if summary == "" {
 			summary = text
 			if len(summary) > 600 {
@@ -663,7 +663,7 @@ func (p *Plugin) SendResponse(event *channels.ChannelEvent, response *a2a.Messag
 
 	// No file parts — use text-based logic.
 	if len(text) > 4096 {
-		summary := response.Summary
+		summary := markdown.StripCompressionMarkers(response.Summary)
 		report := text
 		if summary == "" {
 			summary, report = markdown.SplitSummaryAndReport(text)

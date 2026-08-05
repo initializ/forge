@@ -806,7 +806,7 @@ func extractText(msg *a2a.Message) string {
 	if len(parts) == 0 {
 		return "(no text response)"
 	}
-	return strings.Join(parts, "\n")
+	return markdown.StripCompressionMarkers(strings.Join(parts, "\n"))
 }
 
 // errIs is a small wrapper around errors.Is that tolerates wrapped sentinels

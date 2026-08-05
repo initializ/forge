@@ -24,6 +24,57 @@ func TestExtractText_StripsCompressionMarker(t *testing.T) {
 	}
 }
 
+// TestSendResponse_SummaryStripsCompressionMarker pins that a marker leaking
+// into the runtime-supplied response.Summary never reaches the channel. The
+// summary is composed over the possibly-compressed context, so it's a likely
+// leak site. Exercises the file-part branch (full upload flow → summary post).
+func TestSendResponse_SummaryStripsCompressionMarker(t *testing.T) {
+	var postedText string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/files.getUploadURLExternal":
+			_, _ = w.Write([]byte(`{"ok":true,"upload_url":"http://` + r.Host + `/upload","file_id":"F1"}`))
+		case "/upload":
+			w.WriteHeader(http.StatusOK)
+		case "/files.completeUploadExternal":
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		case "/chat.postMessage":
+			body, _ := io.ReadAll(r.Body)
+			var payload map[string]any
+			_ = json.Unmarshal(body, &payload)
+			postedText, _ = payload["text"].(string)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	p := New()
+	p.botToken = "xoxb-test-token"
+	p.apiBase = srv.URL
+
+	event := &channels.ChannelEvent{WorkspaceID: "C0123456", MessageID: "1699.0001"}
+	msg := &a2a.Message{
+		Role:    a2a.MessageRoleAgent,
+		Summary: "Found 3 issues. <<ctxzip:2cda42236849 55_lines_offloaded>>",
+		Parts: []a2a.Part{
+			a2a.NewTextPart("short text"),
+			a2a.NewFilePart(a2a.FileContent{Name: "report.md", Bytes: []byte(strings.Repeat("full report body\n", 200))}),
+		},
+	}
+
+	if err := p.SendResponse(event, msg); err != nil {
+		t.Fatalf("SendResponse error: %v", err)
+	}
+	if postedText == "" {
+		t.Fatal("no chat.postMessage captured")
+	}
+	if strings.Contains(postedText, "ctxzip") {
+		t.Errorf("summary leaked a compression marker to the channel: %q", postedText)
+	}
+}
+
 // recordingServer captures every chat.postMessage payload the plugin sends.
 func recordingServer(t *testing.T) (*httptest.Server, *[]map[string]any) {
 	t.Helper()

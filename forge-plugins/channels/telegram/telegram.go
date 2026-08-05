@@ -12,7 +12,6 @@ import (
 	"log"
 	"mime/multipart"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -612,23 +611,6 @@ func (p *Plugin) sendMessage(payload map[string]any) error {
 	return nil
 }
 
-// ctxzipMarkerRe matches an internal context-compression pointer
-// ("<<ctxzip:HASH note>>") that ctxzip leaves in place of offloaded content.
-// Mirrors github.com/initializ/ctxzip/ccr's marker format.
-var ctxzipMarkerRe = regexp.MustCompile(`<<ctxzip:[0-9a-f]{12,64}(?:[ ,][^>]*)?>>`)
-
-// stripCompressionMarkers removes any ctxzip markers that leaked into
-// channel-bound text. These are internal artifacts of context compression; a
-// user must never see them. The model is expected to expand offloaded content
-// it needs before answering, so a marker reaching a channel is a leak — drop
-// it rather than surface a dangling pointer.
-func stripCompressionMarkers(s string) string {
-	if !strings.Contains(s, "<<ctxzip:") {
-		return s
-	}
-	return strings.TrimSpace(ctxzipMarkerRe.ReplaceAllString(s, ""))
-}
-
 // extractText concatenates all text parts from an A2A message.
 func extractText(msg *a2a.Message) string {
 	if msg == nil {
@@ -643,7 +625,7 @@ func extractText(msg *a2a.Message) string {
 			text += p.Text
 		}
 	}
-	text = stripCompressionMarkers(text)
+	text = markdown.StripCompressionMarkers(text)
 	if text == "" {
 		text = "(no text response)"
 	}
@@ -660,7 +642,7 @@ func extractLargestFile(msg *a2a.Message) (content, filename string) {
 	}
 	for _, p := range msg.Parts {
 		if p.Kind == a2a.PartKindFile && p.File != nil && len(p.File.Bytes) > len(content) {
-			content = stripCompressionMarkers(string(p.File.Bytes))
+			content = markdown.StripCompressionMarkers(string(p.File.Bytes))
 			filename = p.File.Name
 		}
 	}

@@ -152,6 +152,37 @@ func TestLargeOutputFilePart_NoRawJSON(t *testing.T) {
 	}
 }
 
+// TestLargeOutputFilePart_CompressedAndMCP is the regression for the live bug:
+// a large MCP JSON result that ctxzip has compressed is no longer valid JSON,
+// so detectFileType classifies the marker-laden bytes as markdown — the
+// content sniff alone would attach it as `<tool>-output.md`. The MCP-name and
+// compression-marker guards must suppress it regardless.
+func TestLargeOutputFilePart_CompressedAndMCP(t *testing.T) {
+	// Compressed JSON: starts with '{', carries a ctxzip marker, is NOT valid
+	// JSON — exactly what detectFileType would mislabel as markdown.
+	compressed := `{"issues":[` + strings.Repeat(`{"key":"INIT-1"},`, 500) +
+		"\n<<ctxzip:2cda42236849 55_lines_offloaded>>\n]}"
+	if json.Valid([]byte(compressed)) {
+		t.Fatal("test premise broken: compressed blob must be invalid JSON")
+	}
+	if _, mime := detectFileType(compressed, "x"); mime != "text/markdown" {
+		t.Fatalf("premise broken: compressed JSON should sniff as markdown, got %s", mime)
+	}
+
+	// The reported tool: MCP name (contains "__").
+	if part := largeOutputFilePart("atlassian-jira-mcp__searchJiraIssuesUsingJql", compressed); part != nil {
+		t.Errorf("compressed MCP JSON was attached as %q — the live bug is not fixed", part.File.Name)
+	}
+	// Even a non-MCP tool: the compression marker alone must suppress it.
+	if part := largeOutputFilePart("some_report_tool", compressed); part != nil {
+		t.Errorf("compressed output was attached as %q — marker guard failed", part.File.Name)
+	}
+	// Any MCP tool output is suppressed even when uncompressed and prose-like.
+	if largeOutputFilePart("atlassian-jira-mcp__searchJiraIssuesUsingJql", "# Heading\n\n"+strings.Repeat("prose ", 2000)) != nil {
+		t.Error("MCP tool output must never be auto-attached")
+	}
+}
+
 func TestIsIntermediateOutputTool(t *testing.T) {
 	for tool, want := range map[string]bool{
 		"cli_execute":     true,

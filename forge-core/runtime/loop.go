@@ -1078,15 +1078,35 @@ func isIntermediateOutputTool(toolName string) bool {
 // It attaches ONLY genuine prose deliverables (markdown). It never attaches:
 //   - intermediate-output tools (cli_execute, browser_*) — the model must
 //     analyze and summarize these, not forward them ("see attached");
+//   - MCP tool outputs (name contains "__") — these are structured API
+//     payloads (e.g. a Jira JQL search), not prose deliverables. The model
+//     must summarize them; forwarding the raw dump to a channel is exactly
+//     what a user never wants;
 //   - artifact-emitting tools — handled explicitly by fileArtifactFromToolResult;
 //   - output below the size threshold — the text answer carries it;
-//   - raw structured data (JSON/YAML, e.g. an MCP search result). Forwarded
-//     verbatim this dumps an unreadable blob to a channel, and once the ctxzip
-//     compression hook has run the blob still carries the "<<ctxzip:...>>"
-//     marker. Such outputs must be summarized by the model (which can expand
-//     offloaded rows if it needs them), never sent raw.
+//   - content the ctxzip compression hook already ran on. A compressed tool
+//     output carries "<<ctxzip:...>>" markers and is no longer valid JSON, so
+//     the detectFileType sniff below misclassifies it as markdown and would
+//     attach it — the exact bug that shipped a raw JSON blob as a `.md` file.
+//     A marker means "raw compressed tool dump", never a clean deliverable;
+//   - raw structured data (JSON/YAML) that is still uncompressed.
+//
+// The three suppression signals (MCP name, compression marker, detected
+// JSON/YAML) are deliberately redundant: content sniffing alone is defeated
+// once compression has mangled the bytes, so the tool-name and marker checks
+// are what actually hold for large real-world outputs.
 func largeOutputFilePart(toolName, result string) *a2a.Part {
 	if isIntermediateOutputTool(toolName) || artifactEmittingTools[toolName] || len(result) <= largeToolOutputThreshold {
+		return nil
+	}
+	// MCP tool → structured payload, summarize don't forward. The "__"
+	// namespace separator is reserved for MCP names (see MCPTool docs).
+	if strings.Contains(toolName, "__") {
+		return nil
+	}
+	// Compressed content is a raw tool dump, not a deliverable — and its
+	// markers defeat the content sniff below.
+	if strings.Contains(result, CompressionMarkerPrefix) {
 		return nil
 	}
 	name, mime := detectFileType(result, toolName)

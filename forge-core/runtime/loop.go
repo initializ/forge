@@ -52,6 +52,11 @@ const (
 	toolResultCeilingAbsolute   = 4 << 20 // 4MB
 )
 
+// largeToolOutputThreshold is the size above which a non-artifact tool's
+// output is considered for auto-attachment as a channel file part (the LLM may
+// otherwise truncate it under output token limits). See largeOutputFilePart.
+const largeToolOutputThreshold = 8000
+
 // CompressionMarkerPrefix mirrors ctxzip's ccr.MarkerPrefix. The runtime
 // cannot import forge-core/compress (it imports runtime — cycle), so the
 // literal is pinned here and a guard test in the compress package asserts
@@ -340,7 +345,6 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 
 	// Track large tool outputs so they can be included as file parts
 	// in the response (the LLM may truncate them due to output token limits).
-	const largeToolOutputThreshold = 8000
 	var largeToolOutputs []a2a.Part
 
 	// stopNudgesSent tracks how many consecutive stop-nudges have been sent
@@ -813,16 +817,8 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 			// to say "see attached" instead of writing a report.
 			if part := fileArtifactFromToolResult(ctx, tc.Function.Name, result); part != nil {
 				largeToolOutputs = append(largeToolOutputs, *part)
-			} else if !isIntermediateOutputTool(tc.Function.Name) && !artifactEmittingTools[tc.Function.Name] && len(result) > largeToolOutputThreshold {
-				name, mime := detectFileType(result, tc.Function.Name)
-				largeToolOutputs = append(largeToolOutputs, a2a.Part{
-					Kind: a2a.PartKindFile,
-					File: &a2a.FileContent{
-						Name:     name,
-						MimeType: mime,
-						Bytes:    []byte(result),
-					},
-				})
+			} else if part := largeOutputFilePart(tc.Function.Name, result); part != nil {
+				largeToolOutputs = append(largeToolOutputs, *part)
 			}
 
 			// Append tool result to memory
@@ -1073,6 +1069,38 @@ func confinedFilesPath(ctx context.Context, p string) (string, bool) {
 // page digests/extracts.
 func isIntermediateOutputTool(toolName string) bool {
 	return toolName == "cli_execute" || browserToolNames[toolName]
+}
+
+// largeOutputFilePart decides whether a non-artifact tool's large output is
+// auto-attached to the channel response as a file part, returning the part or
+// nil.
+//
+// It attaches ONLY genuine prose deliverables (markdown). It never attaches:
+//   - intermediate-output tools (cli_execute, browser_*) — the model must
+//     analyze and summarize these, not forward them ("see attached");
+//   - artifact-emitting tools — handled explicitly by fileArtifactFromToolResult;
+//   - output below the size threshold — the text answer carries it;
+//   - raw structured data (JSON/YAML, e.g. an MCP search result). Forwarded
+//     verbatim this dumps an unreadable blob to a channel, and once the ctxzip
+//     compression hook has run the blob still carries the "<<ctxzip:...>>"
+//     marker. Such outputs must be summarized by the model (which can expand
+//     offloaded rows if it needs them), never sent raw.
+func largeOutputFilePart(toolName, result string) *a2a.Part {
+	if isIntermediateOutputTool(toolName) || artifactEmittingTools[toolName] || len(result) <= largeToolOutputThreshold {
+		return nil
+	}
+	name, mime := detectFileType(result, toolName)
+	if mime == "application/json" || mime == "text/yaml" {
+		return nil
+	}
+	return &a2a.Part{
+		Kind: a2a.PartKindFile,
+		File: &a2a.FileContent{
+			Name:     name,
+			MimeType: mime,
+			Bytes:    []byte(result),
+		},
+	}
 }
 
 // detectFileType inspects tool output content and returns an appropriate

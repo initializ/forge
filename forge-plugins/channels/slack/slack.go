@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -695,18 +696,22 @@ func (p *Plugin) SendResponse(event *channels.ChannelEvent, response *a2a.Messag
 	mrkdwn := markdown.ToSlackMrkdwn(text)
 	chunks := markdown.SplitMessage(mrkdwn, 4000)
 
-	for i, chunk := range chunks {
+	// Thread EVERY chunk under the same parent. Threading only the first
+	// chunk (the old behavior) left continuation chunks with no thread_ts, so
+	// Slack posted them to the main channel — a reply split half in-thread,
+	// half in the channel.
+	threadTS := event.ThreadID
+	if threadTS == "" {
+		threadTS = event.MessageID
+	}
+	for _, chunk := range chunks {
 		payload := map[string]any{
 			"channel": event.WorkspaceID,
 			"text":    chunk,
 			"mrkdwn":  true,
 		}
-		if i == 0 {
-			if event.ThreadID != "" {
-				payload["thread_ts"] = event.ThreadID
-			} else if event.MessageID != "" {
-				payload["thread_ts"] = event.MessageID
-			}
+		if threadTS != "" {
+			payload["thread_ts"] = threadTS
 		}
 		if err := p.postMessage(payload); err != nil {
 			return err
@@ -719,18 +724,20 @@ func (p *Plugin) SendResponse(event *channels.ChannelEvent, response *a2a.Messag
 func (p *Plugin) sendChunked(event *channels.ChannelEvent, text string) error {
 	mrkdwn := markdown.ToSlackMrkdwn(text)
 	chunks := markdown.SplitMessage(mrkdwn, 4000)
-	for i, chunk := range chunks {
+	// Thread every chunk under the same parent (see SendResponse) so a
+	// multi-chunk fallback doesn't split across thread and main channel.
+	threadTS := event.ThreadID
+	if threadTS == "" {
+		threadTS = event.MessageID
+	}
+	for _, chunk := range chunks {
 		payload := map[string]any{
 			"channel": event.WorkspaceID,
 			"text":    chunk,
 			"mrkdwn":  true,
 		}
-		if i == 0 {
-			if event.ThreadID != "" {
-				payload["thread_ts"] = event.ThreadID
-			} else if event.MessageID != "" {
-				payload["thread_ts"] = event.MessageID
-			}
+		if threadTS != "" {
+			payload["thread_ts"] = threadTS
 		}
 		if err := p.postMessage(payload); err != nil {
 			return err
@@ -995,6 +1002,23 @@ func unwrapJSONContent(text string) string {
 	return text
 }
 
+// ctxzipMarkerRe matches an internal context-compression pointer
+// ("<<ctxzip:HASH note>>") that ctxzip leaves in place of offloaded content.
+// Mirrors github.com/initializ/ctxzip/ccr's marker format.
+var ctxzipMarkerRe = regexp.MustCompile(`<<ctxzip:[0-9a-f]{12,64}(?:[ ,][^>]*)?>>`)
+
+// stripCompressionMarkers removes any ctxzip markers that leaked into
+// channel-bound text. These are internal artifacts of context compression; a
+// user must never see them. The model is expected to expand offloaded content
+// it needs before answering, so a marker reaching a channel is a leak — drop
+// it rather than surface a dangling pointer.
+func stripCompressionMarkers(s string) string {
+	if !strings.Contains(s, "<<ctxzip:") {
+		return s
+	}
+	return strings.TrimSpace(ctxzipMarkerRe.ReplaceAllString(s, ""))
+}
+
 // extractText concatenates all text parts from an A2A message.
 func extractText(msg *a2a.Message) string {
 	if msg == nil {
@@ -1009,6 +1033,7 @@ func extractText(msg *a2a.Message) string {
 			text += unwrapJSONContent(p.Text)
 		}
 	}
+	text = stripCompressionMarkers(text)
 	if text == "" {
 		text = "(no text response)"
 	}
@@ -1032,7 +1057,7 @@ func extractLargestFile(msg *a2a.Message) (content, filename string) {
 			if strings.HasSuffix(p.File.Name, ".md") {
 				raw = unwrapJSONContent(raw)
 			}
-			content = raw
+			content = stripCompressionMarkers(raw)
 			filename = p.File.Name
 		}
 	}

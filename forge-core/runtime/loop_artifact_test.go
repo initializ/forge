@@ -117,6 +117,41 @@ func TestFileArtifactFromToolResult_Negative(t *testing.T) {
 	}
 }
 
+// TestLargeOutputFilePart_NoRawJSON pins the channel-hygiene rule: large raw
+// structured data (JSON/YAML) from a normal tool is NEVER auto-attached — the
+// model must summarize it. Only large markdown/prose deliverables attach.
+func TestLargeOutputFilePart_NoRawJSON(t *testing.T) {
+	bigJSON := `{"issues":[` + strings.Repeat(`{"key":"INIT-1","x":"yyyyyyyyyy"},`, 400) + `{"key":"INIT-2"}]}`
+	if len(bigJSON) <= 8000 || !json.Valid([]byte(bigJSON)) {
+		t.Fatal("test premise broken: need a >8000-char valid JSON blob")
+	}
+	// An MCP tool (server__op) returning a large JSON search result.
+	if part := largeOutputFilePart("atlassian-write__searchJiraIssuesUsingJql", bigJSON); part != nil {
+		t.Errorf("large JSON was auto-attached as %q — must be summarized, not forwarded raw", part.File.Name)
+	}
+	// Same for a large YAML blob.
+	bigYAML := "---\n" + strings.Repeat("key: value\n", 1000)
+	if part := largeOutputFilePart("http_request", bigYAML); part != nil {
+		t.Errorf("large YAML was auto-attached as %q — must be summarized", part.File.Name)
+	}
+	// A large markdown/prose deliverable STILL attaches.
+	bigMD := "# Report\n\n" + strings.Repeat("Analysis paragraph. ", 500)
+	part := largeOutputFilePart("some_report_tool", bigMD)
+	if part == nil || part.File == nil {
+		t.Fatal("large markdown deliverable was not attached")
+	}
+	if part.File.MimeType != "text/markdown" {
+		t.Errorf("markdown deliverable mime = %q, want text/markdown", part.File.MimeType)
+	}
+	// Intermediate tools and sub-threshold output never attach.
+	if largeOutputFilePart("cli_execute", bigMD) != nil {
+		t.Error("cli_execute output must not be auto-attached")
+	}
+	if largeOutputFilePart("some_report_tool", "small") != nil {
+		t.Error("sub-threshold output must not be auto-attached")
+	}
+}
+
 func TestIsIntermediateOutputTool(t *testing.T) {
 	for tool, want := range map[string]bool{
 		"cli_execute":     true,

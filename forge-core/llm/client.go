@@ -2,6 +2,14 @@ package llm
 
 import "context"
 
+// ProviderOpenAIResponses is the provider string that selects the OpenAI
+// Responses API client (POST <baseURL>/responses) via config + API-key/gateway
+// auth, distinct from the Chat Completions "openai" provider (#383). It shares
+// the ResponsesClient with the ChatGPT OAuth path but does not force
+// store=false. Kept here so both the providers factory and the runtime config
+// resolver reference one spelling.
+const ProviderOpenAIResponses = "openai-responses"
+
 // Outbound LLM auth schemes (ClientConfig.AuthScheme / ModelRef.auth_scheme).
 const (
 	// AuthSchemeAWSSigV4 signs every outbound request with AWS SigV4

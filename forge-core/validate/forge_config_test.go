@@ -104,8 +104,18 @@ func TestValidateForgeConfig_AuthScheme(t *testing.T) {
 		cfg.Model.Provider = "gemini"
 		cfg.Model.AuthScheme = "apikey_header"
 		r := ValidateForgeConfig(cfg)
-		if !r.IsValid() || !hasSubstr(r.Warnings, "only affects the openai and anthropic clients") {
+		if !r.IsValid() || !hasSubstr(r.Warnings, "only affects the openai, openai-responses, and anthropic clients") {
 			t.Fatalf("expected a provider warning and no error; errors=%v warnings=%v", r.Errors, r.Warnings)
+		}
+	})
+
+	t.Run("scheme on openai-responses does not warn", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Model.Provider = "openai-responses"
+		cfg.Model.AuthScheme = "apikey_header"
+		r := ValidateForgeConfig(cfg)
+		if !r.IsValid() || hasSubstr(r.Warnings, "ignores it") {
+			t.Fatalf("openai-responses honors auth_scheme; expected no ignore-warning; errors=%v warnings=%v", r.Errors, r.Warnings)
 		}
 	})
 

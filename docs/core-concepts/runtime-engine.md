@@ -38,10 +38,13 @@ Forge supports multiple LLM providers with automatic fallback:
 | Provider | Default Model | Auth |
 |----------|--------------|------|
 | `openai` | `gpt-5.2-2025-12-11` | API key or OAuth; optional Organization ID |
+| `openai-responses` | `gpt-5.2-2025-12-11` | API key or gateway; optional Organization ID |
 | `anthropic` | `claude-sonnet-4-20250514` | API key |
 | `gemini` | `gemini-2.5-flash` | API key |
 | `ollama` | `llama3` | None (local) |
 | Custom URL | Configurable | API key (OpenAI or Anthropic shape); AWS SigV4 via `auth_scheme: aws_sigv4` for Bedrock; or a gateway key header via `auth_scheme: apikey_header` (e.g. Kong `key-auth`) |
+
+`openai` POSTs to `<base_url>/chat/completions`; `openai-responses` POSTs to `<base_url>/responses` (the [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses)) for a Responses-only endpoint, a Responses-first gateway, or a Responses-native model. The two share OpenAI's credential, base-URL, organization-ID, and default-model resolution (`OPENAI_API_KEY` / `LLM_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_ORG_ID`) and both compose with every `auth_scheme` (`bearer` / `apikey_header` / `apikey_header_only` / `aws_sigv4`). Issue #383.
 
 ### Configuration
 
@@ -120,13 +123,14 @@ Custom URL endpoints (OpenRouter, vLLM, litellm, Together.ai, Anyscale, self-hos
 | Wire format | Scaffolded as | Env vars emitted |
 |---|---|---|
 | OpenAI Chat Completions | `provider: openai` | `OPENAI_BASE_URL`, `OPENAI_API_KEY` |
+| OpenAI Responses | `provider: openai-responses` | `OPENAI_BASE_URL`, `OPENAI_API_KEY` |
 | Anthropic Messages | `provider: anthropic` | `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` |
 
 Both shapes flow through the same client construction path; only the wire format and env var names differ. Issue #202 Phase 1.
 
 ### AWS Bedrock (SigV4 Outbound)
 
-Bedrock uses AWS SigV4 signing instead of a static API key, so `model.auth_scheme: aws_sigv4` swaps the default `Authorization: Bearer …` / `x-api-key: …` header for a hand-rolled SigV4 signature over the outbound HTTP request (forge-core/llm/providers/sigv4_transport.go). The signer is symmetric across the `openai` and `anthropic` providers — pick whichever wire format the Bedrock endpoint speaks.
+Bedrock uses AWS SigV4 signing instead of a static API key, so `model.auth_scheme: aws_sigv4` swaps the default `Authorization: Bearer …` / `x-api-key: …` header for a hand-rolled SigV4 signature over the outbound HTTP request (forge-core/llm/providers/sigv4_transport.go). The signer is symmetric across the `openai`, `openai-responses`, and `anthropic` providers — pick whichever wire format the Bedrock endpoint speaks.
 
 ```yaml
 model:

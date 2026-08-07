@@ -17,7 +17,7 @@ var providers = []Provider{
 			{Label: "GPT 5.4", ModelID: "gpt-5.4"},
 			{Label: "GPT 5 Mini", ModelID: "gpt-5-mini"},
 			{Label: "GPT 5 Nano", ModelID: "gpt-5-nano"},
-			{Label: "GPT 4.1", ModelID: "gpt-4.1"},
+			// {Label: "GPT 4.1", ModelID: "gpt-4.1"},
 		},
 	},
 	{

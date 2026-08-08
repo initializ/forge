@@ -56,6 +56,7 @@ func NewResponsesClient(cfg llm.ClientConfig) *ResponsesClient {
 		model:          cfg.Model,
 		authScheme:     cfg.AuthScheme,
 		authHeaderName: cfg.AuthHeaderName,
+		disableStore:   cfg.DisableStore,
 		client:         httpClient,
 	}
 }

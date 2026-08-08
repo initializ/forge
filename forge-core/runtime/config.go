@@ -115,6 +115,12 @@ func ResolveModelConfig(cfg *types.ForgeConfig, envVars map[string]string, provi
 	if cfg.Model.AuthHeaderName != "" {
 		mc.Client.AuthHeaderName = cfg.Model.AuthHeaderName
 	}
+	// Issue #383 — opt out of OpenAI Responses server-side retention
+	// (store=false). Only the openai-responses client honors it; carried
+	// unconditionally since every other client ignores the field.
+	if cfg.Model.DisableStore {
+		mc.Client.DisableStore = true
+	}
 	// AWS_REGION env safety-net for the SigV4 path. Mirrors the
 	// OPENAI_BASE_URL / ANTHROPIC_BASE_URL env pattern above — lets
 	// an operator override the region per-deploy without touching

@@ -950,6 +950,13 @@ type ModelRef struct {
 	// "x-gateway-key". Ignored for every other AuthScheme.
 	AuthHeaderName string `yaml:"auth_header_name,omitempty"`
 
+	// DisableStore sends `store: false` on OpenAI Responses API requests
+	// (provider: openai-responses), telling OpenAI not to retain the
+	// response server-side (default retention is ~30 days). Unset leaves
+	// `store` at the API default. Only the openai-responses provider honors
+	// it; every other provider ignores it. Issue #383.
+	DisableStore bool `yaml:"disable_store,omitempty"`
+
 	Version        string          `yaml:"version,omitempty"`
 	OrganizationID string          `yaml:"organization_id,omitempty"`
 	Fallbacks      []ModelFallback `yaml:"fallbacks,omitempty"`

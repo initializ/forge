@@ -15,6 +15,7 @@ func TestResolveModelConfig_OpenAIResponses(t *testing.T) {
 			Provider:       "openai-responses",
 			OrganizationID: "org-abc",
 			AuthScheme:     "apikey_header",
+			DisableStore:   true,
 		},
 	}
 	envVars := map[string]string{
@@ -43,6 +44,9 @@ func TestResolveModelConfig_OpenAIResponses(t *testing.T) {
 	}
 	if mc.Client.AuthScheme != "apikey_header" {
 		t.Errorf("AuthScheme = %q, want apikey_header carried onto the client", mc.Client.AuthScheme)
+	}
+	if !mc.Client.DisableStore {
+		t.Error("DisableStore = false, want true carried onto the client (disable_store)")
 	}
 }
 

@@ -46,6 +46,11 @@ Forge supports multiple LLM providers with automatic fallback:
 
 `openai` POSTs to `<base_url>/chat/completions`; `openai-responses` POSTs to `<base_url>/responses` (the [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses)) for a Responses-only endpoint, a Responses-first gateway, or a Responses-native model. The two share OpenAI's credential, base-URL, organization-ID, and default-model resolution (`OPENAI_API_KEY` / `LLM_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_ORG_ID`) and both compose with every `auth_scheme` (`bearer` / `apikey_header` / `apikey_header_only` / `aws_sigv4`). Issue #383.
 
+Two `openai-responses` caveats:
+
+- **Data retention.** OpenAI retains Responses server-side by default (~30 days). Set `model.disable_store: true` to send `store: false` and opt out; the config default leaves `store` unset (API default). The ChatGPT OAuth login uses this same client but always forces `store: false` regardless of the flag.
+- **Streaming.** The client always requests SSE streaming internally (it aggregates the deltas). The public `/responses` endpoint supports this, but a gateway that buffers or does not proxy SSE will break this provider — confirm SSE passthrough when routing it through one.
+
 ### Configuration
 
 ```yaml

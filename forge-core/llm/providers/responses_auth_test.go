@@ -2,6 +2,8 @@ package providers
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -18,6 +20,53 @@ func TestNewClient_OpenAIResponses(t *testing.T) {
 	}
 	if _, ok := c.(*ResponsesClient); !ok {
 		t.Fatalf("NewClient(openai-responses) = %T, want *ResponsesClient", c)
+	}
+}
+
+// TestResponsesClient_StoreFlag covers the #383 privacy opt-out: DisableStore
+// sends store=false; the default leaves store unset (API default retention).
+func TestResponsesClient_StoreFlag(t *testing.T) {
+	tests := []struct {
+		name         string
+		disableStore bool
+		wantStoreKey bool // whether the "store" key is present in the body
+		wantStoreVal bool // its value when present
+	}{
+		{name: "default omits store", disableStore: false, wantStoreKey: false},
+		{name: "disable_store sends false", disableStore: true, wantStoreKey: true, wantStoreVal: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				raw, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(raw, &body)
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte("event: response.completed\ndata: {\"response\":{\"id\":\"r\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n"))
+			}))
+			defer srv.Close()
+
+			client := NewResponsesClient(llm.ClientConfig{
+				APIKey:       "sk-test",
+				Model:        "gpt-5.4",
+				BaseURL:      srv.URL,
+				DisableStore: tt.disableStore,
+			})
+			if _, err := client.Chat(context.Background(), &llm.ChatRequest{
+				Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: "hi"}},
+			}); err != nil {
+				t.Fatalf("Chat error: %v", err)
+			}
+			v, present := body["store"]
+			if present != tt.wantStoreKey {
+				t.Fatalf("store present = %v, want %v (body=%v)", present, tt.wantStoreKey, body)
+			}
+			if tt.wantStoreKey {
+				if got, _ := v.(bool); got != tt.wantStoreVal {
+					t.Errorf("store = %v, want %v", got, tt.wantStoreVal)
+				}
+			}
+		})
 	}
 }
 

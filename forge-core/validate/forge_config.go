@@ -123,6 +123,11 @@ func ValidateForgeConfig(cfg *types.ForgeConfig) *ValidationResult {
 	if cfg.Model.AuthHeaderName != "" && !isGatewayScheme(cfg.Model.AuthScheme) {
 		r.Warnings = append(r.Warnings, `model.auth_header_name is set but auth_scheme is not "apikey_header" / "apikey_header_only"; it will be ignored`)
 	}
+	// disable_store only affects the openai-responses client (store=false on
+	// the Responses API); warn if it's set where it will be ignored (#383).
+	if cfg.Model.DisableStore && cfg.Model.Provider != "" && cfg.Model.Provider != llm.ProviderOpenAIResponses {
+		r.Warnings = append(r.Warnings, fmt.Sprintf("model.disable_store only affects the openai-responses provider; provider %q ignores it", cfg.Model.Provider))
+	}
 
 	if cfg.Framework != "" && !knownFrameworks[cfg.Framework] {
 		r.Warnings = append(r.Warnings, fmt.Sprintf("unknown framework %q (known: forge, crewai, langchain)", cfg.Framework))

@@ -108,4 +108,12 @@ type ClientConfig struct {
 	// pre-compression contract unless the operator opts in
 	// (compression.cache_hints / compression.enabled in forge.yaml).
 	PromptCaching bool
+
+	// DisableStore sends `store: false` on OpenAI Responses API requests
+	// (the "openai-responses" provider), telling OpenAI not to retain the
+	// response server-side (~30-day default retention). Only the Responses
+	// client honors it; other clients ignore it. Empty/false leaves `store`
+	// unset so the API applies its own default (#383). The ChatGPT OAuth
+	// path forces this true regardless (Codex backend requires it).
+	DisableStore bool
 }

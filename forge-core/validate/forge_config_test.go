@@ -119,6 +119,26 @@ func TestValidateForgeConfig_AuthScheme(t *testing.T) {
 		}
 	})
 
+	t.Run("disable_store on wrong provider warns", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Model.Provider = "openai"
+		cfg.Model.DisableStore = true
+		r := ValidateForgeConfig(cfg)
+		if !r.IsValid() || !hasSubstr(r.Warnings, "disable_store only affects the openai-responses provider") {
+			t.Fatalf("expected disable_store warning; errors=%v warnings=%v", r.Errors, r.Warnings)
+		}
+	})
+
+	t.Run("disable_store on openai-responses does not warn", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Model.Provider = "openai-responses"
+		cfg.Model.DisableStore = true
+		r := ValidateForgeConfig(cfg)
+		if !r.IsValid() || hasSubstr(r.Warnings, "disable_store only affects") {
+			t.Fatalf("openai-responses honors disable_store; expected no warning; errors=%v warnings=%v", r.Errors, r.Warnings)
+		}
+	})
+
 	t.Run("stray auth_header_name warns", func(t *testing.T) {
 		cfg := validConfig()
 		cfg.Model.AuthHeaderName = "apikey" // no apikey_header scheme

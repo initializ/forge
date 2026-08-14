@@ -652,6 +652,9 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Same for MCP servers — without this, every HTTPS MCP call would
 	// be silently blocked. Mirror the AuthDomains pattern.
 	egressDomains = append(egressDomains, security.MCPDomains(r.cfg.Config.MCP)...)
+	// Same for API servers (apis.servers[]) — the base_url host must be
+	// allowlisted or the api-tool's REST call is silently blocked.
+	egressDomains = append(egressDomains, security.APIDomains(r.cfg.Config.APIs)...)
 	// #316: with OAuth discovery the authorization-server host is not in
 	// forge.yaml to pre-seed the allowlist — it is learned at login time
 	// and persisted in the registration record. mcpRegisteredOAuthHosts
@@ -1180,6 +1183,29 @@ func (r *Runner) Run(ctx context.Context) error {
 								"incoming_name": mcpTool.Name(),
 								"error":         regErr.Error(),
 							},
+						})
+					}
+				}
+			}
+
+			// Register per-op API tools from apis.servers[] (admitted OpenAPI
+			// entries the platform materialized). Each op is a namespaced
+			// "<server>__<op>" tool the PDP keys rules on; the adapter uses the
+			// egress transport from the tool ctx at call time.
+			for _, srv := range r.cfg.Config.APIs.Servers {
+				tokenEnv := ""
+				if srv.Auth != nil {
+					tokenEnv = srv.Auth.TokenEnv
+				}
+				for _, op := range srv.Ops {
+					apiTool := adapters.NewAPITool(srv.Name, srv.BaseURL, tokenEnv, op, srv.Timeout)
+					if regErr := reg.Register(apiTool); regErr != nil {
+						r.logger.Warn("api tool registration", map[string]any{
+							"tool": apiTool.Name(), "error": regErr.Error(),
+						})
+						auditLogger.Emit(coreruntime.AuditEvent{
+							Event:  coreruntime.EventMCPToolConflict,
+							Fields: map[string]any{"incoming_name": apiTool.Name(), "error": regErr.Error()},
 						})
 					}
 				}

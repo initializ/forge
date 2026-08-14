@@ -29,6 +29,7 @@ type ForgeConfig struct {
 	Secrets        SecretsConfig       `yaml:"secrets,omitempty"`
 	Auth           AuthConfig          `yaml:"auth,omitempty"`
 	MCP            MCPConfig           `yaml:"mcp,omitempty"`
+	APIs           APIConfig           `yaml:"apis,omitempty"`
 	Platform       *PlatformConfig     `yaml:"platform,omitempty"`
 	Schedules      []ScheduleConfig    `yaml:"schedules,omitempty"`
 	Scheduler      SchedulerConfig     `yaml:"scheduler,omitempty"`
@@ -661,6 +662,57 @@ type MCPToolSchema struct {
 	Description string `yaml:"description,omitempty"`
 	// InputSchema is the JSON Schema for the tool's arguments, authored as
 	// a YAML mapping and marshaled to JSON when the descriptor is built.
+	InputSchema map[string]any `yaml:"input_schema,omitempty"`
+}
+
+// APIConfig registers admitted OpenAPI APIs as PER-OPERATION tools. Unlike the
+// generic openapi_call adapter, each operation becomes its own namespaced tool
+// "<server>__<op>" with the operation's typed input schema — so a PDP can key
+// value rules on the operation (e.g. reverse_fee.amount). The platform
+// materializes these from an admitted api-type registry entry (there is no
+// live discovery — schemas are baked in, like the MCP #317 path).
+type APIConfig struct {
+	Servers []APIServer `yaml:"servers,omitempty"`
+}
+
+// APIServer is one admitted API. Its operations register as "<Name>__<op>".
+type APIServer struct {
+	// Name is the slug used as the tool namespace prefix and in audit logs
+	// (e.g. name "memberservice" → tool "memberservice__reverse_fee"). Required.
+	Name string `yaml:"name"`
+	// BaseURL is the API's base (e.g. https://member-service.test.initializ.ai).
+	// The host must be on the egress allowlist (see security.APIDomains). Required.
+	BaseURL string `yaml:"base_url"`
+	// Auth declares how Forge authenticates outbound calls. nil = no auth.
+	Auth *APIAuth `yaml:"auth,omitempty"`
+	// Ops are the operations exposed as tools. Required (non-empty).
+	Ops []APIOp `yaml:"operations,omitempty"`
+	// Timeout caps each call. Default 30s.
+	Timeout time.Duration `yaml:"timeout,omitempty"`
+}
+
+// APIAuth declares outbound auth for an API server. Bearer/static only — the
+// admission gate rejects oauth for api entries.
+type APIAuth struct {
+	// TokenEnv names the env var holding the bearer token, sent as
+	// Authorization: Bearer <value>. The value is a per-agent secret, never
+	// stored on the config.
+	TokenEnv string `yaml:"token_env,omitempty"`
+}
+
+// APIOp is one operation of an APIServer — an OpenAPI path+method with its
+// typed input schema.
+type APIOp struct {
+	// Name is the operation id (e.g. "reverse_fee") — the tool suffix.
+	Name string `yaml:"name"`
+	// Method is the HTTP verb (GET/POST/PUT/PATCH/DELETE).
+	Method string `yaml:"method"`
+	// Path is the OpenAPI path template (e.g. /accounts/{account_id}/history);
+	// {name} segments are substituted from the call's typed args.
+	Path        string `yaml:"path"`
+	Description string `yaml:"description,omitempty"`
+	// InputSchema is the operation's argument JSON Schema (YAML mapping →
+	// JSON), the same flattened shape the registry stores.
 	InputSchema map[string]any `yaml:"input_schema,omitempty"`
 }
 

@@ -33,7 +33,7 @@ func TestRegistry_RejectsDoubleUnderscoreFromNonMCP(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error for non-MCP tool with '__'")
 	}
-	if !strings.Contains(err.Error(), "reserved for MCP") {
+	if !strings.Contains(err.Error(), "reserved for namespacing") {
 		t.Errorf("error message lacks hint: %v", err)
 	}
 }

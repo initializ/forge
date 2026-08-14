@@ -48,6 +48,16 @@ type MCPSource interface {
 	MCPSource() // marker — body is empty
 }
 
+// NamespacedSource is a sibling marker to MCPSource for non-MCP tools that
+// legitimately use the "<server>__<op>" namespaced form — notably per-op API
+// tools materialized from an admitted OpenAPI entry. Implementing it opts the
+// tool into the "__" separator at registration (same as MCPSource) without
+// falsely claiming to be an MCP tool.
+type NamespacedSource interface {
+	Tool
+	NamespacedSource() // marker — body is empty
+}
+
 // ToLLMDefinition converts a Tool to an llm.ToolDefinition for use with LLM APIs.
 func ToLLMDefinition(t Tool) llm.ToolDefinition {
 	return llm.ToolDefinition{

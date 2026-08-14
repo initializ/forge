@@ -36,8 +36,10 @@ func NewRegistry() *Registry {
 func (r *Registry) Register(t Tool) error {
 	name := t.Name()
 	if strings.Contains(name, "__") {
-		if _, isMCP := t.(MCPSource); !isMCP {
-			return fmt.Errorf("tool name %q contains '__' which is reserved for MCP namespacing (tool must implement tools.MCPSource)", name)
+		_, isMCP := t.(MCPSource)
+		_, isNamespaced := t.(NamespacedSource)
+		if !isMCP && !isNamespaced {
+			return fmt.Errorf("tool name %q contains '__' which is reserved for namespacing (tool must implement tools.MCPSource or tools.NamespacedSource)", name)
 		}
 	}
 

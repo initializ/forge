@@ -58,22 +58,16 @@ func TestWebhookCallTool(t *testing.T) {
 // (No runtime assertion — the absence of NewMCPCallTool is what the
 // test enforces.)
 
-func TestOpenAPICallTool(t *testing.T) {
-	tool := NewOpenAPICallTool()
-	if tool.Name() != "openapi_call" {
-		t.Errorf("name: got %q", tool.Name())
-	}
-
-	args, _ := json.Marshal(map[string]any{
-		"spec_url":     "https://example.com/api.json",
-		"operation_id": "getUser",
-	})
-
-	result, err := tool.Execute(context.Background(), args)
-	if err != nil {
-		t.Fatalf("Execute error: %v", err)
-	}
-	if !strings.Contains(result, "not yet implemented") {
-		t.Errorf("expected stub message: %q", result)
-	}
-}
+// TestOpenAPICallTool_Removed pins the deprecation: the generic
+// `openapi_call` stub was removed in favor of the per-operation API tool
+// (the `apis:` config block → `api_tool.go`), which registers each admitted
+// OpenAPI operation as its own namespaced tool "<server>__<op>". The generic
+// caller took operation_id as a RUNTIME arg, which a PDP can't key value
+// rules on — so it was never a governable path. It was also never registered
+// (a pure stub returning "not yet implemented"). See api_tool.go.
+//
+// Compile-time guard, same as TestMCPCallTool_Removed above: if anyone brings
+// NewOpenAPICallTool back, this file won't compile. Remove the guard once the
+// generic-caller deprecation is settled.
+//
+// (No runtime assertion — the absence of NewOpenAPICallTool is the test.)

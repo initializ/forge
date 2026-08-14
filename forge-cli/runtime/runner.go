@@ -486,9 +486,24 @@ func (r *Runner) Run(ctx context.Context) error {
 	if err := r.cfg.Config.Security.Defer.Validate(); err != nil {
 		return fmt.Errorf("defer: %w", err)
 	}
-	if r.cfg.Config.Security.Defer.Enabled {
+	// Managed PDP path (design §4.1): validated fail-loud — `pdp.fail: open`
+	// aborts startup so no authz path fails open by accident (§14.5).
+	if err := r.cfg.Config.Security.Pdp.Validate(); err != nil {
+		return fmt.Errorf("pdp: %w", err)
+	}
+	pdpEnabled := r.cfg.Config.Security.Pdp.Enabled
+	deferEnabled := r.cfg.Config.Security.Defer.Enabled
+	if pdpEnabled && deferEnabled {
+		// One decision source at a time: PDP wins, the static map is ignored.
+		r.logger.Warn("both security.pdp and security.defer are enabled — PDP wins; the static security.defer.tools map is ignored", nil)
+	}
+	// The parking machinery is shared: wire the defer engine when EITHER path
+	// is active (a PDP `defer` verdict parks through the same engine).
+	if pdpEnabled || deferEnabled {
 		r.deferEngine = deferengine.New()
 		r.logger.Info("defer engine wired", map[string]any{
+			"pdp":   pdpEnabled,
+			"defer": deferEnabled,
 			"tools": len(r.cfg.Config.Security.Defer.Tools),
 		})
 	}
@@ -1206,13 +1221,20 @@ func (r *Runner) Run(ctx context.Context) error {
 					// No-op when the engine is disabled.
 					r.registerStepUpHook(hooks, auditLogger)
 
-					// R4c (#211) — defer hook. Pauses the executor
-					// when a listed tool is invoked, until a decision
-					// arrives (or the timeout auto-denies). The hook
-					// resolves r.taskStore lazily (populated after srv
-					// is built, below) so hook registration can happen
-					// before srv exists.
-					r.registerDeferHook(hooks, r, auditLogger)
+					// R4c (#211) — the authorization decision hook. One
+					// decision source at a time:
+					//   - MANAGED (security.pdp.enabled): POST every tool
+					//     call to the remote PDP, default-deny, fail-closed.
+					//   - STANDALONE (else): the static security.defer.tools
+					//     lookup, UNCHANGED (opt-in, approval-only).
+					// Both enforce identically and share the parking machinery
+					// (park); a PDP `defer` verdict routes through the same
+					// engine + POST /tasks/{id}/decisions flow.
+					if r.cfg.Config.Security.Pdp.Enabled {
+						r.registerPDPDecisionHook(hooks, BuildPDPResolver(r.cfg.Config, r.logger), r, auditLogger)
+					} else {
+						r.registerDeferHook(hooks, r, auditLogger)
+					}
 
 					// Register skill-level guardrails if present.
 					// Prefer build-time artifact; fall back to runtime-parsed guardrails.

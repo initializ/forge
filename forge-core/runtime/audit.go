@@ -231,6 +231,15 @@ const (
 	// 429). See docs/security/admission.md.
 	AuditTaskAdmissionDenied = "task_admission_denied"
 
+	// AuditPDPDecision is emitted for EVERY managed PDP verdict at
+	// BeforeToolExec (the per-tool-call authorization altitude, over
+	// argument values — distinct from task_admission_denied's per-invocation
+	// quota gate). Carries in Fields: tool (runtime name), op (registry
+	// operation), decision (allow|defer|deny), reason, caller, agent. A deny
+	// is a permanent-log deliverable. The agent-side enforcement record; the
+	// platform separately records its own decision as tool_call_decided.
+	AuditPDPDecision = "pdp_decision"
+
 	// Deprecated: use EventAuthVerify. Kept as a string alias so any
 	// audit-log consumer that grep'd for "auth_success" can be migrated.
 	// Scheduled for removal in v0.11.0.

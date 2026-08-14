@@ -491,6 +491,13 @@ func (r *Runner) Run(ctx context.Context) error {
 	if err := r.cfg.Config.Security.Pdp.Validate(); err != nil {
 		return fmt.Errorf("pdp: %w", err)
 	}
+	// Materialized API tools (apis.servers[]) are validated fail-loud too — a
+	// malformed server (missing base_url, op without method/path, duplicate
+	// name) is a platform materialization bug, not a runtime condition to
+	// tolerate: aborting boot beats every call failing closed at egress later.
+	if err := r.cfg.Config.APIs.Validate(); err != nil {
+		return fmt.Errorf("apis: %w", err)
+	}
 	pdpEnabled := r.cfg.Config.Security.Pdp.Enabled
 	deferEnabled := r.cfg.Config.Security.Defer.Enabled
 	if pdpEnabled && deferEnabled {

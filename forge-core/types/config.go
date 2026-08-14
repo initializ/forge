@@ -716,6 +716,51 @@ type APIOp struct {
 	InputSchema map[string]any `yaml:"input_schema,omitempty"`
 }
 
+// Validate rejects a malformed materialized API config at startup (fail-loud,
+// mirroring PdpConfig/DeferConfig.Validate). apis.servers[] is platform-
+// materialized, so a violation here is a materialization bug that should abort
+// boot loudly rather than degrade to a confusing runtime symptom — e.g. an
+// empty base_url yields host "" (never allowlisted), so every call would fail
+// closed at egress with no hint that the config, not the network, is broken.
+// Empty config is valid (agents without API tools). Requires: each server a
+// name + base_url + ≥1 op; each op a method + path; server and per-server op
+// names unique (a duplicate tool name would be silently dropped at register).
+func (c APIConfig) Validate() error {
+	seenServer := map[string]struct{}{}
+	for i, s := range c.Servers {
+		if s.Name == "" {
+			return fmt.Errorf("apis.servers[%d]: name is required", i)
+		}
+		if _, dup := seenServer[s.Name]; dup {
+			return fmt.Errorf("apis.servers: duplicate server name %q", s.Name)
+		}
+		seenServer[s.Name] = struct{}{}
+		if s.BaseURL == "" {
+			return fmt.Errorf("apis.servers[%q]: base_url is required", s.Name)
+		}
+		if len(s.Ops) == 0 {
+			return fmt.Errorf("apis.servers[%q]: at least one operation is required", s.Name)
+		}
+		seenOp := map[string]struct{}{}
+		for j, op := range s.Ops {
+			if op.Name == "" {
+				return fmt.Errorf("apis.servers[%q].operations[%d]: name is required", s.Name, j)
+			}
+			if _, dup := seenOp[op.Name]; dup {
+				return fmt.Errorf("apis.servers[%q]: duplicate operation name %q", s.Name, op.Name)
+			}
+			seenOp[op.Name] = struct{}{}
+			if op.Method == "" {
+				return fmt.Errorf("apis.servers[%q].operations[%q]: method is required", s.Name, op.Name)
+			}
+			if op.Path == "" {
+				return fmt.Errorf("apis.servers[%q].operations[%q]: path is required", s.Name, op.Name)
+			}
+		}
+	}
+	return nil
+}
+
 // PlatformConfig wires a deployed agent to its managing platform's token
 // resolver (the managed half of the resolver seam): MCP servers with
 // auth.type "platform" fetch a SHORT-LIVED access token from TokenEndpoint,

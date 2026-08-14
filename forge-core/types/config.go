@@ -1066,6 +1066,13 @@ func ParseForgeConfig(data []byte) (*ForgeConfig, error) {
 	// values, and the egress allowlist is computed from real hosts.
 	expandMCPEnv(&cfg)
 
+	// Expand ${VAR} in the managed PDP endpoint at load too, so
+	// PdpConfig.Validate() (run at startup) sees the RESOLVED value: an unset
+	// `endpoint: ${PDP_ENDPOINT}` expands to "" and fails loud ("enabled but no
+	// endpoint") instead of passing validation and silently degrading to a
+	// per-call deny-all when the resolver later expands it to "".
+	cfg.Security.Pdp.Endpoint = expandEnvRef(cfg.Security.Pdp.Endpoint)
+
 	if cfg.AgentID == "" {
 		return nil, fmt.Errorf("forge config: agent_id is required")
 	}

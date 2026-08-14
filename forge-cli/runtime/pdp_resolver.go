@@ -33,6 +33,13 @@ const defaultPDPTimeout = 3 * time.Second
 // Verdict is the resolver output at the CLI enforcement layer. It carries a full
 // deferengine.Spec (which includes Approvers) rather than runtime.DeferSpec
 // (which does not), so a PDP defer verdict feeds the parking machinery directly.
+//
+// CONTRACT: a zero-value Verdict is UNDEFINED and must never be treated as a
+// decision. Note DecisionAllow is the zero value of PolicyDecision, so an
+// accidentally-unconstructed Verdict{} would read as allow — every Verdict must
+// be constructed with an explicit Decision, and the enforcement hook's default
+// arm fails closed as a backstop. Do not add a code path that returns a
+// Verdict{} on an authorization boundary.
 type Verdict struct {
 	Decision coreruntime.PolicyDecision
 	Reason   string
@@ -41,8 +48,10 @@ type Verdict struct {
 }
 
 // DecisionResolver reaches an authorization verdict for a proposed tool call.
-// It MUST NEVER fail open. A caching resolver can decorate an implementation
-// later without touching the hook or loop.go.
+// It MUST NEVER fail open — every error is a Deny Verdict, never allow-on-error
+// and never a zero-value Verdict (see the contract note above). A caching
+// resolver can decorate an implementation later without touching the hook or
+// loop.go.
 type DecisionResolver interface {
 	Resolve(ctx context.Context, hctx *coreruntime.HookContext) Verdict
 }
@@ -102,12 +111,14 @@ type pdpResolver struct {
 }
 
 // BuildPDPResolver constructs the managed resolver from config + the platform
-// identity env (reusing the admission env constants). The endpoint is
-// env-expanded so `endpoint: ${PDP_ENDPOINT}` in forge.yaml resolves.
+// identity env (reusing the admission env constants). The endpoint is already
+// env-expanded at load (ParseForgeConfig), so startup validation saw the
+// resolved value and an unset ${PDP_ENDPOINT} failed loud rather than reaching
+// here empty.
 func BuildPDPResolver(cfg *types.ForgeConfig, logger pdpLogger) *pdpResolver {
 	pc := cfg.Security.Pdp
 	return &pdpResolver{
-		endpoint:    os.ExpandEnv(pc.Endpoint),
+		endpoint:    pc.Endpoint,
 		token:       os.Getenv(EnvPlatformToken),
 		orgID:       os.Getenv(EnvOrgID),
 		workspaceID: os.Getenv(EnvWorkspaceID),
@@ -156,25 +167,47 @@ func (p *pdpResolver) Resolve(ctx context.Context, hctx *coreruntime.HookContext
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, p.endpoint, bytes.NewReader(body))
-	if err != nil {
-		return p.deny(op, "build pdp request: "+err.Error())
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+p.token)
-	// Tenancy headers: the platform verifies a per-org HS256 token and needs
-	// Org-Id to select the signing secret before validating the bearer.
-	if p.orgID != "" {
-		req.Header.Set("Org-Id", p.orgID)
-	}
-	if p.workspaceID != "" {
-		req.Header.Set("Workspace-Id", p.workspaceID)
-	}
+	// Send with a single retry on TRANSPORT error only — a dropped packet /
+	// reset shouldn't deny an otherwise-legitimate call. NOT retried: a 200
+	// deny (a real verdict), or a timeout — the shared callCtx bounds total
+	// time, so a retry after the deadline blows fails instantly and denies.
+	//
+	// NOTE (data flow): the PARSED tool arguments are sent to the PDP in full
+	// (it decides over argument values), so for tools whose args carry secrets
+	// or PII those values leave the pod. Keep the endpoint cluster-internal and
+	// TLS-terminated at any boundary it crosses; redact sensitive fields before
+	// they reach the decision point if needed.
+	var resp *http.Response
+	for attempt := 0; attempt < 2; attempt++ {
+		req, err := http.NewRequestWithContext(callCtx, http.MethodPost, p.endpoint, bytes.NewReader(body))
+		if err != nil {
+			return p.deny(op, "build pdp request: "+err.Error())
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Authorization", "Bearer "+p.token)
+		// Tenancy headers: the platform verifies a per-org HS256 token and needs
+		// Org-Id to select the signing secret before validating the bearer.
+		if p.orgID != "" {
+			req.Header.Set("Org-Id", p.orgID)
+		}
+		if p.workspaceID != "" {
+			req.Header.Set("Workspace-Id", p.workspaceID)
+		}
 
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return p.deny(op, "pdp unreachable: "+err.Error())
+		var doErr error
+		resp, doErr = p.client.Do(req)
+		if doErr == nil {
+			break
+		}
+		// Out of attempts, or the deadline is blown (a retry would fail
+		// instantly) → fail closed.
+		if attempt == 1 || callCtx.Err() != nil {
+			return p.deny(op, "pdp unreachable: "+doErr.Error())
+		}
+	}
+	if resp == nil { // defensive — the loop always sets resp or denies
+		return p.deny(op, "pdp unreachable: no response")
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {

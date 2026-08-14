@@ -35,16 +35,23 @@ func (s *UIServer) handleGetWizardMeta(w http.ResponseWriter, _ *http.Request) {
 			HasOAuth:      true,
 			SupportsOrgID: true,
 			APIKey: []ModelOption{
+				{DisplayName: "GPT 5.6 Sol", ModelID: "gpt-5.6-sol"},
+				{DisplayName: "GPT 5.6 Terra", ModelID: "gpt-5.6-terra"},
+				{DisplayName: "GPT 5.6 Luna", ModelID: "gpt-5.6-luna"},
 				{DisplayName: "GPT 5.4", ModelID: "gpt-5.4"},
 				{DisplayName: "GPT 5 Mini", ModelID: "gpt-5-mini"},
 				{DisplayName: "GPT 5 Nano", ModelID: "gpt-5-nano"},
 				{DisplayName: "GPT 4.1", ModelID: "gpt-4.1"},
 			},
+			// OAuth (Codex browser login) supports a narrower set than the plain
+			// API — notably gpt-4.1 is not available, so it is APIKey-only.
 			OAuth: []ModelOption{
+				{DisplayName: "GPT 5.6 Sol", ModelID: "gpt-5.6-sol"},
+				{DisplayName: "GPT 5.6 Terra", ModelID: "gpt-5.6-terra"},
+				{DisplayName: "GPT 5.6 Luna", ModelID: "gpt-5.6-luna"},
 				{DisplayName: "GPT 5.4", ModelID: "gpt-5.4"},
 				{DisplayName: "GPT 5 Mini", ModelID: "gpt-5-mini"},
 				{DisplayName: "GPT 5 Nano", ModelID: "gpt-5-nano"},
-				{DisplayName: "GPT 4.1", ModelID: "gpt-4.1"},
 			},
 		},
 		"anthropic": {

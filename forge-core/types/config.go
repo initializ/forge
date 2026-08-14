@@ -204,6 +204,15 @@ type SecurityConfig struct {
 	// Opt-in; requires a decision to arrive at
 	// `POST /tasks/{id}/decisions` before the tool call proceeds.
 	Defer DeferConfig `yaml:"defer,omitempty"`
+
+	// Pdp configures the MANAGED per-tool-call authorization decision:
+	// every tool call is POSTed to a remote Policy Decision Point that
+	// returns allow | defer | deny over the parsed arguments, default-deny
+	// (design-tool-registry §4.1). This is the managed counterpart to the
+	// standalone/OSS static `defer` above — when Pdp.Enabled the PDP is the
+	// single decision source and `defer.tools` is ignored (a startup warning
+	// is emitted). Fails CLOSED (§14.5). Opt-in; absent → today's behavior.
+	Pdp PdpConfig `yaml:"pdp,omitempty"`
 }
 
 // IntentDriftConfig is the forge.yaml-facing block for R7 drift
@@ -388,6 +397,49 @@ func (c DeferConfig) Validate() error {
 	}
 	if len(c.Tools) == 0 {
 		return fmt.Errorf("security.defer: enabled but no tools declared — either list tools under `defer.tools:` or set `defer.enabled: false`")
+	}
+	return nil
+}
+
+// PdpConfig is the forge.yaml-facing block for the managed PDP decision
+// path (`security.pdp`). When Enabled, a BeforeToolExec hook POSTs every
+// proposed tool call to Endpoint and enforces the returned verdict.
+type PdpConfig struct {
+	// Enabled turns the managed PDP path on. When true it is the single
+	// decision source (the static `defer.tools` map is ignored).
+	Enabled bool `yaml:"enabled,omitempty"`
+
+	// Endpoint is the full PDP decide URL, POSTed verbatim (e.g.
+	// http://security-next.<ns>.svc:8080/security/v1/pdp/decide).
+	// `${VAR}` is env-expanded at load, so `endpoint: ${PDP_ENDPOINT}` works.
+	Endpoint string `yaml:"endpoint,omitempty"`
+
+	// Fail is the failure posture. Only "closed" (the default) is honored:
+	// an authorization decision must never fail open (§14.5). "open" and any
+	// other value are rejected at startup so nobody demos an authz path that
+	// fails open by accident.
+	Fail string `yaml:"fail,omitempty"`
+
+	// Timeout bounds each PDP call. Zero → a built-in default (3s).
+	Timeout time.Duration `yaml:"timeout,omitempty"`
+}
+
+// Validate rejects a misconfigured managed PDP at startup (fail-loud, like
+// DeferConfig.Validate). Critically it refuses `fail: open` — an authz path
+// that fails open is a security regression (§14.5).
+func (c PdpConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	if c.Endpoint == "" {
+		return fmt.Errorf("security.pdp: enabled but no endpoint — set `pdp.endpoint:` or `pdp.enabled: false`")
+	}
+	switch c.Fail {
+	case "", "closed":
+	case "open":
+		return fmt.Errorf("security.pdp.fail: 'open' is not permitted — an authorization decision must fail closed (design-tool-registry §14.5)")
+	default:
+		return fmt.Errorf("security.pdp.fail must be 'closed' (the only supported value), got %q", c.Fail)
 	}
 	return nil
 }

@@ -57,8 +57,7 @@ func (r *Runner) registerDeferHook(hooks *coreruntime.HookRegistry, store TaskSt
 	if !cfg.Enabled || len(cfg.Tools) == 0 {
 		return
 	}
-	engine := r.deferEngine
-	if engine == nil {
+	if r.deferEngine == nil {
 		return
 	}
 	hooks.Register(coreruntime.BeforeToolExec, func(ctx context.Context, hctx *coreruntime.HookContext) error {
@@ -66,120 +65,134 @@ func (r *Runner) registerDeferHook(hooks *coreruntime.HookRegistry, store TaskSt
 		if !has {
 			return nil // fast path: tool has no defer requirement
 		}
-
 		spec := resolveDeferSpec(cfg, toolCfg, hctx)
-		handle, err := engine.Register(hctx.TaskID, hctx.ToolName, spec)
-		if err != nil {
-			// Only happens on duplicate register — a hook-level bug.
-			// Fail closed rather than silently dropping.
-			return fmt.Errorf("defer: %w", err)
-		}
+		return r.park(ctx, hctx, spec, store, auditLogger)
+	})
+}
 
-		// Flip task status → deferred while we wait so parallel
-		// GET /tasks/{id} readers see the deferred state.
-		originalStatus := store.SetStatus(hctx.TaskID, a2a.TaskStatus{
-			State: a2a.TaskStateDeferred,
-			Message: &a2a.Message{
-				Role: a2a.MessageRoleAgent,
-				Parts: []a2a.Part{
-					a2a.NewTextPart(fmt.Sprintf(
-						"Deferred: awaiting %s decision on %s",
-						spec.To, hctx.ToolName)),
-				},
+// park runs the DEFER parking machinery for an already-resolved Spec: register
+// the deferral, flip task status → deferred, emit task_deferred, deliver the
+// approval request, then block on the decision. approve → nil (the tool
+// proceeds); reject/timeout → error (the tool aborts). Shared verbatim by the
+// static defer hook (registerDeferHook) and a managed PDP `defer` verdict
+// (registerPDPDecisionHook) so both paths park identically.
+func (r *Runner) park(ctx context.Context, hctx *coreruntime.HookContext, spec deferengine.Spec, store TaskStatusStore, auditLogger *coreruntime.AuditLogger) error {
+	engine := r.deferEngine
+	if engine == nil {
+		// Fail closed: a defer verdict with no engine must not silently proceed.
+		return fmt.Errorf("defer: engine not wired")
+	}
+	handle, err := engine.Register(hctx.TaskID, hctx.ToolName, spec)
+	if err != nil {
+		// Only happens on duplicate register — a hook-level bug.
+		// Fail closed rather than silently dropping.
+		return fmt.Errorf("defer: %w", err)
+	}
+
+	// Flip task status → deferred while we wait so parallel
+	// GET /tasks/{id} readers see the deferred state.
+	originalStatus := store.SetStatus(hctx.TaskID, a2a.TaskStatus{
+		State: a2a.TaskStateDeferred,
+		Message: &a2a.Message{
+			Role: a2a.MessageRoleAgent,
+			Parts: []a2a.Part{
+				a2a.NewTextPart(fmt.Sprintf(
+					"Deferred: awaiting %s decision on %s",
+					spec.To, hctx.ToolName)),
+			},
+		},
+	})
+
+	auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
+		Event:         coreruntime.AuditTaskDeferred,
+		CorrelationID: hctx.CorrelationID,
+		TaskID:        hctx.TaskID,
+		Fields: map[string]any{
+			"tool":       hctx.ToolName,
+			"to":         spec.To,
+			"timeout_ms": spec.Timeout.Milliseconds(),
+			"context":    truncateForAudit(spec.ContextForApprover, 512),
+		},
+	})
+
+	// #310 — deliver an interactive approval request to the channel named
+	// in `to:` (e.g. Slack Block Kit buttons). Best-effort: a delivery
+	// failure is logged, never fatal — the approver can still POST
+	// /tasks/{id}/decisions, and blocking/denying on a Slack outage would
+	// be worse than a missing button.
+	if r.deferralNotifier != nil {
+		if nErr := r.deferralNotifier(ctx, spec.To, hctx.TaskID, hctx.ToolName, spec.ContextForApprover, spec.Timeout); nErr != nil {
+			r.logger.Warn("defer: approval delivery failed", map[string]any{
+				"tool":  hctx.ToolName,
+				"to":    spec.To,
+				"error": nErr.Error(),
+			})
+		}
+	}
+
+	start := time.Now()
+	res, waitErr := handle.WaitCtx(ctx)
+	if waitErr != nil {
+		// ctx cancelled — the caller abandoned the request. Roll
+		// back task status and clean up the pending deferral.
+		// engine.Register left the timer running; resolve with
+		// timeout so the timer fires immediately if it hasn't
+		// already.
+		store.SetStatus(hctx.TaskID, originalStatus)
+		_ = engine.Resolve(hctx.TaskID, deferengine.Resolution{Decision: deferengine.DecisionTimeout})
+		return waitErr
+	}
+
+	waitMs := time.Since(start).Milliseconds()
+
+	switch res.Decision {
+	case deferengine.DecisionApprove:
+		// Approve: restore working state, let the tool proceed.
+		store.SetStatus(hctx.TaskID, originalStatus)
+		auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
+			Event:         coreruntime.AuditTaskDeferredDecision,
+			CorrelationID: hctx.CorrelationID,
+			TaskID:        hctx.TaskID,
+			Fields: map[string]any{
+				"tool":           hctx.ToolName,
+				"decision":       string(res.Decision),
+				"approver":       res.Approver,
+				"approver_email": res.ApproverEmail,
+				"note":           res.Note,
+				"wait_ms":        waitMs,
 			},
 		})
-
+		return nil
+	case deferengine.DecisionReject:
 		auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
-			Event:         coreruntime.AuditTaskDeferred,
+			Event:         coreruntime.AuditTaskDeferredDecision,
+			CorrelationID: hctx.CorrelationID,
+			TaskID:        hctx.TaskID,
+			Fields: map[string]any{
+				"tool":           hctx.ToolName,
+				"decision":       string(res.Decision),
+				"approver":       res.Approver,
+				"approver_email": res.ApproverEmail,
+				"note":           res.Note,
+				"wait_ms":        waitMs,
+			},
+		})
+		return fmt.Errorf("defer: rejected by %s: %s", res.Approver, res.Note)
+	case deferengine.DecisionTimeout:
+		auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
+			Event:         coreruntime.AuditTaskDeferredTimeout,
 			CorrelationID: hctx.CorrelationID,
 			TaskID:        hctx.TaskID,
 			Fields: map[string]any{
 				"tool":       hctx.ToolName,
-				"to":         spec.To,
 				"timeout_ms": spec.Timeout.Milliseconds(),
-				"context":    truncateForAudit(spec.ContextForApprover, 512),
+				"wait_ms":    waitMs,
 			},
 		})
-
-		// #310 — deliver an interactive approval request to the channel named
-		// in `to:` (e.g. Slack Block Kit buttons). Best-effort: a delivery
-		// failure is logged, never fatal — the approver can still POST
-		// /tasks/{id}/decisions, and blocking/denying on a Slack outage would
-		// be worse than a missing button.
-		if r.deferralNotifier != nil {
-			if nErr := r.deferralNotifier(ctx, spec.To, hctx.TaskID, hctx.ToolName, spec.ContextForApprover, spec.Timeout); nErr != nil {
-				r.logger.Warn("defer: approval delivery failed", map[string]any{
-					"tool":  hctx.ToolName,
-					"to":    spec.To,
-					"error": nErr.Error(),
-				})
-			}
-		}
-
-		start := time.Now()
-		res, waitErr := handle.WaitCtx(ctx)
-		if waitErr != nil {
-			// ctx cancelled — the caller abandoned the request. Roll
-			// back task status and clean up the pending deferral.
-			// engine.Register left the timer running; resolve with
-			// timeout so the timer fires immediately if it hasn't
-			// already.
-			store.SetStatus(hctx.TaskID, originalStatus)
-			_ = engine.Resolve(hctx.TaskID, deferengine.Resolution{Decision: deferengine.DecisionTimeout})
-			return waitErr
-		}
-
-		waitMs := time.Since(start).Milliseconds()
-
-		switch res.Decision {
-		case deferengine.DecisionApprove:
-			// Approve: restore working state, let the tool proceed.
-			store.SetStatus(hctx.TaskID, originalStatus)
-			auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
-				Event:         coreruntime.AuditTaskDeferredDecision,
-				CorrelationID: hctx.CorrelationID,
-				TaskID:        hctx.TaskID,
-				Fields: map[string]any{
-					"tool":           hctx.ToolName,
-					"decision":       string(res.Decision),
-					"approver":       res.Approver,
-					"approver_email": res.ApproverEmail,
-					"note":           res.Note,
-					"wait_ms":        waitMs,
-				},
-			})
-			return nil
-		case deferengine.DecisionReject:
-			auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
-				Event:         coreruntime.AuditTaskDeferredDecision,
-				CorrelationID: hctx.CorrelationID,
-				TaskID:        hctx.TaskID,
-				Fields: map[string]any{
-					"tool":           hctx.ToolName,
-					"decision":       string(res.Decision),
-					"approver":       res.Approver,
-					"approver_email": res.ApproverEmail,
-					"note":           res.Note,
-					"wait_ms":        waitMs,
-				},
-			})
-			return fmt.Errorf("defer: rejected by %s: %s", res.Approver, res.Note)
-		case deferengine.DecisionTimeout:
-			auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
-				Event:         coreruntime.AuditTaskDeferredTimeout,
-				CorrelationID: hctx.CorrelationID,
-				TaskID:        hctx.TaskID,
-				Fields: map[string]any{
-					"tool":       hctx.ToolName,
-					"timeout_ms": spec.Timeout.Milliseconds(),
-					"wait_ms":    waitMs,
-				},
-			})
-			return fmt.Errorf("defer: no decision within %s (auto-deny)", spec.Timeout)
-		default:
-			return fmt.Errorf("defer: unknown decision %q", res.Decision)
-		}
-	})
+		return fmt.Errorf("defer: no decision within %s (auto-deny)", spec.Timeout)
+	default:
+		return fmt.Errorf("defer: unknown decision %q", res.Decision)
+	}
 }
 
 // resolveDeferSpec composes a Spec from the tool-level + top-level

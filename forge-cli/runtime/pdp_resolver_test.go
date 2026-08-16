@@ -143,12 +143,12 @@ func TestPDPResolver_FailClosed(t *testing.T) {
 }
 
 // A builtin tool (no "__") uses its whole name as the op; empty args → {}.
-func TestPDPResolver_BuiltinOpAndEmptyArgs(t *testing.T) {
+func TestPDPResolver_NamespacedOpAndEmptyArgs(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req pdpRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		if req.Tool != "http_request" || req.Op != "http_request" {
-			t.Errorf("tool/op = %q/%q, want http_request/http_request", req.Tool, req.Op)
+		if req.Tool != "member-service__reverse_fee" || req.Op != "reverse_fee" {
+			t.Errorf("tool/op = %q/%q, want member-service__reverse_fee/reverse_fee", req.Tool, req.Op)
 		}
 		if req.Args == nil || len(req.Args) != 0 {
 			t.Errorf("args = %v, want empty object", req.Args)
@@ -157,9 +157,25 @@ func TestPDPResolver_BuiltinOpAndEmptyArgs(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	v := testResolver(srv.URL).Resolve(context.Background(), hctx("http_request", ""))
+	v := testResolver(srv.URL).Resolve(context.Background(), hctx("member-service__reverse_fee", ""))
 	if v.Decision != coreruntime.DecisionAllow {
 		t.Fatalf("decision = %v, want allow", v.Decision)
+	}
+}
+
+// pdpGoverns is the PDP scope gate: only NAMESPACED registry ops ("<server>__<op>")
+// are governed. Builtins/script tools (no "__") MUST be skipped — else the PDP
+// default-denies them and bricks the agent (it couldn't even call read_skill).
+func TestPDPGoverns(t *testing.T) {
+	for _, n := range []string{"member-service__reverse_fee", "jira__search", "linear-write__create_issue"} {
+		if !pdpGoverns(n) {
+			t.Errorf("pdpGoverns(%q) = false, want true (namespaced governed tool)", n)
+		}
+	}
+	for _, n := range []string{"read_skill", "datetime_now", "web_fetch", "http_request", "run_skill_script", "math_calculate"} {
+		if pdpGoverns(n) {
+			t.Errorf("pdpGoverns(%q) = true, want false (builtin/script — PDP must skip)", n)
+		}
 	}
 }
 

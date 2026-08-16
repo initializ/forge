@@ -130,9 +130,10 @@ func BuildPDPResolver(cfg *types.ForgeConfig, logger pdpLogger) *pdpResolver {
 }
 
 func (p *pdpResolver) Resolve(ctx context.Context, hctx *coreruntime.HookContext) Verdict {
-	// op = the registry operation name the PDP keys rules on. For an MCP-style
-	// runtime name "<server>__<op>" it's the part after the first "__"; a
-	// builtin (no "__") IS the op.
+	// op = the registry operation name the PDP keys rules on: the part after the
+	// first "__" of the runtime name "<server>__<op>". The hook only reaches here
+	// for PDP-governed (namespaced) tools — see pdpGoverns; a name with no "__"
+	// would not be governed and is filtered before Resolve.
 	op := hctx.ToolName
 	if _, after, found := strings.Cut(hctx.ToolName, "__"); found {
 		op = after
@@ -267,8 +268,25 @@ func parsePDPTimeout(s string) time.Duration {
 // registerPDPDecisionHook wires the managed PDP path as a single BeforeToolExec
 // hook that fires on EVERY tool call. Allow → proceed; Deny → abort; Defer →
 // the existing parking machinery (shared park()).
+// pdpGoverns reports whether the PDP is in scope for a tool call. The PDP
+// governs only NAMESPACED registry operations — "<server>__<op>" materialized
+// from apis.servers / mcp.servers (forge's registry gate RESERVES "__" for that
+// namespacing, so a builtin or script tool never contains it). Built-ins
+// (read_skill, datetime_now, web_fetch, …) and skill script tools are NOT
+// registry-admitted and can't be expressed as a PDP rule, so they must bypass
+// the PDP: consulting it makes security-next default-deny ("op is not governed
+// by any admitted registry tool"), which would brick the agent (it couldn't
+// even read_skill to load its skill). Those tools stay governed by egress + the
+// platform deny-list policy, not the PDP.
+func pdpGoverns(toolName string) bool {
+	return strings.Contains(toolName, "__")
+}
+
 func (r *Runner) registerPDPDecisionHook(hooks *coreruntime.HookRegistry, resolver DecisionResolver, store TaskStatusStore, auditLogger *coreruntime.AuditLogger) {
 	hooks.Register(coreruntime.BeforeToolExec, func(ctx context.Context, hctx *coreruntime.HookContext) error {
+		if !pdpGoverns(hctx.ToolName) {
+			return nil // not a PDP-governed tool — no decision, no audit
+		}
 		v := resolver.Resolve(ctx, hctx)
 		emitPDPDecision(ctx, auditLogger, hctx, r.cfg.Config.AgentID, v)
 

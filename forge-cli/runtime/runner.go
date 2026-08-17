@@ -1956,7 +1956,10 @@ func (r *Runner) executeTask(
 	// invocation by task ID. The release closure pops the registry
 	// entry on return; cancel() at defer time is a no-op when the
 	// invocation completed cleanly.
-	ctx, cancelInvocation := context.WithCancelCause(ctx)
+	//
+	// Detaches from the HTTP request's cancellation so a parked deferral
+	// survives the caller disconnecting — see invocationContext.
+	ctx, cancelInvocation := invocationContext(ctx)
 	release := r.cancelRegistry.Register(params.ID, cancelInvocation)
 	defer release()
 	defer cancelInvocation(nil) // nil cause = clean completion; no-op when already cancelled
@@ -4056,6 +4059,21 @@ func withoutEnvNames(names []string, exclude map[string]bool) []string {
 		}
 	}
 	return out
+}
+
+// invocationContext derives the task-execution context from the request ctx.
+// It DETACHES from the request's cancellation (context.WithoutCancel) so a
+// caller disconnect can't cancel a task that legitimately outlives the request
+// — most importantly a parked DEFERRAL awaiting human approval for up to its
+// defer timeout (e.g. 1h), far longer than the synchronous caller holds the
+// connection. Before this, a caller that gave up after minutes cancelled the
+// request ctx, which resolved the parked deferral as a timeout and canceled the
+// task before anyone could approve it. The returned CancelCauseFunc keeps the
+// task explicitly cancellable (tasks/cancel via the cancellation registry) and
+// the deferral's own timeout still bounds it; request values (correlation id,
+// usage accumulator) are preserved by WithoutCancel.
+func invocationContext(reqCtx context.Context) (context.Context, context.CancelCauseFunc) {
+	return context.WithCancelCause(context.WithoutCancel(reqCtx))
 }
 
 func envFromOS() map[string]string {

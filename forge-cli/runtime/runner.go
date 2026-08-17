@@ -971,11 +971,17 @@ func (r *Runner) Run(ctx context.Context) error {
 					break
 				}
 			}
+			// Governed-tool bearer tokens are consumed in-process by the tool
+			// adapters — never by a script. Withhold them from every script
+			// env passthrough so a script can't read the token and call the
+			// governed host directly, bypassing the PDP (see governedToolTokenEnvs).
+			toolTokenEnvs := governedToolTokenEnvs(r.cfg.Config)
+
 			// Auto-register cli_execute from skill-derived config when not explicitly configured
 			if !hasExplicitCLI && r.derivedCLIConfig != nil && len(r.derivedCLIConfig.AllowedBinaries) > 0 {
 				cliCfg := clitools.CLIExecuteConfig{
 					AllowedBinaries: r.derivedCLIConfig.AllowedBinaries,
-					EnvPassthrough:  r.derivedCLIConfig.EnvPassthrough,
+					EnvPassthrough:  withoutEnvNames(r.derivedCLIConfig.EnvPassthrough, toolTokenEnvs),
 					TimeoutSeconds:  r.derivedCLIConfig.TimeoutHint,
 					WorkDir:         r.cfg.WorkDir,
 				}
@@ -1000,7 +1006,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			{
 				var envPass []string
 				if r.derivedCLIConfig != nil {
-					envPass = r.derivedCLIConfig.EnvPassthrough
+					envPass = withoutEnvNames(r.derivedCLIConfig.EnvPassthrough, toolTokenEnvs)
 				}
 				rss := clitools.NewRunSkillScriptTool(r.cfg.WorkDir, proxyURL, socksURL, envPass)
 				if regErr := reg.Register(rss); regErr != nil {
@@ -3598,6 +3604,10 @@ func (r *Runner) registerSkillTools(reg *tools.Registry, proxyURL string, socksU
 				envVars = append(envVars, entry.ForgeReqs.Env.OneOf...)
 				envVars = append(envVars, entry.ForgeReqs.Env.Optional...)
 			}
+			// Withhold governed-tool bearer tokens from the skill script env —
+			// they belong to the in-process tool adapter, not scripts (a script
+			// with the token could bypass the PDP; see governedToolTokenEnvs).
+			envVars = withoutEnvNames(envVars, governedToolTokenEnvs(r.cfg.Config))
 
 			var modelName string
 			if r.modelConfig != nil {
@@ -4001,6 +4011,48 @@ func convertSkillGuardrails(sg *contract.SkillGuardrailConfig) *agentspec.SkillG
 		return nil
 	}
 	return rules
+}
+
+// governedToolTokenEnvs returns the set of env-var NAMES that hold a governed
+// tool's bearer token (api + bearer/static mcp servers). These are read by the
+// IN-PROCESS tool adapters via os.Getenv and are the real governance boundary:
+// the LLM never sees them. They must therefore be WITHHELD from the skill-script
+// env passthrough — otherwise a bundled (or file_write-planted) skill script
+// could read the token (e.g. `echo $API_MEMBER_SERVICE_TOKEN`) and call the
+// governed host DIRECTLY, bypassing the PDP that governs "<server>__<op>" (the
+// network path becomes reachable once builtins are PDP-exempt). Scripts never
+// need these tokens; a skill's own script secrets (its requires.env) still pass.
+func governedToolTokenEnvs(cfg *types.ForgeConfig) map[string]bool {
+	if cfg == nil {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, s := range cfg.APIs.Servers {
+		if s.Auth != nil && s.Auth.TokenEnv != "" {
+			out[s.Auth.TokenEnv] = true
+		}
+	}
+	for _, s := range cfg.MCP.Servers {
+		if s.Auth != nil && s.Auth.TokenEnv != "" {
+			out[s.Auth.TokenEnv] = true
+		}
+	}
+	return out
+}
+
+// withoutEnvNames returns names with the excluded set removed, order-preserving,
+// without mutating the input.
+func withoutEnvNames(names []string, exclude map[string]bool) []string {
+	if len(exclude) == 0 {
+		return names
+	}
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		if !exclude[n] {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 func envFromOS() map[string]string {

@@ -103,16 +103,24 @@ func (r *Runner) park(ctx context.Context, hctx *coreruntime.HookContext, spec d
 		},
 	})
 
+	deferFields := map[string]any{
+		"tool":       hctx.ToolName,
+		"to":         spec.To,
+		"timeout_ms": spec.Timeout.Milliseconds(),
+		"context":    truncateForAudit(spec.ContextForApprover, 512),
+	}
+	// The approver allowlist rides on task_deferred so the platform can route
+	// the gate to the right person's approvals queue (a direct email matches a
+	// user; the #313 allowlist is what forge later enforces on the decision).
+	// Empty = no allowlist (anyone may approve).
+	if len(spec.Approvers) > 0 {
+		deferFields["approvers"] = spec.Approvers
+	}
 	auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
 		Event:         coreruntime.AuditTaskDeferred,
 		CorrelationID: hctx.CorrelationID,
 		TaskID:        hctx.TaskID,
-		Fields: map[string]any{
-			"tool":       hctx.ToolName,
-			"to":         spec.To,
-			"timeout_ms": spec.Timeout.Milliseconds(),
-			"context":    truncateForAudit(spec.ContextForApprover, 512),
-		},
+		Fields:        deferFields,
 	})
 
 	// #310 — deliver an interactive approval request to the channel named

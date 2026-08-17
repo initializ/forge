@@ -1792,7 +1792,14 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 			server.WriteSSEEvent(w, flusher, "progress", progressTask) //nolint:errcheck
 		})
 
-		// Stream from executor
+		// Stream from executor.
+		// NOTE: the streaming path intentionally runs with the REQUEST ctx
+		// (not invocationContext) — a client disconnect SHOULD stop a live SSE
+		// stream. The trade-off: a DEFER that parks here is cancelled on
+		// disconnect (park resolves as a timeout), so durable human-approval
+		// defers are NOT supported over streaming — only the synchronous
+		// tasks/send path detaches (see executeTask + invocationContext).
+		// Tracked as defer piece 1b: initializ/forge#404.
 		ch, err := executor.ExecuteStream(ctx, task, &params.Message)
 		if err != nil {
 			task.Status = a2a.TaskStatus{
@@ -2353,6 +2360,13 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 			server.WriteSSEEvent(w, flusher, "progress", progressTask) //nolint:errcheck
 		})
 
+		// NOTE: the streaming path intentionally runs with the REQUEST ctx
+		// (not invocationContext) — a client disconnect SHOULD stop a live SSE
+		// stream. The trade-off: a DEFER that parks here is cancelled on
+		// disconnect (park resolves as a timeout), so durable human-approval
+		// defers are NOT supported over streaming — only the synchronous
+		// tasks/send path detaches (see executeTask + invocationContext).
+		// Tracked as defer piece 1b: initializ/forge#404.
 		ch, err := executor.ExecuteStream(ctx, task, &params.Message)
 		if err != nil {
 			task.Status = a2a.TaskStatus{
@@ -4072,6 +4086,14 @@ func withoutEnvNames(names []string, exclude map[string]bool) []string {
 // task explicitly cancellable (tasks/cancel via the cancellation registry) and
 // the deferral's own timeout still bounds it; request values (correlation id,
 // usage accumulator) are preserved by WithoutCancel.
+//
+// RESIDUAL: WithoutCancel detaches from the WHOLE ctx chain, so an in-flight or
+// parked invocation also stops observing server graceful-shutdown signalling.
+// Teardown then falls to the agent loop cap (maxIter, default 50), the defer
+// timeout, or explicit tasks/cancel, and ultimately the shutdown hard-kill —
+// i.e. orphaned tasks compute to natural loop termination and don't drain
+// cleanly on shutdown. Accepted: the loop cap bounds runaway compute and task
+// state is persisted in the store, so a hard-killed task is recoverable.
 func invocationContext(reqCtx context.Context) (context.Context, context.CancelCauseFunc) {
 	return context.WithCancelCause(context.WithoutCancel(reqCtx))
 }

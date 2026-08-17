@@ -946,6 +946,13 @@ func (r *Runner) Run(ctx context.Context) error {
 				r.logger.Warn("failed to register read_skill", map[string]any{"error": regErr.Error()})
 			}
 
+			// Governed-tool bearer tokens are consumed in-process by the tool
+			// adapters — never by a script. Withhold them from EVERY script env
+			// passthrough (explicit + auto-derived cli_execute, run_skill_script,
+			// per-skill script tool) so a script can't read the token and call the
+			// governed host directly, bypassing the PDP (see governedToolTokenEnvs).
+			toolTokenEnvs := governedToolTokenEnvs(r.cfg.Config)
+
 			// Register cli_execute if configured explicitly or auto-derived from skills
 			hasExplicitCLI := false
 			for _, toolRef := range r.cfg.Config.Tools {
@@ -953,6 +960,7 @@ func (r *Runner) Run(ctx context.Context) error {
 					hasExplicitCLI = true
 					cliCfg := clitools.ParseCLIExecuteConfig(toolRef.Config)
 					cliCfg.WorkDir = r.cfg.WorkDir
+					cliCfg.EnvPassthrough = withoutEnvNames(cliCfg.EnvPassthrough, toolTokenEnvs)
 					// Apply timeout hint from skill requirements if larger than explicit config
 					if r.derivedCLIConfig != nil && r.derivedCLIConfig.TimeoutHint > cliCfg.TimeoutSeconds {
 						cliCfg.TimeoutSeconds = r.derivedCLIConfig.TimeoutHint
@@ -971,11 +979,6 @@ func (r *Runner) Run(ctx context.Context) error {
 					break
 				}
 			}
-			// Governed-tool bearer tokens are consumed in-process by the tool
-			// adapters — never by a script. Withhold them from every script
-			// env passthrough so a script can't read the token and call the
-			// governed host directly, bypassing the PDP (see governedToolTokenEnvs).
-			toolTokenEnvs := governedToolTokenEnvs(r.cfg.Config)
 
 			// Auto-register cli_execute from skill-derived config when not explicitly configured
 			if !hasExplicitCLI && r.derivedCLIConfig != nil && len(r.derivedCLIConfig.AllowedBinaries) > 0 {

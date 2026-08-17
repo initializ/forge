@@ -3,6 +3,7 @@ package runtime
 import (
 	"testing"
 
+	clitools "github.com/initializ/forge/forge-cli/tools"
 	"github.com/initializ/forge/forge-core/types"
 )
 
@@ -41,5 +42,18 @@ func TestWithoutEnvNames(t *testing.T) {
 	}
 	if in[1] != "API_MEMBER_SERVICE_TOKEN" {
 		t.Errorf("input slice was mutated: %v", in)
+	}
+}
+
+// The EXPLICIT cli_execute path must also strip governed tokens from its
+// env_passthrough (mirrors the runner's explicit-cli_execute registration).
+func TestExplicitCLIExecuteStripsGovernedToken(t *testing.T) {
+	cfg := clitools.ParseCLIExecuteConfig(map[string]any{
+		"allowed_binaries": []any{"curl"},
+		"env_passthrough":  []any{"API_MEMBER_SERVICE_TOKEN", "MY_SCRIPT_KEY"},
+	})
+	cfg.EnvPassthrough = withoutEnvNames(cfg.EnvPassthrough, map[string]bool{"API_MEMBER_SERVICE_TOKEN": true})
+	if len(cfg.EnvPassthrough) != 1 || cfg.EnvPassthrough[0] != "MY_SCRIPT_KEY" {
+		t.Fatalf("env_passthrough = %v, want [MY_SCRIPT_KEY] (governed token stripped, script secret kept)", cfg.EnvPassthrough)
 	}
 }

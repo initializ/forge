@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http/httptest"
 	"strings"
@@ -500,4 +501,33 @@ func TestResolveDeferSpec_Approvers(t *testing.T) {
 			t.Errorf("no approvers → nil, got %v", spec.Approvers)
 		}
 	})
+}
+
+// A parked deferral must survive the caller (request) disconnecting — the whole
+// point of a human-approval gate that can take minutes to hours. invocationContext
+// detaches the task from the request's cancellation while staying explicitly
+// cancellable via tasks/cancel and preserving request values.
+func TestInvocationContext_DetachesFromRequestCancel(t *testing.T) {
+	type ctxKey struct{}
+	reqCtx, cancelReq := context.WithCancel(context.WithValue(context.Background(), ctxKey{}, "corr-123"))
+	ctx, cancelInvocation := invocationContext(reqCtx)
+
+	// Caller disconnects → request ctx cancels → the invocation must NOT.
+	cancelReq()
+	select {
+	case <-ctx.Done():
+		t.Fatal("invocation ctx cancelled by request cancel — a deferral would die before approval")
+	default:
+	}
+	// Request values survive the detach.
+	if ctx.Value(ctxKey{}) != "corr-123" {
+		t.Errorf("request value not preserved: %v", ctx.Value(ctxKey{}))
+	}
+	// Explicit tasks/cancel still ends the task, with its cause.
+	cause := errors.New("operator stop")
+	cancelInvocation(cause)
+	<-ctx.Done()
+	if context.Cause(ctx) != cause {
+		t.Errorf("cause = %v, want %v", context.Cause(ctx), cause)
+	}
 }

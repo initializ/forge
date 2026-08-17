@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -529,5 +530,58 @@ func TestInvocationContext_DetachesFromRequestCancel(t *testing.T) {
 	<-ctx.Done()
 	if context.Cause(ctx) != cause {
 		t.Errorf("cause = %v, want %v", context.Cause(ctx), cause)
+	}
+}
+
+// TestDeferHook_EmitsApprovers asserts the task_deferred audit event
+// carries the configured approver allowlist, so the platform can route
+// the gate to the right approver's "My Approvals" queue.
+func TestDeferHook_EmitsApprovers(t *testing.T) {
+	var buf bytes.Buffer
+	logger := coreruntime.NewJSONLogger(discardWriter{}, false)
+	auditLogger := coreruntime.NewAuditLogger(&buf)
+	r := &Runner{
+		logger: logger,
+		cfg: RunnerConfig{Config: &types.ForgeConfig{Security: types.SecurityConfig{Defer: types.DeferConfig{
+			Enabled:        true,
+			DefaultTimeout: 500 * time.Millisecond,
+			Tools: map[string]types.DeferToolConfig{
+				"cli_execute": {To: "platform", Timeout: 500 * time.Millisecond, Approvers: []string{"Fee-Approvals@x.io"}},
+			},
+		}}}},
+		deferEngine: deferengine.New(),
+	}
+	hooks := coreruntime.NewHookRegistry()
+	store := newFakeStatusStore()
+	r.registerDeferHook(hooks, store, auditLogger)
+
+	hctx := &coreruntime.HookContext{
+		ToolName:      "cli_execute",
+		ToolInput:     `{}`,
+		TaskID:        "task-appr-emit",
+		CorrelationID: "corr-emit",
+	}
+	done := make(chan error, 1)
+	go func() { done <- hooks.Fire(context.Background(), coreruntime.BeforeToolExec, hctx) }()
+	time.Sleep(30 * time.Millisecond)
+	if err := r.deferEngine.Resolve("task-appr-emit", deferengine.Resolution{Decision: deferengine.DecisionApprove}); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	<-done
+
+	events := captureAudit(t, &buf)
+	var found bool
+	for _, e := range events {
+		if e.Event != coreruntime.AuditTaskDeferred {
+			continue
+		}
+		found = true
+		appr, ok := e.Fields["approvers"].([]any)
+		if !ok || len(appr) != 1 || appr[0] != "fee-approvals@x.io" {
+			t.Errorf("task_deferred approvers = %#v, want [fee-approvals@x.io] (normalized)", e.Fields["approvers"])
+		}
+	}
+	if !found {
+		t.Fatal("no task_deferred event emitted")
 	}
 }

@@ -14,6 +14,61 @@ forge init my-agent --from-skills
 forge build
 ```
 
+## Importing a skill folder
+
+`forge skills import <folder>` converts an existing skill folder — a `SKILL.md`
+plus its scripts and reference files — into a vendored skill inside the current
+agent project, then wires the skill's egress domains into `forge.yaml` and
+reports its environment requirements. Run it from inside an agent project (a
+directory containing `forge.yaml`).
+
+```bash
+cd my-agent
+forge skills import ./path/to/skill-folder
+```
+
+Accepted input layout (flat folders work too — files are classified by role):
+
+```
+skill-folder/
+  SKILL.md                 # required
+  scripts/                 # *.sh / *.py / *.js
+    fetch-data.py
+  reference/               # arbitrary files the skill reads at runtime
+    schema.json
+  requirements.txt         # optional Python deps
+```
+
+What it does:
+
+- **Vendors** `SKILL.md` into `skills/<name>/SKILL.md`, executable scripts
+  (`.sh`/`.py`/`.js`) under `skills/<name>/scripts/`, and every other file as a
+  reference preserving its relative path. All writes are confined to the skill
+  directory; `.git`/`.venv`/`__pycache__`/`node_modules` and similar build cruft
+  are skipped.
+- **Resolves the skill name** from the `SKILL.md` frontmatter `name` (falling
+  back to the sanitized folder name; override with `--name`).
+- **Merges** `metadata.forge.egress_domains` into `forge.yaml`
+  `egress.allowed_domains`.
+- **Reports** the `requires.env` variables you still need to supply (set them in
+  `.env` or via `forge secret set <KEY>`).
+
+Flags:
+
+| Flag | Description |
+|------|-------------|
+| `--name <name>` | Skill name override (default: frontmatter `name` or folder basename). Must be kebab-case. |
+| `--overwrite` | Replace an existing `skills/<name>/` directory (clears stale scripts). |
+
+> **Python scripts** run at runtime through the `run_skill_script` tool
+> (`.py` supported). Ensure `python3` (and `pip`) are listed under
+> `metadata.forge.requires.bins` so the built image provisions the interpreter —
+> `forge skills import` warns if they're missing. **Per-skill `requirements.txt`
+> installation is not wired yet** (tracked in
+> [#405](https://github.com/initializ/forge/issues/405)); until it lands,
+> express Python dependencies as system packages in `requires.bins` or install
+> them in your base image.
+
 ## Security Audit
 
 `forge skills audit` scores each skill in the project across four categories — egress, binary, env, script — and runs a `SecurityPolicy` check for hard violations. By default it uses the analyzer's `DefaultPolicy`. A custom policy YAML can be supplied with `--policy`.

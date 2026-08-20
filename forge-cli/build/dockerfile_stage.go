@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"text/template"
 
 	"github.com/initializ/forge/forge-cli/templates"
@@ -227,11 +228,10 @@ func (s *DockerfileStage) injectLocalBins(bc *pipeline.BuildContext) {
 	}
 }
 
-// copyLocalBins copies local binary files into .local-bins/ in the build output directory.
-// It collects binaries from both forge.yaml config (BinOverrides with LocalPath) and
-// CLI flags (bc.LocalBins).
-func (s *DockerfileStage) copyLocalBins(bc *pipeline.BuildContext) error {
-	// Collect local bins from config
+// localBins returns the union of local binary overrides from forge.yaml
+// config (BinOverrides with LocalPath) and CLI flags (bc.LocalBins), which
+// may have additional entries not yet in config.
+func localBins(bc *pipeline.BuildContext) map[string]string {
 	bins := make(map[string]string)
 	if bc.Config != nil {
 		for name, override := range bc.Config.Package.BinOverrides {
@@ -240,11 +240,15 @@ func (s *DockerfileStage) copyLocalBins(bc *pipeline.BuildContext) error {
 			}
 		}
 	}
-	// CLI flags (bc.LocalBins) may have additional entries not yet in config
 	for name, path := range bc.LocalBins {
 		bins[name] = path
 	}
+	return bins
+}
 
+// copyLocalBins copies local binary files into .local-bins/ in the build output directory.
+func (s *DockerfileStage) copyLocalBins(bc *pipeline.BuildContext) error {
+	bins := localBins(bc)
 	if len(bins) == 0 {
 		return nil
 	}
@@ -338,10 +342,25 @@ compiled/
 # Recursive — the Dockerfile shouldn't be baked into its own image.
 Dockerfile
 .dockerignore
-# Build-only local binary stash; binaries land in /usr/local/bin via
-# the bin stage already.
+# Build-only local binary stash. Local bin overrides are re-included
+# below (last match wins) — the generated Dockerfile COPYs each one
+# from .local-bins/ directly, so excluding them breaks the build.
 .local-bins/
 `
+	// Re-include local bin overrides: for each one the generated Dockerfile
+	// carries a `COPY .local-bins/<name> /usr/local/bin/<name>` that reads
+	// straight from the build context, which the blanket .local-bins/
+	// exclusion above would otherwise break.
+	if bins := localBins(bc); len(bins) > 0 {
+		names := make([]string, 0, len(bins))
+		for name := range bins {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			dockerignoreContent += fmt.Sprintf("!.local-bins/%s\n", name)
+		}
+	}
 	ignorePath := filepath.Join(bc.Opts.OutputDir, ".dockerignore")
 	if err := os.WriteFile(ignorePath, []byte(dockerignoreContent), 0644); err != nil {
 		return fmt.Errorf("writing .dockerignore: %w", err)

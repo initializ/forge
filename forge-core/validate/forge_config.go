@@ -3,6 +3,7 @@ package validate
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/initializ/forge/forge-core/llm"
@@ -33,6 +34,22 @@ var nativeAuthHeaders = map[string]bool{"authorization": true, "x-api-key": true
 // (native suppressed).
 func isGatewayScheme(s string) bool {
 	return s == llm.AuthSchemeAPIKeyHeader || s == llm.AuthSchemeAPIKeyHeaderOnly
+}
+
+// binOverrideNamePattern is the accepted charset for a bin-override name
+// (forge.yaml bin_overrides.<name> / --local-bin name=…). The name is a
+// binary basename that reaches three sinks verbatim — the .local-bins/
+// filesystem path, the Dockerfile COPY line, and the .dockerignore
+// re-include negation — so anything beyond a plain basename (path
+// separators, whitespace, glob metacharacters) is an injection vector.
+var binOverrideNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,64}$`)
+
+// ValidBinOverrideName reports whether name is a safe bin-override name.
+// Pure-dot names are rejected explicitly: "." and ".." pass the charset
+// pattern but are path navigation, not basenames — ".." is exactly the
+// traversal the pattern exists to stop.
+func ValidBinOverrideName(name string) bool {
+	return binOverrideNamePattern.MatchString(name) && strings.Trim(name, ".") != ""
 }
 
 var (
@@ -142,6 +159,20 @@ func ValidateForgeConfig(cfg *types.ForgeConfig) *ValidationResult {
 	}
 	if cfg.Egress.Mode == "dev-open" {
 		r.Warnings = append(r.Warnings, "egress mode 'dev-open' is not recommended for production")
+	}
+
+	// Validate bin-override names (package.bin_overrides). The name flows
+	// verbatim into the .local-bins/ path, the Dockerfile COPY, and the
+	// .dockerignore negation — reject anything that isn't a plain basename.
+	binNames := make([]string, 0, len(cfg.Package.BinOverrides))
+	for name := range cfg.Package.BinOverrides {
+		binNames = append(binNames, name)
+	}
+	sort.Strings(binNames)
+	for _, name := range binNames {
+		if !ValidBinOverrideName(name) {
+			r.Errors = append(r.Errors, fmt.Sprintf("package.bin_overrides name %q must be a plain binary basename matching ^[a-zA-Z0-9_.-]{1,64}$ (and not %q or %q)", name, ".", ".."))
+		}
 	}
 
 	// Validate secrets config

@@ -38,6 +38,7 @@ forge init [name] [flags]
 | `--api-key` | | | LLM provider API key |
 | `--org-id` | | | OpenAI Organization ID (enterprise) |
 | `--from-skills` | | | Path to a SKILL.md file for auto-configuration |
+| `--from-skill-dir` | | | Path to a skill folder (SKILL.md + scripts + reference files) to vendor into the new agent and wire (egress/env). See [Skills CLI / Importing a skill folder](../skills/skills-cli.md#importing-a-skill-folder) |
 | `--non-interactive` | | `false` | Skip interactive prompts |
 | `--compression` | | `false` | Enable reversible context compression — writes `compression.enabled: true` to the scaffolded forge.yaml. See [Context Compression](../core-concepts/context-compression.md) |
 | `--auth` | | | Auth mode: `none`, `oidc`, `http_verifier`, `aws_sigv4`, `gcp_iap`, `azure_ad`, `custom` |
@@ -86,6 +87,9 @@ forge init my-agent \
 
 # From a skills file
 forge init my-agent --from-skills SKILL.md
+
+# From a skill folder (SKILL.md + scripts + reference files)
+forge init my-agent --from-skill-dir ./path/to/skill-folder
 
 # With builtin tools and registry skills
 forge init my-agent \

@@ -58,6 +58,13 @@ What it does:
   `egress.allowed_domains`.
 - **Reports** the `requires.env` variables you still need to supply (set them in
   `.env` or via `forge secret set <KEY>`).
+- **Infers a `metadata.forge` block** when the imported `SKILL.md` has none —
+  many real skills are plain (`name` + `description` only). It derives
+  `requires.bins` from the script interpreters (`.py` → `python3`, `.js` →
+  `node`), and reports **candidate** `egress_domains` (http(s) hosts found in
+  scripts) and `requires.env` (env-var reads) for you to review. By default it
+  **prints** a paste-ready suggested block; the interpreter part is high-
+  confidence, the egress/env parts are candidates and are never auto-declared.
 
 Flags:
 
@@ -65,6 +72,7 @@ Flags:
 |------|-------------|
 | `--name <name>` | Skill name override (default: frontmatter `name` or folder basename). Must be kebab-case. |
 | `--overwrite` | Replace an existing `skills/<name>/` directory (clears stale scripts). |
+| `--write-forge-meta` | Inject the inferred `requires.bins` into the vendored `SKILL.md` (only when it has no `metadata.forge`/`metadata:` block). Egress/env stay printed as review candidates — never auto-declared, so egress is not silently widened. |
 
 > **Python scripts** get first-class tool registration: a `## Tool: foo_bar`
 > backed by `scripts/foo-bar.py` (or `.js`) is registered as a callable tool the

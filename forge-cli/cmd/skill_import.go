@@ -35,6 +35,10 @@ type SkillImportOptions struct {
 	// Overwrite replaces an existing skills/<name>/ directory. Without it,
 	// importing over an existing skill is an error.
 	Overwrite bool
+	// WriteForgeMeta injects the inferred requires.bins into the vendored
+	// SKILL.md frontmatter (when it has no metadata.forge block). Egress/env
+	// candidates are reported but never auto-declared (#412).
+	WriteForgeMeta bool
 }
 
 // SkillImportResult reports what ImportSkillFolder vendored and wired, plus a
@@ -50,6 +54,10 @@ type SkillImportResult struct {
 	RequirementsTxt bool
 	Warnings        []string
 	Notes           []string // informational (non-warning) follow-ups
+	// SuggestedForgeMeta is a paste-ready metadata.forge block inferred from
+	// the scripts when the SKILL.md declared none (#412). Empty when the
+	// SKILL.md already has forge metadata or nothing was inferred.
+	SuggestedForgeMeta string
 }
 
 // printSkillImportResult writes a human-readable summary of an import to
@@ -87,6 +95,14 @@ func printSkillImportResult(res *SkillImportResult) {
 		fmt.Println("\n  Follow-ups:")
 		for _, w := range res.Warnings {
 			fmt.Printf("    - %s\n", w)
+		}
+	}
+	if res.SuggestedForgeMeta != "" {
+		fmt.Println("\n  Suggested metadata.forge (no forge frontmatter found) — review and add to the SKILL.md,")
+		fmt.Println("  or re-run with --write-forge-meta to inject requires.bins automatically:")
+		fmt.Println()
+		for _, line := range strings.Split(strings.TrimRight(res.SuggestedForgeMeta, "\n"), "\n") {
+			fmt.Printf("    %s\n", line)
 		}
 	}
 }
@@ -200,6 +216,30 @@ func ImportSkillFolder(opts SkillImportOptions) (*SkillImportResult, error) {
 
 	// Python provisioning follow-ups (issue #405, D1).
 	checkPythonProvisioning(string(skillMD), result)
+
+	// Infer a metadata.forge block for a plain SKILL.md that declared none
+	// (#412): interpreters → requires.bins, plus egress/env candidates to
+	// review. Skipped when the author already wrote forge metadata.
+	if !hasForgeMeta(string(skillMD)) {
+		inferred := inferForgeMeta(skillDir, result)
+		if !inferred.empty() {
+			result.SuggestedForgeMeta = suggestedForgeMetaYAML(inferred)
+			if opts.WriteForgeMeta {
+				wrote, msg := injectForgeMetaBins(skillDir, inferred)
+				if msg != "" {
+					if wrote {
+						result.Notes = append(result.Notes, msg)
+						result.SuggestedForgeMeta = "" // written; no need to also print it
+						// The python3-missing follow-up is now stale — we just
+						// wrote it into requires.bins.
+						result.Warnings = dropWarningsContaining(result.Warnings, "does not list python3")
+					} else {
+						result.Warnings = append(result.Warnings, msg)
+					}
+				}
+			}
+		}
+	}
 
 	return result, nil
 }

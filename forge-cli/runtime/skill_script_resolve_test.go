@@ -92,3 +92,28 @@ func TestResolveSkillScript_NotFound(t *testing.T) {
 		t.Error("skillEntryHasScript should be false for a missing script")
 	}
 }
+
+// TestResolveSkillScript_RejectsTraversalName is the D2 security regression: a
+// `## Tool:` name with path traversal must not resolve to an out-of-tree
+// script, even when a matching file exists there.
+func TestResolveSkillScript_RejectsTraversalName(t *testing.T) {
+	wd := t.TempDir()
+	r := &Runner{cfg: RunnerConfig{WorkDir: wd}, logger: nopLogger{}}
+	// Plant a script an escaping name would otherwise resolve to.
+	writeScript(t, filepath.Join(wd, "evil.sh"))
+	writeScript(t, filepath.Join(wd, "skills", "other", "scripts", "steal.sh"))
+
+	for _, name := range []string{
+		"../../evil",             // climbs out of skills/<dir>/scripts
+		"../../../evil",          // further
+		"../other/scripts/steal", // hop into another skill's scripts
+		"/etc/passwd",            // absolute
+	} {
+		if rel, _, found := r.resolveSkillScript("mine", name); found {
+			t.Errorf("traversal tool name %q resolved to %q — must be rejected", name, rel)
+		}
+		if r.skillEntryHasScript("mine", name) {
+			t.Errorf("skillEntryHasScript accepted traversal name %q", name)
+		}
+	}
+}

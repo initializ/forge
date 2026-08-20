@@ -33,6 +33,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          # Pin GoReleaser to the tag that triggered this run. The rolling
+          # `vnext` prerelease (edge.yaml) points at the same commit as each
+          # real release tag, so GoReleaser's `git describe` could otherwise
+          # resolve `current=vnext` and abort ("failed to parse tag 'vnext' as
+          # semver"). github.ref_name is the pushed tag (e.g. v0.18.1).
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
 
   # Path-prefixed Git tags so external consumers (e.g. the Initializ
   # platform) can `go get github.com/initializ/forge/forge-{skills,core,

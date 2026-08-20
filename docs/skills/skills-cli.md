@@ -67,13 +67,13 @@ Flags:
 | `--overwrite` | Replace an existing `skills/<name>/` directory (clears stale scripts). |
 
 > **Python scripts** run at runtime through the `run_skill_script` tool
-> (`.py` supported). Ensure `python3` (and `pip`) are listed under
-> `metadata.forge.requires.bins` so the built image provisions the interpreter —
-> `forge skills import` warns if they're missing. **Per-skill `requirements.txt`
-> installation is not wired yet** (tracked in
-> [#405](https://github.com/initializ/forge/issues/405)); until it lands,
-> express Python dependencies as system packages in `requires.bins` or install
-> them in your base image.
+> (`.py` supported). A skill folder may ship a `requirements.txt`:
+> `forge build` discovers `skills/<name>/requirements.txt`, forces `python3` +
+> `pip` into the image (you don't need to list them in `requires.bins`), and
+> adds a `pip install -r` step for it in the generated Dockerfile. For Python
+> scripts **without** a `requirements.txt`, list `python3` under
+> `metadata.forge.requires.bins` so the interpreter is still provisioned —
+> `forge skills import` warns if it's missing.
 
 ## Security Audit
 

@@ -29,6 +29,11 @@ type TemplateSpecData struct {
 	OptionalEnvVars []string
 	RequiredBins    []string
 
+	// SkillPipRequirements are container-relative requirements.txt paths
+	// (e.g. "skills/pdf-tools/requirements.txt"); each becomes a
+	// `pip install -r` step in the application stage (#405 D1).
+	SkillPipRequirements []string
+
 	// Framework
 	ForgeFramework bool
 	ForgeVersion   string // forge CLI version for GitHub release download (e.g. "v0.9.0")
@@ -124,6 +129,7 @@ func BuildTemplateDataFromContext(spec *agentspec.AgentSpec, bc *pipeline.BuildC
 	d.ProdBuild = bc.ProdMode
 	d.SkillsCount = bc.SkillsCount
 	d.HasSkills = bc.SkillsCount > 0
+	d.SkillPipRequirements = bc.SkillPipRequirements
 	d.EgressProfile = spec.EgressProfile
 	d.EgressMode = spec.EgressMode
 	d.ToolInterfaceVersion = spec.ToolInterfaceVersion

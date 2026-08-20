@@ -49,6 +49,7 @@ type SkillImportResult struct {
 	PythonDetected  bool
 	RequirementsTxt bool
 	Warnings        []string
+	Notes           []string // informational (non-warning) follow-ups
 }
 
 // printSkillImportResult writes a human-readable summary of an import to
@@ -75,6 +76,12 @@ func printSkillImportResult(res *SkillImportResult) {
 			fmt.Printf("    %s (%s)\n", e.Name, e.Kind)
 		}
 		fmt.Println("    Set them in .env or via 'forge secret set <KEY>'.")
+	}
+	if len(res.Notes) > 0 {
+		fmt.Println("\n  Notes:")
+		for _, n := range res.Notes {
+			fmt.Printf("    - %s\n", n)
+		}
 	}
 	if len(res.Warnings) > 0 {
 		fmt.Println("\n  Follow-ups:")
@@ -394,13 +401,17 @@ func checkPythonProvisioning(skillMD string, result *SkillImportResult) {
 	}
 	result.PythonDetected = true
 
-	lower := strings.ToLower(skillMD)
-	if !strings.Contains(lower, "python3") {
+	if result.RequirementsTxt {
+		// D1 is wired: the build discovers skills/<name>/requirements.txt,
+		// forces python3/pip into the image, and pip-installs it.
+		result.Notes = append(result.Notes,
+			"requirements.txt detected — `forge build` will provision python3/pip and pip-install it into the image.")
+		return
+	}
+	// No requirements.txt: the interpreter is only provisioned if python3 is a
+	// declared bin (nothing auto-injects it without a requirements.txt).
+	if !strings.Contains(strings.ToLower(skillMD), "python3") {
 		result.Warnings = append(result.Warnings,
 			"Python scripts detected but SKILL.md `metadata.forge.requires.bins` does not list python3 — add python3 (and pip) so the built image provisions the interpreter.")
-	}
-	if result.RequirementsTxt {
-		result.Warnings = append(result.Warnings,
-			"requirements.txt vendored, but per-skill pip install is not wired yet (issue #405, D1) — declare its packages as system bins in requires.bins, or install them in your base image, until that lands.")
 	}
 }

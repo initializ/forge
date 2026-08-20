@@ -116,6 +116,7 @@ func TestLLMExecutor_RefreshThenRetry_SessionAccumulates(t *testing.T) {
 	})
 	var ctx context.Context
 	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
 	_, err = cancelExec.Execute(ctx,
 		&a2a.Task{ID: taskID},
 		&a2a.Message{Role: a2a.MessageRoleUser, Parts: []a2a.Part{a2a.NewTextPart("first message")}},

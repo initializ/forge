@@ -66,8 +66,11 @@ Flags:
 | `--name <name>` | Skill name override (default: frontmatter `name` or folder basename). Must be kebab-case. |
 | `--overwrite` | Replace an existing `skills/<name>/` directory (clears stale scripts). |
 
-> **Python scripts** run at runtime through the `run_skill_script` tool
-> (`.py` supported). A skill folder may ship a `requirements.txt`:
+> **Python scripts** get first-class tool registration: a `## Tool: foo_bar`
+> backed by `scripts/foo-bar.py` (or `.js`) is registered as a callable tool the
+> model invokes by name, run under `python3` (or `node`) — same as `.sh`. A
+> `.py`/`.js` script that doesn't map to a `## Tool:` heading stays reachable by
+> path via `run_skill_script`. A skill folder may ship a `requirements.txt`:
 > `forge build` discovers `skills/<name>/requirements.txt`, forces `python3` +
 > `pip` into the image (you don't need to list them in `requires.bins`), and
 > adds a `pip install -r` step for it in the generated Dockerfile. For Python

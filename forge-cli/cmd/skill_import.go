@@ -143,6 +143,15 @@ func ImportSkillFolder(opts SkillImportOptions) (*SkillImportResult, error) {
 
 	skillRel := filepath.Join("skills", name)
 	skillDir := filepath.Join(opts.AgentDir, skillRel)
+	// Defense in depth: the skill directory itself must stay under
+	// AgentDir/skills. resolveImportSkillName already rejects a non-kebab
+	// name, but confine skillDir before any Stat/RemoveAll/MkdirAll so a
+	// traversal name can never reach the filesystem even if that check
+	// regresses.
+	skillsRoot := filepath.Join(opts.AgentDir, "skills")
+	if !withinDir(skillsRoot, skillDir) {
+		return nil, fmt.Errorf("resolved skill directory %q escapes %q", skillDir, skillsRoot)
+	}
 	if _, err := os.Stat(skillDir); err == nil {
 		if !opts.Overwrite {
 			return nil, fmt.Errorf("skill %q already exists at %s (use --overwrite to replace)", name, skillRel)
@@ -200,6 +209,13 @@ func resolveImportSkillName(override, skillMD, srcDir string) (string, error) {
 		return override, nil
 	}
 	if info := ParseSkillFrontmatterName(skillMD); info != "" {
+		// The parser does NOT kebab-validate `name` (only category/tags), and
+		// the folder is untrusted input — a `name` like "../../etc" would
+		// escape the skills/ directory. Reject anything non-kebab here, the
+		// same as the --name override and the folder fallback below.
+		if !kebabNameRe.MatchString(info) {
+			return "", fmt.Errorf("SKILL.md `name` %q is not kebab-case (lowercase, digits, single hyphens) — rename it or pass --name", info)
+		}
 		return info, nil
 	}
 	base := sanitizeToKebab(filepath.Base(filepath.Clean(srcDir)))
@@ -235,6 +251,10 @@ func sanitizeToKebab(s string) string {
 // (0644). SKILL.md and skip-listed directories are excluded. All destinations
 // are confined to skillDir.
 func vendorSkillFiles(src, skillDir string, result *SkillImportResult) error {
+	// Track destinations already written this import so a flattened
+	// scripts/<basename> collision (a/run.sh + b/run.sh) doesn't silently
+	// clobber — we keep the first and warn on the rest.
+	written := make(map[string]bool)
 	return filepath.Walk(src, func(path string, fi os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -251,6 +271,19 @@ func vendorSkillFiles(src, skillDir string, result *SkillImportResult) error {
 			if importSkipDirs[fi.Name()] {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		// Never vendor symlinks: os.Open would follow them and copy the
+		// target's content (e.g. a `ref -> ~/.ssh/id_rsa` in an untrusted
+		// folder would smuggle a host secret into the skill). filepath.Walk
+		// lstats, so a symlink entry arrives here with ModeSymlink set and
+		// IsDir()==false (symlinked dirs are not descended).
+		if fi.Mode()&os.ModeSymlink != 0 {
+			result.Warnings = append(result.Warnings, "skipped symlink (not vendored): "+filepath.ToSlash(rel))
+			return nil
+		}
+		// Only vendor regular files; skip devices/pipes/sockets.
+		if !fi.Mode().IsRegular() {
 			return nil
 		}
 		if rel == "SKILL.md" {
@@ -270,6 +303,11 @@ func vendorSkillFiles(src, skillDir string, result *SkillImportResult) error {
 			result.Warnings = append(result.Warnings, "skipped file escaping skill dir: "+relSlash)
 			return nil
 		}
+		if written[dest] {
+			result.Warnings = append(result.Warnings,
+				fmt.Sprintf("script name collision: %s already vendored as %s — keeping the first, skipping %s", filepath.ToSlash(destRel), filepath.ToSlash(destRel), relSlash))
+			return nil
+		}
 		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 			return fmt.Errorf("creating dir for %s: %w", destRel, err)
 		}
@@ -280,6 +318,7 @@ func vendorSkillFiles(src, skillDir string, result *SkillImportResult) error {
 		if err := copyFileMode(path, dest, mode); err != nil {
 			return fmt.Errorf("copying %s: %w", relSlash, err)
 		}
+		written[dest] = true
 		if fi.Size() > largeReferenceFileBytes && !isScript {
 			result.Warnings = append(result.Warnings,
 				fmt.Sprintf("large reference file vendored (%d MB): %s", fi.Size()/(1<<20), destRel))

@@ -65,12 +65,24 @@ type Message struct {
 	Summary string      `json:"summary,omitempty"`
 }
 
+// dataPartProjectionCap bounds each data part's projected JSON block in
+// PromptText (review #411): an arbitrarily large data part must not become an
+// arbitrarily large prompt block at this layer. The cap applies to the
+// PROJECTION only — the wire message is untouched — and because scanners and
+// prompt builder share PromptText, both see the same capped text: the
+// truncated tail reaches neither the checks nor the model, so consistency
+// (the no-bypass property) is preserved. 16KiB comfortably covers real
+// workflow-step payloads while keeping a hostile megabyte data part from
+// dominating the context budget before the model-side truncation.
+const dataPartProjectionCap = 16 << 10
+
 // PromptText projects a message's parts into the single string the LLM sees as
 // the turn's content. Text parts are included verbatim; each data part is
-// appended as a fenced JSON block so structured input carried in a data part —
-// e.g. a workflow step's output dispatched with no text part — still reaches
-// the model instead of yielding an empty prompt (#410). File parts are not
-// projected (their bytes/URIs aren't prompt text).
+// appended as a fenced JSON block (capped at dataPartProjectionCap, rune-safe)
+// so structured input carried in a data part — e.g. a workflow step's output
+// dispatched with no text part — still reaches the model instead of yielding
+// an empty prompt (#410). File parts are not projected (their bytes/URIs
+// aren't prompt text).
 //
 // This is the single source of truth for "what the model sees": the executor's
 // prompt builder AND the inbound guardrail / intent-alignment scanners all go
@@ -92,7 +104,11 @@ func (m Message) PromptText() string {
 			if err != nil {
 				continue
 			}
-			segments = append(segments, "```json\n"+string(b)+"\n```")
+			s := string(b)
+			if len(s) > dataPartProjectionCap {
+				s = strings.ToValidUTF8(s[:dataPartProjectionCap], "") + "\n… (data truncated)"
+			}
+			segments = append(segments, "```json\n"+s+"\n```")
 		}
 	}
 	return strings.Join(segments, "\n")

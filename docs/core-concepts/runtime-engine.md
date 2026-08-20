@@ -31,7 +31,9 @@ An inbound A2A message is a list of typed parts. `a2a.Message.PromptText()` proj
 - **Data parts** (`{"kind":"data","data":{…}}`) are appended as a fenced ` ```json ` block of the part's fields. This means structured input — e.g. a workflow step's output dispatched as a data part with no text part — still reaches the model instead of producing an empty prompt (a message with only a data part must never execute as empty).
 - **File parts** are not projected into prompt text (their bytes/URIs aren't text).
 
-The same projection feeds the inbound guardrail and intent-alignment scanners, so the security checks see exactly what the model sees — a payload carried in a data part can't reach the LLM while bypassing them.
+The same projection feeds the inbound guardrail and intent-alignment scanners, so the security checks see exactly what the model sees — a payload carried in a data part can't reach the LLM while bypassing them. Each data part's projected block is capped (~16KiB, rune-safe) — the cap applies identically to the scanners and the prompt, so truncation can't open a divergence.
+
+**Note for guardrail pattern authors:** parts join with **newlines** (matching what the model sees). A pattern intended to match content that may span a part boundary should use `\s+` rather than a literal space — a payload split across two text parts joins as `…end\nstart…`.
 
 ### Session Recovery Deduplication
 

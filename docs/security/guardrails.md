@@ -39,6 +39,8 @@ The guardrails library provides these evaluator categories:
 | Secret detection | Outbound + Tool output | Detects API keys, tokens, and private keys via regex rules |
 | Custom rules | Configurable per gate | User-defined regex and keyword rules |
 
+> **Pattern tip:** inbound scanners see the message's [prompt projection](../core-concepts/runtime-engine.md#message-parts--prompt-projection) — text parts and data-part JSON blocks joined by **newlines** (exactly what the model sees). A custom pattern meant to match content that may span a part boundary should use `\s+` rather than a literal space.
+
 ## Modes
 
 | Mode | Behavior |

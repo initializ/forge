@@ -58,6 +58,15 @@ func TestPDPResolver_Allow(t *testing.T) {
 		if req.Caller.Subject != "agent:member-service" || req.Caller.EntitledAccounts != nil {
 			t.Errorf("caller = %+v, want subject agent:member-service, no entitled_accounts", req.Caller)
 		}
+		// The turn's correlation id + task id must be sent so the platform-written
+		// tool_call_decided event attributes to the same invocation as this agent's
+		// pdp_decision (else it lands in "unattributed events").
+		if req.InvocationID != "corr-1" {
+			t.Errorf("invocation_id = %q, want corr-1 (the hook correlation id)", req.InvocationID)
+		}
+		if req.Session != "task-1" {
+			t.Errorf("session = %q, want task-1", req.Session)
+		}
 		writeEnvelope(w, `{"decision":"allow","reason":"within policy","policy_version":7}`)
 	}))
 	defer srv.Close()

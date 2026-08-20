@@ -226,9 +226,18 @@ RUN PIP_BREAK_SYSTEM_PACKAGES=1 pip3 install --no-cache-dir -r skills/pdf-tools/
 
 `PIP_BREAK_SYSTEM_PACKAGES=1` is honored by pip ≥ 23 (PEP 668
 externally-managed environments, e.g. Debian bookworm) and ignored by older
-pip, so the same line works across base images. Python scripts **without** a
-`requirements.txt` still need `python3` listed in `requires.bins` to provision
-the interpreter.
+pip, so the same line works across base images. Only a `requirements.txt` at
+the **skill-directory root** is installed — a nested one is vendored but not
+pip-installed. Python scripts **without** a `requirements.txt` still need
+`python3` listed in `requires.bins` to provision the interpreter.
+
+> **Trust boundary:** `pip install -r` runs the dependency's build-time code
+> (`setup.py` / PEP 517 backends, and any `--index-url` / VCS references in the
+> file) during `forge build`. So **building an imported skill executes that
+> skill's Python build-time code** — review a third-party skill's
+> `requirements.txt` (and its scripts) before building, the same as you would
+> its `SKILL.md`. This is not a new boundary — an imported skill's scripts
+> already run at runtime via `run_skill_script` — but it's worth naming.
 
 ## Cross-references
 

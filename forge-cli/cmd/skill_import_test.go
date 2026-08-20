@@ -333,6 +333,43 @@ func TestImportSkillFolder_ScriptCollisionKeepsFirst(t *testing.T) {
 	}
 }
 
+// TestImportSkillFolder_NestedRequirementsWarns ensures a requirements.txt in a
+// subdirectory (which the build does NOT auto-install) produces a warning, not
+// the "will be installed" note — the two components must agree.
+func TestImportSkillFolder_NestedRequirementsWarns(t *testing.T) {
+	srcDir := t.TempDir()
+	writeImportFile(t, filepath.Join(srcDir, "SKILL.md"), sampleSkillMD)
+	writeImportFile(t, filepath.Join(srcDir, "scripts", "run.py"), "print(1)\n")
+	// requirements.txt in a subdir, NOT at the skill root.
+	writeImportFile(t, filepath.Join(srcDir, "vendor", "requirements.txt"), "requests\n")
+
+	res, err := ImportSkillFolder(SkillImportOptions{SourceDir: srcDir, AgentDir: newAgentDir(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RequirementsTxt {
+		t.Error("RequirementsTxt should be false for a subdirectory requirements.txt")
+	}
+	hasNote := false
+	for _, n := range res.Notes {
+		if strings.Contains(n, "will provision") {
+			hasNote = true
+		}
+	}
+	if hasNote {
+		t.Errorf("should not promise install for a nested requirements.txt; notes=%v", res.Notes)
+	}
+	hasWarn := false
+	for _, w := range res.Warnings {
+		if strings.Contains(w, "subdirectory") {
+			hasWarn = true
+		}
+	}
+	if !hasWarn {
+		t.Errorf("expected a nested-requirements warning, got %v", res.Warnings)
+	}
+}
+
 func TestClassifyImportFile(t *testing.T) {
 	cases := []struct {
 		in         string

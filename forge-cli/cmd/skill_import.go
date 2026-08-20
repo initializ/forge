@@ -391,9 +391,18 @@ func checkPythonProvisioning(skillMD string, result *SkillImportResult) {
 			break
 		}
 	}
+	// Only a requirements.txt at the SKILL DIR ROOT is auto-installed at build
+	// time — discoverSkillPipRequirements (skills_stage.go) looks at
+	// skills/<name>/requirements.txt only. A nested one is vendored but the
+	// build won't pip-install it, so flag that mismatch rather than promising
+	// an install that won't happen.
+	nestedReqs := false
 	for _, f := range result.ReferenceFiles {
-		if filepath.Base(f) == "requirements.txt" {
+		switch {
+		case f == "requirements.txt":
 			result.RequirementsTxt = true
+		case filepath.Base(f) == "requirements.txt":
+			nestedReqs = true
 		}
 	}
 	if !hasPython {
@@ -401,6 +410,10 @@ func checkPythonProvisioning(skillMD string, result *SkillImportResult) {
 	}
 	result.PythonDetected = true
 
+	if nestedReqs && !result.RequirementsTxt {
+		result.Warnings = append(result.Warnings,
+			"a requirements.txt was found in a subdirectory — `forge build` only installs a skill-root requirements.txt, so move it to the skill's top level (or declare its packages another way) for its deps to be installed.")
+	}
 	if result.RequirementsTxt {
 		// D1 is wired: the build discovers skills/<name>/requirements.txt,
 		// forces python3/pip into the image, and pip-installs it.

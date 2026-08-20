@@ -56,8 +56,8 @@ func TestDockerfileStage_RendersSkillPipStep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "pip3 install --no-cache-dir -r skills/pdf-tools/requirements.txt") {
-		t.Errorf("Dockerfile missing skill pip install step:\n%s", data)
+	if !strings.Contains(string(data), `pip3 install --no-cache-dir -r "skills/pdf-tools/requirements.txt"`) {
+		t.Errorf("Dockerfile missing quoted skill pip install step:\n%s", data)
 	}
 }
 

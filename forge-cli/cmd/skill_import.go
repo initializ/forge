@@ -51,6 +51,39 @@ type SkillImportResult struct {
 	Warnings        []string
 }
 
+// printSkillImportResult writes a human-readable summary of an import to
+// stdout: what was vendored, egress/env wiring, and follow-up warnings. Shared
+// by `forge skills import` and `forge init --from-skill-dir`.
+func printSkillImportResult(res *SkillImportResult) {
+	fmt.Printf("  Imported skill %q into %s/\n", res.SkillName, res.SkillDir)
+	fmt.Printf("    SKILL.md + %d script(s), %d reference file(s)\n", len(res.Scripts), len(res.ReferenceFiles))
+	for _, s := range res.Scripts {
+		fmt.Printf("    script:    %s/%s\n", res.SkillDir, s)
+	}
+	for _, f := range res.ReferenceFiles {
+		fmt.Printf("    reference: %s/%s\n", res.SkillDir, f)
+	}
+	if len(res.EgressAdded) > 0 {
+		fmt.Println("\n  Egress domains added to forge.yaml:")
+		for _, d := range res.EgressAdded {
+			fmt.Printf("    + %s\n", d)
+		}
+	}
+	if len(res.EnvMissing) > 0 {
+		fmt.Println("\n  Environment requirements not yet satisfied:")
+		for _, e := range res.EnvMissing {
+			fmt.Printf("    %s (%s)\n", e.Name, e.Kind)
+		}
+		fmt.Println("    Set them in .env or via 'forge secret set <KEY>'.")
+	}
+	if len(res.Warnings) > 0 {
+		fmt.Println("\n  Follow-ups:")
+		for _, w := range res.Warnings {
+			fmt.Printf("    - %s\n", w)
+		}
+	}
+}
+
 // scriptExtensions are the file types Forge can execute as skill scripts
 // (interpreterForScript in forge-cli/tools/run_skill_script.go). A file with
 // one of these extensions is vendored under the skill's scripts/ directory.

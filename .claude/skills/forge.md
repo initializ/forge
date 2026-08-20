@@ -889,7 +889,7 @@ Full reference: `docs/reference/cli-reference.md`.
 | Subcommand | Purpose | Key flags |
 |---|---|---|
 | `forge try` | Instant demo: scaffold a keyless demo agent (native executor + `weather` skill + safe builtins) into a temp dir and chat in-process with the tool/egress loop rendered inline. No server/build. Credential auto-resolved (flags → env key → OpenAI OAuth → Ollama → picker); nothing on disk unless `--keep`. Same runtime as `forge run`, no A2A server | `--provider`, `--model`, `--once <prompt>`, `--keep`, `--quiet`, `--audit` |
-| `forge init` | Scaffold a new agent: `forge.yaml`, `.env`, `SKILL.md`, `guardrails.json`. Interactive TUI by default; `--non-interactive` for CI | `--model-provider`, `--model-name`, `--channels`, `--auth`, `--from-skills`, `--compression` |
+| `forge init` | Scaffold a new agent: `forge.yaml`, `.env`, `SKILL.md`, `guardrails.json`. Interactive TUI by default; `--non-interactive` for CI. `--from-skill-dir <folder>` vendors an external skill folder (SKILL.md + scripts + reference files) into the new agent and wires its egress/env (#405) | `--model-provider`, `--model-name`, `--channels`, `--auth`, `--from-skills`, `--from-skill-dir`, `--compression` |
 | `forge build` | Run the build pipeline → `.forge-output/agent.json` + container Dockerfile + K8s manifests + (optional) signature | `--output-dir`, `--sign` |
 | `forge validate` | Lint `forge.yaml` + SKILL.md. `--platform-policy=PATH` lints a policy file standalone | `--strict`, `--command-compat`, `--platform-policy` |
 | `forge run` | Dev-mode A2A server with hot-reload | `--port`, `--host`, `--with slack,telegram`, `--mock-tools`, `--no-auth`, `--cors-origins`, `--audit-socket`, `--audit-http-endpoint`, `--rate-limit-*`, `--otel-enabled`, `--otel-endpoint`, `--otel-sampler`, `--compression[=false]` |
@@ -903,7 +903,7 @@ Full reference: `docs/reference/cli-reference.md`.
 | `forge secret set \| get \| list \| delete` | Encrypted secrets | |
 | `forge auth show-token \| mint-token \| secret-yaml \| logout` | Operator UX for the internal bearer token at `<root>/.forge/runtime.token` (same token channel adapters + K8s CronJob trigger pods use). `secret-yaml` prints a ready-to-apply K8s Secret manifest sourced from the local token; `mint-token` is for first-deploy bootstrap. `logout [provider]` clears a stored LLM OAuth credential (default openai) so the next `forge init`/`forge try` re-prompts sign-in — laptop/dev only, **refuses inside an agent runtime** (container or `FORGE_PLATFORM_TOKEN` set). `forge.agent.id` label always tracks `forge.yaml` `agent_id`, never the `--name` override. (#162 part 1, PR #168) | `--namespace`, `--name` |
 | `forge key generate \| sign \| verify` | Ed25519 build artifact signing | |
-| `forge skills add \| list \| validate \| audit` | Registry: install, search, validate binary/env deps, security audit `--embedded` | `--category`, `--tags`, `--embedded` |
+| `forge skills add \| import \| list \| validate \| audit` | Registry: `add` installs from the embedded registry; `import <folder>` vendors an EXTERNAL skill folder (SKILL.md + scripts + reference files) into the current project + wires egress/env (#405); `list`/`validate`/`audit` search + check binary/env deps + security audit `--embedded` | `--category`, `--tags`, `--embedded`, `--name`, `--overwrite` |
 | `forge mcp list \| test \| login \| logout` | Manage MCP servers + OAuth tokens | `--call <tool>`, `--args '<json>'` |
 | `forge ui` | Launch the local Web Dashboard | `--port` |
 

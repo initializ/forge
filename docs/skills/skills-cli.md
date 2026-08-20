@@ -16,16 +16,22 @@ forge build
 
 ## Importing a skill folder
 
-`forge skills import <folder>` converts an existing skill folder — a `SKILL.md`
-plus its scripts and reference files — into a vendored skill inside the current
-agent project, then wires the skill's egress domains into `forge.yaml` and
-reports its environment requirements. Run it from inside an agent project (a
-directory containing `forge.yaml`).
+Convert an existing skill folder — a `SKILL.md` plus its scripts and reference
+files — into a vendored skill. Two entry points share the same importer:
 
 ```bash
+# Scaffold a NEW agent from a skill folder
+forge init my-agent --from-skill-dir ./path/to/skill-folder
+
+# Import into an EXISTING agent project (run from a dir containing forge.yaml)
 cd my-agent
 forge skills import ./path/to/skill-folder
 ```
+
+`forge init --from-skill-dir` scaffolds the agent first (the normal init flow —
+model provider, channels, auth, etc. still apply), then vendors the folder and
+merges its egress into the freshly generated `forge.yaml`. `forge skills import`
+does the same vendoring into an already-scaffolded project.
 
 Accepted input layout (flat folders work too — files are classified by role):
 

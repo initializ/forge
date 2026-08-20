@@ -58,6 +58,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 {{- if .RuntimeApkPackages}}
 RUN apk add --no-cache{{range .RuntimeApkPackages}} {{.}}{{end}}
 {{- end}}
+{{- if .SkillPipRequirements}}
+# Skill Python dependencies (#405). PIP_BREAK_SYSTEM_PACKAGES is honored by
+# pip >= 23 (PEP 668 externally-managed environments) and ignored by older pip.
+{{- range .SkillPipRequirements}}
+RUN PIP_BREAK_SYSTEM_PACKAGES=1 pip3 install --no-cache-dir -r {{.}}
+{{- end}}
+{{- end}}
 {{- if .ForgeFramework}}
 {{- if eq .ForgeVersion "latest"}}
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \

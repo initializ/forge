@@ -27,6 +27,13 @@ type BuildContext struct {
 	SkillsCount        int
 	ToolCategoryCounts map[string]int
 
+	// SkillPipRequirements holds container-relative paths to skill
+	// requirements.txt files (e.g. "skills/pdf-tools/requirements.txt")
+	// discovered under skills/. Each becomes a `pip install -r` step in the
+	// generated Dockerfile, and their presence forces python3/pip into the
+	// bin manifest so the interpreter is provisioned (#405 D1).
+	SkillPipRequirements []string
+
 	// Bin resolution for smart Dockerfile generation
 	BinManifest  any // *packaging.BinManifest (avoid import cycle)
 	PreferAlpine bool

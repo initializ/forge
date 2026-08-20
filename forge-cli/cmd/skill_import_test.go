@@ -124,15 +124,15 @@ func TestImportSkillFolder_FullFolder(t *testing.T) {
 	if !res.RequirementsTxt {
 		t.Error("RequirementsTxt = false, want true")
 	}
-	// requirements.txt warning present (per-skill pip not wired).
-	hasReqWarn := false
-	for _, w := range res.Warnings {
-		if strings.Contains(w, "requirements.txt") {
-			hasReqWarn = true
+	// requirements.txt note present (D1 wired: build installs it).
+	hasReqNote := false
+	for _, n := range res.Notes {
+		if strings.Contains(n, "requirements.txt") {
+			hasReqNote = true
 		}
 	}
-	if !hasReqWarn {
-		t.Errorf("expected a requirements.txt follow-up warning, got %v", res.Warnings)
+	if !hasReqNote {
+		t.Errorf("expected a requirements.txt note, got warnings=%v notes=%v", res.Warnings, res.Notes)
 	}
 }
 

@@ -3,7 +3,11 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      # Semver release tags only — "v" followed by a digit (v0.18.0,
+      # v1.2.3-rc1, …). Deliberately does NOT match the rolling `vnext`
+      # prerelease pointer (edge.yaml), which is not semver and made
+      # GoReleaser abort with "failed to parse tag 'vnext' as semver".
+      - "v[0-9]*"
 
 permissions:
   contents: write

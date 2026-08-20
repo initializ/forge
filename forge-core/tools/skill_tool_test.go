@@ -47,6 +47,25 @@ func TestNewSkillTool_RunsViaBash(t *testing.T) {
 	}
 }
 
+// TestNewScriptSkillTool_RunsViaInterpreter pins the #405 D2 contract: a
+// script-backed tool runs under its declared interpreter, argv is
+// [<interpreter> <scriptPath> <jsonArgs>].
+func TestNewScriptSkillTool_RunsViaInterpreter(t *testing.T) {
+	fe := &fakeExecutor{}
+	tool := NewScriptSkillTool("py_tool", "python tool", "q (string)", "python3", "skills/x/scripts/py-tool.py", fe)
+
+	jsonArgs := json.RawMessage(`{"q":"hi"}`)
+	if _, err := tool.Execute(context.Background(), jsonArgs); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if fe.lastCommand != "python3" {
+		t.Errorf("command = %q, want python3", fe.lastCommand)
+	}
+	if len(fe.lastArgs) != 2 || fe.lastArgs[0] != "skills/x/scripts/py-tool.py" || fe.lastArgs[1] != string(jsonArgs) {
+		t.Errorf("argv = %v, want [scriptPath json]", fe.lastArgs)
+	}
+}
+
 // TestNewBinarySkillTool_RunsBinaryDirectly is the issue #182 pin:
 // when the skill is `runtime: binary`, argv is [<binary> <jsonArgs>]
 // with no bash fork in front. The binary receives the JSON at $1

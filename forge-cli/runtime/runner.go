@@ -3566,6 +3566,46 @@ func (r *Runner) resolveBinarySkillPath(entry contract.SkillEntry) (string, erro
 	return resolved, nil
 }
 
+// skillScriptExtensions maps a script extension to the interpreter that runs
+// it, in resolution priority order. A `## Tool:` entry named foo_bar resolves
+// to scripts/foo-bar.<ext> and is registered as a first-class tool that runs
+// `<interpreter> <scriptPath> <jsonArgs>`. Shell stays first for back-compat;
+// .py/.js are first-class as of #405 D2. Mirrors interpreterForScript in
+// forge-cli/tools/run_skill_script.go (the generic run path).
+var skillScriptExtensions = []struct{ ext, interpreter string }{
+	{".sh", "bash"},
+	{".bash", "bash"},
+	{".py", "python3"},
+	{".js", "node"},
+	{".cjs", "node"},
+	{".mjs", "node"},
+}
+
+// resolveSkillScript locates the script backing a `## Tool:` entry and returns
+// its container-relative path, the interpreter to run it under, and whether it
+// was found. It searches the skill's own scripts/ directory first, then the
+// shared skills/scripts/ directory; within each, shell before python before
+// node. Single source of truth shared by registerSkillTools (which registers
+// the tool) and skillEntryHasScript (which excludes it from the read_skill
+// catalog) so the two can never disagree about what's a first-class tool.
+func (r *Runner) resolveSkillScript(skillDirName, toolName string) (relPath, interpreter string, found bool) {
+	scriptName := strings.ReplaceAll(toolName, "_", "-")
+	var dirs []string
+	if skillDirName != "" {
+		dirs = append(dirs, filepath.Join("skills", skillDirName, "scripts"))
+	}
+	dirs = append(dirs, filepath.Join("skills", "scripts"))
+	for _, dir := range dirs {
+		for _, se := range skillScriptExtensions {
+			candidate := filepath.Join(dir, scriptName+se.ext)
+			if _, err := os.Stat(filepath.Join(r.cfg.WorkDir, candidate)); err == nil {
+				return candidate, se.interpreter, true
+			}
+		}
+	}
+	return "", "", false
+}
+
 // registerSkillTools scans skill files for skill entries that have associated
 // skill:run commands and registers them as tools. socksURL is the raw-TCP
 // SOCKS5 egress URL — empty when raw-TCP egress isn't configured.
@@ -3655,24 +3695,13 @@ func (r *Runner) registerSkillTools(reg *tools.Registry, proxyURL string, socksU
 				st = tools.NewBinarySkillTool(entry.Name, entry.Description, entry.InputSpec, binaryPath, skillExec)
 			default:
 				// "script" (or unrecognized — treat as script for back-compat).
-				scriptName := strings.ReplaceAll(entry.Name, "_", "-")
-				var scriptPath string
-				if skillDirName != "" {
-					candidate := filepath.Join("skills", skillDirName, "scripts", scriptName+".sh")
-					if _, err := os.Stat(filepath.Join(r.cfg.WorkDir, candidate)); err == nil {
-						scriptPath = candidate
-					}
-				}
-				if scriptPath == "" {
-					candidate := filepath.Join("skills", "scripts", scriptName+".sh")
-					if _, err := os.Stat(filepath.Join(r.cfg.WorkDir, candidate)); err == nil {
-						scriptPath = candidate
-					}
-				}
-				if scriptPath == "" {
+				// Resolves .sh/.py/.js; each registers as a first-class tool run
+				// under its interpreter (#405 D2).
+				scriptPath, interpreter, found := r.resolveSkillScript(skillDirName, entry.Name)
+				if !found {
 					continue // No script file, skip
 				}
-				st = tools.NewSkillTool(entry.Name, entry.Description, entry.InputSpec, scriptPath, skillExec)
+				st = tools.NewScriptSkillTool(entry.Name, entry.Description, entry.InputSpec, interpreter, scriptPath, skillExec)
 			}
 
 			// Last-line schema guard (field-hit 2026-07-22): a property key
@@ -3722,33 +3751,14 @@ func (r *Runner) buildSystemPrompt() string {
 // (those without scripts) for the system prompt. Script-backed skills are
 // already registered as first-class tools and don't need catalog entries.
 // skillEntryHasScript reports whether a `## Tool:` entry is backed by a
-// script that registerSkillTools actually registers as a first-class
-// callable tool — currently only `scripts/<name>.sh`. Such tools are
-// excluded from the read_skill catalog's "provides" list because the LLM
-// invokes them directly by name.
-//
-// This deliberately mirrors registerSkillTools' `.sh`-only lookup, NOT the
-// full set of script languages. A tool backed by a `.py`/`.js` script is
-// not a directly-callable registered tool, so it correctly stays in
-// "provides" — and that is now sufficient, not a gap: the LLM reaches it
-// by loading the skill (read_skill's file listing surfaces the script) and
-// runs it with the `run_skill_script` tool, which resolves the path
-// relative to the skill dir and picks the interpreter by extension (#251).
-// So `.sh`/`.py`/`.js` scripts are all runnable; only `.sh` also gets the
-// first-class `## Tool:` registration. Keep this in lockstep with
-// registerSkillTools: if IT ever registers other languages as callable
-// tools, broaden this check at the same time or those tools vanish from both.
+// script that registerSkillTools registers as a first-class callable tool —
+// a scripts/<name>.{sh,py,js} file (#405 D2). Such tools are excluded from the
+// read_skill catalog's "provides" list because the LLM invokes them directly
+// by name. It shares resolveSkillScript with registerSkillTools, so the set of
+// "what's a first-class tool" can never drift between registration and catalog.
 func (r *Runner) skillEntryHasScript(skillDir, toolName string) bool {
-	scriptName := strings.ReplaceAll(toolName, "_", "-")
-	if skillDir != "" {
-		if _, err := os.Stat(filepath.Join(r.cfg.WorkDir, "skills", skillDir, "scripts", scriptName+".sh")); err == nil {
-			return true
-		}
-	}
-	if _, err := os.Stat(filepath.Join(r.cfg.WorkDir, "skills", "scripts", scriptName+".sh")); err == nil {
-		return true
-	}
-	return false
+	_, _, found := r.resolveSkillScript(skillDir, toolName)
+	return found
 }
 
 func (r *Runner) buildSkillCatalog() string {

@@ -27,7 +27,7 @@ Script-backed skills are automatically registered as **first-class LLM tools** a
 
 1. Parses the skill's SKILL.md for tool definitions, descriptions, and input schemas
 2. Creates a named tool for each `## Tool:` entry (e.g., `tavily_research` becomes a tool the LLM can call directly)
-3. Executes the skill's shell script with JSON input when the LLM invokes it
+3. Executes the backing script with JSON input when the LLM invokes it, under the interpreter matching its extension — `scripts/<name>.sh` (bash), `.py` (python3), or `.js` (node). A `## Tool: foo_bar` binds to `scripts/foo-bar.<ext>` (underscores become hyphens); shell wins if several extensions exist. Ensure the interpreter is provisioned (`python3`/`node` in `requires.bins`; bash is built in).
 
 This means the LLM sees skill tools alongside builtins like `web_search` and `http_request` — no generic `cli_execute` indirection needed.
 
@@ -71,10 +71,11 @@ against the skill dir (path-confined — no `..` or absolute escapes):
   JSON supplied in the tool's `args` is passed to the script as its first
   positional argument (`$1`). TypeScript must be shipped as compiled `.js`.
 
-This is distinct from a `## Tool:` entry backed by `scripts/<name>.sh`, which
-is registered as a first-class callable tool the model invokes by name (see
-above). Skill-relative scripts are invoked by path via `run_skill_script` and
-can be any of the three languages.
+This is distinct from a `## Tool:` entry backed by `scripts/<name>.{sh,py,js}`,
+which is registered as a first-class callable tool the model invokes by name
+(see above) — all three languages get first-class registration. Skill-relative
+scripts that DON'T correspond to a `## Tool:` heading are still reachable by
+path via `run_skill_script`.
 
 ## Skill Execution Security
 

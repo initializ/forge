@@ -293,7 +293,9 @@ The agent loop calls tools the LLM asks for. The registry merges:
   `http_request`, `json_parse`, `csv_parse`, `datetime_now`,
   `uuid_generate`, `math_calculate`, `cli_execute`, `read_skill`.
 - **Skill tools**: script-backed `SKILL.md` skills auto-register as
-  first-class LLM tools (one tool per `## Tool:` heading). Binary-backed
+  first-class LLM tools (one tool per `## Tool:` heading). A tool `foo_bar`
+  binds to `scripts/foo-bar.{sh,py,js}` and runs under bash/python3/node
+  respectively (#405 D2; shell wins if several exist). Binary-backed
   skills inline their full body into the system prompt instead.
 - **MCP tools**: discovered from MCP servers declared in `forge.yaml`'s
   `mcp.servers[]` block. Names are namespaced `<server>__<tool>` (e.g.
@@ -1089,7 +1091,8 @@ A Forge skill is a Markdown file with YAML frontmatter. Two flavors:
   existing CLIs (kubectl, gh, git, terraform).
 - **Script-backed** — provides executable scripts under `scripts/`;
   each `## Tool: <name>` becomes a first-class LLM tool the model
-  calls directly. Tool name `my_search` → `scripts/my-search.sh`.
+  calls directly. Tool name `my_search` → `scripts/my-search.{sh,py,js}`,
+  run under bash/python3/node (#405 D2; shell wins if several exist).
 
 Minimal frontmatter:
 

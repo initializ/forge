@@ -3590,6 +3590,14 @@ var skillScriptExtensions = []struct{ ext, interpreter string }{
 // catalog) so the two can never disagree about what's a first-class tool.
 func (r *Runner) resolveSkillScript(skillDirName, toolName string) (relPath, interpreter string, found bool) {
 	scriptName := strings.ReplaceAll(toolName, "_", "-")
+	// The `## Tool:` name is taken verbatim by the parser (no kebab/char
+	// check), so a crafted "## Tool: ../../../../x" would otherwise resolve to
+	// an out-of-tree script and register it as a callable tool. Require the
+	// derived script name to be a bare, non-escaping path segment before it
+	// touches the filesystem. Mirrors the import-path traversal hardening.
+	if !filepath.IsLocal(scriptName) || strings.ContainsRune(scriptName, filepath.Separator) || strings.ContainsRune(scriptName, '/') {
+		return "", "", false
+	}
 	var dirs []string
 	if skillDirName != "" {
 		dirs = append(dirs, filepath.Join("skills", skillDirName, "scripts"))
@@ -3700,6 +3708,19 @@ func (r *Runner) registerSkillTools(reg *tools.Registry, proxyURL string, socksU
 				scriptPath, interpreter, found := r.resolveSkillScript(skillDirName, entry.Name)
 				if !found {
 					continue // No script file, skip
+				}
+				// Don't hand the LLM a tool that can't run: a .py/.js tool
+				// whose interpreter isn't in the image would fail at call time
+				// with "python3: not found". bash is always present, so it's
+				// exempt (and stays back-compat). The import-time nudge already
+				// tells authors to declare python3 in requires.bins.
+				if interpreter != "bash" {
+					if _, err := exec.LookPath(interpreter); err != nil {
+						r.logger.Warn("skipping script skill tool: interpreter not found on PATH", map[string]any{
+							"skill": entry.Name, "interpreter": interpreter, "script": scriptPath,
+						})
+						continue
+					}
 				}
 				st = tools.NewScriptSkillTool(entry.Name, entry.Description, entry.InputSpec, interpreter, scriptPath, skillExec)
 			}

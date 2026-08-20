@@ -16,13 +16,14 @@ registry: "ghcr.io/org"             # Container registry
 entrypoint: "agent.py"              # Required for crewai/langchain, omit for forge
 
 model:
-  provider: "openai"                # openai, anthropic, gemini, ollama
+  provider: "openai"                # openai, openai-responses, anthropic, gemini, ollama
   name: "gpt-4o"                    # Model name
   base_url: ""                      # Override the provider's default API host (issue #139)
   organization_id: "org-xxx"        # OpenAI Organization ID (enterprise, optional)
   auth_scheme: ""                   # "" (default) / "x_api_key" / "bearer" / "aws_sigv4" (#202) / "apikey_header" (#302) / "apikey_header_only"
   aws_region: ""                    # Required when auth_scheme: aws_sigv4 — issue #202
   auth_header_name: ""              # apikey_header[_only] custom header name; default "apikey" — issue #302
+  disable_store: false              # openai-responses only: send store=false so OpenAI doesn't retain responses — issue #383
   fallbacks:                        # Fallback providers (optional)
     - provider: "anthropic"
       name: "claude-sonnet-4-20250514"
@@ -31,10 +32,29 @@ model:
 # Custom URL endpoints (OpenRouter, vLLM, litellm, self-hosted Kimi/Llama,
 # Together.ai, Anyscale, Bedrock OpenAI compat, …):
 #   provider: "openai" + OPENAI_BASE_URL env  → OpenAI Chat Completions wire format
+#   provider: "openai-responses" + OPENAI_BASE_URL env → OpenAI Responses API wire format
 #   provider: "anthropic" + ANTHROPIC_BASE_URL env → Anthropic Messages wire format
 # The forge init wizard's "Custom" option asks which wire format the URL
 # speaks and writes the matching provider; generated forge.yaml never
 # carries provider: "custom". Issue #202 Phase 1.
+
+# provider: "openai-responses" POSTs <base_url>/responses (the OpenAI Responses
+# API) instead of /chat/completions, with plain API-key or gateway auth — for a
+# Responses-only endpoint, a Responses-first gateway, or a Responses-native
+# model. It shares OpenAI's credentials, base URL, organization ID, and default
+# model with provider: "openai" (OPENAI_API_KEY / LLM_API_KEY, OPENAI_BASE_URL,
+# OPENAI_ORG_ID) and composes with every auth_scheme below the same way.
+#
+# Data retention: by default OpenAI RETAINS Responses server-side (~30 days).
+# Set model.disable_store: true to send store=false and opt out. The config
+# default leaves store unset (API default). The ChatGPT OAuth login path uses
+# this same client but always forces store=false regardless of this flag.
+#
+# Streaming: the openai-responses client always requests server-sent-events
+# streaming internally (it collects the deltas). The public OpenAI /responses
+# endpoint supports this, but a gateway that buffers or does not proxy SSE will
+# break this provider — verify SSE passthrough when routing it through one.
+# Issue #383.
 
 # AWS Bedrock with native API key auth is not supported (Bedrock uses
 # SigV4 signing). Set auth_scheme: aws_sigv4 + aws_region to use AWS

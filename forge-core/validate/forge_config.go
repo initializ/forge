@@ -93,8 +93,9 @@ func ValidateForgeConfig(cfg *types.ForgeConfig) *ValidationResult {
 		r.Warnings = append(r.Warnings, "model.provider is set but model.name is empty")
 	}
 
-	if cfg.Model.OrganizationID != "" && cfg.Model.Provider != "" && cfg.Model.Provider != "openai" {
-		r.Warnings = append(r.Warnings, fmt.Sprintf("model.organization_id is set but provider is %q (only used by openai)", cfg.Model.Provider))
+	if cfg.Model.OrganizationID != "" && cfg.Model.Provider != "" &&
+		cfg.Model.Provider != "openai" && cfg.Model.Provider != llm.ProviderOpenAIResponses {
+		r.Warnings = append(r.Warnings, fmt.Sprintf("model.organization_id is set but provider is %q (only used by openai / openai-responses)", cfg.Model.Provider))
 	}
 
 	// model.auth_scheme validation (#202 / #302). An unrecognized value
@@ -103,11 +104,12 @@ func ValidateForgeConfig(cfg *types.ForgeConfig) *ValidationResult {
 	if s := cfg.Model.AuthScheme; !knownModelAuthSchemes[s] {
 		r.Errors = append(r.Errors, fmt.Sprintf("model.auth_scheme %q is not recognized (known: x_api_key, bearer, aws_sigv4, apikey_header, apikey_header_only)", s))
 	}
-	// Only the openai and anthropic clients honor auth_scheme; warn if it's
-	// set on a provider that will silently ignore it.
+	// Only the openai, openai-responses, and anthropic clients honor
+	// auth_scheme; warn if it's set on a provider that will silently ignore it.
 	if s := cfg.Model.AuthScheme; (s == llm.AuthSchemeAWSSigV4 || s == llm.AuthSchemeAPIKeyHeader || s == llm.AuthSchemeAPIKeyHeaderOnly) &&
-		cfg.Model.Provider != "" && cfg.Model.Provider != "openai" && cfg.Model.Provider != "anthropic" {
-		r.Warnings = append(r.Warnings, fmt.Sprintf("model.auth_scheme %q only affects the openai and anthropic clients; provider %q ignores it", s, cfg.Model.Provider))
+		cfg.Model.Provider != "" && cfg.Model.Provider != "openai" &&
+		cfg.Model.Provider != llm.ProviderOpenAIResponses && cfg.Model.Provider != "anthropic" {
+		r.Warnings = append(r.Warnings, fmt.Sprintf("model.auth_scheme %q only affects the openai, openai-responses, and anthropic clients; provider %q ignores it", s, cfg.Model.Provider))
 	}
 	// The gateway header must not collide with a native auth header, or it
 	// would overwrite the provider's Bearer / x-api-key with the raw key —
@@ -120,6 +122,11 @@ func ValidateForgeConfig(cfg *types.ForgeConfig) *ValidationResult {
 	// auth_header_name only applies to the gateway schemes.
 	if cfg.Model.AuthHeaderName != "" && !isGatewayScheme(cfg.Model.AuthScheme) {
 		r.Warnings = append(r.Warnings, `model.auth_header_name is set but auth_scheme is not "apikey_header" / "apikey_header_only"; it will be ignored`)
+	}
+	// disable_store only affects the openai-responses client (store=false on
+	// the Responses API); warn if it's set where it will be ignored (#383).
+	if cfg.Model.DisableStore && cfg.Model.Provider != "" && cfg.Model.Provider != llm.ProviderOpenAIResponses {
+		r.Warnings = append(r.Warnings, fmt.Sprintf("model.disable_store only affects the openai-responses provider; provider %q ignores it", cfg.Model.Provider))
 	}
 
 	if cfg.Framework != "" && !knownFrameworks[cfg.Framework] {

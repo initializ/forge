@@ -6,6 +6,60 @@ import (
 	"github.com/initializ/forge/forge-core/types"
 )
 
+// TestResolveModelConfig_OpenAIResponses covers #383: the "openai-responses"
+// provider resolves OpenAI credentials, base URL, org, and default model the
+// same way "openai" does, so it is usable purely from config.
+func TestResolveModelConfig_OpenAIResponses(t *testing.T) {
+	cfg := &types.ForgeConfig{
+		Model: types.ModelRef{
+			Provider:       "openai-responses",
+			OrganizationID: "org-abc",
+			AuthScheme:     "apikey_header",
+			DisableStore:   true,
+		},
+	}
+	envVars := map[string]string{
+		"OPENAI_API_KEY":  "sk-resp-test",
+		"OPENAI_BASE_URL": "https://gateway.example/v1",
+	}
+
+	mc := ResolveModelConfig(cfg, envVars, "")
+	if mc == nil {
+		t.Fatal("expected non-nil ModelConfig")
+	}
+	if mc.Provider != "openai-responses" {
+		t.Fatalf("provider = %s, want openai-responses", mc.Provider)
+	}
+	if mc.Client.APIKey != "sk-resp-test" {
+		t.Errorf("APIKey = %q, want sk-resp-test (OPENAI_API_KEY should resolve)", mc.Client.APIKey)
+	}
+	if mc.Client.BaseURL != "https://gateway.example/v1" {
+		t.Errorf("BaseURL = %q, want the OPENAI_BASE_URL override", mc.Client.BaseURL)
+	}
+	if mc.Client.OrgID != "org-abc" {
+		t.Errorf("OrgID = %q, want org-abc", mc.Client.OrgID)
+	}
+	if mc.Client.Model != "gpt-5.4" {
+		t.Errorf("Model = %q, want the openai default gpt-5.4", mc.Client.Model)
+	}
+	if mc.Client.AuthScheme != "apikey_header" {
+		t.Errorf("AuthScheme = %q, want apikey_header carried onto the client", mc.Client.AuthScheme)
+	}
+	if !mc.Client.DisableStore {
+		t.Error("DisableStore = false, want true carried onto the client (disable_store)")
+	}
+}
+
+// TestResolveModelConfig_OpenAIResponsesLLMKey confirms the shared LLM_API_KEY
+// fallback resolves for the Responses provider too (gateway deployments).
+func TestResolveModelConfig_OpenAIResponsesLLMKey(t *testing.T) {
+	cfg := &types.ForgeConfig{Model: types.ModelRef{Provider: "openai-responses"}}
+	mc := ResolveModelConfig(cfg, map[string]string{"LLM_API_KEY": "gw-key"}, "")
+	if mc == nil || mc.Client.APIKey != "gw-key" {
+		t.Fatalf("expected LLM_API_KEY to resolve for openai-responses, got %+v", mc)
+	}
+}
+
 func TestResolveModelConfig_FallbacksFromYAML(t *testing.T) {
 	cfg := &types.ForgeConfig{
 		Model: types.ModelRef{

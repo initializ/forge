@@ -48,11 +48,12 @@ func ResolveModelConfig(cfg *types.ForgeConfig, envVars map[string]string, provi
 	// Resolve API key based on provider
 	resolveAPIKey(mc, envVars)
 
-	// Wire organization ID for OpenAI
-	if mc.Provider == "openai" && cfg.Model.OrganizationID != "" {
+	// Wire organization ID for OpenAI (both the Chat Completions and
+	// Responses clients send the OpenAI-Organization header).
+	if isOpenAIFamily(mc.Provider) && cfg.Model.OrganizationID != "" {
 		mc.Client.OrgID = cfg.Model.OrganizationID
 	}
-	if orgID := envVars["OPENAI_ORG_ID"]; orgID != "" && mc.Provider == "openai" {
+	if orgID := envVars["OPENAI_ORG_ID"]; orgID != "" && isOpenAIFamily(mc.Provider) {
 		mc.Client.OrgID = orgID
 	}
 
@@ -87,7 +88,7 @@ func ResolveModelConfig(cfg *types.ForgeConfig, envVars map[string]string, provi
 	}
 
 	// Apply base URL overrides
-	if u := envVars["OPENAI_BASE_URL"]; u != "" && mc.Provider == "openai" {
+	if u := envVars["OPENAI_BASE_URL"]; u != "" && isOpenAIFamily(mc.Provider) {
 		mc.Client.BaseURL = u
 	}
 	if u := envVars["ANTHROPIC_BASE_URL"]; u != "" && mc.Provider == "anthropic" {
@@ -113,6 +114,12 @@ func ResolveModelConfig(cfg *types.ForgeConfig, envVars map[string]string, provi
 	// owns the default-name fallback.
 	if cfg.Model.AuthHeaderName != "" {
 		mc.Client.AuthHeaderName = cfg.Model.AuthHeaderName
+	}
+	// Issue #383 — opt out of OpenAI Responses server-side retention
+	// (store=false). Only the openai-responses client honors it; carried
+	// unconditionally since every other client ignores the field.
+	if cfg.Model.DisableStore {
+		mc.Client.DisableStore = true
 	}
 	// AWS_REGION env safety-net for the SigV4 path. Mirrors the
 	// OPENAI_BASE_URL / ANTHROPIC_BASE_URL env pattern above — lets
@@ -141,7 +148,7 @@ func ResolveModelConfig(cfg *types.ForgeConfig, envVars map[string]string, provi
 // defaultModelForProvider returns the default model name for a given provider.
 func defaultModelForProvider(provider string) string {
 	switch provider {
-	case "openai":
+	case "openai", llm.ProviderOpenAIResponses:
 		return "gpt-5.4"
 	case "anthropic":
 		return "claude-sonnet-4-20250514"
@@ -187,7 +194,7 @@ func resolveFallbacks(cfg *types.ForgeConfig, envVars map[string]string, primary
 		// Apply base URL overrides
 		fc.Client.BaseURL = resolveFallbackBaseURL(provider, envVars)
 		// Wire organization ID for OpenAI fallbacks
-		if provider == "openai" {
+		if isOpenAIFamily(provider) {
 			resolvedOrgID := orgID
 			if resolvedOrgID == "" {
 				resolvedOrgID = cfg.Model.OrganizationID
@@ -235,7 +242,7 @@ func resolveFallbacks(cfg *types.ForgeConfig, envVars map[string]string, primary
 // resolveFallbackAPIKey resolves the API key for a fallback provider.
 func resolveFallbackAPIKey(provider string, envVars map[string]string) string {
 	switch provider {
-	case "openai":
+	case "openai", llm.ProviderOpenAIResponses:
 		return envVars["OPENAI_API_KEY"]
 	case "anthropic":
 		return envVars["ANTHROPIC_API_KEY"]
@@ -251,7 +258,7 @@ func resolveFallbackAPIKey(provider string, envVars map[string]string) string {
 // resolveFallbackBaseURL resolves the base URL for a fallback provider.
 func resolveFallbackBaseURL(provider string, envVars map[string]string) string {
 	switch provider {
-	case "openai":
+	case "openai", llm.ProviderOpenAIResponses:
 		return envVars["OPENAI_BASE_URL"]
 	case "anthropic":
 		return envVars["ANTHROPIC_BASE_URL"]
@@ -262,9 +269,16 @@ func resolveFallbackBaseURL(provider string, envVars map[string]string) string {
 	}
 }
 
+// isOpenAIFamily reports whether provider uses OpenAI credential / base-URL /
+// organization conventions: the Chat Completions "openai" client and the
+// Responses-API "openai-responses" client (#383).
+func isOpenAIFamily(provider string) bool {
+	return provider == "openai" || provider == llm.ProviderOpenAIResponses
+}
+
 func resolveAPIKey(mc *ModelConfig, envVars map[string]string) {
 	switch mc.Provider {
-	case "openai":
+	case "openai", llm.ProviderOpenAIResponses:
 		if k := envVars["OPENAI_API_KEY"]; k != "" {
 			mc.Client.APIKey = k
 		} else if k := envVars["LLM_API_KEY"]; k != "" {

@@ -2,6 +2,14 @@ package llm
 
 import "context"
 
+// ProviderOpenAIResponses is the provider string that selects the OpenAI
+// Responses API client (POST <baseURL>/responses) via config + API-key/gateway
+// auth, distinct from the Chat Completions "openai" provider (#383). It shares
+// the ResponsesClient with the ChatGPT OAuth path but does not force
+// store=false. Kept here so both the providers factory and the runtime config
+// resolver reference one spelling.
+const ProviderOpenAIResponses = "openai-responses"
+
 // Outbound LLM auth schemes (ClientConfig.AuthScheme / ModelRef.auth_scheme).
 const (
 	// AuthSchemeAWSSigV4 signs every outbound request with AWS SigV4
@@ -100,4 +108,12 @@ type ClientConfig struct {
 	// pre-compression contract unless the operator opts in
 	// (compression.cache_hints / compression.enabled in forge.yaml).
 	PromptCaching bool
+
+	// DisableStore sends `store: false` on OpenAI Responses API requests
+	// (the "openai-responses" provider), telling OpenAI not to retain the
+	// response server-side (~30-day default retention). Only the Responses
+	// client honors it; other clients ignore it. Empty/false leaves `store`
+	// unset so the API applies its own default (#383). The ChatGPT OAuth
+	// path forces this true regardless (Codex backend requires it).
+	DisableStore bool
 }

@@ -18,15 +18,24 @@ import (
 // This is used with ChatGPT OAuth tokens which are scoped to the Responses API
 // endpoint (chatgpt.com/backend-api) rather than the Chat Completions API.
 type ResponsesClient struct {
-	apiKey       string
-	orgID        string
-	baseURL      string
-	model        string
-	client       *http.Client
-	disableStore bool // set store=false in requests (required for ChatGPT Codex backend)
+	apiKey         string
+	orgID          string
+	baseURL        string
+	model          string
+	authScheme     string
+	authHeaderName string
+	client         *http.Client
+	disableStore   bool // set store=false in requests (required for ChatGPT Codex backend)
 }
 
 // NewResponsesClient creates a new Responses API client.
+//
+// Auth mirrors NewOpenAIClient so a config-selected "openai-responses" provider
+// composes with the same auth_scheme values (#383): aws_sigv4 wraps the
+// transport with the Bedrock SigV4 signer and skips the native Bearer header;
+// apikey_header / apikey_header_only send the key in a gateway header. Empty
+// AuthScheme (the ChatGPT OAuth path) preserves the plain Bearer behavior
+// byte-for-byte.
 func NewResponsesClient(cfg llm.ClientConfig) *ResponsesClient {
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
@@ -36,12 +45,19 @@ func NewResponsesClient(cfg llm.ClientConfig) *ResponsesClient {
 	if timeout == 0 {
 		timeout = 120 * time.Second
 	}
+	httpClient := &http.Client{Timeout: timeout}
+	if cfg.AuthScheme == llm.AuthSchemeAWSSigV4 {
+		httpClient.Transport = newBedrockSigningTransport(cfg.AWSRegion, http.DefaultTransport)
+	}
 	return &ResponsesClient{
-		apiKey:  cfg.APIKey,
-		orgID:   cfg.OrgID,
-		baseURL: strings.TrimRight(baseURL, "/"),
-		model:   cfg.Model,
-		client:  &http.Client{Timeout: timeout},
+		apiKey:         cfg.APIKey,
+		orgID:          cfg.OrgID,
+		baseURL:        strings.TrimRight(baseURL, "/"),
+		model:          cfg.Model,
+		authScheme:     cfg.AuthScheme,
+		authHeaderName: cfg.AuthHeaderName,
+		disableStore:   cfg.DisableStore,
+		client:         httpClient,
 	}
 }
 
@@ -144,12 +160,17 @@ func (c *ResponsesClient) ChatStream(ctx context.Context, req *llm.ChatRequest) 
 
 func (c *ResponsesClient) setHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
-	if c.apiKey != "" {
+	// Suppress the native Authorization: Bearer header for the two schemes
+	// that own auth elsewhere — aws_sigv4 (the SigV4 transport stamps it) and
+	// apikey_header_only (the gateway injects the real upstream credential).
+	// Every other scheme, including the empty OAuth path, keeps the Bearer.
+	if c.apiKey != "" && c.authScheme != llm.AuthSchemeAWSSigV4 && c.authScheme != llm.AuthSchemeAPIKeyHeaderOnly {
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 	if c.orgID != "" {
 		req.Header.Set("OpenAI-Organization", c.orgID)
 	}
+	setGatewayAPIKeyHeader(req, c.authScheme, c.authHeaderName, c.apiKey)
 }
 
 // --- Request types ---

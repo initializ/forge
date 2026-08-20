@@ -233,11 +233,12 @@ Common `llm.Client` interface (`forge-core/llm/`). Providers:
 | Provider | Notes |
 |---|---|
 | `anthropic` | Claude family. Native messages API. Also covers Anthropic-compatible endpoints (Bedrock Anthropic passthrough, Anthropic-compatible proxies) — set `provider: anthropic` + `ANTHROPIC_BASE_URL`. |
-| `openai` | GPT family. Also covers OpenAI-compatible endpoints (OpenRouter, vLLM, litellm, Together.ai, Anyscale, self-hosted Kimi/Llama) — set `provider: openai` + `OPENAI_BASE_URL`. |
+| `openai` | GPT family, Chat Completions wire (`POST <base_url>/chat/completions`). Also covers OpenAI-compatible endpoints (OpenRouter, vLLM, litellm, Together.ai, Anyscale, self-hosted Kimi/Llama) — set `provider: openai` + `OPENAI_BASE_URL`. |
+| `openai-responses` | OpenAI Responses API wire (`POST <base_url>/responses`) via API-key/gateway auth — for a Responses-only endpoint, a Responses-first gateway, or a Responses-native model. Shares OpenAI's credential/base-URL/org/default-model resolution with `openai` (`OPENAI_API_KEY`/`LLM_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_ORG_ID`) and composes with every `auth_scheme`. Same `ResponsesClient` the ChatGPT OAuth login uses, but only the OAuth path forces `store=false` — config-selected use leaves store at the OpenAI default (~30-day retention) unless `model.disable_store: true`. Always streams internally (SSE); a gateway that doesn't proxy SSE breaks it. Issue #383. |
 | `ollama` | Local OSS models via the Ollama daemon. |
 | `gemini` | Google. |
 
-The wizard's "Custom URL" option asks which wire format the endpoint speaks (OpenAI Chat Completions or Anthropic Messages) and scaffolds the matching provider + base-URL env. `forge.yaml` never carries `provider: "custom"`. Issue #202 Phase 1.
+The wizard's "Custom URL" option asks which wire format the endpoint speaks (OpenAI Chat Completions, OpenAI Responses, or Anthropic Messages) and scaffolds the matching provider + base-URL env. `forge.yaml` never carries `provider: "custom"`. Issue #202 Phase 1.
 
 Configured in `forge.yaml`:
 
@@ -256,7 +257,7 @@ Fallbacks fire in order on provider error. CLI flags
 
 ### `auth_scheme` (AWS Bedrock SigV4 outbound)
 
-`model.auth_scheme: aws_sigv4` + `model.aws_region: <region>` swaps the default `Authorization: Bearer …` / `x-api-key: …` header for a hand-rolled AWS SigV4 signature on every outbound LLM request (`forge-core/llm/providers/sigv4_transport.go`, ~250 LOC stdlib only — no aws-sdk-go-v2). Symmetric across the `openai` and `anthropic` providers; pick whichever wire format the Bedrock endpoint speaks:
+`model.auth_scheme: aws_sigv4` + `model.aws_region: <region>` swaps the default `Authorization: Bearer …` / `x-api-key: …` header for a hand-rolled AWS SigV4 signature on every outbound LLM request (`forge-core/llm/providers/sigv4_transport.go`, ~250 LOC stdlib only — no aws-sdk-go-v2). Symmetric across the `openai`, `openai-responses`, and `anthropic` providers; pick whichever wire format the Bedrock endpoint speaks:
 
 ```yaml
 model:
@@ -271,7 +272,7 @@ Credentials read from `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSI
 
 ### `auth_scheme: apikey_header` (API-gateway key header)
 
-`model.auth_scheme: apikey_header` sends the API key in a gateway header **in addition to** the provider-native header (`x-api-key` / `Authorization: Bearer`), for gateways whose auth plugin reads a fixed header name — e.g. Kong AI Gateway `key-auth`, which reads `apikey` and ignores the provider headers (otherwise every call 401s with `No API key found in request`). Additive, so safe against non-gateway endpoints. Header name defaults to `apikey`, overridable via `model.auth_header_name` (e.g. `x-gateway-key`) for custom `key_names`. Key comes from the usual `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`. Additive header set in `forge-core/llm/providers/auth_scheme.go` (`setGatewayAPIKeyHeader`), wired in both providers' `setHeaders`. Applies to the **primary model only** (fallbacks use their provider-native header). `forge validate` rejects an unknown `auth_scheme` and an `auth_header_name` that collides with `Authorization` / `x-api-key` (the helper also refuses to overwrite a native header as defense-in-depth), and warns when `auth_scheme` is set on a non-openai/anthropic provider that ignores it. Issue #302.
+`model.auth_scheme: apikey_header` sends the API key in a gateway header **in addition to** the provider-native header (`x-api-key` / `Authorization: Bearer`), for gateways whose auth plugin reads a fixed header name — e.g. Kong AI Gateway `key-auth`, which reads `apikey` and ignores the provider headers (otherwise every call 401s with `No API key found in request`). Additive, so safe against non-gateway endpoints. Header name defaults to `apikey`, overridable via `model.auth_header_name` (e.g. `x-gateway-key`) for custom `key_names`. Key comes from the usual `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`. Additive header set in `forge-core/llm/providers/auth_scheme.go` (`setGatewayAPIKeyHeader`), wired in the `openai`, `openai-responses`, and `anthropic` `setHeaders`. Applies to the **primary model only** (fallbacks use their provider-native header). `forge validate` rejects an unknown `auth_scheme` and an `auth_header_name` that collides with `Authorization` / `x-api-key` (the helper also refuses to overwrite a native header as defense-in-depth), and warns when `auth_scheme` is set on a provider outside `openai` / `openai-responses` / `anthropic` that ignores it. Issue #302.
 
 `model.auth_scheme: apikey_header_only` is the same gateway header but **suppresses** the provider-native header (mirrors `aws_sigv4`), so Forge's gateway key never reaches the provider's `x-api-key` / `Authorization`. Use it when the gateway *injects* the real upstream credential itself — Kong `request-transformer` `add` (which won't overwrite an existing header) is blocked by an additive native header, so the provider 401s on the gateway key. `apikey_header` = gateway *replaces*/passes through; `apikey_header_only` = gateway *adds*. Same validation + `auth_header_name` rules apply.
 

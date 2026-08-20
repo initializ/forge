@@ -486,9 +486,31 @@ func (r *Runner) Run(ctx context.Context) error {
 	if err := r.cfg.Config.Security.Defer.Validate(); err != nil {
 		return fmt.Errorf("defer: %w", err)
 	}
-	if r.cfg.Config.Security.Defer.Enabled {
+	// Managed PDP path (design §4.1): validated fail-loud — `pdp.fail: open`
+	// aborts startup so no authz path fails open by accident (§14.5).
+	if err := r.cfg.Config.Security.Pdp.Validate(); err != nil {
+		return fmt.Errorf("pdp: %w", err)
+	}
+	// Materialized API tools (apis.servers[]) are validated fail-loud too — a
+	// malformed server (missing base_url, op without method/path, duplicate
+	// name) is a platform materialization bug, not a runtime condition to
+	// tolerate: aborting boot beats every call failing closed at egress later.
+	if err := r.cfg.Config.APIs.Validate(); err != nil {
+		return fmt.Errorf("apis: %w", err)
+	}
+	pdpEnabled := r.cfg.Config.Security.Pdp.Enabled
+	deferEnabled := r.cfg.Config.Security.Defer.Enabled
+	if pdpEnabled && deferEnabled {
+		// One decision source at a time: PDP wins, the static map is ignored.
+		r.logger.Warn("both security.pdp and security.defer are enabled — PDP wins; the static security.defer.tools map is ignored", nil)
+	}
+	// The parking machinery is shared: wire the defer engine when EITHER path
+	// is active (a PDP `defer` verdict parks through the same engine).
+	if pdpEnabled || deferEnabled {
 		r.deferEngine = deferengine.New()
 		r.logger.Info("defer engine wired", map[string]any{
+			"pdp":   pdpEnabled,
+			"defer": deferEnabled,
 			"tools": len(r.cfg.Config.Security.Defer.Tools),
 		})
 	}
@@ -637,6 +659,9 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Same for MCP servers — without this, every HTTPS MCP call would
 	// be silently blocked. Mirror the AuthDomains pattern.
 	egressDomains = append(egressDomains, security.MCPDomains(r.cfg.Config.MCP)...)
+	// Same for API servers (apis.servers[]) — the base_url host must be
+	// allowlisted or the api-tool's REST call is silently blocked.
+	egressDomains = append(egressDomains, security.APIDomains(r.cfg.Config.APIs)...)
 	// #316: with OAuth discovery the authorization-server host is not in
 	// forge.yaml to pre-seed the allowlist — it is learned at login time
 	// and persisted in the registration record. mcpRegisteredOAuthHosts
@@ -921,6 +946,13 @@ func (r *Runner) Run(ctx context.Context) error {
 				r.logger.Warn("failed to register read_skill", map[string]any{"error": regErr.Error()})
 			}
 
+			// Governed-tool bearer tokens are consumed in-process by the tool
+			// adapters — never by a script. Withhold them from EVERY script env
+			// passthrough (explicit + auto-derived cli_execute, run_skill_script,
+			// per-skill script tool) so a script can't read the token and call the
+			// governed host directly, bypassing the PDP (see governedToolTokenEnvs).
+			toolTokenEnvs := governedToolTokenEnvs(r.cfg.Config)
+
 			// Register cli_execute if configured explicitly or auto-derived from skills
 			hasExplicitCLI := false
 			for _, toolRef := range r.cfg.Config.Tools {
@@ -928,6 +960,7 @@ func (r *Runner) Run(ctx context.Context) error {
 					hasExplicitCLI = true
 					cliCfg := clitools.ParseCLIExecuteConfig(toolRef.Config)
 					cliCfg.WorkDir = r.cfg.WorkDir
+					cliCfg.EnvPassthrough = withoutEnvNames(cliCfg.EnvPassthrough, toolTokenEnvs)
 					// Apply timeout hint from skill requirements if larger than explicit config
 					if r.derivedCLIConfig != nil && r.derivedCLIConfig.TimeoutHint > cliCfg.TimeoutSeconds {
 						cliCfg.TimeoutSeconds = r.derivedCLIConfig.TimeoutHint
@@ -946,11 +979,12 @@ func (r *Runner) Run(ctx context.Context) error {
 					break
 				}
 			}
+
 			// Auto-register cli_execute from skill-derived config when not explicitly configured
 			if !hasExplicitCLI && r.derivedCLIConfig != nil && len(r.derivedCLIConfig.AllowedBinaries) > 0 {
 				cliCfg := clitools.CLIExecuteConfig{
 					AllowedBinaries: r.derivedCLIConfig.AllowedBinaries,
-					EnvPassthrough:  r.derivedCLIConfig.EnvPassthrough,
+					EnvPassthrough:  withoutEnvNames(r.derivedCLIConfig.EnvPassthrough, toolTokenEnvs),
 					TimeoutSeconds:  r.derivedCLIConfig.TimeoutHint,
 					WorkDir:         r.cfg.WorkDir,
 				}
@@ -975,7 +1009,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			{
 				var envPass []string
 				if r.derivedCLIConfig != nil {
-					envPass = r.derivedCLIConfig.EnvPassthrough
+					envPass = withoutEnvNames(r.derivedCLIConfig.EnvPassthrough, toolTokenEnvs)
 				}
 				rss := clitools.NewRunSkillScriptTool(r.cfg.WorkDir, proxyURL, socksURL, envPass)
 				if regErr := reg.Register(rss); regErr != nil {
@@ -1170,6 +1204,29 @@ func (r *Runner) Run(ctx context.Context) error {
 				}
 			}
 
+			// Register per-op API tools from apis.servers[] (admitted OpenAPI
+			// entries the platform materialized). Each op is a namespaced
+			// "<server>__<op>" tool the PDP keys rules on; the adapter uses the
+			// egress transport from the tool ctx at call time.
+			for _, srv := range r.cfg.Config.APIs.Servers {
+				tokenEnv := ""
+				if srv.Auth != nil {
+					tokenEnv = srv.Auth.TokenEnv
+				}
+				for _, op := range srv.Ops {
+					apiTool := adapters.NewAPITool(srv.Name, srv.BaseURL, tokenEnv, op, srv.Timeout)
+					if regErr := reg.Register(apiTool); regErr != nil {
+						r.logger.Warn("api tool registration", map[string]any{
+							"tool": apiTool.Name(), "error": regErr.Error(),
+						})
+						auditLogger.Emit(coreruntime.AuditEvent{
+							Event:  coreruntime.EventMCPToolConflict,
+							Fields: map[string]any{"incoming_name": apiTool.Name(), "error": regErr.Error()},
+						})
+					}
+				}
+			}
+
 			// Log registered tool names
 			toolNames := reg.List()
 			r.logger.Info("registered tools", map[string]any{"tools": toolNames})
@@ -1206,13 +1263,20 @@ func (r *Runner) Run(ctx context.Context) error {
 					// No-op when the engine is disabled.
 					r.registerStepUpHook(hooks, auditLogger)
 
-					// R4c (#211) — defer hook. Pauses the executor
-					// when a listed tool is invoked, until a decision
-					// arrives (or the timeout auto-denies). The hook
-					// resolves r.taskStore lazily (populated after srv
-					// is built, below) so hook registration can happen
-					// before srv exists.
-					r.registerDeferHook(hooks, r, auditLogger)
+					// R4c (#211) — the authorization decision hook. One
+					// decision source at a time:
+					//   - MANAGED (security.pdp.enabled): POST every tool
+					//     call to the remote PDP, default-deny, fail-closed.
+					//   - STANDALONE (else): the static security.defer.tools
+					//     lookup, UNCHANGED (opt-in, approval-only).
+					// Both enforce identically and share the parking machinery
+					// (park); a PDP `defer` verdict routes through the same
+					// engine + POST /tasks/{id}/decisions flow.
+					if r.cfg.Config.Security.Pdp.Enabled {
+						r.registerPDPDecisionHook(hooks, BuildPDPResolver(r.cfg.Config, r.logger), r, auditLogger)
+					} else {
+						r.registerDeferHook(hooks, r, auditLogger)
+					}
 
 					// Register skill-level guardrails if present.
 					// Prefer build-time artifact; fall back to runtime-parsed guardrails.
@@ -1728,7 +1792,14 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 			server.WriteSSEEvent(w, flusher, "progress", progressTask) //nolint:errcheck
 		})
 
-		// Stream from executor
+		// Stream from executor.
+		// NOTE: the streaming path intentionally runs with the REQUEST ctx
+		// (not invocationContext) — a client disconnect SHOULD stop a live SSE
+		// stream. The trade-off: a DEFER that parks here is cancelled on
+		// disconnect (park resolves as a timeout), so durable human-approval
+		// defers are NOT supported over streaming — only the synchronous
+		// tasks/send path detaches (see executeTask + invocationContext).
+		// Tracked as defer piece 1b: initializ/forge#404.
 		ch, err := executor.ExecuteStream(ctx, task, &params.Message)
 		if err != nil {
 			task.Status = a2a.TaskStatus{
@@ -1892,7 +1963,10 @@ func (r *Runner) executeTask(
 	// invocation by task ID. The release closure pops the registry
 	// entry on return; cancel() at defer time is a no-op when the
 	// invocation completed cleanly.
-	ctx, cancelInvocation := context.WithCancelCause(ctx)
+	//
+	// Detaches from the HTTP request's cancellation so a parked deferral
+	// survives the caller disconnecting — see invocationContext.
+	ctx, cancelInvocation := invocationContext(ctx)
 	release := r.cancelRegistry.Register(params.ID, cancelInvocation)
 	defer release()
 	defer cancelInvocation(nil) // nil cause = clean completion; no-op when already cancelled
@@ -2286,6 +2360,13 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 			server.WriteSSEEvent(w, flusher, "progress", progressTask) //nolint:errcheck
 		})
 
+		// NOTE: the streaming path intentionally runs with the REQUEST ctx
+		// (not invocationContext) — a client disconnect SHOULD stop a live SSE
+		// stream. The trade-off: a DEFER that parks here is cancelled on
+		// disconnect (park resolves as a timeout), so durable human-approval
+		// defers are NOT supported over streaming — only the synchronous
+		// tasks/send path detaches (see executeTask + invocationContext).
+		// Tracked as defer piece 1b: initializ/forge#404.
 		ch, err := executor.ExecuteStream(ctx, task, &params.Message)
 		if err != nil {
 			task.Status = a2a.TaskStatus{
@@ -3543,6 +3624,10 @@ func (r *Runner) registerSkillTools(reg *tools.Registry, proxyURL string, socksU
 				envVars = append(envVars, entry.ForgeReqs.Env.OneOf...)
 				envVars = append(envVars, entry.ForgeReqs.Env.Optional...)
 			}
+			// Withhold governed-tool bearer tokens from the skill script env —
+			// they belong to the in-process tool adapter, not scripts (a script
+			// with the token could bypass the PDP; see governedToolTokenEnvs).
+			envVars = withoutEnvNames(envVars, governedToolTokenEnvs(r.cfg.Config))
 
 			var modelName string
 			if r.modelConfig != nil {
@@ -3946,6 +4031,71 @@ func convertSkillGuardrails(sg *contract.SkillGuardrailConfig) *agentspec.SkillG
 		return nil
 	}
 	return rules
+}
+
+// governedToolTokenEnvs returns the set of env-var NAMES that hold a governed
+// tool's bearer token (api + bearer/static mcp servers). These are read by the
+// IN-PROCESS tool adapters via os.Getenv and are the real governance boundary:
+// the LLM never sees them. They must therefore be WITHHELD from the skill-script
+// env passthrough — otherwise a bundled (or file_write-planted) skill script
+// could read the token (e.g. `echo $API_MEMBER_SERVICE_TOKEN`) and call the
+// governed host DIRECTLY, bypassing the PDP that governs "<server>__<op>" (the
+// network path becomes reachable once builtins are PDP-exempt). Scripts never
+// need these tokens; a skill's own script secrets (its requires.env) still pass.
+func governedToolTokenEnvs(cfg *types.ForgeConfig) map[string]bool {
+	if cfg == nil {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, s := range cfg.APIs.Servers {
+		if s.Auth != nil && s.Auth.TokenEnv != "" {
+			out[s.Auth.TokenEnv] = true
+		}
+	}
+	for _, s := range cfg.MCP.Servers {
+		if s.Auth != nil && s.Auth.TokenEnv != "" {
+			out[s.Auth.TokenEnv] = true
+		}
+	}
+	return out
+}
+
+// withoutEnvNames returns names with the excluded set removed, order-preserving,
+// without mutating the input.
+func withoutEnvNames(names []string, exclude map[string]bool) []string {
+	if len(exclude) == 0 {
+		return names
+	}
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		if !exclude[n] {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// invocationContext derives the task-execution context from the request ctx.
+// It DETACHES from the request's cancellation (context.WithoutCancel) so a
+// caller disconnect can't cancel a task that legitimately outlives the request
+// — most importantly a parked DEFERRAL awaiting human approval for up to its
+// defer timeout (e.g. 1h), far longer than the synchronous caller holds the
+// connection. Before this, a caller that gave up after minutes cancelled the
+// request ctx, which resolved the parked deferral as a timeout and canceled the
+// task before anyone could approve it. The returned CancelCauseFunc keeps the
+// task explicitly cancellable (tasks/cancel via the cancellation registry) and
+// the deferral's own timeout still bounds it; request values (correlation id,
+// usage accumulator) are preserved by WithoutCancel.
+//
+// RESIDUAL: WithoutCancel detaches from the WHOLE ctx chain, so an in-flight or
+// parked invocation also stops observing server graceful-shutdown signalling.
+// Teardown then falls to the agent loop cap (maxIter, default 50), the defer
+// timeout, or explicit tasks/cancel, and ultimately the shutdown hard-kill —
+// i.e. orphaned tasks compute to natural loop termination and don't drain
+// cleanly on shutdown. Accepted: the loop cap bounds runaway compute and task
+// state is persisted in the store, so a hard-killed task is recoverable.
+func invocationContext(reqCtx context.Context) (context.Context, context.CancelCauseFunc) {
+	return context.WithCancelCause(context.WithoutCancel(reqCtx))
 }
 
 func envFromOS() map[string]string {

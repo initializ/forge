@@ -29,6 +29,7 @@ type ForgeConfig struct {
 	Secrets        SecretsConfig       `yaml:"secrets,omitempty"`
 	Auth           AuthConfig          `yaml:"auth,omitempty"`
 	MCP            MCPConfig           `yaml:"mcp,omitempty"`
+	APIs           APIConfig           `yaml:"apis,omitempty"`
 	Platform       *PlatformConfig     `yaml:"platform,omitempty"`
 	Schedules      []ScheduleConfig    `yaml:"schedules,omitempty"`
 	Scheduler      SchedulerConfig     `yaml:"scheduler,omitempty"`
@@ -204,6 +205,15 @@ type SecurityConfig struct {
 	// Opt-in; requires a decision to arrive at
 	// `POST /tasks/{id}/decisions` before the tool call proceeds.
 	Defer DeferConfig `yaml:"defer,omitempty"`
+
+	// Pdp configures the MANAGED per-tool-call authorization decision:
+	// every tool call is POSTed to a remote Policy Decision Point that
+	// returns allow | defer | deny over the parsed arguments, default-deny
+	// (design-tool-registry §4.1). This is the managed counterpart to the
+	// standalone/OSS static `defer` above — when Pdp.Enabled the PDP is the
+	// single decision source and `defer.tools` is ignored (a startup warning
+	// is emitted). Fails CLOSED (§14.5). Opt-in; absent → today's behavior.
+	Pdp PdpConfig `yaml:"pdp,omitempty"`
 }
 
 // IntentDriftConfig is the forge.yaml-facing block for R7 drift
@@ -388,6 +398,49 @@ func (c DeferConfig) Validate() error {
 	}
 	if len(c.Tools) == 0 {
 		return fmt.Errorf("security.defer: enabled but no tools declared — either list tools under `defer.tools:` or set `defer.enabled: false`")
+	}
+	return nil
+}
+
+// PdpConfig is the forge.yaml-facing block for the managed PDP decision
+// path (`security.pdp`). When Enabled, a BeforeToolExec hook POSTs every
+// proposed tool call to Endpoint and enforces the returned verdict.
+type PdpConfig struct {
+	// Enabled turns the managed PDP path on. When true it is the single
+	// decision source (the static `defer.tools` map is ignored).
+	Enabled bool `yaml:"enabled,omitempty"`
+
+	// Endpoint is the full PDP decide URL, POSTed verbatim (e.g.
+	// http://security-next.<ns>.svc:8080/security/v1/pdp/decide).
+	// `${VAR}` is env-expanded at load, so `endpoint: ${PDP_ENDPOINT}` works.
+	Endpoint string `yaml:"endpoint,omitempty"`
+
+	// Fail is the failure posture. Only "closed" (the default) is honored:
+	// an authorization decision must never fail open (§14.5). "open" and any
+	// other value are rejected at startup so nobody demos an authz path that
+	// fails open by accident.
+	Fail string `yaml:"fail,omitempty"`
+
+	// Timeout bounds each PDP call. Zero → a built-in default (3s).
+	Timeout time.Duration `yaml:"timeout,omitempty"`
+}
+
+// Validate rejects a misconfigured managed PDP at startup (fail-loud, like
+// DeferConfig.Validate). Critically it refuses `fail: open` — an authz path
+// that fails open is a security regression (§14.5).
+func (c PdpConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	if c.Endpoint == "" {
+		return fmt.Errorf("security.pdp: enabled but no endpoint — set `pdp.endpoint:` or `pdp.enabled: false`")
+	}
+	switch c.Fail {
+	case "", "closed":
+	case "open":
+		return fmt.Errorf("security.pdp.fail: 'open' is not permitted — an authorization decision must fail closed (design-tool-registry §14.5)")
+	default:
+		return fmt.Errorf("security.pdp.fail must be 'closed' (the only supported value), got %q", c.Fail)
 	}
 	return nil
 }
@@ -610,6 +663,102 @@ type MCPToolSchema struct {
 	// InputSchema is the JSON Schema for the tool's arguments, authored as
 	// a YAML mapping and marshaled to JSON when the descriptor is built.
 	InputSchema map[string]any `yaml:"input_schema,omitempty"`
+}
+
+// APIConfig registers admitted OpenAPI APIs as PER-OPERATION tools. Unlike the
+// generic openapi_call adapter, each operation becomes its own namespaced tool
+// "<server>__<op>" with the operation's typed input schema — so a PDP can key
+// value rules on the operation (e.g. reverse_fee.amount). The platform
+// materializes these from an admitted api-type registry entry (there is no
+// live discovery — schemas are baked in, like the MCP #317 path).
+type APIConfig struct {
+	Servers []APIServer `yaml:"servers,omitempty"`
+}
+
+// APIServer is one admitted API. Its operations register as "<Name>__<op>".
+type APIServer struct {
+	// Name is the slug used as the tool namespace prefix and in audit logs
+	// (e.g. name "memberservice" → tool "memberservice__reverse_fee"). Required.
+	Name string `yaml:"name"`
+	// BaseURL is the API's base (e.g. https://member-service.test.initializ.ai).
+	// The host must be on the egress allowlist (see security.APIDomains). Required.
+	BaseURL string `yaml:"base_url"`
+	// Auth declares how Forge authenticates outbound calls. nil = no auth.
+	Auth *APIAuth `yaml:"auth,omitempty"`
+	// Ops are the operations exposed as tools. Required (non-empty).
+	Ops []APIOp `yaml:"operations,omitempty"`
+	// Timeout caps each call. Default 30s.
+	Timeout time.Duration `yaml:"timeout,omitempty"`
+}
+
+// APIAuth declares outbound auth for an API server. Bearer/static only — the
+// admission gate rejects oauth for api entries.
+type APIAuth struct {
+	// TokenEnv names the env var holding the bearer token, sent as
+	// Authorization: Bearer <value>. The value is a per-agent secret, never
+	// stored on the config.
+	TokenEnv string `yaml:"token_env,omitempty"`
+}
+
+// APIOp is one operation of an APIServer — an OpenAPI path+method with its
+// typed input schema.
+type APIOp struct {
+	// Name is the operation id (e.g. "reverse_fee") — the tool suffix.
+	Name string `yaml:"name"`
+	// Method is the HTTP verb (GET/POST/PUT/PATCH/DELETE).
+	Method string `yaml:"method"`
+	// Path is the OpenAPI path template (e.g. /accounts/{account_id}/history);
+	// {name} segments are substituted from the call's typed args.
+	Path        string `yaml:"path"`
+	Description string `yaml:"description,omitempty"`
+	// InputSchema is the operation's argument JSON Schema (YAML mapping →
+	// JSON), the same flattened shape the registry stores.
+	InputSchema map[string]any `yaml:"input_schema,omitempty"`
+}
+
+// Validate rejects a malformed materialized API config at startup (fail-loud,
+// mirroring PdpConfig/DeferConfig.Validate). apis.servers[] is platform-
+// materialized, so a violation here is a materialization bug that should abort
+// boot loudly rather than degrade to a confusing runtime symptom — e.g. an
+// empty base_url yields host "" (never allowlisted), so every call would fail
+// closed at egress with no hint that the config, not the network, is broken.
+// Empty config is valid (agents without API tools). Requires: each server a
+// name + base_url + ≥1 op; each op a method + path; server and per-server op
+// names unique (a duplicate tool name would be silently dropped at register).
+func (c APIConfig) Validate() error {
+	seenServer := map[string]struct{}{}
+	for i, s := range c.Servers {
+		if s.Name == "" {
+			return fmt.Errorf("apis.servers[%d]: name is required", i)
+		}
+		if _, dup := seenServer[s.Name]; dup {
+			return fmt.Errorf("apis.servers: duplicate server name %q", s.Name)
+		}
+		seenServer[s.Name] = struct{}{}
+		if s.BaseURL == "" {
+			return fmt.Errorf("apis.servers[%q]: base_url is required", s.Name)
+		}
+		if len(s.Ops) == 0 {
+			return fmt.Errorf("apis.servers[%q]: at least one operation is required", s.Name)
+		}
+		seenOp := map[string]struct{}{}
+		for j, op := range s.Ops {
+			if op.Name == "" {
+				return fmt.Errorf("apis.servers[%q].operations[%d]: name is required", s.Name, j)
+			}
+			if _, dup := seenOp[op.Name]; dup {
+				return fmt.Errorf("apis.servers[%q]: duplicate operation name %q", s.Name, op.Name)
+			}
+			seenOp[op.Name] = struct{}{}
+			if op.Method == "" {
+				return fmt.Errorf("apis.servers[%q].operations[%q]: method is required", s.Name, op.Name)
+			}
+			if op.Path == "" {
+				return fmt.Errorf("apis.servers[%q].operations[%q]: path is required", s.Name, op.Name)
+			}
+		}
+	}
+	return nil
 }
 
 // PlatformConfig wires a deployed agent to its managing platform's token
@@ -950,6 +1099,13 @@ type ModelRef struct {
 	// "x-gateway-key". Ignored for every other AuthScheme.
 	AuthHeaderName string `yaml:"auth_header_name,omitempty"`
 
+	// DisableStore sends `store: false` on OpenAI Responses API requests
+	// (provider: openai-responses), telling OpenAI not to retain the
+	// response server-side (default retention is ~30 days). Unset leaves
+	// `store` at the API default. Only the openai-responses provider honors
+	// it; every other provider ignores it. Issue #383.
+	DisableStore bool `yaml:"disable_store,omitempty"`
+
 	Version        string          `yaml:"version,omitempty"`
 	OrganizationID string          `yaml:"organization_id,omitempty"`
 	Fallbacks      []ModelFallback `yaml:"fallbacks,omitempty"`
@@ -1013,6 +1169,13 @@ func ParseForgeConfig(data []byte) (*ForgeConfig, error) {
 	// validate, security.MCPDomains, the build pipeline) sees resolved
 	// values, and the egress allowlist is computed from real hosts.
 	expandMCPEnv(&cfg)
+
+	// Expand ${VAR} in the managed PDP endpoint at load too, so
+	// PdpConfig.Validate() (run at startup) sees the RESOLVED value: an unset
+	// `endpoint: ${PDP_ENDPOINT}` expands to "" and fails loud ("enabled but no
+	// endpoint") instead of passing validation and silently degrading to a
+	// per-call deny-all when the resolver later expands it to "".
+	cfg.Security.Pdp.Endpoint = expandEnvRef(cfg.Security.Pdp.Endpoint)
 
 	if cfg.AgentID == "" {
 		return nil, fmt.Errorf("forge config: agent_id is required")

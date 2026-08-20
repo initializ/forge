@@ -176,6 +176,8 @@ configured — immediately on a sink `connected` flip, else a slow
 keepalive (15m default, `AUDIT_STATUS_KEEPALIVE_INTERVAL`) (FWS-7,
 #280).
 
+**Message-part → prompt projection** (`a2a.Message.PromptText()`, `forge-core/a2a/types.go`): the inbound message's parts become the LLM turn's content — text parts verbatim (newline-joined), each **data part** (`{kind:"data",data:{…}}`) appended as a fenced ```json block (capped at 16KiB per part, rune-safe, with a truncation marker), file parts ignored. So a data-part-only message (e.g. a workflow step's output dispatched with no text part) still produces a non-empty prompt instead of reading as empty (#410). The SAME projection feeds the inbound guardrail + intent-alignment scanners (`ExtractText`) — same cap, same text — so a payload carried in a data part can't reach the model while bypassing the security checks, and the truncated tail reaches neither. Custom guardrail patterns that span a part boundary should use `\s+` (parts join with `\n`), not a literal space.
+
 **Read**: `docs/core-concepts/runtime-engine.md`,
 `docs/core-concepts/hooks.md`, `forge-cli/runtime/runner.go`.
 

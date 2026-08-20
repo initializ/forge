@@ -54,6 +54,55 @@ func TestInferForgeMeta(t *testing.T) {
 	}
 }
 
+func TestShellEnvReads(t *testing.T) {
+	script := `#!/usr/bin/env bash
+set -euo pipefail
+: "${DATADOG_API_KEY:?}"          # required env → candidate
+TOKEN="$DD_APP_KEY"               # read → candidate
+LOCAL_TMP=$(mktemp)               # assigned locally → NOT a candidate
+echo "$LOCAL_TMP" > "$HOME/out"   # HOME is a common shell var → excluded
+for ITEM in a b c; do echo "$ITEM"; done   # ITEM assigned by for → excluded
+curl -H "apikey: $DATADOG_API_KEY" https://api.example.com
+echo "$1 $PATH"                   # positional + PATH → excluded
+`
+	got := map[string]bool{}
+	for _, n := range shellEnvReads(script) {
+		got[n] = true
+	}
+	for _, want := range []string{"DATADOG_API_KEY", "DD_APP_KEY"} {
+		if !got[want] {
+			t.Errorf("expected %q in shell env candidates, got %v", want, got)
+		}
+	}
+	for _, notWant := range []string{"LOCAL_TMP", "HOME", "ITEM", "PATH"} {
+		if got[notWant] {
+			t.Errorf("%q should be filtered out of shell env candidates", notWant)
+		}
+	}
+}
+
+// TestInferForgeMeta_ShellScript exercises the full inference path for a
+// shell-backed skill.
+func TestInferForgeMeta_ShellScript(t *testing.T) {
+	src := t.TempDir()
+	writeImportFile(t, filepath.Join(src, "SKILL.md"), inferSkillMD)
+	writeImportFile(t, filepath.Join(src, "scripts", "run.sh"),
+		"#!/usr/bin/env bash\n: \"${WEATHER_API_KEY:?}\"\ncurl \"https://api.weather.example/v1?key=$WEATHER_API_KEY\"\n")
+
+	res, err := ImportSkillFolder(SkillImportOptions{SourceDir: src, AgentDir: newAgentDir(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := res.SuggestedForgeMeta
+	// .sh needs no requires.bins (bash is built in) but env/egress candidates surface.
+	if !strings.Contains(s, "WEATHER_API_KEY") {
+		t.Errorf("shell env candidate missing:\n%s", s)
+	}
+	if !strings.Contains(s, "api.weather.example") {
+		t.Errorf("shell egress candidate missing:\n%s", s)
+	}
+}
+
 func TestImportSkillFolder_WriteForgeMeta(t *testing.T) {
 	src := t.TempDir()
 	writeImportFile(t, filepath.Join(src, "SKILL.md"), inferSkillMD)

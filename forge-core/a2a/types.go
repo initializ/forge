@@ -1,6 +1,11 @@
 // Package a2a provides shared types for the Agent-to-Agent (A2A) protocol.
 package a2a
 
+import (
+	"encoding/json"
+	"strings"
+)
+
 // TaskState represents the possible states of an A2A task.
 type TaskState string
 
@@ -58,6 +63,39 @@ type Message struct {
 	Role    MessageRole `json:"role"`
 	Parts   []Part      `json:"parts"`
 	Summary string      `json:"summary,omitempty"`
+}
+
+// PromptText projects a message's parts into the single string the LLM sees as
+// the turn's content. Text parts are included verbatim; each data part is
+// appended as a fenced JSON block so structured input carried in a data part —
+// e.g. a workflow step's output dispatched with no text part — still reaches
+// the model instead of yielding an empty prompt (#410). File parts are not
+// projected (their bytes/URIs aren't prompt text).
+//
+// This is the single source of truth for "what the model sees": the executor's
+// prompt builder AND the inbound guardrail / intent-alignment scanners all go
+// through it, so a data part can never reach the LLM while bypassing the
+// security checks.
+func (m Message) PromptText() string {
+	var segments []string
+	for _, p := range m.Parts {
+		switch p.Kind {
+		case PartKindText:
+			if p.Text != "" {
+				segments = append(segments, p.Text)
+			}
+		case PartKindData:
+			if p.Data == nil {
+				continue
+			}
+			b, err := json.MarshalIndent(p.Data, "", "  ")
+			if err != nil {
+				continue
+			}
+			segments = append(segments, "```json\n"+string(b)+"\n```")
+		}
+	}
+	return strings.Join(segments, "\n")
 }
 
 // PartKind discriminates the content type of a Part.

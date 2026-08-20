@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"github.com/initializ/forge/forge-core/a2a"
@@ -253,13 +252,14 @@ func (n *NoopGuardrailChecker) CheckStream(_ context.Context, chunk string) (str
 	return chunk, nil
 }
 
-// ExtractText extracts all text parts from a message into a single string.
+// ExtractText projects a message into the string the inbound guardrail and
+// intent-alignment checks scan. It delegates to Message.PromptText so the
+// scanners see exactly what the LLM sees — including data parts (#410), so a
+// prompt-injection or misaligned payload carried in a data part can't slip past
+// the checks while still reaching the model.
 func ExtractText(msg *a2a.Message) string {
-	var parts []string
-	for _, p := range msg.Parts {
-		if p.Kind == a2a.PartKindText && p.Text != "" {
-			parts = append(parts, p.Text)
-		}
+	if msg == nil {
+		return ""
 	}
-	return strings.Join(parts, " ")
+	return msg.PromptText()
 }

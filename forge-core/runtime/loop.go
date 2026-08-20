@@ -936,16 +936,9 @@ func a2aMessageToLLM(msg a2a.Message) llm.ChatMessage {
 		role = llm.RoleAssistant
 	}
 
-	var textParts []string
-	for _, p := range msg.Parts {
-		if p.Kind == a2a.PartKindText && p.Text != "" {
-			textParts = append(textParts, p.Text)
-		}
-	}
-
 	return llm.ChatMessage{
 		Role:    role,
-		Content: strings.Join(textParts, "\n"),
+		Content: msg.PromptText(),
 	}
 }
 

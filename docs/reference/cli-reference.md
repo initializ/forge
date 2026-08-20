@@ -39,6 +39,7 @@ forge init [name] [flags]
 | `--org-id` | | | OpenAI Organization ID (enterprise) |
 | `--from-skills` | | | Path to a SKILL.md file for auto-configuration |
 | `--from-skill-dir` | | | Path to a skill folder (SKILL.md + scripts + reference files) to vendor into the new agent and wire (egress/env). See [Skills CLI / Importing a skill folder](../skills/skills-cli.md#importing-a-skill-folder) |
+| `--write-forge-meta` | | `false` | With `--from-skill-dir`: inject inferred `requires.bins` into the imported SKILL.md when it has no `metadata.forge` block |
 | `--non-interactive` | | `false` | Skip interactive prompts |
 | `--compression` | | `false` | Enable reversible context compression — writes `compression.enabled: true` to the scaffolded forge.yaml. See [Context Compression](../core-concepts/context-compression.md) |
 | `--auth` | | | Auth mode: `none`, `oidc`, `http_verifier`, `aws_sigv4`, `gcp_iap`, `azure_ad`, `custom` |
@@ -611,6 +612,8 @@ forge skills add <skill-name>
 # the current project; vendors files, merges egress, reports env requirements
 forge skills import ./path/to/skill-folder
 forge skills import ./path/to/skill-folder --name my-skill --overwrite
+# Infer + inject requires.bins (python3/node) for a plain SKILL.md with no metadata.forge
+forge skills import ./path/to/skill-folder --write-forge-meta
 
 # List available skills
 forge skills list

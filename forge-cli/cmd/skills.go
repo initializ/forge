@@ -99,6 +99,7 @@ func init() {
 
 	skillsImportCmd.Flags().String("name", "", "Skill name override (default: SKILL.md `name` or folder basename)")
 	skillsImportCmd.Flags().Bool("overwrite", false, "Replace an existing skills/<name>/ directory")
+	skillsImportCmd.Flags().Bool("write-forge-meta", false, "Inject inferred requires.bins into the SKILL.md when it has no metadata.forge block")
 
 	skillsAuditCmd.Flags().StringVar(&auditFormat, "format", "text", "Output format: text or json")
 	skillsAuditCmd.Flags().BoolVar(&auditEmbedded, "embedded", false, "Audit embedded skills from the binary")
@@ -288,12 +289,14 @@ func runSkillsImport(cmd *cobra.Command, args []string) error {
 
 	nameOverride, _ := cmd.Flags().GetString("name")
 	overwrite, _ := cmd.Flags().GetBool("overwrite")
+	writeForgeMeta, _ := cmd.Flags().GetBool("write-forge-meta")
 
 	res, err := ImportSkillFolder(SkillImportOptions{
-		SourceDir:    args[0],
-		AgentDir:     wd,
-		NameOverride: nameOverride,
-		Overwrite:    overwrite,
+		SourceDir:      args[0],
+		AgentDir:       wd,
+		NameOverride:   nameOverride,
+		Overwrite:      overwrite,
+		WriteForgeMeta: writeForgeMeta,
 	})
 	if err != nil {
 		return err

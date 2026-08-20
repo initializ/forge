@@ -231,6 +231,108 @@ func TestImportSkillFolder_Errors(t *testing.T) {
 	}
 }
 
+// TestImportSkillFolder_RejectsTraversalName is the security regression: a
+// SKILL.md whose frontmatter `name` contains path traversal must be rejected,
+// never used to derive a skill directory outside skills/. Covers arbitrary
+// write (MkdirAll+WriteFile) and, with --overwrite, arbitrary delete.
+func TestImportSkillFolder_RejectsTraversalName(t *testing.T) {
+	agentDir := newAgentDir(t)
+	// A sentinel directory outside the project that must never be touched.
+	victim := filepath.Join(t.TempDir(), "victim")
+	writeImportFile(t, filepath.Join(victim, "keep.txt"), "do not delete")
+
+	for _, evil := range []string{
+		"../../../../etc",
+		"..",
+		"../outside",
+		"foo/bar",  // slash → not kebab
+		"Bad_Name", // underscore/upper → not kebab
+	} {
+		srcDir := t.TempDir()
+		md := "---\nname: " + evil + "\ndescription: x\n---\n## Tool: t\n**Input:** a (string)\n"
+		writeImportFile(t, filepath.Join(srcDir, "SKILL.md"), md)
+
+		// Without and with overwrite — both must error, nothing written/deleted.
+		for _, ow := range []bool{false, true} {
+			_, err := ImportSkillFolder(SkillImportOptions{SourceDir: srcDir, AgentDir: agentDir, Overwrite: ow})
+			if err == nil {
+				t.Errorf("expected rejection for traversal/non-kebab name %q (overwrite=%v)", evil, ow)
+			}
+		}
+	}
+	// The victim is untouched.
+	if _, err := os.Stat(filepath.Join(victim, "keep.txt")); err != nil {
+		t.Errorf("victim file was affected by a traversal import: %v", err)
+	}
+	// Nothing escaped into the parent of skills/.
+	if entries, _ := os.ReadDir(filepath.Join(agentDir, "skills")); len(entries) != 0 {
+		t.Errorf("skills/ should be empty after rejected imports, got %d entries", len(entries))
+	}
+}
+
+// TestImportSkillFolder_SkipsSymlinks ensures a symlinked file in the source is
+// not vendored (its target content would otherwise be smuggled in).
+func TestImportSkillFolder_SkipsSymlinks(t *testing.T) {
+	secret := filepath.Join(t.TempDir(), "id_rsa")
+	writeImportFile(t, secret, "TOP SECRET KEY")
+
+	srcDir := t.TempDir()
+	writeImportFile(t, filepath.Join(srcDir, "SKILL.md"), sampleSkillMD)
+	if err := os.MkdirAll(filepath.Join(srcDir, "reference"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(srcDir, "reference", "leaked.txt")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	agentDir := newAgentDir(t)
+	res, err := ImportSkillFolder(SkillImportOptions{SourceDir: srcDir, AgentDir: agentDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(agentDir, "skills", "jira-search", "reference", "leaked.txt")); err == nil {
+		t.Error("symlink was vendored — host content smuggling not prevented")
+	}
+	hasWarn := false
+	for _, w := range res.Warnings {
+		if strings.Contains(w, "symlink") {
+			hasWarn = true
+		}
+	}
+	if !hasWarn {
+		t.Errorf("expected a skipped-symlink warning, got %v", res.Warnings)
+	}
+}
+
+// TestImportSkillFolder_ScriptCollisionKeepsFirst ensures two root-level scripts
+// with the same basename don't silently clobber — the first wins and a warning
+// is emitted.
+func TestImportSkillFolder_ScriptCollisionKeepsFirst(t *testing.T) {
+	srcDir := t.TempDir()
+	writeImportFile(t, filepath.Join(srcDir, "SKILL.md"), sampleSkillMD)
+	writeImportFile(t, filepath.Join(srcDir, "a", "run.sh"), "echo A\n")
+	writeImportFile(t, filepath.Join(srcDir, "b", "run.sh"), "echo B\n")
+
+	agentDir := newAgentDir(t)
+	res, err := ImportSkillFolder(SkillImportOptions{SourceDir: srcDir, AgentDir: agentDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(filepath.Join(agentDir, "skills", "jira-search", "scripts", "run.sh"))
+	if string(got) != "echo A\n" {
+		t.Errorf("collision clobbered the first script: got %q, want the first (echo A)", got)
+	}
+	hasWarn := false
+	for _, w := range res.Warnings {
+		if strings.Contains(w, "collision") {
+			hasWarn = true
+		}
+	}
+	if !hasWarn {
+		t.Errorf("expected a script-collision warning, got %v", res.Warnings)
+	}
+}
+
 func TestClassifyImportFile(t *testing.T) {
 	cases := []struct {
 		in         string

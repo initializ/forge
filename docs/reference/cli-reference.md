@@ -603,6 +603,11 @@ Manage agent skills.
 # Add a skill from the registry (prompts for env vars, merges egress domains)
 forge skills add <skill-name>
 
+# Import an external skill folder (SKILL.md + scripts + reference files) into
+# the current project; vendors files, merges egress, reports env requirements
+forge skills import ./path/to/skill-folder
+forge skills import ./path/to/skill-folder --name my-skill --overwrite
+
 # List available skills
 forge skills list
 

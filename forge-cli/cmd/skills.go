@@ -41,6 +41,13 @@ var skillsAddCmd = &cobra.Command{
 	RunE:  runSkillsAdd,
 }
 
+var skillsImportCmd = &cobra.Command{
+	Use:   "import <folder>",
+	Short: "Import an external skill folder (SKILL.md + scripts + reference files) into the current project",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runSkillsImport,
+}
+
 var skillsAuditCmd = &cobra.Command{
 	Use:   "audit",
 	Short: "Run security audit on skills file",
@@ -83,11 +90,15 @@ var signKeyPath string
 func init() {
 	skillsCmd.AddCommand(skillsValidateCmd)
 	skillsCmd.AddCommand(skillsAddCmd)
+	skillsCmd.AddCommand(skillsImportCmd)
 	skillsCmd.AddCommand(skillsAuditCmd)
 	skillsCmd.AddCommand(skillsSignCmd)
 	skillsCmd.AddCommand(skillsKeygenCmd)
 	skillsCmd.AddCommand(skillsListCmd)
 	skillsCmd.AddCommand(skillsTrustReportCmd)
+
+	skillsImportCmd.Flags().String("name", "", "Skill name override (default: SKILL.md `name` or folder basename)")
+	skillsImportCmd.Flags().Bool("overwrite", false, "Replace an existing skills/<name>/ directory")
 
 	skillsAuditCmd.Flags().StringVar(&auditFormat, "format", "text", "Output format: text or json")
 	skillsAuditCmd.Flags().BoolVar(&auditEmbedded, "embedded", false, "Audit embedded skills from the binary")
@@ -266,6 +277,60 @@ func runSkillsAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("\nSkill %q added successfully.\n", info.DisplayName)
+	return nil
+}
+
+func runSkillsImport(cmd *cobra.Command, args []string) error {
+	wd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getting working directory: %w", err)
+	}
+
+	nameOverride, _ := cmd.Flags().GetString("name")
+	overwrite, _ := cmd.Flags().GetBool("overwrite")
+
+	res, err := ImportSkillFolder(SkillImportOptions{
+		SourceDir:    args[0],
+		AgentDir:     wd,
+		NameOverride: nameOverride,
+		Overwrite:    overwrite,
+	})
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("  Imported skill %q into %s/\n", res.SkillName, res.SkillDir)
+	fmt.Printf("    SKILL.md + %d script(s), %d reference file(s)\n", len(res.Scripts), len(res.ReferenceFiles))
+	for _, s := range res.Scripts {
+		fmt.Printf("    script:    %s/%s\n", res.SkillDir, s)
+	}
+	for _, f := range res.ReferenceFiles {
+		fmt.Printf("    reference: %s/%s\n", res.SkillDir, f)
+	}
+
+	if len(res.EgressAdded) > 0 {
+		fmt.Println("\n  Egress domains added to forge.yaml:")
+		for _, d := range res.EgressAdded {
+			fmt.Printf("    + %s\n", d)
+		}
+	}
+
+	if len(res.EnvMissing) > 0 {
+		fmt.Println("\n  Environment requirements not yet satisfied:")
+		for _, e := range res.EnvMissing {
+			fmt.Printf("    %s (%s)\n", e.Name, e.Kind)
+		}
+		fmt.Println("    Set them in .env or via 'forge secret set <KEY>'.")
+	}
+
+	if len(res.Warnings) > 0 {
+		fmt.Println("\n  Follow-ups:")
+		for _, w := range res.Warnings {
+			fmt.Printf("    - %s\n", w)
+		}
+	}
+
+	fmt.Printf("\nSkill %q imported. Run 'forge run' to use it.\n", res.SkillName)
 	return nil
 }
 

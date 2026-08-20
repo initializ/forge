@@ -31,7 +31,53 @@ var (
 	// not scanned — it's far too noisy ($1, $PATH, $HOME, …) to be useful.
 	pyEnvRe = regexp.MustCompile(`os\.(?:getenv\(|environ(?:\.get)?\(|environ\[)\s*["']([A-Z][A-Z0-9_]{2,})["']`)
 	jsEnvRe = regexp.MustCompile(`process\.env\.([A-Z][A-Z0-9_]{2,})`)
+
+	// Shell env reads: $VAR or ${VAR}, uppercase names ≥3 chars (so $1, $a,
+	// $IFS-style shorts don't match). Assignments and common shell vars are
+	// filtered separately — see shellEnvReads.
+	shEnvReadRe = regexp.MustCompile(`\$\{?([A-Z][A-Z0-9_]{2,})\}?`)
+	// Names assigned locally in the script (so they're a local var, not an env
+	// requirement): NAME=, export NAME=, local NAME=, read NAME, for NAME in.
+	shEnvAssignRe = regexp.MustCompile(`(?m)(?:^|\bexport\s+|\blocal\s+)([A-Z][A-Z0-9_]{2,})=|(?:\bread\s+(?:-\w+\s+)*|\bfor\s+)([A-Z][A-Z0-9_]{2,})\b`)
 )
+
+// commonShellVars are shell/OS-provided variables that a script reads but the
+// operator never sets as a skill secret — excluded from env candidates.
+var commonShellVars = map[string]bool{
+	"PATH": true, "HOME": true, "PWD": true, "OLDPWD": true, "USER": true,
+	"SHELL": true, "TERM": true, "LANG": true, "LC_ALL": true, "TMPDIR": true,
+	"TMP": true, "TEMP": true, "IFS": true, "PS1": true, "PS2": true,
+	"HOSTNAME": true, "RANDOM": true, "SECONDS": true, "LINENO": true,
+	"UID": true, "EUID": true, "BASH": true, "BASH_VERSION": true,
+	"BASH_SOURCE": true, "FUNCNAME": true, "REPLY": true, "GROUPS": true,
+	"SHLVL": true, "COLUMNS": true, "LINES": true, "EDITOR": true, "PAGER": true,
+}
+
+// shellEnvReads returns the uppercase env-var names a shell script READS
+// ($VAR / ${VAR}) that it does NOT assign locally and that aren't common
+// shell/OS vars — i.e. env vars the skill expects to be provided.
+func shellEnvReads(text string) []string {
+	assigned := map[string]bool{}
+	for _, m := range shEnvAssignRe.FindAllStringSubmatch(text, -1) {
+		if m[1] != "" {
+			assigned[m[1]] = true
+		}
+		if m[2] != "" {
+			assigned[m[2]] = true
+		}
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range shEnvReadRe.FindAllStringSubmatch(text, -1) {
+		name := m[1]
+		if assigned[name] || commonShellVars[name] || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
+}
 
 // inferForgeMeta scans the vendored skill scripts for a plain SKILL.md's
 // missing forge metadata (#412): script interpreters → requires.bins, http(s)
@@ -82,6 +128,11 @@ func inferForgeMeta(skillDir string, result *SkillImportResult) inferredForgeMet
 		if ext == ".js" || ext == ".cjs" || ext == ".mjs" {
 			for _, m := range jsEnvRe.FindAllStringSubmatch(text, -1) {
 				envSet[m[1]] = true
+			}
+		}
+		if ext == ".sh" || ext == ".bash" {
+			for _, name := range shellEnvReads(text) {
+				envSet[name] = true
 			}
 		}
 	}

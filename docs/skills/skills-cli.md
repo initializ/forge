@@ -62,7 +62,9 @@ What it does:
   many real skills are plain (`name` + `description` only). It derives
   `requires.bins` from the script interpreters (`.py` → `python3`, `.js` →
   `node`), and reports **candidate** `egress_domains` (http(s) hosts found in
-  scripts) and `requires.env` (env-var reads) for you to review. By default it
+  scripts) and `requires.env` (env-var reads — Python `os.environ`/`os.getenv`,
+  JS `process.env`, and shell `$VAR`/`${VAR}` minus locally-assigned and common
+  shell variables) for you to review. By default it
   **prints** a paste-ready suggested block; the interpreter part is high-
   confidence, the egress/env parts are candidates and are never auto-declared.
 

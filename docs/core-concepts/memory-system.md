@@ -56,6 +56,8 @@ memory:
 
 The pod authenticates to the service with its platform token, reusing the same env the admission client reads — `FORGE_PLATFORM_TOKEN` plus the `FORGE_ORG_ID` / `FORGE_WORKSPACE_ID` tenancy stamps. A `remote` selection missing its URL or token warns and falls back to the `file` backend, so session memory is never silently dropped.
 
+> **The `remote` store attaches independent of `memory.persistence` (#372/#373).** Selecting `remote` (via `session_store: remote` or `FORGE_SESSION_STORE=remote`) engages the backend **even when `memory.persistence` is off / absent** — the two are decoupled. This is the load-bearing behavior for the common platform/BYO-CI case, where the platform injects `FORGE_SESSION_STORE=remote` at deploy time while the developer's committed `forge.yaml` omits any `memory:` block: previously the session store was gated behind `persistence`, so every session was silently dropped despite a configured remote backend. You do **not** need `persistence: true` for the remote store to work.
+
 ```bash
 export FORGE_SESSION_STORE=remote
 export FORGE_SESSION_STORE_URL=https://sessions.example/api/v1/agent-sessions

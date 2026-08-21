@@ -3,6 +3,7 @@ package forgeui
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,6 +16,8 @@ import (
 
 	"github.com/initializ/forge/forge-core/auth"
 )
+
+const agentCallTimeout = 10 * time.Minute
 
 // handleChat proxies a chat message to a running agent via A2A JSON-RPC
 // and streams the SSE response back to the browser.
@@ -73,10 +76,12 @@ func (s *UIServer) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// POST to the agent's A2A endpoint.
+	agentCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), agentCallTimeout)
+	defer cancel()
+
 	client := &http.Client{Timeout: 0}
 	agentURL := fmt.Sprintf("http://127.0.0.1:%d/", port)
-	agentReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, agentURL, bytes.NewReader(rpcBody))
+	agentReq, err := http.NewRequestWithContext(agentCtx, http.MethodPost, agentURL, bytes.NewReader(rpcBody))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create agent request")
 		return
@@ -115,17 +120,18 @@ func (s *UIServer) handleChat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	flusher.Flush()
 
-	// Parse agent SSE and re-emit to browser.
 	scanner := bufio.NewScanner(agentResp.Body)
 	var eventType string
 	var dataLines []string
+	clientGone := false
 
 	for scanner.Scan() {
-		// Check if client disconnected.
-		select {
-		case <-r.Context().Done():
-			return
-		default:
+		if !clientGone {
+			select {
+			case <-r.Context().Done():
+				clientGone = true
+			default:
+			}
 		}
 
 		line := scanner.Text()
@@ -135,11 +141,13 @@ func (s *UIServer) handleChat(w http.ResponseWriter, r *http.Request) {
 		} else if after, found := strings.CutPrefix(line, "data:"); found {
 			dataLines = append(dataLines, after)
 		} else if line == "" && eventType != "" {
-			// Blank line = end of SSE frame. Re-emit to browser.
-			data := strings.TrimSpace(strings.Join(dataLines, "\n"))
-			if data != "" {
-				_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, data)
-				flusher.Flush()
+			// Blank line = end of SSE frame. Re-emit to browser (if still connected).
+			if !clientGone {
+				data := strings.TrimSpace(strings.Join(dataLines, "\n"))
+				if data != "" {
+					_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, data)
+					flusher.Flush()
+				}
 			}
 			eventType = ""
 			dataLines = nil
@@ -150,6 +158,72 @@ func (s *UIServer) handleChat(w http.ResponseWriter, r *http.Request) {
 	doneData, _ := json.Marshal(map[string]string{"session_id": sessionID})
 	_, _ = fmt.Fprintf(w, "event: done\ndata: %s\n\n", doneData)
 	flusher.Flush()
+}
+
+func (s *UIServer) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
+	agentID := r.PathValue("id")
+	sid := r.PathValue("sid")
+	if agentID == "" || sid == "" {
+		writeError(w, http.StatusBadRequest, "agent id and session id are required")
+		return
+	}
+
+	agents, err := s.scanner.Scan()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	agent := agents[agentID]
+	if agent == nil || agent.Port == 0 {
+		writeJSON(w, http.StatusOK, map[string]string{"state": "unknown"})
+		return
+	}
+
+	rpcBody, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tasks/get",
+		"params":  map[string]any{"id": sid},
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to build request")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	agentURL := fmt.Sprintf("http://127.0.0.1:%d/", agent.Port)
+	agentReq, err := http.NewRequestWithContext(ctx, http.MethodPost, agentURL, bytes.NewReader(rpcBody))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create agent request")
+		return
+	}
+	agentReq.Header.Set("Content-Type", "application/json")
+	if token := s.loadAgentToken(agentID); token != "" {
+		agentReq.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	client := &http.Client{Timeout: 6 * time.Second}
+	agentResp, err := client.Do(agentReq)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]string{"state": "unknown"})
+		return
+	}
+	defer func() { _ = agentResp.Body.Close() }()
+
+	var rpcResp struct {
+		Result *struct {
+			Status struct {
+				State string `json:"state"`
+			} `json:"status"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(agentResp.Body).Decode(&rpcResp); err != nil || rpcResp.Result == nil {
+		writeJSON(w, http.StatusOK, map[string]string{"state": "unknown"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"state": rpcResp.Result.Status.State})
 }
 
 // handleListSessions returns stored chat sessions for an agent.

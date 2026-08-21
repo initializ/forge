@@ -93,7 +93,7 @@ Authorization: Bearer <agent_identity>
 
 | Response | Meaning |
 |----------|---------|
-| `200 {"access_token": "…", "expires_in": 3600}` | The delegated access token for this user. Forge caches it per-subject (`expires_in` seconds; default 5 min if omitted). **Return only a short-lived access token — never the refresh token** (it stays in your vault). |
+| `200 {"access_token": "…", "expires_in": 3600}` | The delegated access token for this user. Forge caches it per-subject for `expires_in` seconds **but clamps the cache to a 5-minute hard cap** (`delegatedTokenMaxTTL`, #380) regardless of a larger `expires_in` — so a platform-side disconnect (revoking the user's grant) takes effect within ~5 minutes instead of lingering for the provider's full TTL (e.g. Atlassian's ~1h). Absent `expires_in` also defaults to 5 min. **Return only a short-lived access token — never the refresh token** (it stays in your vault). |
 | `401` / `403` / `404` | **No grant for this user yet** → Forge treats it as `ErrNoToken`, which trips the auth-required gate and parks the call. This is the signal that starts the consent flow. |
 | other non-200 | Protocol error — the call fails (not parked). |
 

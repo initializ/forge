@@ -1,6 +1,6 @@
 ---
 title: "MCP — Audit Events"
-description: "Seven event types emitted by the MCP subsystem; their fields and reason codes."
+description: "Event types emitted by the MCP subsystem; their fields and reason codes."
 order: 4
 ---
 
@@ -21,9 +21,17 @@ reason codes. The grep-test
 | `mcp_tool_result`      | After every `tools/call`                   | `server`, `tool`, `duration_ms`, `result_size`, `ok`, `reason?` |
 | `mcp_tool_conflict`    | Registry rejects a tool name               | `incoming_name`, `error`                        |
 | `mcp_token_refresh`    | Every OAuth refresh attempt                | `server`, `ok`, `reason`                        |
+| `mcp_auth_required`    | A delegated (`auth.type: user`) call parked awaiting consent (#330) | `server`, `subject`, `deadline`, `timeout_ms` |
+| `mcp_auth_resolved`    | The parked call's consent arrived; it resumed (#330) | `server`, `subject`, `wait_ms`          |
+| `mcp_auth_timeout`     | No consent within the window; the call fails `no_token` (#330) | `server`, `subject`, `wait_ms`, `decision` |
 
 Every event also carries the standard top-level fields: `ts`,
 `event`, `correlation_id` (when scoped to a request).
+
+The three `mcp_auth_*` consent-gate events are emitted **once** and attributed
+to the **parked invocation** — they carry that call's `correlation_id` /
+`task_id` / `seq` even though the resume happens out of band (#366). See
+[Delegated consent](./delegated-consent.md) for the full gate lifecycle.
 
 ## Reason codes
 

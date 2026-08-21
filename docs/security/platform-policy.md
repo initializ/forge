@@ -287,6 +287,32 @@ Command patterns are a scalpel for dangerous *invocations of allowed binaries*, 
 - **Always set `message`.** It turns a block from a silent retry-loop into a redirect that steers the model to the sanctioned alternative.
 - **Trial in a workspace layer first.** Ship a new pattern to the narrowest layer, watch the `guardrail_check` (`source: platform`) events for false positives, then promote it to the system layer once it's clean.
 
+## Managed PDP — per-call authorization decisions (#399)
+
+Where `denied_command_patterns` is a static, operator-authored denylist, the
+**Policy Decision Point (PDP)** delegates the whole allow/deny/modify decision to
+an external managed service, consulted on **every governed tool call** at
+`BeforeToolExec`. It's the managed counterpart to the standalone/OSS static
+[`security.defer`](defer-decisions.md) map.
+
+```yaml
+security:
+  pdp:
+    enabled: true
+    endpoint: ${PDP_ENDPOINT}   # full decide URL, POSTed verbatim; ${VAR} env-expanded at load
+    fail: closed                # only "closed" is honored (see below)
+    timeout: 3s
+```
+
+Semantics:
+
+- **Single decision source.** When `pdp.enabled` is true, the PDP is authoritative and the static `security.defer.tools` map is **ignored** — you use one or the other, not both.
+- **Fail-closed, always.** `fail` accepts only `closed` (the default). `open` — or any other value — is **rejected at startup**, so nobody can accidentally ship an authorization path that fails open when the PDP is unreachable (§14.5). An unreachable/slow PDP therefore denies the call rather than allowing it.
+- **Attribution.** The invocation id is sent with each decision request so the platform verdict attributes to the specific turn.
+- **Scope.** It governs namespaced registry operations (MCP `<server>__<op>`, API `<name>__<op>`); builtin/script tools follow the standalone governance path.
+
+Reach the PDP over the platform callout contract (bearer + `Org-Id`/`Workspace-Id`, see [Tenancy](tenancy.md)). Full field reference: [`security.pdp` schema](../reference/forge-yaml-schema.md#security--build-time--runtime-governance).
+
 ## Conflict semantics
 
 When `forge.yaml` declares an egress / tool / model / size value any layer forbids, the runner:

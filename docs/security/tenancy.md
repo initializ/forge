@@ -80,6 +80,10 @@ When one Forge agent calls another (via the egress proxy with explicit propagati
 
 Auto-propagation is NOT built into the egress proxy. The agent only propagates tenancy when it knows the target is a tenancy-aware Forge peer. This mirrors the workflow-header behavior: explicit only, to avoid leaking tenancy to unrelated third-party APIs.
 
+## Outbound propagation (platform callouts)
+
+Every Forge→**platform** HTTP callout — admission (`FORGE_ADMISSION_URL`), the remote session store, and the MCP platform token / authorize endpoints (`type: platform` / `type: user`) — sends `Org-Id` + `Workspace-Id` headers (from `FORGE_ORG_ID` / `FORGE_WORKSPACE_ID`) alongside `Authorization: Bearer ${FORGE_PLATFORM_TOKEN}`. This is a hard contract, not best-effort: the platform verifies a **per-org** HS256 token and needs `Org-Id` to select the signing secret *before* it can validate the bearer — omitting it returns `401 "missing org-id header"`. Note the header spelling here is `Org-Id` / `Workspace-Id` (the platform-callout convention), distinct from the inbound `X-Forge-Org-ID` / `X-Forge-Workspace-ID` request-override headers above.
+
 ## Backwards compatibility
 
 Both `org_id` and `workspace_id` use `omitempty`. Deployments that set neither env nor header keep emitting the pre-tenancy JSON shape verbatim. Consumers that ignore unknown keys continue to work unchanged. The audit schema version is **not** bumped — additive optional fields are schema-compatible per the documented policy.

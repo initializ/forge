@@ -313,6 +313,45 @@ Semantics:
 
 Reach the PDP over the platform callout contract (bearer + `Org-Id`/`Workspace-Id`, see [Tenancy](tenancy.md)). Full field reference: [`security.pdp` schema](../reference/forge-yaml-schema.md#security--build-time--runtime-governance).
 
+### Default-deny: govern the tool the LLM picks, not just the ones you listed
+
+The PDP fires at the **execution** boundary, not the decision boundary — it does
+not matter *how* the model chose the call. A prose skill that vaguely says
+"use Linear to file a ticket" still ends up emitting a concrete `tool_use` for a
+registered, namespaced tool (`linear__create_issue`), and that invocation is
+intercepted at `BeforeToolExec` and sent to the PDP like any other. There is no
+runtime "discover-and-call" path that escapes the registry: MCP/API operations
+are enumerated at build/startup, filtered by `tools.allow`, and registered as
+fixed `<name>__<op>` tools — the model can only pick from that set, and every
+pick is governed.
+
+So the real control isn't *whether* the PDP is consulted (it always is) — it's
+what your policy decides for an operation you didn't anticipate the model
+reaching for. Write the policy **default-deny**: allow the operations the agent
+is meant to use, and deny everything else by default. Then an unexpected pick is
+denied even though the PDP fired.
+
+```jsonc
+// PDP decide response for an operation with no explicit allow rule.
+// With a default-deny policy the fallback is deny, not allow:
+{ "decision": "deny", "reason": "no matching allow rule (default-deny)", "policy_version": 7 }
+```
+
+This is the key contrast with the static [`security.defer.tools`](defer-decisions.md)
+map: a tool **absent** from that map has *no* requirement and simply **runs** —
+static defer is allow-by-default for anything you forgot to list. Managed PDP
+lets you invert that to deny-by-default. Two levers combine for defense in depth:
+
+1. **Narrow `tools.allow`** on each MCP/API server so operations you never intend
+   (e.g. `linear__delete_issue`) are not registered at all — the model cannot
+   select what isn't in the registry.
+2. **Default-deny in the PDP policy** so anything that *is* callable but lacks an
+   explicit allow rule is denied rather than silently permitted.
+
+Rely on `security.defer.tools` alone and vague prose becomes a real gap — not
+because the PDP is skipped, but because an unlisted tool is ungoverned. Move
+enforcement to a default-deny PDP and the looseness of the prompt stops mattering.
+
 ## Conflict semantics
 
 When `forge.yaml` declares an egress / tool / model / size value any layer forbids, the runner:

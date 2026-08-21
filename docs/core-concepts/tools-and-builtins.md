@@ -92,9 +92,38 @@ All file tools use `PathValidator` (from `pathutil.go`):
 | Adapter | Description |
 |---------|-------------|
 | `webhook_call` | POST JSON payloads to webhook URLs. Strips credentials on cross-origin redirects |
-| `openapi_call` | Call OpenAPI-described endpoints |
 
 Adapter tools bridge external services into the agent's tool set.
+
+### Per-operation API tools (`apis.servers`)
+
+Instead of one generic `openapi_call` tool, Forge registers **one typed tool
+per admitted OpenAPI operation** (issue #400 — the generic `openapi_call` stub
+was removed). Configure them under the top-level `apis:` block: each
+`operations[]` entry of a server registers as a namespaced `<name>__<op>` tool
+(e.g. server `memberservice` op `reverse_fee` → tool `memberservice__reverse_fee`)
+with the operation's own typed input schema, so the LLM (and the PDP) see a
+distinct, argument-typed tool per endpoint rather than a free-form HTTP call.
+
+```yaml
+apis:
+  servers:
+    - name: memberservice
+      base_url: https://member-service.internal   # host must be on the egress allowlist
+      auth:
+        token_env: MEMBERSERVICE_TOKEN             # bearer/static only (oauth rejected for apis)
+      operations:
+        - name: reverse_fee
+          method: POST
+          path: /accounts/{account_id}/reversals   # {…} segments filled from typed args
+          description: Reverse a fee on an account
+```
+
+`apis.servers[]` entries are typically **platform-materialized** from admitted
+OpenAPI specs. Because each operation is its own `<name>__<op>` tool, the
+managed [PDP](../reference/forge-yaml-schema.md#security--build-time--runtime-governance)
+keys authorization rules per operation. See the
+[`apis:` schema](../reference/forge-yaml-schema.md#full-schema).
 
 > **MCP tools** are not listed in this table. Configure MCP servers
 > under the top-level `mcp:` block in `forge.yaml`; each server's

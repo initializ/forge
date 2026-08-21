@@ -390,13 +390,34 @@ func runSkillsValidate(cmd *cobra.Command, args []string) error {
 		fmt.Println()
 	}
 
+	// Tool → registry lint: surface the registration failures the runtime
+	// otherwise handles silently (invalid Input keys, missing/orphan scripts).
+	// Scans the whole skill tree, not just the main SKILL.md (#418).
+	toolFindings := lintSkillTools(filepath.Dir(skillsPath), skillsPath)
+	if len(toolFindings) > 0 {
+		fmt.Println("Tools:")
+		for _, f := range toolFindings {
+			prefix := "  WARN "
+			if f.Level == "error" {
+				prefix = "  ERROR"
+				hasErrors = true
+			}
+			where := f.Skill
+			if f.Tool != "" {
+				where = f.Skill + " / " + f.Tool
+			}
+			fmt.Printf("%s %s: %s\n", prefix, where, f.Msg)
+		}
+		fmt.Println()
+	}
+
 	// Summary
 	if !hasErrors {
 		fmt.Println("Validation passed.")
 		return nil
 	}
 
-	return fmt.Errorf("validation failed: missing required environment variables")
+	return fmt.Errorf("validation failed: see ERROR lines above")
 }
 
 func envFromOS() map[string]string {

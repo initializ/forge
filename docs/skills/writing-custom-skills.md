@@ -27,7 +27,9 @@ Script-backed skills are automatically registered as **first-class LLM tools** a
 
 1. Parses the skill's SKILL.md for tool definitions, descriptions, and input schemas
 2. Creates a named tool for each `## Tool:` entry (e.g., `tavily_research` becomes a tool the LLM can call directly)
-3. Executes the backing script with JSON input when the LLM invokes it, under the interpreter matching its extension — `scripts/<name>.sh` (bash), `.py` (python3), or `.js` (node). A `## Tool: foo_bar` binds to `scripts/foo-bar.<ext>` (underscores become hyphens); shell wins if several extensions exist. Ensure the interpreter is provisioned (`python3`/`node` in `requires.bins`; bash is built in).
+3. Executes the backing script with JSON input when the LLM invokes it, under the interpreter matching its extension — `scripts/<name>.sh` (bash), `.py` (python3), or `.js` (node). A `## Tool: foo_bar` binds to **either** `scripts/foo_bar.<ext>` **or** `scripts/foo-bar.<ext>` (the underscore and hyphen forms both work; the hyphenated form wins only if both files exist). Shell wins if several extensions exist. Ensure the interpreter is provisioned (`python3`/`node` in `requires.bins`; bash is built in).
+
+> **Silent-failure guard.** If the backing script is missing, or a `**Input:**` parameter yields a JSON-schema property key outside `^[a-zA-Z0-9_.-]{1,64}$`, the runtime drops that tool at startup with only a log line. Run [`forge skills validate`](skills-cli.md) to catch both — plus orphan scripts with no `## Tool:` heading — before you ship; it exits non-zero on any error, so you can gate CI on it.
 
 This means the LLM sees skill tools alongside builtins like `web_search` and `http_request` — no generic `cli_execute` indirection needed.
 

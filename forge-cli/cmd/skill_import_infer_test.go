@@ -103,6 +103,35 @@ func TestInferForgeMeta_ShellScript(t *testing.T) {
 	}
 }
 
+func TestAtomicWriteFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sub", "f.txt")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWriteFile(path, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != "hello" {
+		t.Fatalf("content = %q err=%v, want hello", got, err)
+	}
+	// Overwrite atomically; no leftover temp files in the dir.
+	if err := atomicWriteFile(path, []byte("world"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = os.ReadFile(path)
+	if string(got) != "world" {
+		t.Errorf("overwrite content = %q, want world", got)
+	}
+	entries, _ := os.ReadDir(filepath.Dir(path))
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Errorf("leftover temp file: %s", e.Name())
+		}
+	}
+}
+
 func TestImportSkillFolder_WriteForgeMeta(t *testing.T) {
 	src := t.TempDir()
 	writeImportFile(t, filepath.Join(src, "SKILL.md"), inferSkillMD)

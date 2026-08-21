@@ -249,6 +249,8 @@ Run the agent locally with an A2A-compliant dev server.
 forge run [flags]
 ```
 
+On startup the server prints a banner whose **`Forge:`** line shows the running binary/runtime version (issue #335/#336) — e.g. `Forge: v0.18.1`. A build without embedded version info degrades to `dev` (or `dev (commit: <sha>)`), so an operator can tell at a glance which forge runtime an agent pod is on. This is the runtime version; `forge --version` prints the CLI's, and the OTel `forge.runtime.version` span attribute carries the same value for traces.
+
 ### Flags
 
 | Flag | Default | Description |
@@ -452,6 +454,30 @@ forge schedule list
 ```
 
 Lists all configured cron schedules (both YAML-defined and LLM-created).
+
+---
+
+## `forge mcp`
+
+Manage [Model Context Protocol](../mcp/index.md) servers and their OAuth tokens. Servers are declared under the `mcp:` block in `forge.yaml`; each server's discovered tools register as namespaced `<server>__<tool>`.
+
+```bash
+# List configured MCP servers + their discovered tools and auth status
+forge mcp list
+
+# Test a server connection (optionally invoke a tool)
+forge mcp test <server>
+forge mcp test <server> --call <tool> --args '{"key":"value"}'
+
+# OAuth login for a server (type: oauth) — discovers endpoints via
+# RFC 9728/8414 + dynamic client registration (RFC 7591) at first login
+forge mcp login <server>
+
+# Clear a stored MCP OAuth token
+forge mcp logout <server>
+```
+
+Auth types (`mcp.servers[].auth.type`): `oauth` (browser login, stored token), `bearer` / `static` (token from `token_env`), `platform` (managed agent-principal token — **no login needed**), and `user` (managed delegated per-user token — lazy consent, no upfront login). See [MCP configuration](../mcp/configuration.md) and the [MCP CLI reference](../mcp/cli-reference.md).
 
 ---
 

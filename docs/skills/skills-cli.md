@@ -88,6 +88,25 @@ Flags:
 > `metadata.forge.requires.bins` so the interpreter is still provisioned —
 > `forge skills import` warns if it's missing.
 
+## Validate
+
+`forge skills validate` checks that a project's skills will actually register at runtime, surfacing failures the runtime otherwise handles **silently** (an error log line at best). It scans the whole skill tree — the main `SKILL.md` **and** every `skills/*/SKILL.md` — and reports, per `## Tool:`:
+
+| Check | Level | Why it matters |
+|---|---|---|
+| **Invalid `**Input:**` property key** — a parameter name that yields a JSON-schema key outside `^[a-zA-Z0-9_.-]{1,64}$` (e.g. a space or backtick) | ERROR | The LLM provider rejects the *entire* request, so the runtime drops the whole tool at startup — the tool silently never appears. |
+| **No backing script** — a script-runtime `## Tool: foo_bar` with no `scripts/foo_bar.{sh,py,js}` or `scripts/foo-bar.{sh,py,js}` | ERROR | The tool never registers. |
+| **Orphan script** — a `scripts/*.{sh,py,js}` no `## Tool:` heading binds | WARN | Reachable only by path via `run_skill_script`; dead weight in the image if never referenced. |
+
+It also reports missing required binaries and unresolved required env vars. It exits **non-zero** when any ERROR is present, so CI can gate on it — making the parser itself the source of truth instead of an external lint you re-confirm each release.
+
+```bash
+# Validate the skills in the current project (run from a dir with forge.yaml).
+forge skills validate
+```
+
+> A `## Tool: foo_bar` binds to its script by **either** name form — `scripts/foo_bar.sh` or `scripts/foo-bar.sh` both work (hyphenated wins only if both exist). See [Writing Custom Skills](writing-custom-skills.md#skills-as-first-class-tools).
+
 ## Security Audit
 
 `forge skills audit` scores each skill in the project across four categories — egress, binary, env, script — and runs a `SecurityPolicy` check for hard violations. By default it uses the analyzer's `DefaultPolicy`. A custom policy YAML can be supplied with `--policy`.

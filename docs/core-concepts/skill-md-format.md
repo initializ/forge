@@ -77,7 +77,7 @@ The `metadata.forge.runtime` field selects how the skill's tool is executed (iss
 
 | Value | Behavior |
 |---|---|
-| `script` (default; empty = `script`) | Skill body is materialized as a bash script at `skills/<dir>/scripts/<tool>.sh` and invoked as `bash <scriptPath> <jsonArgs>`. |
+| `script` (default; empty = `script`) | The `## Tool:` binds to a script at `skills/<dir>/scripts/<tool>.{sh,py,js}` (the tool name matches the file in either its underscore or hyphen form) and is invoked as `<interpreter> <scriptPath> <jsonArgs>`, interpreter chosen by extension. |
 | `binary` | The first `metadata.forge.requires.bins` entry IS the executable. The runtime resolves it via `exec.LookPath` and invokes `<binary> <jsonArgs>` directly — no bash fork, no script file required. Skill body is documentation only. |
 
 ```yaml

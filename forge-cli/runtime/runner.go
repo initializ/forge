@@ -3581,34 +3581,91 @@ var skillScriptExtensions = []struct{ ext, interpreter string }{
 	{".mjs", "node"},
 }
 
-// resolveSkillScript locates the script backing a `## Tool:` entry and returns
-// its container-relative path, the interpreter to run it under, and whether it
-// was found. It searches the skill's own scripts/ directory first, then the
-// shared skills/scripts/ directory; within each, shell before python before
-// node. Single source of truth shared by registerSkillTools (which registers
-// the tool) and skillEntryHasScript (which excludes it from the read_skill
-// catalog) so the two can never disagree about what's a first-class tool.
-func (r *Runner) resolveSkillScript(skillDirName, toolName string) (relPath, interpreter string, found bool) {
-	scriptName := strings.ReplaceAll(toolName, "_", "-")
+// SkillScriptExtensions returns the recognized skill-script file extensions
+// (each with a leading dot), for tooling that enumerates a scripts/ directory
+// — e.g. `forge skills validate`'s orphan-script check.
+func SkillScriptExtensions() []string {
+	out := make([]string, len(skillScriptExtensions))
+	for i, se := range skillScriptExtensions {
+		out[i] = se.ext
+	}
+	return out
+}
+
+// skillScriptNameVariants returns the distinct filename stems a `## Tool:`
+// name can bind to: the hyphenated form (historical convention) and, when it
+// differs, the underscore form. A tool `some_name` therefore matches both
+// scripts/some-name.<ext> and scripts/some_name.<ext> — authors no longer have
+// to remember the underscore→hyphen rewrite (#418). The hyphenated form is
+// listed first so it keeps priority for the (rare) skill that ships both.
+func skillScriptNameVariants(toolName string) []string {
+	hyphen := strings.ReplaceAll(toolName, "_", "-")
+	underscore := strings.ReplaceAll(toolName, "-", "_")
+	if hyphen == underscore {
+		return []string{hyphen}
+	}
+	return []string{hyphen, underscore}
+}
+
+// interpreterForSkillScript returns the interpreter for a resolved script path
+// by its extension, or "" if the extension is not a recognized skill script.
+func interpreterForSkillScript(path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	for _, se := range skillScriptExtensions {
+		if se.ext == ext {
+			return se.interpreter
+		}
+	}
+	return ""
+}
+
+// SkillScriptCandidatePaths returns the container-relative script paths a
+// `## Tool: toolName` in skill directory skillDirName can bind to, in
+// resolution priority order: skill-local scripts/ before the shared
+// skills/scripts/, shell before python before node, hyphenated name before
+// underscore. It returns nil when the tool name would escape the tree. Exported
+// so `forge skills validate` checks the tool→script binding against the exact
+// same candidate set the runtime resolves against — the two can never drift.
+func SkillScriptCandidatePaths(skillDirName, toolName string) []string {
+	names := skillScriptNameVariants(toolName)
 	// The `## Tool:` name is taken verbatim by the parser (no kebab/char
 	// check), so a crafted "## Tool: ../../../../x" would otherwise resolve to
-	// an out-of-tree script and register it as a callable tool. Require the
-	// derived script name to be a bare, non-escaping path segment before it
-	// touches the filesystem. Mirrors the import-path traversal hardening.
-	if !filepath.IsLocal(scriptName) || strings.ContainsRune(scriptName, filepath.Separator) || strings.ContainsRune(scriptName, '/') {
-		return "", "", false
+	// an out-of-tree script and register it as a callable tool. Require every
+	// derived stem to be a bare, non-escaping path segment before it touches
+	// the filesystem. Mirrors the import-path traversal hardening.
+	for _, n := range names {
+		if !filepath.IsLocal(n) || strings.ContainsRune(n, filepath.Separator) || strings.ContainsRune(n, '/') {
+			return nil
+		}
 	}
 	var dirs []string
 	if skillDirName != "" {
 		dirs = append(dirs, filepath.Join("skills", skillDirName, "scripts"))
 	}
 	dirs = append(dirs, filepath.Join("skills", "scripts"))
+	var out []string
 	for _, dir := range dirs {
 		for _, se := range skillScriptExtensions {
-			candidate := filepath.Join(dir, scriptName+se.ext)
-			if _, err := os.Stat(filepath.Join(r.cfg.WorkDir, candidate)); err == nil {
-				return candidate, se.interpreter, true
+			for _, name := range names {
+				out = append(out, filepath.Join(dir, name+se.ext))
 			}
+		}
+	}
+	return out
+}
+
+// resolveSkillScript locates the script backing a `## Tool:` entry and returns
+// its container-relative path, the interpreter to run it under, and whether it
+// was found. Candidate order comes from SkillScriptCandidatePaths (skill-local
+// before shared; shell before python before node; hyphenated name before
+// underscore). Single source of truth shared by registerSkillTools (which
+// registers the tool) and skillEntryHasScript (which excludes it from the
+// read_skill catalog) so the two can never disagree about what's a first-class
+// tool.
+func (r *Runner) resolveSkillScript(skillDirName, toolName string) (relPath, interpreter string, found bool) {
+	for _, candidate := range SkillScriptCandidatePaths(skillDirName, toolName) {
+		if _, err := os.Stat(filepath.Join(r.cfg.WorkDir, candidate)); err == nil {
+			return candidate, interpreterForSkillScript(candidate), true
 		}
 	}
 	return "", "", false

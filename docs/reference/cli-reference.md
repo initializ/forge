@@ -651,7 +651,7 @@ forge skills list --category sre
 forge skills list --tags kubernetes,incident-response
 
 # Validate skill requirements
-forge skills validate
+forge skills validate  # checks bins, env, invalid Input keys, missing/orphan scripts; non-zero exit on error
 
 # Audit skill security
 forge skills audit --embedded

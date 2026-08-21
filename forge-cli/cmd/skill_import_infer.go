@@ -223,10 +223,48 @@ func injectForgeMetaBins(skillDir string, m inferredForgeMeta) (bool, string) {
 	front := content[:len("---\n")+end]
 	tail := content[len("---\n")+end:] // starts with "\n---"
 	newContent := front + "\n" + block.String() + strings.TrimPrefix(tail, "\n")
-	if err := os.WriteFile(path, []byte(newContent), 0o644); err != nil {
+
+	// Verify the spliced result parses (with our forge block) BEFORE
+	// overwriting the author's file — from valid frontmatter the splice is
+	// provably valid, but this keeps the injection safe against unusual
+	// frontmatter shapes and any future change to the splicer (PR #415 review).
+	if _, meta, perr := parser.ParseWithMetadata(strings.NewReader(newContent)); perr != nil || meta == nil || meta.Metadata["forge"] == nil {
+		return false, "--write-forge-meta skipped: the inferred block would not parse as valid frontmatter — add it by hand."
+	}
+	// Atomic write (temp → rename) so a mid-write failure can't leave a
+	// truncated SKILL.md — this rewrites a file the import just vendored.
+	if err := atomicWriteFile(path, []byte(newContent), 0o644); err != nil {
 		return false, "could not write forge metadata into SKILL.md: " + err.Error()
 	}
 	return true, fmt.Sprintf("wrote requires.bins %v into %s/SKILL.md", m.Bins, filepath.Base(skillDir))
+}
+
+// atomicWriteFile writes data to path atomically: a temp file in the same
+// directory is written, fsync'd, and renamed over path, so a failure mid-write
+// never leaves a partially-written file.
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".skill-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }() // no-op once renamed
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, perm); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 var frontmatterMetadataKeyRe = regexp.MustCompile(`(?m)^metadata:`)

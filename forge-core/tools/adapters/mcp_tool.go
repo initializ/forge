@@ -195,9 +195,8 @@ func (m *MCPTool) InputSchema() json.RawMessage {
 // payload — only sizes, duration, and reason codes.
 func (m *MCPTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	start := time.Now()
-	correlationID := runtime.CorrelationIDFromContext(ctx)
 
-	m.emitCall(correlationID, len(args))
+	m.emitCall(ctx, len(args))
 	// resolveAndCall runs the whole resolve→call sequence for THIS request.
 	// ErrNoToken can surface from EITHER half: the per-subject connection
 	// establish (transports that authenticate at initialize) OR CallTool
@@ -233,7 +232,7 @@ func (m *MCPTool) Execute(ctx context.Context, args json.RawMessage) (string, er
 
 	if err != nil {
 		reason := classifyToolErr(err)
-		m.emitResult(correlationID, durMs, 0, false, reason)
+		m.emitResult(ctx, durMs, 0, false, reason)
 		return "", fmt.Errorf("mcp %s/%s: %w", m.server, m.descriptor.Name, err)
 	}
 
@@ -254,9 +253,9 @@ func (m *MCPTool) Execute(ctx context.Context, args json.RawMessage) (string, er
 	}
 
 	if res.IsError {
-		m.emitResult(correlationID, durMs, len(out), false, "tool_error")
+		m.emitResult(ctx, durMs, len(out), false, "tool_error")
 	} else {
-		m.emitResult(correlationID, durMs, len(out), true, "")
+		m.emitResult(ctx, durMs, len(out), true, "")
 	}
 	return out, nil
 }
@@ -321,13 +320,18 @@ func classifyToolErr(err error) string {
 	}
 }
 
-func (m *MCPTool) emitCall(correlationID string, argsSize int) {
+func (m *MCPTool) emitCall(ctx context.Context, argsSize int) {
 	if m.audit == nil {
 		return
 	}
-	m.audit.Emit(runtime.AuditEvent{
-		Event:         runtime.EventMCPToolCall,
-		CorrelationID: correlationID,
+	// EmitFromContext (not plain Emit) so the event carries the per-invocation
+	// `seq` from the counter the A2A handler put on ctx — same as every other
+	// per-call event (LLM call, tool exec). Without seq these events land
+	// unordered and, being second-precision on ts, collide in the console's
+	// same-second sort (a result renders before its own call). It also stamps
+	// correlation_id + tenancy from ctx, so we no longer pass them by hand.
+	m.audit.EmitFromContext(ctx, runtime.AuditEvent{
+		Event: runtime.EventMCPToolCall,
 		Fields: map[string]any{
 			"server":    m.server,
 			"tool":      m.descriptor.Name,
@@ -336,7 +340,7 @@ func (m *MCPTool) emitCall(correlationID string, argsSize int) {
 	})
 }
 
-func (m *MCPTool) emitResult(correlationID string, durMs int64, resultSize int, ok bool, reason string) {
+func (m *MCPTool) emitResult(ctx context.Context, durMs int64, resultSize int, ok bool, reason string) {
 	if m.audit == nil {
 		return
 	}
@@ -350,10 +354,9 @@ func (m *MCPTool) emitResult(correlationID string, durMs int64, resultSize int, 
 	if reason != "" {
 		fields["reason"] = reason
 	}
-	m.audit.Emit(runtime.AuditEvent{
-		Event:         runtime.EventMCPToolResult,
-		CorrelationID: correlationID,
-		Fields:        fields,
+	m.audit.EmitFromContext(ctx, runtime.AuditEvent{
+		Event:  runtime.EventMCPToolResult,
+		Fields: fields,
 	})
 }
 

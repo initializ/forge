@@ -285,6 +285,55 @@ func TestMCPTool_Audit_NeverLogsBytes(t *testing.T) {
 	}
 }
 
+// TestMCPTool_Audit_StampsSequence guards the fix for MCP events landing
+// seq-less: Execute must emit via EmitFromContext so mcp_tool_call /
+// mcp_tool_result carry the per-invocation `seq` from the ctx counter. Without
+// it, same-second call/result pairs sort ambiguously in consumers (a result
+// renders before its own call).
+func TestMCPTool_Audit_StampsSequence(t *testing.T) {
+	t.Parallel()
+	c := &mockClient{res: &mcp.CallToolResult{
+		Content: []mcp.ToolContent{{Type: "text", Text: "ok"}},
+	}}
+	var buf safeBuf
+	a, err := NewMCPTool(MCPToolOpts{
+		Server:     "srv",
+		Descriptor: mcp.MCPToolDescriptor{Name: "echo", InputSchema: json.RawMessage(`{}`)},
+		Client:     c, Audit: runtime.NewAuditLogger(&buf),
+	})
+	if err != nil {
+		t.Fatalf("NewMCPTool: %v", err)
+	}
+	// The A2A handler installs this counter per request; simulate it.
+	ctx := runtime.EnsureSequenceCounter(context.Background())
+	if _, err := a.Execute(ctx, json.RawMessage(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	var callSeq, resultSeq int
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		var e struct {
+			Event string `json:"event"`
+			Seq   int    `json:"seq"`
+		}
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			continue
+		}
+		switch e.Event {
+		case "mcp_tool_call":
+			callSeq = e.Seq
+		case "mcp_tool_result":
+			resultSeq = e.Seq
+		}
+	}
+	if callSeq == 0 || resultSeq == 0 {
+		t.Fatalf("expected non-zero seq on both events, got call=%d result=%d; log:\n%s", callSeq, resultSeq, buf.String())
+	}
+	if callSeq >= resultSeq {
+		t.Errorf("call seq (%d) must precede result seq (%d)", callSeq, resultSeq)
+	}
+}
+
 func TestMCPTool_Audit_OkFalseOnError(t *testing.T) {
 	t.Parallel()
 	c := &mockClient{err: errors.New("simulated network failure: " + mcp.ErrTransportUnavailable.Error())}

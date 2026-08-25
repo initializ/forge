@@ -1337,6 +1337,8 @@ func (r *Runner) Run(ctx context.Context) error {
 						Logger:        r.logger,
 						ModelName:     mc.Client.Model,
 						Provider:      mc.Provider,
+						AgentID:       r.cfg.Config.AgentID,
+						AgentVersion:  r.cfg.Config.Version,
 						MaxIterations: 100,
 						CharBudget:    charBudget,
 						FilesDir:      filepath.Join(r.cfg.WorkDir, ".forge", "files"),

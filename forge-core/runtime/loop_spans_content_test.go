@@ -284,34 +284,34 @@ func runOneToolCall(t *testing.T, tracingCfg observability.TracingConfig, toolAr
 
 // TestExecute_CaptureContentTrue_StampsToolArgsAndResult exercises the
 // tool-side mirror of the LLM-span content tests. Args from the
-// LLM-emitted tool call land at forge.tool.args; tool stdout/return
-// lands at forge.tool.result; both go through the same redact +
-// truncate pipeline.
+// LLM-emitted tool call land at gen_ai.tool.call.arguments; tool
+// stdout/return lands at gen_ai.tool.call.result; both go through the
+// same redact + truncate pipeline.
 func TestExecute_CaptureContentTrue_StampsToolArgsAndResult(t *testing.T) {
 	cfg := observability.TracingConfig{CaptureContent: true, Redact: true}
 	span := runOneToolCall(t, cfg, `{"target":"`+awsKeyFixture+`"}`, "deleted "+awsKeyFixture)
 
-	args, ok := findAttr(span, observability.AttrForgeToolArgs)
+	args, ok := findAttr(span, observability.AttrGenAIToolCallArguments)
 	if !ok {
-		t.Error("forge.tool.args missing when CaptureContent=true")
+		t.Error("gen_ai.tool.call.arguments missing when CaptureContent=true")
 	} else {
 		if strings.Contains(args, awsKeyFixture) {
-			t.Errorf("raw AWS key survived redaction on forge.tool.args: %q", args)
+			t.Errorf("raw AWS key survived redaction on gen_ai.tool.call.arguments: %q", args)
 		}
 		if !strings.Contains(args, RedactionMarker) {
-			t.Errorf("expected redaction marker in forge.tool.args; got %q", args)
+			t.Errorf("expected redaction marker in gen_ai.tool.call.arguments; got %q", args)
 		}
 	}
 
-	result, ok := findAttr(span, observability.AttrForgeToolResult)
+	result, ok := findAttr(span, observability.AttrGenAIToolCallResult)
 	if !ok {
-		t.Error("forge.tool.result missing when CaptureContent=true")
+		t.Error("gen_ai.tool.call.result missing when CaptureContent=true")
 	} else {
 		if strings.Contains(result, awsKeyFixture) {
-			t.Errorf("raw AWS key survived redaction on forge.tool.result: %q", result)
+			t.Errorf("raw AWS key survived redaction on gen_ai.tool.call.result: %q", result)
 		}
 		if !strings.Contains(result, RedactionMarker) {
-			t.Errorf("expected redaction marker in forge.tool.result; got %q", result)
+			t.Errorf("expected redaction marker in gen_ai.tool.call.result; got %q", result)
 		}
 	}
 }
@@ -322,10 +322,10 @@ func TestExecute_CaptureContentFalse_NoToolContentAttributes(t *testing.T) {
 	cfg := observability.TracingConfig{CaptureContent: false}
 	span := runOneToolCall(t, cfg, `{"target":"foo"}`, "ok")
 
-	if _, ok := findAttr(span, observability.AttrForgeToolArgs); ok {
-		t.Errorf("CaptureContent=false must not set forge.tool.args")
+	if _, ok := findAttr(span, observability.AttrGenAIToolCallArguments); ok {
+		t.Errorf("CaptureContent=false must not set gen_ai.tool.call.arguments")
 	}
-	if _, ok := findAttr(span, observability.AttrForgeToolResult); ok {
-		t.Errorf("CaptureContent=false must not set forge.tool.result")
+	if _, ok := findAttr(span, observability.AttrGenAIToolCallResult); ok {
+		t.Errorf("CaptureContent=false must not set gen_ai.tool.call.result")
 	}
 }

@@ -333,6 +333,7 @@ func (c *AnthropicClient) convertMessage(m llm.ChatMessage) anthropicMessage {
 // Anthropic-specific response types.
 type anthropicResponse struct {
 	ID         string                  `json:"id"`
+	Model      string                  `json:"model"`
 	Content    []anthropicContentBlock `json:"content"`
 	StopReason string                  `json:"stop_reason"`
 	Usage      struct {
@@ -375,6 +376,7 @@ func (c *AnthropicClient) parseAnthropicResponse(body io.Reader) (*llm.ChatRespo
 
 	return &llm.ChatResponse{
 		ID:      resp.ID,
+		Model:   resp.Model,
 		Message: msg,
 		Usage: llm.UsageInfo{
 			InputTokens:  resp.Usage.InputTokens,

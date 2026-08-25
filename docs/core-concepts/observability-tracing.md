@@ -212,14 +212,25 @@ Forge mixes OTel GenAI semconv with Forge-specific `forge.*` namespaced attribut
 | `forge.correlation_id` | `agent.execute` | inbound `X-Forge-Correlation-Id` |
 | `forge.loop.iteration` | `agent.execute` (set at End) | turn count |
 | `forge.task.final_state` | `agent.execute` (set at End) | `completed` / `failed` / `canceled` |
-| `gen_ai.system` | `agent.execute`, `llm.completion` | `"anthropic"`, `"openai"`, `"ollama"` |
-| `gen_ai.request.model` / `.response.model` | `llm.completion` | provider request/response model |
+| `gen_ai.provider.name` | `agent.execute`, `llm.completion` | `"anthropic"`, `"openai"`, `"ollama"` — current key (see deprecation note below) |
+| `gen_ai.system` | `agent.execute`, `llm.completion` | same value as `gen_ai.provider.name`; **deprecated**, emitted one release for compatibility |
+| `gen_ai.operation.name` | `llm.completion` (`chat`), `tool.<name>` (`execute_tool`) | operation kind |
+| `gen_ai.agent.id` / `.name` / `.version` | `agent.execute` | `forge.yaml` `agent_id` (id + name) / `version` |
+| `gen_ai.conversation.id` | `agent.execute` | Forge session id (A2A task id) |
+| `gen_ai.request.model` | `agent.execute`, `llm.completion` | requested model |
+| `gen_ai.response.model` | `llm.completion` | vendor-reported model (falls back to request model) |
+| `gen_ai.response.id` | `llm.completion` | provider completion id |
 | `gen_ai.usage.input_tokens` / `.output_tokens` | `llm.completion` | provider usage block |
 | `gen_ai.response.finish_reasons` | `llm.completion` | provider stop reason |
-| `forge.tool.name` | `tool.<tool_name>` | tool function name |
-| `forge.tool.error` | `tool.<tool_name>` | error message on failure |
+| `gen_ai.tool.name` | `tool.<tool_name>` | tool function name |
+| `gen_ai.tool.call.id` | `tool.<tool_name>` | LLM-assigned tool-call id |
+| `gen_ai.tool.type` | `tool.<tool_name>` | `function` (builtin/skill) or `extension` (MCP-backed) |
+| `mcp.method.name` | `tool.<tool_name>` (MCP only) | `tools/call` |
+| `error.type` | `tool.<tool_name>` (on failure) | `tool_execution_error` |
 
-Tool errors do **not** fail the outer `agent.execute` span — they surface to the LLM as text and the loop continues. The tool span carries the failure detail so operators can pivot from a trace to the specific failed invocation.
+Tool spans follow the OTel **GenAI semantic conventions** (`gen_ai.tool.*`) — these replaced the former proprietary `forge.tool.*` keys, which never shipped to production. MCP-backed tools (namespaced `<server>__<tool>`) are typed `extension` and additionally carry `mcp.method.name=tools/call`. (`mcp.session.id` / `mcp.protocol.version` require plumbing the MCP manager to the executor and are tracked as a follow-up.)
+
+Tool errors do **not** fail the outer `agent.execute` span — they surface to the LLM as text and the loop continues. The tool span carries the failure detail (`error.type` + span status `Error`) so operators can pivot from a trace to the specific failed invocation.
 
 ### Span content capture
 
@@ -227,18 +238,20 @@ Prompts, completions, tool args, and tool results are **off by default** — Pha
 
 | `forge.yaml` knob | Span | Attribute keys added when `capture_content: true` |
 |---|---|---|
-| (always) | `llm.completion` | `gen_ai.system`, `gen_ai.request.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.response.finish_reasons` |
+| (always) | `agent.execute` | `gen_ai.provider.name`, `gen_ai.agent.id`, `gen_ai.agent.name`, `gen_ai.agent.version`, `gen_ai.conversation.id`, `gen_ai.request.model` |
+| `capture_content: true` | `agent.execute` | `gen_ai.tool.definitions` (JSON array of the tool catalog available to the agent — potentially large, hence opt-in) |
+| (always) | `llm.completion` | `gen_ai.operation.name` (`chat`), `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.response.id`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.response.finish_reasons` |
 | `capture_content: true` | `llm.completion` | `gen_ai.input.messages` (JSON array of role+content pairs sent to the model), `gen_ai.output.messages` (JSON single-element array of role+content for the model's response) — current OTel GenAI semconv, supersedes the deprecated flat-string `gen_ai.prompt` / `gen_ai.completion` |
-| (always) | `tool.<name>` | `forge.tool.name`, `forge.tool.error` (on failure) |
-| `capture_content: true` | `tool.<name>` | `forge.tool.args` (raw arguments JSON), `forge.tool.result` (raw output) |
+| (always) | `tool.<name>` | `gen_ai.operation.name` (`execute_tool`), `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.tool.type`, `mcp.method.name` (MCP only), `error.type` (on failure) |
+| `capture_content: true` | `tool.<name>` | `gen_ai.tool.call.arguments` (raw arguments JSON), `gen_ai.tool.call.result` (raw output), `gen_ai.tool.description` (from the tool definition) |
 
 When `capture_content: true` and `redact: true` (the default when capture is on), attribute values pass through a redactor that scrubs the same vendor secret-token shapes the runtime guardrails default rules cover (Anthropic `sk-ant-…`, OpenAI `sk-…`, GitHub `ghp_/gho_/ghs_/github_pat_…`, AWS `AKIA…`, Slack `xoxb-/xoxp-…`, RSA/EC/OPENSSH/PRIVATE key blocks, Telegram bot tokens). Matched values become `[REDACTED]`. Setting `redact: false` is the enterprise raw-capture path — content is stamped verbatim with the byte cap still applied.
 
 Every captured value is byte-capped at **4 KiB** (below the 5 KiB attribute soft-cap most backends apply). When the input exceeds the cap, the value ends with a `…[truncated:N]` marker where `N` is the original byte length. The marker is **byte-identical** to what the audit payload-capture path emits for the same input, so an operator grepping `[truncated:` across span attributes and audit rows sees aligned output.
 
-**Default posture** (no opt-in): the `gen_ai.input.messages`, `gen_ai.output.messages`, `forge.tool.args`, `forge.tool.result` keys are **absent** from spans — not set to empty string. Backends that gate dashboards on "is this key present?" can distinguish "metadata-only by default" from "operator opted in but the field happened to be empty."
+**Default posture** (no opt-in): the `gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result`, `gen_ai.tool.description`, and `gen_ai.tool.definitions` keys are **absent** from spans — not set to empty string. Backends that gate dashboards on "is this key present?" can distinguish "metadata-only by default" from "operator opted in but the field happened to be empty."
 
-**OTel semconv versioning note**: the GenAI semantic conventions moved from flat-string (`gen_ai.prompt`, `gen_ai.completion`) to structured (`gen_ai.input.messages`, `gen_ai.output.messages`) attributes. Forge emits only the **current** structured keys. Backends that only recognize the deprecated flat-string attributes will not show prompt / completion text on Forge spans — upgrade the backend's semconv mapping or use a span processor to translate.
+**OTel semconv versioning note**: the GenAI semantic conventions moved from flat-string (`gen_ai.prompt`, `gen_ai.completion`) to structured (`gen_ai.input.messages`, `gen_ai.output.messages`) attributes, and renamed `gen_ai.system` → `gen_ai.provider.name`. Forge emits the **current** structured keys and `gen_ai.provider.name`, and continues to emit the deprecated `gen_ai.system` for one release for compatibility. Backends that only recognize the older attributes should upgrade their semconv mapping or use a span processor to translate.
 
 ### Guardrail spans (issue #161)
 
@@ -268,7 +281,7 @@ Attribute reference:
 
 **Default posture**: `forge.guardrail.evidence` is absent unless `capture_content: true`. The other five attributes are always present when a gate fires (cheap, no PII risk). When tracing is disabled, the noop tracer short-circuits and the spans are not produced at all.
 
-**Content-capture parity**: the evidence attribute uses the exact same `PrepareSpanContent(redact, maxBytes)` pipeline as `gen_ai.input.messages` and `forge.tool.args` — same vendor secret-token scrub, same 4 KiB byte cap, same `…[truncated:N]` marker. Operators get one mental model across all four content streams (LLM input / LLM output / tool args / tool result / guardrail evidence).
+**Content-capture parity**: the evidence attribute uses the exact same `PrepareSpanContent(redact, maxBytes)` pipeline as `gen_ai.input.messages` and `gen_ai.tool.call.arguments` — same vendor secret-token scrub, same 4 KiB byte cap, same `…[truncated:N]` marker. Operators get one mental model across all four content streams (LLM input / LLM output / tool args / tool result / guardrail evidence).
 
 ## End-to-end propagation (Phase 5)
 

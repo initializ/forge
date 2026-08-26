@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/initializ/forge/forge-core/a2a"
 	"github.com/initializ/forge/forge-core/agentspec"
@@ -12,11 +13,23 @@ import (
 	"github.com/initializ/forge/forge-core/types"
 )
 
+// agentCardBaseURL is the URL the Agent Card advertises in its `url` field. When
+// the agent is fronted by an ingress/gateway, the operator sets FORGE_A2A_PUBLIC_URL
+// to the externally-reachable origin (e.g. https://agent.example.com) so A2A clients
+// that dial the card's `url` reach the agent — not the pod-local default. Unset (the
+// standalone / local-dev case) falls back to http://localhost:<port>.
+func agentCardBaseURL(port int) string {
+	if u := strings.TrimSpace(os.Getenv("FORGE_A2A_PUBLIC_URL")); u != "" {
+		return strings.TrimRight(u, "/")
+	}
+	return fmt.Sprintf("http://localhost:%d", port)
+}
+
 // BuildAgentCard constructs an AgentCard from available sources.
 // It first tries .forge-output/agent.json; if that doesn't exist, it falls
 // back to the ForgeConfig.
 func BuildAgentCard(workDir string, cfg *types.ForgeConfig, port int) (*a2a.AgentCard, error) {
-	baseURL := fmt.Sprintf("http://localhost:%d", port)
+	baseURL := agentCardBaseURL(port)
 
 	// Try loading from a prior build
 	card, err := agentCardFromDisk(workDir, baseURL)

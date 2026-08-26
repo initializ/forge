@@ -41,6 +41,11 @@ const emptyAssistantPlaceholder = "(continuing — previous response was truncat
 type ToolExecutor interface {
 	Execute(ctx context.Context, name string, arguments json.RawMessage) (string, error)
 	ToolDefinitions() []llm.ToolDefinition
+	// IsMCPTool reports whether the named tool is backed by an MCP server.
+	// Authoritative signal for the gen_ai.tool.type / mcp.* span attributes —
+	// distinct from the "<server>__<tool>" name shape, which non-MCP
+	// namespaced (API per-op) tools also use.
+	IsMCPTool(name string) bool
 }
 
 // Pre-hook safety ceiling for deferred tool-result truncation: hooks must
@@ -787,11 +792,13 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 			// args/result content capture under CaptureContent + Redact.
 			toolCtx, toolSpan := Tracer().Start(ctx, "tool."+tc.Function.Name)
 			// OTel GenAI tool conventions (gen_ai.tool.*). MCP-backed tools
-			// are namespaced "<server>__<tool>" and map to the "extension"
-			// tool type (an agent-side bridge to an external system); all
-			// others are "function".
+			// map to the "extension" tool type (an agent-side bridge to an
+			// external system); all others are "function". Uses the
+			// registry's MCPSource marker, not the "<server>__<tool>" name
+			// shape — non-MCP namespaced (API per-op) tools share that shape
+			// but must not be typed as MCP extensions.
 			toolType := observability.ToolTypeFunction
-			isMCPTool := strings.Contains(tc.Function.Name, "__")
+			isMCPTool := e.tools != nil && e.tools.IsMCPTool(tc.Function.Name)
 			if isMCPTool {
 				toolType = observability.ToolTypeExtension
 			}

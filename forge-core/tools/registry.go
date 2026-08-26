@@ -113,6 +113,23 @@ func (r *Registry) Filter(allowed []string) *Registry {
 	return filtered
 }
 
+// IsMCPTool reports whether the named tool was discovered from an MCP
+// server (implements the MCPSource marker). This is the authoritative
+// signal for MCP-backedness — distinct from the "<server>__<tool>" name
+// shape, which NamespacedSource tools (e.g. per-op API tools "<api>__<op>")
+// also use without being MCP. Returns false for unknown or non-MCP tools.
+// Satisfies the engine.ToolExecutor interface.
+func (r *Registry) IsMCPTool(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	t, ok := r.tools[name]
+	if !ok {
+		return false
+	}
+	_, isMCP := t.(MCPSource)
+	return isMCP
+}
+
 // ToolDefinitions returns LLM tool definitions for all registered tools.
 // This method satisfies the engine.ToolExecutor interface.
 func (r *Registry) ToolDefinitions() []llm.ToolDefinition {

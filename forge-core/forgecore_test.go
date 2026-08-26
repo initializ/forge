@@ -54,6 +54,8 @@ func (m *mockToolExecutor) Execute(ctx context.Context, name string, arguments j
 	return "", nil
 }
 
+func (m *mockToolExecutor) IsMCPTool(string) bool { return false }
+
 func (m *mockToolExecutor) ToolDefinitions() []llm.ToolDefinition {
 	var defs []llm.ToolDefinition
 	for name := range m.tools {

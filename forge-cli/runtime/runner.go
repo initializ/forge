@@ -628,6 +628,11 @@ func (r *Runner) Run(ctx context.Context) error {
 	var egressProxy *security.EgressProxy
 	var proxyURL string
 	var socksURL string
+	// Separate transport for the OTLP trace exporter — egress-enforced but
+	// NOT audited and NOT otel-wrapped (see the tracing enforcer built in the
+	// egress block below). Stays nil when egress resolution fails, matching
+	// the exporter's default-client fallback.
+	var tracingTransport http.RoundTripper
 	egressToolNames := make([]string, len(r.cfg.Config.Tools))
 	for i, t := range r.cfg.Config.Tools {
 		egressToolNames[i] = t.Name
@@ -736,6 +741,19 @@ func (r *Runner) Run(ctx context.Context) error {
 				Fields:        map[string]any{"domain": domain, "mode": string(egressCfg.Mode)},
 			})
 		}
+		// The OTLP trace exporter gets its OWN enforcer, distinct from the
+		// audited egressClient above. Routing the exporter through the audited
+		// client floods the audit stream: its OnAttempt emits an egress_allowed
+		// event on every request, and the batch exporter exports on a ~5s timer,
+		// so tracing alone produces one egress_allowed per 5s — indefinitely,
+		// because the otelhttp wrap below also traces the exporter's own POST,
+		// which enqueues a span that forces the next export (a self-sustaining
+		// loop that never quiesces even on an idle agent). This enforcer keeps
+		// the allowlist + post-DNS IP guard (so a misconfigured collector host
+		// still can't exfiltrate span content) but has NO OnAttempt hook and is
+		// deliberately NOT otel-wrapped, so exporter traffic is neither audited
+		// nor self-traced.
+		tracingTransport = security.NewEgressEnforcer(nil, egressCfg.Mode, egressCfg.AllDomains, allowPrivateIPs, allowedPrivateCIDRs)
 		// Phase 3 (#104) — wrap the egress-enforced transport with
 		// otelhttp instrumentation so every outbound HTTP request the
 		// in-process clients (LLM providers, MCP, channels, OAuth)
@@ -853,10 +871,11 @@ func (r *Runner) Run(ctx context.Context) error {
 	// initiative ruling — a misconfigured exporter must never crash
 	// the agent.
 	tracingCfg := tracingCfgEarly
-	var tracingTransport http.RoundTripper
-	if egressClient != nil {
-		tracingTransport = egressClient.Transport
-	}
+	// tracingTransport was built alongside the egress enforcer above — an
+	// egress-enforced but unaudited, non-otel-wrapped RoundTripper (nil when
+	// egress resolution failed, which the exporter treats as "use default
+	// client"). Deliberately NOT egressClient.Transport: that path audits and
+	// self-traces every export, flooding the audit stream every ~5s.
 	tp, tpErr := observability.NewTracerProvider(ctx, tracingCfg, tracingTransport)
 	switch {
 	case errors.Is(tpErr, observability.ErrDisabled):

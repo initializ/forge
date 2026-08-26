@@ -753,7 +753,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		// still can't exfiltrate span content) but has NO OnAttempt hook and is
 		// deliberately NOT otel-wrapped, so exporter traffic is neither audited
 		// nor self-traced.
-		tracingTransport = security.NewEgressEnforcer(nil, egressCfg.Mode, egressCfg.AllDomains, allowPrivateIPs, allowedPrivateCIDRs)
+		tracingTransport = newTracingExporterTransport(egressCfg.Mode, egressCfg.AllDomains, allowPrivateIPs, allowedPrivateCIDRs)
 		// Phase 3 (#104) — wrap the egress-enforced transport with
 		// otelhttp instrumentation so every outbound HTTP request the
 		// in-process clients (LLM providers, MCP, channels, OAuth)

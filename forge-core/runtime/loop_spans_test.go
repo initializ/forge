@@ -306,10 +306,10 @@ func TestExecuteRecordsToolErrorOnSpan(t *testing.T) {
 }
 
 // genAIToolRun drives one tool call through the executor and returns the
-// recorder so a test can assert span attributes. toolName controls whether
-// the tool span is treated as a "function" (builtin/skill) or "extension"
-// (MCP-namespaced "<server>__<tool>").
-func genAIToolRun(t *testing.T, toolName string) *observability.SpanRecorder {
+// recorder so a test can assert span attributes. isMCP mirrors the registry's
+// MCPSource marker: it — not the tool name's "__" shape — decides whether the
+// span is typed "extension" and carries mcp.method.name.
+func genAIToolRun(t *testing.T, toolName string, isMCP bool) *observability.SpanRecorder {
 	t.Helper()
 	tp, rec := observability.NewTestTracerProvider()
 	SetTracerProvider(tp)
@@ -351,6 +351,7 @@ func genAIToolRun(t *testing.T, toolName string) *observability.SpanRecorder {
 		executeFunc: func(_ context.Context, _ string, _ json.RawMessage) (string, error) {
 			return "sunny, 20C", nil
 		},
+		mcpNames: map[string]bool{toolName: isMCP},
 	}
 	exec := NewLLMExecutor(LLMExecutorConfig{
 		Client:        client,
@@ -372,7 +373,7 @@ func genAIToolRun(t *testing.T, toolName string) *observability.SpanRecorder {
 // TestExecuteStampsGenAIAgentAndCompletionAttrs asserts the semconv
 // identity/operation attributes on the agent.execute + llm.completion spans.
 func TestExecuteStampsGenAIAgentAndCompletionAttrs(t *testing.T) {
-	rec := genAIToolRun(t, "weather")
+	rec := genAIToolRun(t, "weather", false)
 
 	root, ok := rec.FindSpan("agent.execute")
 	if !ok {
@@ -412,7 +413,7 @@ func TestExecuteStampsGenAIAgentAndCompletionAttrs(t *testing.T) {
 // TestExecuteStampsGenAIToolAttrs asserts the semconv gen_ai.tool.* attrs on
 // a function-tool span, and that mcp.method.name is absent for it.
 func TestExecuteStampsGenAIToolAttrs(t *testing.T) {
-	rec := genAIToolRun(t, "weather")
+	rec := genAIToolRun(t, "weather", false)
 
 	toolSpan, ok := rec.FindSpan("tool.weather")
 	if !ok {
@@ -437,7 +438,7 @@ func TestExecuteStampsGenAIToolAttrs(t *testing.T) {
 // TestExecuteMCPToolSpanUsesExtensionType asserts an MCP-namespaced tool
 // ("<server>__<tool>") is typed "extension" and carries mcp.method.name.
 func TestExecuteMCPToolSpanUsesExtensionType(t *testing.T) {
-	rec := genAIToolRun(t, "linear__create_issue")
+	rec := genAIToolRun(t, "linear__create_issue", true)
 
 	toolSpan, ok := rec.FindSpan("tool.linear__create_issue")
 	if !ok {
@@ -448,5 +449,24 @@ func TestExecuteMCPToolSpanUsesExtensionType(t *testing.T) {
 	}
 	if got, ok := findAttr(toolSpan, observability.AttrMCPMethodName); !ok || got != observability.MCPMethodToolsCall {
 		t.Errorf("mcp.method.name = %q (ok=%v); want %q", got, ok, observability.MCPMethodToolsCall)
+	}
+}
+
+// TestExecuteNamespacedNonMCPToolNotTypedAsExtension guards the fix for the
+// name-heuristic edge: a NON-MCP namespaced tool (API per-op "<api>__<op>")
+// shares the "__" shape but must be typed "function" with no mcp.method.name,
+// because classification is driven by the registry's MCPSource marker.
+func TestExecuteNamespacedNonMCPToolNotTypedAsExtension(t *testing.T) {
+	rec := genAIToolRun(t, "weatherapi__forecast", false)
+
+	toolSpan, ok := rec.FindSpan("tool.weatherapi__forecast")
+	if !ok {
+		t.Fatal("missing tool.weatherapi__forecast span")
+	}
+	if got, _ := findAttr(toolSpan, observability.AttrGenAIToolType); got != observability.ToolTypeFunction {
+		t.Errorf("gen_ai.tool.type = %q; want %q for a non-MCP namespaced tool", got, observability.ToolTypeFunction)
+	}
+	if _, ok := findAttr(toolSpan, observability.AttrMCPMethodName); ok {
+		t.Error("mcp.method.name must not be set on a non-MCP namespaced tool")
 	}
 }

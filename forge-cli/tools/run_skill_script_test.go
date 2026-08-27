@@ -159,7 +159,8 @@ func TestRunSkillScript_ArgsMustBeObject(t *testing.T) {
 }
 
 func TestInterpreterForScript(t *testing.T) {
-	ok := map[string]string{"a.sh": "bash", "a.bash": "bash", "a.py": "python3", "a.js": "node", "a.mjs": "node"}
+	wantBash := bashInterpreter()
+	ok := map[string]string{"a.sh": wantBash, "a.bash": wantBash, "a.py": "python3", "a.js": "node", "a.mjs": "node"}
 	for path, want := range ok {
 		got, err := interpreterForScript(path)
 		if err != nil || got != want {

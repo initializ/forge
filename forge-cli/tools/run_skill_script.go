@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -90,6 +91,18 @@ func (t *RunSkillScriptTool) Execute(ctx context.Context, args json.RawMessage) 
 		}
 		jsonArgs = string(input.Args)
 	}
+	// Re-indent before handing jsonArgs to argv: on Windows, compact JSON
+	// (no space after ':') gets silently truncated by Git-Bash/MSYS's
+	// re-parsing of the CreateProcess command line — confirmed via a
+	// minimal exec.Command repro outside forge (any `":<value>}"` with no
+	// separating space loses everything from the colon onward before the
+	// script sees $1). Indenting guarantees whitespace after every ':' and
+	// ',', which the repro confirms is unaffected. Only needed for the
+	// argv copy; the stdin copy below is unaffected either way.
+	argvJSON := jsonArgs
+	if indented, err := json.MarshalIndent(json.RawMessage(jsonArgs), "", " "); err == nil {
+		argvJSON = string(indented)
+	}
 
 	dir, ok := builtins.SkillDir(t.workDir, input.Skill)
 	if !ok {
@@ -111,6 +124,12 @@ func (t *RunSkillScriptTool) Execute(ctx context.Context, args json.RawMessage) 
 	// CWD = the skill dir so `input.Path` (relative) and the script's own
 	// relative references resolve there. Same subprocess posture as
 	// cli_execute / skill scripts (egress proxy + env passthrough).
+	//
+	// argvJSON (indented) goes to argv[1] since every shipped skill script
+	// reads its args from $1 / sys.argv[1] / process.argv[2], not stdin.
+	// jsonArgs (compact) also goes on stdin for any script that chooses to
+	// read it there instead. See the MarshalIndent comment above for why
+	// argv needs the indented form on Windows.
 	exec := &SkillCommandExecutor{
 		Timeout:  t.timeout,
 		WorkDir:  dir,
@@ -118,7 +137,7 @@ func (t *RunSkillScriptTool) Execute(ctx context.Context, args json.RawMessage) 
 		ProxyURL: t.proxyURL,
 		SOCKSURL: t.socksURL,
 	}
-	out, runErr := exec.Run(ctx, interp, []string{input.Path, jsonArgs}, nil)
+	out, runErr := exec.Run(ctx, interp, []string{input.Path, argvJSON}, []byte(jsonArgs))
 	if runErr != nil {
 		// Build via json.Marshal, not fmt %q: script output can carry raw
 		// bytes / invalid UTF-8 that %q would emit as \xNN escapes, which
@@ -148,7 +167,7 @@ func jsonError(msg string) string { return jsonObj(map[string]any{"error": msg})
 func interpreterForScript(path string) (string, error) {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".sh", ".bash":
-		return "bash", nil
+		return bashInterpreter(), nil
 	case ".py":
 		return "python3", nil
 	case ".js", ".cjs", ".mjs":
@@ -156,6 +175,32 @@ func interpreterForScript(path string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported script type %q (supported: .sh, .py, .js)", filepath.Ext(path))
 	}
+}
+
+// bashInterpreter resolves the bash to invoke. On Windows, a bare "bash"
+// resolved via PATH can land on the WSL launcher stub at
+// %WINDIR%\System32\bash.exe (or the WindowsApps alias) instead of a real
+// POSIX bash — depending on PATH ordering in the process's environment,
+// which can differ from an interactive shell's. The WSL stub adds its own
+// Windows<->Linux argv translation layer on top of Go's own Windows argv
+// escaping, and the two together corrupt any argument containing embedded
+// double quotes (i.e. any JSON payload) before the script ever sees it.
+// Git for Windows' bash.exe is a native Win32 program (MSYS2), so it only
+// goes through Go's escaping once; prefer it explicitly when present.
+func bashInterpreter() string {
+	if runtime.GOOS != "windows" {
+		return "bash"
+	}
+	candidates := []string{
+		`C:\Program Files\Git\bin\bash.exe`,
+		`C:\Program Files\Git\usr\bin\bash.exe`,
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c
+		}
+	}
+	return "bash"
 }
 
 func truncate(s string, max int) string {

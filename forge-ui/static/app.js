@@ -1068,6 +1068,13 @@ function ChatPage({ agentId, initialSessionId, agents }) {
   const userScrolledUp = useRef(false);
   const textareaRef = useRef(null);
   const loadedInitialRef = useRef(false);
+  // Tracks whether the agent process still reports this session as
+  // working/submitted, independent of local `streaming` state (which
+  // resets on reload even though the server-side turn keeps running).
+  // Gates sending so a refreshed-but-still-running turn can't be sent
+  // into twice — two concurrent Execute calls on the same task ID would
+  // each persistSession and the later write clobbers the earlier one.
+  const [remoteBusy, setRemoteBusy] = useState(false);
 
   // Resume the session named in the URL (e.g. after a page reload) instead
   // of starting from a blank chat. Runs once per agent mount; a fresh
@@ -1095,12 +1102,15 @@ function ChatPage({ agentId, initialSessionId, agents }) {
         } catch {
           break;
         }
-        if (status.state !== 'working' && status.state !== 'submitted') {
+        const busy = status.state === 'working' || status.state === 'submitted';
+        if (!cancelled) setRemoteBusy(busy);
+        if (!busy) {
           if (attempt > 0 && !cancelled) await loadSession(initialSessionId);
           break;
         }
         await new Promise(r => setTimeout(r, 1500));
       }
+      if (!cancelled) setRemoteBusy(false);
     })();
 
     return () => { cancelled = true; };
@@ -1138,13 +1148,13 @@ function ChatPage({ agentId, initialSessionId, agents }) {
 
   const handleSend = useCallback(() => {
     const text = inputText.trim();
-    if (!text || streaming || !isRunning) return;
+    if (!text || streaming || !isRunning || remoteBusy) return;
     setInputText('');
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
     sendMessage(text);
-  }, [inputText, streaming, isRunning, sendMessage]);
+  }, [inputText, streaming, isRunning, remoteBusy, sendMessage]);
 
   const handleKeyDown = useCallback((e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -1214,17 +1224,17 @@ function ChatPage({ agentId, initialSessionId, agents }) {
           <textarea
             ref=${textareaRef}
             class="chat-textarea"
-            placeholder=${isRunning ? 'Type a message... (Enter to send, Shift+Enter for newline)' : 'Agent is not running'}
+            placeholder=${!isRunning ? 'Agent is not running' : remoteBusy ? 'Waiting for the in-progress response to finish...' : 'Type a message... (Enter to send, Shift+Enter for newline)'}
             value=${inputText}
             onInput=${handleInput}
             onKeyDown=${handleKeyDown}
-            disabled=${!isRunning}
+            disabled=${!isRunning || remoteBusy}
             rows="1"
           />
           <div class="chat-input-actions">
             ${streaming
               ? html`<button class="btn btn-danger btn-sm" onClick=${cancel}>Stop</button>`
-              : html`<button class="btn btn-primary btn-sm" onClick=${handleSend} disabled=${!inputText.trim() || !isRunning}>Send</button>`
+              : html`<button class="btn btn-primary btn-sm" onClick=${handleSend} disabled=${!inputText.trim() || !isRunning || remoteBusy}>Send</button>`
             }
           </div>
         </div>

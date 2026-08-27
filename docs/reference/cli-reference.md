@@ -38,6 +38,8 @@ forge init [name] [flags]
 | `--api-key` | | | LLM provider API key |
 | `--org-id` | | | OpenAI Organization ID (enterprise) |
 | `--from-skills` | | | Path to a SKILL.md file for auto-configuration |
+| `--from-skill-dir` | | | Path to a skill folder (SKILL.md + scripts + reference files) to vendor into the new agent and wire (egress/env). See [Skills CLI / Importing a skill folder](../skills/skills-cli.md#importing-a-skill-folder) |
+| `--write-forge-meta` | | `false` | With `--from-skill-dir`: inject inferred `requires.bins` into the imported SKILL.md when it has no `metadata.forge` block |
 | `--non-interactive` | | `false` | Skip interactive prompts |
 | `--compression` | | `false` | Enable reversible context compression — writes `compression.enabled: true` to the scaffolded forge.yaml. See [Context Compression](../core-concepts/context-compression.md) |
 | `--auth` | | | Auth mode: `none`, `oidc`, `http_verifier`, `aws_sigv4`, `gcp_iap`, `azure_ad`, `custom` |
@@ -86,6 +88,9 @@ forge init my-agent \
 
 # From a skills file
 forge init my-agent --from-skills SKILL.md
+
+# From a skill folder (SKILL.md + scripts + reference files)
+forge init my-agent --from-skill-dir ./path/to/skill-folder
 
 # With builtin tools and registry skills
 forge init my-agent \
@@ -244,6 +249,8 @@ Run the agent locally with an A2A-compliant dev server.
 ```
 forge run [flags]
 ```
+
+On startup the server prints a banner whose **`Forge:`** line shows the running binary/runtime version (issue #335/#336) — e.g. `Forge: v0.18.1`. A build without embedded version info degrades to `dev` (or `dev (commit: <sha>)`), so an operator can tell at a glance which forge runtime an agent pod is on. This is the runtime version; `forge --version` prints the CLI's, and the OTel `forge.runtime.version` span attribute carries the same value for traces.
 
 ### Flags
 
@@ -451,6 +458,30 @@ Lists all configured cron schedules (both YAML-defined and LLM-created).
 
 ---
 
+## `forge mcp`
+
+Manage [Model Context Protocol](../mcp/index.md) servers and their OAuth tokens. Servers are declared under the `mcp:` block in `forge.yaml`; each server's discovered tools register as namespaced `<server>__<tool>`.
+
+```bash
+# List configured MCP servers + their discovered tools and auth status
+forge mcp list
+
+# Test a server connection (optionally invoke a tool)
+forge mcp test <server>
+forge mcp test <server> --call <tool> --args '{"key":"value"}'
+
+# OAuth login for a server (type: oauth) — discovers endpoints via
+# RFC 9728/8414 + dynamic client registration (RFC 7591) at first login
+forge mcp login <server>
+
+# Clear a stored MCP OAuth token
+forge mcp logout <server>
+```
+
+Auth types (`mcp.servers[].auth.type`): `oauth` (browser login, stored token), `bearer` / `static` (token from `token_env`), `platform` (managed agent-principal token — **no login needed**), and `user` (managed delegated per-user token — lazy consent, no upfront login). See [MCP configuration](../mcp/configuration.md) and the [MCP CLI reference](../mcp/cli-reference.md).
+
+---
+
 ## `forge tool`
 
 Manage and inspect agent tools.
@@ -603,6 +634,13 @@ Manage agent skills.
 # Add a skill from the registry (prompts for env vars, merges egress domains)
 forge skills add <skill-name>
 
+# Import an external skill folder (SKILL.md + scripts + reference files) into
+# the current project; vendors files, merges egress, reports env requirements
+forge skills import ./path/to/skill-folder
+forge skills import ./path/to/skill-folder --name my-skill --overwrite
+# Infer + inject requires.bins (python3/node) for a plain SKILL.md with no metadata.forge
+forge skills import ./path/to/skill-folder --write-forge-meta
+
 # List available skills
 forge skills list
 
@@ -613,7 +651,7 @@ forge skills list --category sre
 forge skills list --tags kubernetes,incident-response
 
 # Validate skill requirements
-forge skills validate
+forge skills validate  # checks bins, env, invalid Input keys, missing/orphan scripts; non-zero exit on error
 
 # Audit skill security
 forge skills audit --embedded

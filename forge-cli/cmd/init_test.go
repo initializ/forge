@@ -399,6 +399,62 @@ func TestScaffold_VendorsSkills(t *testing.T) {
 	}
 }
 
+func TestScaffold_FromSkillDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	origDir, _ := os.Getwd()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(origDir) }()
+
+	// An external skill folder with a script and a reference file.
+	srcDir := filepath.Join(t.TempDir(), "external-skill")
+	if err := os.MkdirAll(filepath.Join(srcDir, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillMD := "---\nname: my-imported\ndescription: imported skill\n" +
+		"metadata:\n  forge:\n    egress_domains:\n      - imported.example.com\n---\n" +
+		"## Tool: do_thing\n**Input:** x (string)\n**Output:** y\n"
+	if err := os.WriteFile(filepath.Join(srcDir, "SKILL.md"), []byte(skillMD), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "scripts", "do-thing.py"), []byte("print(1)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "notes.md"), []byte("reference"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := &initOptions{
+		Name:           "import-agent",
+		AgentID:        "import-agent",
+		Framework:      "forge",
+		ModelProvider:  "openai",
+		SkillDir:       srcDir,
+		EnvVars:        map[string]string{},
+		NonInteractive: true,
+	}
+	if err := scaffold(opts); err != nil {
+		t.Fatalf("scaffold error: %v", err)
+	}
+
+	skillDir := filepath.Join("import-agent", "skills", "my-imported")
+	if _, err := os.Stat(filepath.Join(skillDir, "SKILL.md")); err != nil {
+		t.Errorf("imported SKILL.md missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(skillDir, "scripts", "do-thing.py")); err != nil {
+		t.Errorf("imported script missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(skillDir, "notes.md")); err != nil {
+		t.Errorf("imported reference file missing: %v", err)
+	}
+	// Skill egress merged into the freshly-scaffolded forge.yaml.
+	fy, _ := os.ReadFile(filepath.Join("import-agent", "forge.yaml"))
+	if !strings.Contains(string(fy), "imported.example.com") {
+		t.Errorf("skill egress not merged into forge.yaml:\n%s", fy)
+	}
+}
+
 func TestScaffold_EgressInForgeYAML(t *testing.T) {
 	tmpDir := t.TempDir()
 	origDir, _ := os.Getwd()

@@ -205,6 +205,40 @@ Reading conventions:
 
 See [Docker Deployment](../deployment/docker.md) for the operator-facing build / run / push workflow.
 
+## Python dependencies (skill `requirements.txt`)
+
+A skill that ships Python scripts can also ship a `requirements.txt` at
+`skills/<name>/requirements.txt` (for example after `forge skills import` /
+`forge init --from-skill-dir` vendors a Python skill folder — see
+[Skills CLI](../skills/skills-cli.md#importing-a-skill-folder)). At build time
+`forge build`:
+
+1. Discovers each `skills/<name>/requirements.txt`.
+2. Forces `python3` + `pip` into the bin manifest (resolved to the `python3` /
+   `python3-pip` apt packages via the registry), so the interpreter is
+   provisioned even when the SKILL.md's `requires.bins` didn't list them.
+3. Emits a `pip install -r` step per file in the application stage:
+
+```dockerfile
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates python3 python3-pip && rm -rf /var/lib/apt/lists/*
+RUN PIP_BREAK_SYSTEM_PACKAGES=1 pip3 install --no-cache-dir -r skills/pdf-tools/requirements.txt
+```
+
+`PIP_BREAK_SYSTEM_PACKAGES=1` is honored by pip ≥ 23 (PEP 668
+externally-managed environments, e.g. Debian bookworm) and ignored by older
+pip, so the same line works across base images. Only a `requirements.txt` at
+the **skill-directory root** is installed — a nested one is vendored but not
+pip-installed. Python scripts **without** a `requirements.txt` still need
+`python3` listed in `requires.bins` to provision the interpreter.
+
+> **Trust boundary:** `pip install -r` runs the dependency's build-time code
+> (`setup.py` / PEP 517 backends, and any `--index-url` / VCS references in the
+> file) during `forge build`. So **building an imported skill executes that
+> skill's Python build-time code** — review a third-party skill's
+> `requirements.txt` (and its scripts) before building, the same as you would
+> its `SKILL.md`. This is not a new boundary — an imported skill's scripts
+> already run at runtime via `run_skill_script` — but it's worth naming.
+
 ## Cross-references
 
 - [SKILL.md Format § Frontmatter](skill-md-format.md#yaml-frontmatter) — the `metadata.forge.requires.bins` block
@@ -220,7 +254,9 @@ See [Docker Deployment](../deployment/docker.md) for the operator-facing build /
 - `forge-skills/registry/registry.go` — registry loader
 - `forge-core/packaging/bin_classifier.go` — source-priority walker + classifier
 - `forge-core/packaging/dockerfile_generator.go` — emits Dockerfile fragments per install method
-- `forge-cli/templates/Dockerfile.tmpl` — application-stage template (consumes the fragments)
+- `forge-cli/templates/Dockerfile.tmpl` — application-stage template (consumes the fragments; renders the skill `pip install` steps)
 - `forge-cli/build/dockerfile_stage.go` — wires the generator output into the build pipeline
+- `forge-cli/build/skills_stage.go` — discovers `skills/<name>/requirements.txt` (`discoverSkillPipRequirements`)
+- `forge-cli/build/requirements_stage.go` — forces `python3`/`pip` into the manifest when a skill ships a `requirements.txt`
 - `forge-skills/contract/types.go` — `BinRequirement` (the SKILL.md frontmatter shape)
 - `forge-core/types/config.go` — `BinOverride` (the `forge.yaml` shape)

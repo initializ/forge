@@ -14,6 +14,99 @@ forge init my-agent --from-skills
 forge build
 ```
 
+## Importing a skill folder
+
+Convert an existing skill folder — a `SKILL.md` plus its scripts and reference
+files — into a vendored skill. Two entry points share the same importer:
+
+```bash
+# Scaffold a NEW agent from a skill folder
+forge init my-agent --from-skill-dir ./path/to/skill-folder
+
+# Import into an EXISTING agent project (run from a dir containing forge.yaml)
+cd my-agent
+forge skills import ./path/to/skill-folder
+```
+
+`forge init --from-skill-dir` scaffolds the agent first (the normal init flow —
+model provider, channels, auth, etc. still apply), then vendors the folder and
+merges its egress into the freshly generated `forge.yaml`. `forge skills import`
+does the same vendoring into an already-scaffolded project.
+
+Accepted input layout (flat folders work too — files are classified by role):
+
+```
+skill-folder/
+  SKILL.md                 # required
+  scripts/                 # *.sh / *.py / *.js
+    fetch-data.py
+  reference/               # arbitrary files the skill reads at runtime
+    schema.json
+  requirements.txt         # optional Python deps
+```
+
+What it does:
+
+- **Vendors** `SKILL.md` into `skills/<name>/SKILL.md`, executable scripts
+  (`.sh`/`.py`/`.js`) under `skills/<name>/scripts/`, and every other file as a
+  reference preserving its relative path. All writes are confined to the skill
+  directory; `.git`/`.venv`/`__pycache__`/`node_modules` and similar build cruft
+  are skipped.
+- **Resolves the skill name** from the `SKILL.md` frontmatter `name` (falling
+  back to the sanitized folder name; override with `--name`).
+- **Merges** `metadata.forge.egress_domains` into `forge.yaml`
+  `egress.allowed_domains`.
+- **Reports** the `requires.env` variables you still need to supply (set them in
+  `.env` or via `forge secret set <KEY>`).
+- **Infers a `metadata.forge` block** when the imported `SKILL.md` has none —
+  many real skills are plain (`name` + `description` only). It derives
+  `requires.bins` from the script interpreters (`.py` → `python3`, `.js` →
+  `node`), and reports **candidate** `egress_domains` (http(s) hosts found in
+  scripts) and `requires.env` (env-var reads — Python `os.environ`/`os.getenv`,
+  JS `process.env`, and shell `$VAR`/`${VAR}` minus locally-assigned and common
+  shell variables) for you to review. By default it
+  **prints** a paste-ready suggested block; the interpreter part is high-
+  confidence, the egress/env parts are candidates and are never auto-declared.
+
+Flags:
+
+| Flag | Description |
+|------|-------------|
+| `--name <name>` | Skill name override (default: frontmatter `name` or folder basename). Must be kebab-case. |
+| `--overwrite` | Replace an existing `skills/<name>/` directory (clears stale scripts). |
+| `--write-forge-meta` | Inject the inferred `requires.bins` into the vendored `SKILL.md` (only when it has no `metadata.forge`/`metadata:` block). Egress/env stay printed as review candidates — never auto-declared, so egress is not silently widened. |
+
+> **Python scripts** get first-class tool registration: a `## Tool: foo_bar`
+> backed by `scripts/foo-bar.py` (or `.js`) is registered as a callable tool the
+> model invokes by name, run under `python3` (or `node`) — same as `.sh`. A
+> `.py`/`.js` script that doesn't map to a `## Tool:` heading stays reachable by
+> path via `run_skill_script`. A skill folder may ship a `requirements.txt`:
+> `forge build` discovers `skills/<name>/requirements.txt`, forces `python3` +
+> `pip` into the image (you don't need to list them in `requires.bins`), and
+> adds a `pip install -r` step for it in the generated Dockerfile. For Python
+> scripts **without** a `requirements.txt`, list `python3` under
+> `metadata.forge.requires.bins` so the interpreter is still provisioned —
+> `forge skills import` warns if it's missing.
+
+## Validate
+
+`forge skills validate` checks that a project's skills will actually register at runtime, surfacing failures the runtime otherwise handles **silently** (an error log line at best). It scans the whole skill tree — the main `SKILL.md` **and** every `skills/*/SKILL.md` — and reports, per `## Tool:`:
+
+| Check | Level | Why it matters |
+|---|---|---|
+| **Invalid `**Input:**` property key** — a parameter name that yields a JSON-schema key outside `^[a-zA-Z0-9_.-]{1,64}$` (e.g. a space or backtick) | ERROR | The LLM provider rejects the *entire* request, so the runtime drops the whole tool at startup — the tool silently never appears. |
+| **No backing script** — a script-runtime `## Tool: foo_bar` with no `scripts/foo_bar.{sh,py,js}` or `scripts/foo-bar.{sh,py,js}` | ERROR | The tool never registers. |
+| **Orphan script** — a `scripts/*.{sh,py,js}` no `## Tool:` heading binds | WARN | Reachable only by path via `run_skill_script`; dead weight in the image if never referenced. |
+
+It also reports missing required binaries and unresolved required env vars. It exits **non-zero** when any ERROR is present, so CI can gate on it — making the parser itself the source of truth instead of an external lint you re-confirm each release.
+
+```bash
+# Validate the skills in the current project (run from a dir with forge.yaml).
+forge skills validate
+```
+
+> A `## Tool: foo_bar` binds to its script by **either** name form — `scripts/foo_bar.sh` or `scripts/foo-bar.sh` both work (hyphenated wins only if both exist). See [Writing Custom Skills](writing-custom-skills.md#skills-as-first-class-tools).
+
 ## Security Audit
 
 `forge skills audit` scores each skill in the project across four categories — egress, binary, env, script — and runs a `SecurityPolicy` check for hard violations. By default it uses the analyzer's `DefaultPolicy`. A custom policy YAML can be supplied with `--policy`.

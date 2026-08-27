@@ -218,6 +218,15 @@ If the summariser call fails or returns empty, channel adapters fall back to hea
 
 Additionally, the runtime tracks large tool outputs (>8000 characters) and attaches them as file parts in the A2A response. This ensures channel adapters receive the complete, untruncated tool output even when the LLM's text summary is truncated by output token limits. JSON tool outputs (e.g. Tavily Research/Search results) are automatically unwrapped into readable markdown before delivery.
 
+### Never dump raw tool JSON to the channel (#384)
+
+Two hardening rules keep a large tool result from becoming an unreadable channel dump:
+
+- **Raw structured data is never auto-attached.** Large JSON/YAML tool output (e.g. an MCP search result) is *not* forwarded as a file part — the model must summarize it. Only genuine prose (markdown) deliverables attach. This also defeats a subtle failure mode: once the context-compression hook has run, a JSON blob carries `<<ctxzip:…>>` markers and is no longer valid JSON, so content-sniffing alone would misclassify it as markdown and attach it — the suppression is keyed on the tool being MCP/structured, not just on sniffing.
+- **Compression markers are stripped before delivery.** Any `<<ctxzip:…>>` context-compression pointer that leaks into channel-bound text is removed by `markdown.StripCompressionMarkers` across **Slack, Telegram, and MS Teams**, applied to the message text, the file content, *and* `response.Summary` (which is composed over the possibly-compressed context — the most likely leak site).
+
+On Slack specifically, chunked replies (when a message is split) all carry `thread_ts`, so a multi-part reply stays in one thread instead of half landing in the main channel.
+
 ## Container Deployment
 
 When channels are configured in `forge.yaml`, the build pipeline automatically:

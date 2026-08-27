@@ -431,7 +431,7 @@ mcp:
 - `deny` subtracts from either an explicit allow set or the
   wildcard.
 - A tool listed in both `allow` and `deny` is a validation error.
-- Tool names follow `^[a-zA-Z0-9_]{1,64}$`.
+- Tool names follow `^[a-zA-Z0-9_-]{1,128}$` (hyphens allowed; length up to 128 — #370). The `__` namespace separator stays reserved.
 
 ### `mcp.servers[].timeout`
 

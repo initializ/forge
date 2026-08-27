@@ -77,7 +77,7 @@ The `metadata.forge.runtime` field selects how the skill's tool is executed (iss
 
 | Value | Behavior |
 |---|---|
-| `script` (default; empty = `script`) | Skill body is materialized as a bash script at `skills/<dir>/scripts/<tool>.sh` and invoked as `bash <scriptPath> <jsonArgs>`. |
+| `script` (default; empty = `script`) | The `## Tool:` binds to a script at `skills/<dir>/scripts/<tool>.{sh,py,js}` (the tool name matches the file in either its underscore or hyphen form) and is invoked as `<interpreter> <scriptPath> <jsonArgs>`, interpreter chosen by extension. |
 | `binary` | The first `metadata.forge.requires.bins` entry IS the executable. The runtime resolves it via `exec.LookPath` and invokes `<binary> <jsonArgs>` directly — no bash fork, no script file required. Skill body is documentation only. |
 
 ```yaml
@@ -158,7 +158,7 @@ Skill scripts run in a restricted environment via `SkillCommandExecutor`:
 - **Isolated environment**: Only `PATH`, `HOME`, and explicitly declared env vars are passed through
 - **OAuth token resolution**: When `OPENAI_API_KEY` is set to `__oauth__`, the executor resolves OAuth credentials and injects the access token, `OPENAI_BASE_URL`, and the configured model as `REVIEW_MODEL`
 - **Configurable timeout**: Each skill declares a `timeout_hint` in its YAML frontmatter (e.g., 300s for research)
-- **No shell execution**: Scripts run via `bash <script> <json-input>`, not through a shell interpreter
+- **No shell string execution**: a `## Tool:` script runs as `<interpreter> <script> <json-input>` — the interpreter is chosen by extension (`.sh`/`.bash` → `bash`, `.py` → `python3`, `.js` → `node`; #405 D2), NOT by passing the command through a shell string, so the JSON argument is a single opaque `argv[1]` and can't be shell-injected. Ensure a non-shell interpreter (`python3`/`node`) is provisioned (`requires.bins`); a `## Tool:` whose interpreter is missing from PATH is skipped with a warning rather than failing at call time.
 - **Egress proxy enforcement**: When egress mode is `allowlist` or `deny-all`, a local HTTP/HTTPS proxy is started and `HTTP_PROXY`/`HTTPS_PROXY` env vars are injected into subprocess environments, ensuring `curl`, `wget`, Python `requests`, and other HTTP clients route through the same domain allowlist used by in-process tools (see [Egress Security](../security/egress-control.md))
 
 ### Symlink Escape Detection

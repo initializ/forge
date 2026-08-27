@@ -41,6 +41,13 @@ var skillsAddCmd = &cobra.Command{
 	RunE:  runSkillsAdd,
 }
 
+var skillsImportCmd = &cobra.Command{
+	Use:   "import <folder>",
+	Short: "Import an external skill folder (SKILL.md + scripts + reference files) into the current project",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runSkillsImport,
+}
+
 var skillsAuditCmd = &cobra.Command{
 	Use:   "audit",
 	Short: "Run security audit on skills file",
@@ -83,11 +90,16 @@ var signKeyPath string
 func init() {
 	skillsCmd.AddCommand(skillsValidateCmd)
 	skillsCmd.AddCommand(skillsAddCmd)
+	skillsCmd.AddCommand(skillsImportCmd)
 	skillsCmd.AddCommand(skillsAuditCmd)
 	skillsCmd.AddCommand(skillsSignCmd)
 	skillsCmd.AddCommand(skillsKeygenCmd)
 	skillsCmd.AddCommand(skillsListCmd)
 	skillsCmd.AddCommand(skillsTrustReportCmd)
+
+	skillsImportCmd.Flags().String("name", "", "Skill name override (default: SKILL.md `name` or folder basename)")
+	skillsImportCmd.Flags().Bool("overwrite", false, "Replace an existing skills/<name>/ directory")
+	skillsImportCmd.Flags().Bool("write-forge-meta", false, "Inject inferred requires.bins into the SKILL.md when it has no metadata.forge block")
 
 	skillsAuditCmd.Flags().StringVar(&auditFormat, "format", "text", "Output format: text or json")
 	skillsAuditCmd.Flags().BoolVar(&auditEmbedded, "embedded", false, "Audit embedded skills from the binary")
@@ -269,6 +281,32 @@ func runSkillsAdd(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runSkillsImport(cmd *cobra.Command, args []string) error {
+	wd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getting working directory: %w", err)
+	}
+
+	nameOverride, _ := cmd.Flags().GetString("name")
+	overwrite, _ := cmd.Flags().GetBool("overwrite")
+	writeForgeMeta, _ := cmd.Flags().GetBool("write-forge-meta")
+
+	res, err := ImportSkillFolder(SkillImportOptions{
+		SourceDir:      args[0],
+		AgentDir:       wd,
+		NameOverride:   nameOverride,
+		Overwrite:      overwrite,
+		WriteForgeMeta: writeForgeMeta,
+	})
+	if err != nil {
+		return err
+	}
+
+	printSkillImportResult(res)
+	fmt.Printf("\nSkill %q imported. Run 'forge run' to use it.\n", res.SkillName)
+	return nil
+}
+
 func runSkillsValidate(cmd *cobra.Command, args []string) error {
 	// Determine skills file path
 	skillsPath := "SKILL.md"
@@ -352,13 +390,34 @@ func runSkillsValidate(cmd *cobra.Command, args []string) error {
 		fmt.Println()
 	}
 
+	// Tool → registry lint: surface the registration failures the runtime
+	// otherwise handles silently (invalid Input keys, missing/orphan scripts).
+	// Scans the whole skill tree, not just the main SKILL.md (#418).
+	toolFindings := lintSkillTools(filepath.Dir(skillsPath), skillsPath)
+	if len(toolFindings) > 0 {
+		fmt.Println("Tools:")
+		for _, f := range toolFindings {
+			prefix := "  WARN "
+			if f.Level == "error" {
+				prefix = "  ERROR"
+				hasErrors = true
+			}
+			where := f.Skill
+			if f.Tool != "" {
+				where = f.Skill + " / " + f.Tool
+			}
+			fmt.Printf("%s %s: %s\n", prefix, where, f.Msg)
+		}
+		fmt.Println()
+	}
+
 	// Summary
 	if !hasErrors {
 		fmt.Println("Validation passed.")
 		return nil
 	}
 
-	return fmt.Errorf("validation failed: missing required environment variables")
+	return fmt.Errorf("validation failed: see ERROR lines above")
 }
 
 func envFromOS() map[string]string {

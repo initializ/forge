@@ -1,6 +1,11 @@
 // Package a2a provides shared types for the Agent-to-Agent (A2A) protocol.
 package a2a
 
+import (
+	"encoding/json"
+	"strings"
+)
+
 // TaskState represents the possible states of an A2A task.
 type TaskState string
 
@@ -58,6 +63,55 @@ type Message struct {
 	Role    MessageRole `json:"role"`
 	Parts   []Part      `json:"parts"`
 	Summary string      `json:"summary,omitempty"`
+}
+
+// dataPartProjectionCap bounds each data part's projected JSON block in
+// PromptText (review #411): an arbitrarily large data part must not become an
+// arbitrarily large prompt block at this layer. The cap applies to the
+// PROJECTION only — the wire message is untouched — and because scanners and
+// prompt builder share PromptText, both see the same capped text: the
+// truncated tail reaches neither the checks nor the model, so consistency
+// (the no-bypass property) is preserved. 16KiB comfortably covers real
+// workflow-step payloads while keeping a hostile megabyte data part from
+// dominating the context budget before the model-side truncation.
+const dataPartProjectionCap = 16 << 10
+
+// PromptText projects a message's parts into the single string the LLM sees as
+// the turn's content. Text parts are included verbatim; each data part is
+// appended as a fenced JSON block (capped at dataPartProjectionCap, rune-safe)
+// so structured input carried in a data part — e.g. a workflow step's output
+// dispatched with no text part — still reaches the model instead of yielding
+// an empty prompt (#410). File parts are not projected (their bytes/URIs
+// aren't prompt text).
+//
+// This is the single source of truth for "what the model sees": the executor's
+// prompt builder AND the inbound guardrail / intent-alignment scanners all go
+// through it, so a data part can never reach the LLM while bypassing the
+// security checks.
+func (m Message) PromptText() string {
+	var segments []string
+	for _, p := range m.Parts {
+		switch p.Kind {
+		case PartKindText:
+			if p.Text != "" {
+				segments = append(segments, p.Text)
+			}
+		case PartKindData:
+			if p.Data == nil {
+				continue
+			}
+			b, err := json.MarshalIndent(p.Data, "", "  ")
+			if err != nil {
+				continue
+			}
+			s := string(b)
+			if len(s) > dataPartProjectionCap {
+				s = strings.ToValidUTF8(s[:dataPartProjectionCap], "") + "\n… (data truncated)"
+			}
+			segments = append(segments, "```json\n"+s+"\n```")
+		}
+	}
+	return strings.Join(segments, "\n")
 }
 
 // PartKind discriminates the content type of a Part.

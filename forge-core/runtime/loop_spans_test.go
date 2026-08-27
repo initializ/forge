@@ -288,12 +288,12 @@ func TestExecuteRecordsToolErrorOnSpan(t *testing.T) {
 	}
 	gotErrAttr := false
 	for _, kv := range toolSpan.Attributes() {
-		if string(kv.Key) == observability.AttrForgeToolError {
+		if string(kv.Key) == observability.AttrErrorType {
 			gotErrAttr = true
 		}
 	}
 	if !gotErrAttr {
-		t.Errorf("tool.broken missing %q attribute", observability.AttrForgeToolError)
+		t.Errorf("tool.broken missing %q attribute", observability.AttrErrorType)
 	}
 
 	// Outer span is "completed" — tool errors aren't fatal.
@@ -302,5 +302,171 @@ func TestExecuteRecordsToolErrorOnSpan(t *testing.T) {
 		if string(kv.Key) == observability.AttrForgeTaskFinalState && kv.Value.AsString() != "completed" {
 			t.Errorf("agent.execute final_state = %q; tool errors must not fail the task", kv.Value.AsString())
 		}
+	}
+}
+
+// genAIToolRun drives one tool call through the executor and returns the
+// recorder so a test can assert span attributes. isMCP mirrors the registry's
+// MCPSource marker: it — not the tool name's "__" shape — decides whether the
+// span is typed "extension" and carries mcp.method.name.
+func genAIToolRun(t *testing.T, toolName string, isMCP bool) *observability.SpanRecorder {
+	t.Helper()
+	tp, rec := observability.NewTestTracerProvider()
+	SetTracerProvider(tp)
+	t.Cleanup(func() {
+		ResetTracerProviderForTest()
+		_ = tp.Shutdown(context.Background())
+	})
+
+	call := 0
+	client := &mockLLMClient{
+		chatFunc: func(_ context.Context, _ *llm.ChatRequest) (*llm.ChatResponse, error) {
+			call++
+			if call == 1 {
+				return &llm.ChatResponse{
+					ID:    "resp-1",
+					Model: "claude-sonnet-4-6-20990101", // vendor-reported, differs from request model
+					Message: llm.ChatMessage{
+						Role: llm.RoleAssistant,
+						ToolCalls: []llm.ToolCall{{
+							ID:       "tc-42",
+							Type:     "function",
+							Function: llm.FunctionCall{Name: toolName, Arguments: `{"city":"Tokyo"}`},
+						}},
+					},
+					Usage:        llm.UsageInfo{InputTokens: 50, OutputTokens: 10},
+					FinishReason: "tool_calls",
+				}, nil
+			}
+			return &llm.ChatResponse{
+				ID:           "resp-2",
+				Model:        "claude-sonnet-4-6-20990101",
+				Message:      llm.ChatMessage{Role: llm.RoleAssistant, Content: "sunny"},
+				Usage:        llm.UsageInfo{InputTokens: 60, OutputTokens: 3},
+				FinishReason: "stop",
+			}, nil
+		},
+	}
+	tools := &mockToolExecutor{
+		executeFunc: func(_ context.Context, _ string, _ json.RawMessage) (string, error) {
+			return "sunny, 20C", nil
+		},
+		mcpNames: map[string]bool{toolName: isMCP},
+	}
+	exec := NewLLMExecutor(LLMExecutorConfig{
+		Client:        client,
+		Tools:         tools,
+		MaxIterations: 3,
+		ModelName:     "claude-req",
+		Provider:      "anthropic",
+		AgentID:       "weatherbot",
+		AgentVersion:  "1.2.3",
+	})
+	if _, err := exec.Execute(context.Background(),
+		&a2a.Task{ID: "task-genai"},
+		&a2a.Message{Role: a2a.MessageRoleUser, Parts: []a2a.Part{{Kind: a2a.PartKindText, Text: "hi"}}}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	return rec
+}
+
+// TestExecuteStampsGenAIAgentAndCompletionAttrs asserts the semconv
+// identity/operation attributes on the agent.execute + llm.completion spans.
+func TestExecuteStampsGenAIAgentAndCompletionAttrs(t *testing.T) {
+	rec := genAIToolRun(t, "weather", false)
+
+	root, ok := rec.FindSpan("agent.execute")
+	if !ok {
+		t.Fatal("missing agent.execute span")
+	}
+	wantRoot := map[string]string{
+		observability.AttrGenAIProviderName:   "anthropic",
+		observability.AttrGenAIAgentID:        "weatherbot",
+		observability.AttrGenAIAgentName:      "weatherbot",
+		observability.AttrGenAIAgentVersion:   "1.2.3",
+		observability.AttrGenAIConversationID: "task-genai",
+	}
+	for k, want := range wantRoot {
+		if got, ok := findAttr(root, k); !ok || got != want {
+			t.Errorf("agent.execute %s = %q (ok=%v); want %q", k, got, ok, want)
+		}
+	}
+
+	llmSpan, ok := rec.FindSpan("llm.completion")
+	if !ok {
+		t.Fatal("missing llm.completion span")
+	}
+	if got, _ := findAttr(llmSpan, observability.AttrGenAIOperationName); got != observability.OpChat {
+		t.Errorf("llm.completion operation.name = %q; want %q", got, observability.OpChat)
+	}
+	if got, _ := findAttr(llmSpan, observability.AttrGenAIProviderName); got != "anthropic" {
+		t.Errorf("llm.completion provider.name = %q; want anthropic", got)
+	}
+	if got, ok := findAttr(llmSpan, observability.AttrGenAIResponseModel); !ok || got != "claude-sonnet-4-6-20990101" {
+		t.Errorf("llm.completion response.model = %q (ok=%v); want the vendor-reported model", got, ok)
+	}
+	if got, _ := findAttr(llmSpan, observability.AttrGenAIResponseID); got == "" {
+		t.Error("llm.completion missing gen_ai.response.id")
+	}
+}
+
+// TestExecuteStampsGenAIToolAttrs asserts the semconv gen_ai.tool.* attrs on
+// a function-tool span, and that mcp.method.name is absent for it.
+func TestExecuteStampsGenAIToolAttrs(t *testing.T) {
+	rec := genAIToolRun(t, "weather", false)
+
+	toolSpan, ok := rec.FindSpan("tool.weather")
+	if !ok {
+		t.Fatal("missing tool.weather span")
+	}
+	want := map[string]string{
+		observability.AttrGenAIOperationName: observability.OpExecuteTool,
+		observability.AttrGenAIToolName:      "weather",
+		observability.AttrGenAIToolCallID:    "tc-42",
+		observability.AttrGenAIToolType:      observability.ToolTypeFunction,
+	}
+	for k, wantVal := range want {
+		if got, ok := findAttr(toolSpan, k); !ok || got != wantVal {
+			t.Errorf("tool.weather %s = %q (ok=%v); want %q", k, got, ok, wantVal)
+		}
+	}
+	if _, ok := findAttr(toolSpan, observability.AttrMCPMethodName); ok {
+		t.Error("mcp.method.name must not be set on a non-MCP (function) tool")
+	}
+}
+
+// TestExecuteMCPToolSpanUsesExtensionType asserts an MCP-namespaced tool
+// ("<server>__<tool>") is typed "extension" and carries mcp.method.name.
+func TestExecuteMCPToolSpanUsesExtensionType(t *testing.T) {
+	rec := genAIToolRun(t, "linear__create_issue", true)
+
+	toolSpan, ok := rec.FindSpan("tool.linear__create_issue")
+	if !ok {
+		t.Fatal("missing tool.linear__create_issue span")
+	}
+	if got, _ := findAttr(toolSpan, observability.AttrGenAIToolType); got != observability.ToolTypeExtension {
+		t.Errorf("gen_ai.tool.type = %q; want %q for an MCP tool", got, observability.ToolTypeExtension)
+	}
+	if got, ok := findAttr(toolSpan, observability.AttrMCPMethodName); !ok || got != observability.MCPMethodToolsCall {
+		t.Errorf("mcp.method.name = %q (ok=%v); want %q", got, ok, observability.MCPMethodToolsCall)
+	}
+}
+
+// TestExecuteNamespacedNonMCPToolNotTypedAsExtension guards the fix for the
+// name-heuristic edge: a NON-MCP namespaced tool (API per-op "<api>__<op>")
+// shares the "__" shape but must be typed "function" with no mcp.method.name,
+// because classification is driven by the registry's MCPSource marker.
+func TestExecuteNamespacedNonMCPToolNotTypedAsExtension(t *testing.T) {
+	rec := genAIToolRun(t, "weatherapi__forecast", false)
+
+	toolSpan, ok := rec.FindSpan("tool.weatherapi__forecast")
+	if !ok {
+		t.Fatal("missing tool.weatherapi__forecast span")
+	}
+	if got, _ := findAttr(toolSpan, observability.AttrGenAIToolType); got != observability.ToolTypeFunction {
+		t.Errorf("gen_ai.tool.type = %q; want %q for a non-MCP namespaced tool", got, observability.ToolTypeFunction)
+	}
+	if _, ok := findAttr(toolSpan, observability.AttrMCPMethodName); ok {
+		t.Error("mcp.method.name must not be set on a non-MCP namespaced tool")
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	cliskills "github.com/initializ/forge/forge-cli/skills"
 	"github.com/initializ/forge/forge-core/pipeline"
@@ -78,12 +79,45 @@ func (s *SkillsStage) Execute(ctx context.Context, bc *pipeline.BuildContext) er
 	// External library consumers (forgecore.Compile) still get the
 	// in-memory CompiledSkills struct directly.
 
+	// Discover per-skill Python dependency files (skills/<name>/requirements.txt).
+	// Recorded as container-relative paths; RequirementsStage forces python3/pip
+	// into the image and DockerfileStage emits a `pip install -r` step (#405 D1).
+	bc.SkillPipRequirements = discoverSkillPipRequirements(filepath.Join(bc.Opts.WorkDir, "skills"))
+
 	bc.SkillsCount = len(entries)
 	if bc.Spec != nil {
 		bc.Spec.SkillsSpecVersion = "agentskills-v1"
 		bc.Spec.ForgeSkillsExtVersion = "1.0"
 	}
 	return nil
+}
+
+// discoverSkillPipRequirements returns container-relative paths to
+// requirements.txt files found directly under each skills/<name>/ directory,
+// sorted for deterministic Dockerfile output. Returns nil when skills/ is
+// absent or none are found.
+func discoverSkillPipRequirements(skillsDir string) []string {
+	info, err := os.Stat(skillsDir)
+	if err != nil || !info.IsDir() {
+		return nil
+	}
+	dirEntries, err := os.ReadDir(skillsDir)
+	if err != nil {
+		return nil
+	}
+	var reqs []string
+	for _, de := range dirEntries {
+		if !de.IsDir() {
+			continue
+		}
+		reqPath := filepath.Join(skillsDir, de.Name(), "requirements.txt")
+		if fi, statErr := os.Stat(reqPath); statErr == nil && fi.Mode().IsRegular() {
+			// Container-relative (skills/ is copied to /app/skills).
+			reqs = append(reqs, filepath.ToSlash(filepath.Join("skills", de.Name(), "requirements.txt")))
+		}
+	}
+	sort.Strings(reqs)
+	return reqs
 }
 
 // scanSkillsSubDir scans the skills/ subdirectory for SKILL.md files in each

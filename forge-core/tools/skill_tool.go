@@ -31,13 +31,23 @@ type SkillTool struct {
 
 // NewSkillTool creates a tool wrapper for a skill backed by a shell
 // script. The compiled `command` is `bash`; argv is
-// `[bash <scriptPath> <jsonArgs>]`.
+// `[bash <scriptPath> <jsonArgs>]`. Shorthand for NewScriptSkillTool with
+// the "bash" interpreter.
 func NewSkillTool(name, description, inputSpec, scriptPath string, executor CommandExecutor) *SkillTool {
+	return NewScriptSkillTool(name, description, inputSpec, "bash", scriptPath, executor)
+}
+
+// NewScriptSkillTool creates a tool wrapper for a skill backed by a script run
+// under an explicit interpreter (e.g. "bash", "python3", "node"); argv is
+// `[<interpreter> <scriptPath> <jsonArgs>]`. This is what lets a `## Tool:`
+// entry backed by a `.py`/`.js` script register as a first-class callable tool,
+// not just a `.sh` one (#405 D2).
+func NewScriptSkillTool(name, description, inputSpec, interpreter, scriptPath string, executor CommandExecutor) *SkillTool {
 	return &SkillTool{
 		name:        name,
 		description: description,
 		schema:      InputSpecToSchema(inputSpec),
-		command:     "bash",
+		command:     interpreter,
 		argsPrefix:  []string{scriptPath},
 		executor:    executor,
 	}

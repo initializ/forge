@@ -69,7 +69,12 @@ type pdpRequest struct {
 	Caller  pdpCaller      `json:"caller"`
 	Agent   string         `json:"agent"`
 	Session string         `json:"session,omitempty"`
-	Context map[string]any `json:"context,omitempty"`
+	// InvocationID is the turn's correlation id. Sent so the platform-written
+	// tool_call_decided event carries the same invocation_id as this agent's
+	// pdp_decision / task_deferred events and groups with them in the console's
+	// invocation timeline (otherwise the platform verdict is "unattributed").
+	InvocationID string         `json:"invocation_id,omitempty"`
+	Context      map[string]any `json:"context,omitempty"`
 }
 
 type pdpCaller struct {
@@ -154,7 +159,11 @@ func (p *pdpResolver) Resolve(ctx context.Context, hctx *coreruntime.HookContext
 		Caller:  pdpCaller{Subject: "agent:" + p.agentID},
 		Agent:   p.agentID,
 		Session: hctx.TaskID,
-		Context: map[string]any{},
+		// Same source as the sibling pdp_decision event (emitPDPDecision uses
+		// hctx.CorrelationID) so the platform tool_call_decided and this agent's
+		// pdp_decision carry an IDENTICAL invocation_id and group together.
+		InvocationID: hctx.CorrelationID,
+		Context:      map[string]any{},
 	}
 	body, err := json.Marshal(reqBody)
 	if err != nil {

@@ -37,6 +37,13 @@ type initOptions struct {
 	Fallbacks      []tui.FallbackProvider
 	Channels       []string
 	SkillsFile     string
+	// SkillDir, when set (--from-skill-dir), is an external skill folder
+	// (SKILL.md + scripts + reference files) vendored into the new agent and
+	// wired (egress/env) after scaffolding. See ImportSkillFolder (#405).
+	SkillDir string
+	// WriteForgeMeta injects inferred requires.bins into the imported
+	// SKILL.md when it has no metadata.forge block (#412).
+	WriteForgeMeta bool
 	Tools          []toolEntry
 	BuiltinTools   []string // selected builtin tool names
 	Skills         []string // selected registry skill names
@@ -136,6 +143,8 @@ func init() {
 	initCmd.Flags().StringP("model-provider", "m", "", "model provider: openai, anthropic, gemini, ollama, or custom")
 	initCmd.Flags().StringSlice("channels", nil, "communication channels (e.g., slack,telegram)")
 	initCmd.Flags().String("from-skills", "", "path to SKILL.md file to parse for tools")
+	initCmd.Flags().String("from-skill-dir", "", "path to a skill folder (SKILL.md + scripts + reference files) to vendor into the new agent")
+	initCmd.Flags().Bool("write-forge-meta", false, "with --from-skill-dir: inject inferred requires.bins into the imported SKILL.md when it has no metadata.forge block")
 	initCmd.Flags().Bool("non-interactive", false, "run without interactive prompts (requires all flags)")
 	initCmd.Flags().Bool("compression", false, "enable reversible context compression (writes compression.enabled: true to forge.yaml)")
 	initCmd.Flags().StringSlice("tools", nil, "builtin tools to enable (e.g., web_search,http_request)")
@@ -189,6 +198,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 	opts.ModelProvider, _ = cmd.Flags().GetString("model-provider")
 	opts.Channels, _ = cmd.Flags().GetStringSlice("channels")
 	opts.SkillsFile, _ = cmd.Flags().GetString("from-skills")
+	opts.SkillDir, _ = cmd.Flags().GetString("from-skill-dir")
+	opts.WriteForgeMeta, _ = cmd.Flags().GetBool("write-forge-meta")
 	opts.BuiltinTools, _ = cmd.Flags().GetStringSlice("tools")
 	opts.Skills, _ = cmd.Flags().GetStringSlice("skills")
 	opts.APIKey, _ = cmd.Flags().GetString("api-key")
@@ -825,6 +836,22 @@ func scaffold(opts *initOptions) error {
 				}
 			}
 		}
+	}
+
+	// Vendor an external skill folder (--from-skill-dir): SKILL.md + scripts +
+	// reference files, with egress/env wiring. Runs after forge.yaml exists so
+	// ImportSkillFolder can merge egress domains into it (#405).
+	if opts.SkillDir != "" {
+		res, impErr := ImportSkillFolder(SkillImportOptions{
+			SourceDir:      opts.SkillDir,
+			AgentDir:       dir,
+			Overwrite:      opts.Force,
+			WriteForgeMeta: opts.WriteForgeMeta,
+		})
+		if impErr != nil {
+			return fmt.Errorf("importing skill folder: %w", impErr)
+		}
+		printSkillImportResult(res)
 	}
 
 	// Preset scaffolds (e.g. `forge try`) drive the agent in-process; stop

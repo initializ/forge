@@ -64,6 +64,13 @@ type ChatResponse struct {
 	Message      ChatMessage `json:"message"`
 	Usage        UsageInfo   `json:"usage"`
 	FinishReason string      `json:"finish_reason"`
+	// Model is the model the provider REPORTED generating the response,
+	// parsed from the provider response body when present (Anthropic /
+	// OpenAI both echo "model"). Often identical to the request model but
+	// enterprise routers can substitute a versioned suffix. Surfaced as
+	// the gen_ai.response.model span attribute; empty when the provider
+	// does not report it (the executor falls back to the request model).
+	Model string `json:"model,omitempty"`
 	// Endpoint is the URL the client POSTed to (base URL + provider path).
 	// Set by the provider client so the llm_call audit event can record the
 	// invoked path even when payload capture is off. Internal only (json:"-").

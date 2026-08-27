@@ -24,9 +24,16 @@ package observability
 // "llm.completion") and reads naturally inline.
 
 const (
-	// ─── GenAI semconv (draft, pinned to OTel semconv 1.26.0 GenAI). ──
+	// ─── GenAI semconv (draft). ──────────────────────────────────────
 	// Backends like Honeycomb / Datadog / Grafana Tempo group LLM
 	// activity by these. Naming follows the OTel GenAI spec exactly.
+	// The core token/model keys below track the 1.26.0 snapshot; the
+	// agent / operation / tool keys added later (provider.name,
+	// operation.name, agent.*, conversation.id, tool.*) track the newer
+	// GenAI registry. Because these are hand-declared string constants
+	// (not imported from the semconv package), a spec bump is this
+	// one-file sweep — the resource-level semconv import in otel.go is
+	// versioned separately and only carries service.* + schema URL.
 
 	// AttrGenAISystem identifies the LLM vendor: "anthropic",
 	// "openai", "ollama", "openai-compatible".
@@ -50,6 +57,70 @@ const (
 	// "stop_reason" / "finish_reason" — "stop", "tool_use",
 	// "max_tokens", "end_turn", etc.
 	AttrGenAIResponseFinishReasons = "gen_ai.response.finish_reasons"
+
+	// AttrGenAIProviderName is the current OTel key for the GenAI vendor
+	// ("anthropic", "openai", "ollama", ...). It supersedes the
+	// deprecated AttrGenAISystem (`gen_ai.system`); Forge emits BOTH for
+	// one release so dashboards keyed on either light up, then drops the
+	// alias. Same value as AttrGenAISystem.
+	AttrGenAIProviderName = "gen_ai.provider.name"
+
+	// AttrGenAIOperationName identifies the operation the span measures —
+	// "chat" on the llm.completion span, "execute_tool" on a tool.<name>
+	// span. Backends group GenAI activity by (operation.name, provider.name).
+	AttrGenAIOperationName = "gen_ai.operation.name"
+
+	// OpChat / OpExecuteTool are the two AttrGenAIOperationName values
+	// Forge emits today.
+	OpChat        = "chat"
+	OpExecuteTool = "execute_tool"
+
+	// AttrGenAIResponseID is the provider's completion id (Anthropic
+	// "msg_…", OpenAI "chatcmpl-…"). Read straight from ChatResponse.ID.
+	AttrGenAIResponseID = "gen_ai.response.id"
+
+	// AttrGenAIConversationID is the stable conversation/thread id. Forge
+	// maps this to the A2A task id — the session-store key that persists a
+	// transcript across turns (.forge/sessions/<task>.json). Per semconv
+	// this MUST be a real thread identifier, never a synthesized UUID or
+	// trace id; the Forge session id qualifies.
+	AttrGenAIConversationID = "gen_ai.conversation.id"
+
+	// AttrGenAIAgent* stamp the agent's identity on the agent.execute
+	// span from forge.yaml. `agent_id` doubles as the human-readable name
+	// (forge.yaml has no separate name field, matching the A2A card's
+	// AgentID fallback), so id and name carry the same value today.
+	AttrGenAIAgentID      = "gen_ai.agent.id"
+	AttrGenAIAgentName    = "gen_ai.agent.name"
+	AttrGenAIAgentVersion = "gen_ai.agent.version"
+
+	// AttrGenAITool* name the tool-call instrumentation on tool.<name>
+	// spans, following the OTel GenAI tool conventions. These REPLACE the
+	// former proprietary `forge.tool.*` keys (which never shipped to
+	// production). Content-bearing tool attributes (arguments / result /
+	// description / definitions) live in the content-capture block below.
+	AttrGenAIToolName   = "gen_ai.tool.name"
+	AttrGenAIToolCallID = "gen_ai.tool.call.id"
+	AttrGenAIToolType   = "gen_ai.tool.type"
+
+	// ToolTypeFunction / ToolTypeExtension are the AttrGenAIToolType
+	// values Forge emits: builtin + skill tools are "function"; MCP-backed
+	// tools (namespaced "<server>__<tool>") are "extension" — an
+	// agent-side bridge to an external system.
+	ToolTypeFunction  = "function"
+	ToolTypeExtension = "extension"
+
+	// AttrMCPMethodName is the MCP JSON-RPC method a span represents. For a
+	// Forge tool call backed by an MCP server it is always "tools/call".
+	// (mcp.session.id / mcp.protocol.version require plumbing the MCP
+	// manager down to the executor and are tracked as a follow-up.)
+	AttrMCPMethodName  = "mcp.method.name"
+	MCPMethodToolsCall = "tools/call"
+
+	// AttrErrorType is the OTel-standard error classification set on a
+	// tool.<name> span when execution fails (alongside RecordError +
+	// Status=Error). Replaces the former `forge.tool.error`.
+	AttrErrorType = "error.type"
 
 	// ─── Forge-specific attributes. ──────────────────────────────────
 
@@ -93,10 +164,12 @@ const (
 	// dashboards can chart "iterations per task."
 	AttrForgeLoopIteration = "forge.loop.iteration"
 
-	// AttrForgeToolName / AttrForgeToolError name the tool call
-	// instrumentation.
-	AttrForgeToolName  = "forge.tool.name"
-	AttrForgeToolError = "forge.tool.error"
+	// AttrForgeToolName cross-references which tool a guardrail.<gate>
+	// span evaluated (see forge-cli/runtime/guardrails_tracing.go). The
+	// tool.<name> execution span itself uses the semconv AttrGenAIToolName
+	// key instead. (The former forge.tool.error was removed in favor of the
+	// standard AttrErrorType.)
+	AttrForgeToolName = "forge.tool.name"
 
 	// AttrForgeTaskFinalState is the terminal A2A TaskState the loop
 	// resolved to — "completed", "failed", "canceled". Set on the
@@ -125,13 +198,26 @@ const (
 	// `gen_ai.completion` flat-string attribute.
 	AttrGenAIOutputMessages = "gen_ai.output.messages"
 
-	// AttrForgeToolArgs is the raw arguments JSON the agent passed to
-	// a tool. Set on tool.<name> spans.
-	AttrForgeToolArgs = "forge.tool.args"
+	// AttrGenAIToolCallArguments is the raw arguments JSON the agent passed
+	// to a tool (semconv `gen_ai.tool.call.arguments`). Set on tool.<name>
+	// spans. Replaces the former `forge.tool.args`.
+	AttrGenAIToolCallArguments = "gen_ai.tool.call.arguments"
 
-	// AttrForgeToolResult is the raw output the tool returned. Set on
-	// tool.<name> spans.
-	AttrForgeToolResult = "forge.tool.result"
+	// AttrGenAIToolCallResult is the raw output the tool returned (semconv
+	// `gen_ai.tool.call.result`). Set on tool.<name> spans. Replaces the
+	// former `forge.tool.result`.
+	AttrGenAIToolCallResult = "gen_ai.tool.call.result"
+
+	// AttrGenAIToolDescription is the tool's description from its
+	// definition (semconv `gen_ai.tool.description`). Flagged sensitive by
+	// semconv, so it rides the same CaptureContent opt-in.
+	AttrGenAIToolDescription = "gen_ai.tool.description"
+
+	// AttrGenAIToolDefinitions is the JSON array of tool definitions
+	// available to the agent (semconv `gen_ai.tool.definitions`), stamped
+	// once on the agent.execute span. Potentially large, so it is opt-in
+	// behind CaptureContent.
+	AttrGenAIToolDefinitions = "gen_ai.tool.definitions"
 
 	// ─── Guardrail span attributes (issue #161) ──────────────────────
 	//

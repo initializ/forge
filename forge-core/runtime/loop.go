@@ -41,6 +41,11 @@ const emptyAssistantPlaceholder = "(continuing — previous response was truncat
 type ToolExecutor interface {
 	Execute(ctx context.Context, name string, arguments json.RawMessage) (string, error)
 	ToolDefinitions() []llm.ToolDefinition
+	// IsMCPTool reports whether the named tool is backed by an MCP server.
+	// Authoritative signal for the gen_ai.tool.type / mcp.* span attributes —
+	// distinct from the "<server>__<tool>" name shape, which non-MCP
+	// namespaced (API per-op) tools also use.
+	IsMCPTool(name string) bool
 }
 
 // Pre-hook safety ceiling for deferred tool-result truncation: hooks must
@@ -94,6 +99,8 @@ type LLMExecutor struct {
 	logger             Logger
 	modelName          string        // resolved model name for context budget
 	provider           string        // resolved provider name (anthropic, openai, ollama, custom)
+	agentID            string        // forge.yaml agent_id — gen_ai.agent.id / .name
+	agentVersion       string        // forge.yaml version — gen_ai.agent.version
 	charBudget         int           // resolved character budget
 	maxToolResultChars int           // computed from char budget
 	filesDir           string        // directory for file_create output
@@ -126,6 +133,8 @@ type LLMExecutorConfig struct {
 	Logger         Logger
 	ModelName      string        // model name for context-aware budgeting
 	Provider       string        // provider name (anthropic, openai, ollama, custom) — for audit attribution
+	AgentID        string        // forge.yaml agent_id — stamped as gen_ai.agent.id / gen_ai.agent.name on the agent.execute span
+	AgentVersion   string        // forge.yaml version — stamped as gen_ai.agent.version
 	CharBudget     int           // explicit char budget override (0 = auto from model)
 	FilesDir       string        // directory for file_create output (default: $TMPDIR/forge-files)
 	SessionMaxAge  time.Duration // max idle time before session recovery is skipped (0 = 30m default)
@@ -194,6 +203,8 @@ func NewLLMExecutor(cfg LLMExecutorConfig) *LLMExecutor {
 		logger:              logger,
 		modelName:           cfg.ModelName,
 		provider:            cfg.Provider,
+		agentID:             cfg.AgentID,
+		agentVersion:        cfg.AgentVersion,
 		charBudget:          budget,
 		maxToolResultChars:  toolLimit,
 		filesDir:            cfg.FilesDir,
@@ -242,15 +253,36 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 	}()
 	if task != nil && task.ID != "" {
 		span.SetAttributes(attribute.String(observability.AttrForgeTaskID, task.ID))
+		// gen_ai.conversation.id — the Forge session id (A2A task id) is
+		// the stable thread key that persists a transcript across turns,
+		// exactly what semconv wants here.
+		span.SetAttributes(attribute.String(observability.AttrGenAIConversationID, task.ID))
 	}
 	if cid := CorrelationIDFromContext(ctx); cid != "" {
 		span.SetAttributes(attribute.String(observability.AttrForgeCorrelationID, cid))
 	}
 	if e.provider != "" {
-		span.SetAttributes(attribute.String(observability.AttrGenAISystem, e.provider))
+		// gen_ai.system is the deprecated key; gen_ai.provider.name is the
+		// current one. Emit both for one release.
+		span.SetAttributes(
+			attribute.String(observability.AttrGenAISystem, e.provider),
+			attribute.String(observability.AttrGenAIProviderName, e.provider),
+		)
 	}
 	if e.modelName != "" {
 		span.SetAttributes(attribute.String(observability.AttrGenAIRequestModel, e.modelName))
+	}
+	// gen_ai.agent.* — identity from forge.yaml. agent_id doubles as the
+	// human-readable name (no separate name field), so id and name carry the
+	// same value.
+	if e.agentID != "" {
+		span.SetAttributes(
+			attribute.String(observability.AttrGenAIAgentID, e.agentID),
+			attribute.String(observability.AttrGenAIAgentName, e.agentID),
+		)
+	}
+	if e.agentVersion != "" {
+		span.SetAttributes(attribute.String(observability.AttrGenAIAgentVersion, e.agentVersion))
 	}
 
 	mem := NewMemory(e.systemPrompt, e.charBudget, e.modelName)
@@ -345,6 +377,26 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 		toolDefs = e.tools.ToolDefinitions()
 	}
 
+	// Map tool name → description for the gen_ai.tool.description attribute
+	// on per-call tool spans below.
+	toolDescByName := make(map[string]string, len(toolDefs))
+	for _, td := range toolDefs {
+		toolDescByName[td.Function.Name] = td.Function.Description
+	}
+
+	// gen_ai.tool.definitions — the full tool catalog available to the
+	// agent, stamped once on the agent.execute span. Opt-in (CaptureContent)
+	// because it can be large; runs through the same redact-then-truncate
+	// pipeline as the other content attributes.
+	if e.tracingCfg.CaptureContent && len(toolDefs) > 0 {
+		if defs, err := json.Marshal(toolDefs); err == nil {
+			span.SetAttributes(attribute.String(
+				observability.AttrGenAIToolDefinitions,
+				PrepareSpanContent(string(defs), e.tracingCfg.Redact, DefaultSpanContentCapBytes),
+			))
+		}
+	}
+
 	// Track large tool outputs so they can be included as file parts
 	// in the response (the LLM may truncate them due to output token limits).
 	var largeToolOutputs []a2a.Part
@@ -427,7 +479,9 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 		// not part of the LLM call's wall-clock measurement.
 		llmCtx, llmSpan := Tracer().Start(ctx, "llm.completion")
 		llmSpan.SetAttributes(
+			attribute.String(observability.AttrGenAIOperationName, observability.OpChat),
 			attribute.String(observability.AttrGenAISystem, e.provider),
+			attribute.String(observability.AttrGenAIProviderName, e.provider),
 			attribute.String(observability.AttrGenAIRequestModel, e.modelName),
 		)
 		// Phase 3.5 (#130) — stamp the structured input messages on the
@@ -482,6 +536,18 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 			attribute.Int(observability.AttrGenAIUsageInputTokens, resp.Usage.InputTokens),
 			attribute.Int(observability.AttrGenAIUsageOutputTokens, resp.Usage.OutputTokens),
 		)
+		if resp.ID != "" {
+			llmSpan.SetAttributes(attribute.String(observability.AttrGenAIResponseID, resp.ID))
+		}
+		// gen_ai.response.model — the model the vendor reported back. Falls
+		// back to the request model when the provider does not echo one.
+		respModel := resp.Model
+		if respModel == "" {
+			respModel = e.modelName
+		}
+		if respModel != "" {
+			llmSpan.SetAttributes(attribute.String(observability.AttrGenAIResponseModel, respModel))
+		}
 		if resp.FinishReason != "" {
 			llmSpan.SetAttributes(attribute.StringSlice(observability.AttrGenAIResponseFinishReasons, []string{resp.FinishReason}))
 		}
@@ -730,7 +796,31 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 			// by kind without a query. Phase 3.5 (#130) added optional
 			// args/result content capture under CaptureContent + Redact.
 			toolCtx, toolSpan := Tracer().Start(ctx, "tool."+tc.Function.Name)
-			toolSpan.SetAttributes(attribute.String(observability.AttrForgeToolName, tc.Function.Name))
+			// OTel GenAI tool conventions (gen_ai.tool.*). MCP-backed tools
+			// map to the "extension" tool type (an agent-side bridge to an
+			// external system); all others are "function". Uses the
+			// registry's MCPSource marker, not the "<server>__<tool>" name
+			// shape — non-MCP namespaced (API per-op) tools share that shape
+			// but must not be typed as MCP extensions.
+			toolType := observability.ToolTypeFunction
+			isMCPTool := e.tools != nil && e.tools.IsMCPTool(tc.Function.Name)
+			if isMCPTool {
+				toolType = observability.ToolTypeExtension
+			}
+			toolSpan.SetAttributes(
+				attribute.String(observability.AttrGenAIOperationName, observability.OpExecuteTool),
+				attribute.String(observability.AttrGenAIToolName, tc.Function.Name),
+				attribute.String(observability.AttrGenAIToolType, toolType),
+			)
+			if tc.ID != "" {
+				toolSpan.SetAttributes(attribute.String(observability.AttrGenAIToolCallID, tc.ID))
+			}
+			// MCP tool calls carry the MCP method that the executor issues
+			// downstream. (mcp.session.id / mcp.protocol.version need the MCP
+			// manager plumbed to the executor — tracked as a follow-up.)
+			if isMCPTool {
+				toolSpan.SetAttributes(attribute.String(observability.AttrMCPMethodName, observability.MCPMethodToolsCall))
+			}
 			// With compression enabled (deferToolTruncation), relax
 			// tool-internal output caps so the full result reaches the
 			// compression hook instead of being destructively cut inside
@@ -738,18 +828,30 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 			if e.deferToolTruncation {
 				toolCtx = tools.WithRelaxedLimits(toolCtx)
 			}
-			if e.tracingCfg.CaptureContent && tc.Function.Arguments != "" {
-				toolSpan.SetAttributes(attribute.String(
-					observability.AttrForgeToolArgs,
-					PrepareSpanContent(tc.Function.Arguments, e.tracingCfg.Redact, DefaultSpanContentCapBytes),
-				))
+			// gen_ai.tool.description + gen_ai.tool.call.arguments are
+			// content-bearing; semconv flags them sensitive, so they ride
+			// the CaptureContent opt-in.
+			if e.tracingCfg.CaptureContent {
+				if desc := toolDescByName[tc.Function.Name]; desc != "" {
+					toolSpan.SetAttributes(attribute.String(
+						observability.AttrGenAIToolDescription,
+						PrepareSpanContent(desc, e.tracingCfg.Redact, DefaultSpanContentCapBytes),
+					))
+				}
+				if tc.Function.Arguments != "" {
+					toolSpan.SetAttributes(attribute.String(
+						observability.AttrGenAIToolCallArguments,
+						PrepareSpanContent(tc.Function.Arguments, e.tracingCfg.Redact, DefaultSpanContentCapBytes),
+					))
+				}
 			}
 			result, execErr := e.tools.Execute(toolCtx, tc.Function.Name, json.RawMessage(tc.Function.Arguments))
 			toolDuration := time.Since(toolStart)
 			if execErr != nil {
 				toolSpan.RecordError(execErr)
 				toolSpan.SetStatus(codes.Error, execErr.Error())
-				toolSpan.SetAttributes(attribute.String(observability.AttrForgeToolError, execErr.Error()))
+				// OTel-standard error classification (replaces forge.tool.error).
+				toolSpan.SetAttributes(attribute.String(observability.AttrErrorType, "tool_execution_error"))
 				result = fmt.Sprintf("Error executing tool %s: %s", tc.Function.Name, execErr.Error())
 			}
 			// Phase 3.5 (#130) — tool result content capture. The
@@ -759,7 +861,7 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 			// will see on the next iteration.
 			if e.tracingCfg.CaptureContent && result != "" {
 				toolSpan.SetAttributes(attribute.String(
-					observability.AttrForgeToolResult,
+					observability.AttrGenAIToolCallResult,
 					PrepareSpanContent(result, e.tracingCfg.Redact, DefaultSpanContentCapBytes),
 				))
 			}
@@ -941,16 +1043,9 @@ func a2aMessageToLLM(msg a2a.Message) llm.ChatMessage {
 		role = llm.RoleAssistant
 	}
 
-	var textParts []string
-	for _, p := range msg.Parts {
-		if p.Kind == a2a.PartKindText && p.Text != "" {
-			textParts = append(textParts, p.Text)
-		}
-	}
-
 	return llm.ChatMessage{
 		Role:    role,
-		Content: strings.Join(textParts, "\n"),
+		Content: msg.PromptText(),
 	}
 }
 

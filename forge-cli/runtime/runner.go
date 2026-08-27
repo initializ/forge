@@ -628,6 +628,11 @@ func (r *Runner) Run(ctx context.Context) error {
 	var egressProxy *security.EgressProxy
 	var proxyURL string
 	var socksURL string
+	// Separate transport for the OTLP trace exporter — egress-enforced but
+	// NOT audited and NOT otel-wrapped (see the tracing enforcer built in the
+	// egress block below). Stays nil when egress resolution fails, matching
+	// the exporter's default-client fallback.
+	var tracingTransport http.RoundTripper
 	egressToolNames := make([]string, len(r.cfg.Config.Tools))
 	for i, t := range r.cfg.Config.Tools {
 		egressToolNames[i] = t.Name
@@ -736,6 +741,19 @@ func (r *Runner) Run(ctx context.Context) error {
 				Fields:        map[string]any{"domain": domain, "mode": string(egressCfg.Mode)},
 			})
 		}
+		// The OTLP trace exporter gets its OWN enforcer, distinct from the
+		// audited egressClient above. Routing the exporter through the audited
+		// client floods the audit stream: its OnAttempt emits an egress_allowed
+		// event on every request, and the batch exporter exports on a ~5s timer,
+		// so tracing alone produces one egress_allowed per 5s — indefinitely,
+		// because the otelhttp wrap below also traces the exporter's own POST,
+		// which enqueues a span that forces the next export (a self-sustaining
+		// loop that never quiesces even on an idle agent). This enforcer keeps
+		// the allowlist + post-DNS IP guard (so a misconfigured collector host
+		// still can't exfiltrate span content) but has NO OnAttempt hook and is
+		// deliberately NOT otel-wrapped, so exporter traffic is neither audited
+		// nor self-traced.
+		tracingTransport = newTracingExporterTransport(egressCfg.Mode, egressCfg.AllDomains, allowPrivateIPs, allowedPrivateCIDRs)
 		// Phase 3 (#104) — wrap the egress-enforced transport with
 		// otelhttp instrumentation so every outbound HTTP request the
 		// in-process clients (LLM providers, MCP, channels, OAuth)
@@ -853,10 +871,11 @@ func (r *Runner) Run(ctx context.Context) error {
 	// initiative ruling — a misconfigured exporter must never crash
 	// the agent.
 	tracingCfg := tracingCfgEarly
-	var tracingTransport http.RoundTripper
-	if egressClient != nil {
-		tracingTransport = egressClient.Transport
-	}
+	// tracingTransport was built alongside the egress enforcer above — an
+	// egress-enforced but unaudited, non-otel-wrapped RoundTripper (nil when
+	// egress resolution failed, which the exporter treats as "use default
+	// client"). Deliberately NOT egressClient.Transport: that path audits and
+	// self-traces every export, flooding the audit stream every ~5s.
 	tp, tpErr := observability.NewTracerProvider(ctx, tracingCfg, tracingTransport)
 	switch {
 	case errors.Is(tpErr, observability.ErrDisabled):
@@ -1337,6 +1356,8 @@ func (r *Runner) Run(ctx context.Context) error {
 						Logger:        r.logger,
 						ModelName:     mc.Client.Model,
 						Provider:      mc.Provider,
+						AgentID:       r.cfg.Config.AgentID,
+						AgentVersion:  r.cfg.Config.Version,
 						MaxIterations: 100,
 						CharBudget:    charBudget,
 						FilesDir:      filepath.Join(r.cfg.WorkDir, ".forge", "files"),
@@ -3566,6 +3587,111 @@ func (r *Runner) resolveBinarySkillPath(entry contract.SkillEntry) (string, erro
 	return resolved, nil
 }
 
+// skillScriptExtensions maps a script extension to the interpreter that runs
+// it, in resolution priority order. A `## Tool:` entry named foo_bar resolves
+// to scripts/foo-bar.<ext> and is registered as a first-class tool that runs
+// `<interpreter> <scriptPath> <jsonArgs>`. Shell stays first for back-compat;
+// .py/.js are first-class as of #405 D2. Mirrors interpreterForScript in
+// forge-cli/tools/run_skill_script.go (the generic run path).
+var skillScriptExtensions = []struct{ ext, interpreter string }{
+	{".sh", "bash"},
+	{".bash", "bash"},
+	{".py", "python3"},
+	{".js", "node"},
+	{".cjs", "node"},
+	{".mjs", "node"},
+}
+
+// SkillScriptExtensions returns the recognized skill-script file extensions
+// (each with a leading dot), for tooling that enumerates a scripts/ directory
+// — e.g. `forge skills validate`'s orphan-script check.
+func SkillScriptExtensions() []string {
+	out := make([]string, len(skillScriptExtensions))
+	for i, se := range skillScriptExtensions {
+		out[i] = se.ext
+	}
+	return out
+}
+
+// skillScriptNameVariants returns the distinct filename stems a `## Tool:`
+// name can bind to: the hyphenated form (historical convention) and, when it
+// differs, the underscore form. A tool `some_name` therefore matches both
+// scripts/some-name.<ext> and scripts/some_name.<ext> — authors no longer have
+// to remember the underscore→hyphen rewrite (#418). The hyphenated form is
+// listed first so it keeps priority for the (rare) skill that ships both.
+func skillScriptNameVariants(toolName string) []string {
+	hyphen := strings.ReplaceAll(toolName, "_", "-")
+	underscore := strings.ReplaceAll(toolName, "-", "_")
+	if hyphen == underscore {
+		return []string{hyphen}
+	}
+	return []string{hyphen, underscore}
+}
+
+// interpreterForSkillScript returns the interpreter for a resolved script path
+// by its extension, or "" if the extension is not a recognized skill script.
+func interpreterForSkillScript(path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	for _, se := range skillScriptExtensions {
+		if se.ext == ext {
+			return se.interpreter
+		}
+	}
+	return ""
+}
+
+// SkillScriptCandidatePaths returns the container-relative script paths a
+// `## Tool: toolName` in skill directory skillDirName can bind to, in
+// resolution priority order: skill-local scripts/ before the shared
+// skills/scripts/, shell before python before node, hyphenated name before
+// underscore. It returns nil when the tool name would escape the tree. Exported
+// so `forge skills validate` checks the tool→script binding against the exact
+// same candidate set the runtime resolves against — the two can never drift.
+func SkillScriptCandidatePaths(skillDirName, toolName string) []string {
+	names := skillScriptNameVariants(toolName)
+	// The `## Tool:` name is taken verbatim by the parser (no kebab/char
+	// check), so a crafted "## Tool: ../../../../x" would otherwise resolve to
+	// an out-of-tree script and register it as a callable tool. Require every
+	// derived stem to be a bare, non-escaping path segment before it touches
+	// the filesystem. Mirrors the import-path traversal hardening.
+	for _, n := range names {
+		if !filepath.IsLocal(n) || strings.ContainsRune(n, filepath.Separator) || strings.ContainsRune(n, '/') {
+			return nil
+		}
+	}
+	var dirs []string
+	if skillDirName != "" {
+		dirs = append(dirs, filepath.Join("skills", skillDirName, "scripts"))
+	}
+	dirs = append(dirs, filepath.Join("skills", "scripts"))
+	var out []string
+	for _, dir := range dirs {
+		for _, se := range skillScriptExtensions {
+			for _, name := range names {
+				out = append(out, filepath.Join(dir, name+se.ext))
+			}
+		}
+	}
+	return out
+}
+
+// resolveSkillScript locates the script backing a `## Tool:` entry and returns
+// its container-relative path, the interpreter to run it under, and whether it
+// was found. Candidate order comes from SkillScriptCandidatePaths (skill-local
+// before shared; shell before python before node; hyphenated name before
+// underscore). Single source of truth shared by registerSkillTools (which
+// registers the tool) and skillEntryHasScript (which excludes it from the
+// read_skill catalog) so the two can never disagree about what's a first-class
+// tool.
+func (r *Runner) resolveSkillScript(skillDirName, toolName string) (relPath, interpreter string, found bool) {
+	for _, candidate := range SkillScriptCandidatePaths(skillDirName, toolName) {
+		if _, err := os.Stat(filepath.Join(r.cfg.WorkDir, candidate)); err == nil {
+			return candidate, interpreterForSkillScript(candidate), true
+		}
+	}
+	return "", "", false
+}
+
 // registerSkillTools scans skill files for skill entries that have associated
 // skill:run commands and registers them as tools. socksURL is the raw-TCP
 // SOCKS5 egress URL — empty when raw-TCP egress isn't configured.
@@ -3655,24 +3781,26 @@ func (r *Runner) registerSkillTools(reg *tools.Registry, proxyURL string, socksU
 				st = tools.NewBinarySkillTool(entry.Name, entry.Description, entry.InputSpec, binaryPath, skillExec)
 			default:
 				// "script" (or unrecognized — treat as script for back-compat).
-				scriptName := strings.ReplaceAll(entry.Name, "_", "-")
-				var scriptPath string
-				if skillDirName != "" {
-					candidate := filepath.Join("skills", skillDirName, "scripts", scriptName+".sh")
-					if _, err := os.Stat(filepath.Join(r.cfg.WorkDir, candidate)); err == nil {
-						scriptPath = candidate
-					}
-				}
-				if scriptPath == "" {
-					candidate := filepath.Join("skills", "scripts", scriptName+".sh")
-					if _, err := os.Stat(filepath.Join(r.cfg.WorkDir, candidate)); err == nil {
-						scriptPath = candidate
-					}
-				}
-				if scriptPath == "" {
+				// Resolves .sh/.py/.js; each registers as a first-class tool run
+				// under its interpreter (#405 D2).
+				scriptPath, interpreter, found := r.resolveSkillScript(skillDirName, entry.Name)
+				if !found {
 					continue // No script file, skip
 				}
-				st = tools.NewSkillTool(entry.Name, entry.Description, entry.InputSpec, scriptPath, skillExec)
+				// Don't hand the LLM a tool that can't run: a .py/.js tool
+				// whose interpreter isn't in the image would fail at call time
+				// with "python3: not found". bash is always present, so it's
+				// exempt (and stays back-compat). The import-time nudge already
+				// tells authors to declare python3 in requires.bins.
+				if interpreter != "bash" {
+					if _, err := exec.LookPath(interpreter); err != nil {
+						r.logger.Warn("skipping script skill tool: interpreter not found on PATH", map[string]any{
+							"skill": entry.Name, "interpreter": interpreter, "script": scriptPath,
+						})
+						continue
+					}
+				}
+				st = tools.NewScriptSkillTool(entry.Name, entry.Description, entry.InputSpec, interpreter, scriptPath, skillExec)
 			}
 
 			// Last-line schema guard (field-hit 2026-07-22): a property key
@@ -3722,33 +3850,14 @@ func (r *Runner) buildSystemPrompt() string {
 // (those without scripts) for the system prompt. Script-backed skills are
 // already registered as first-class tools and don't need catalog entries.
 // skillEntryHasScript reports whether a `## Tool:` entry is backed by a
-// script that registerSkillTools actually registers as a first-class
-// callable tool — currently only `scripts/<name>.sh`. Such tools are
-// excluded from the read_skill catalog's "provides" list because the LLM
-// invokes them directly by name.
-//
-// This deliberately mirrors registerSkillTools' `.sh`-only lookup, NOT the
-// full set of script languages. A tool backed by a `.py`/`.js` script is
-// not a directly-callable registered tool, so it correctly stays in
-// "provides" — and that is now sufficient, not a gap: the LLM reaches it
-// by loading the skill (read_skill's file listing surfaces the script) and
-// runs it with the `run_skill_script` tool, which resolves the path
-// relative to the skill dir and picks the interpreter by extension (#251).
-// So `.sh`/`.py`/`.js` scripts are all runnable; only `.sh` also gets the
-// first-class `## Tool:` registration. Keep this in lockstep with
-// registerSkillTools: if IT ever registers other languages as callable
-// tools, broaden this check at the same time or those tools vanish from both.
+// script that registerSkillTools registers as a first-class callable tool —
+// a scripts/<name>.{sh,py,js} file (#405 D2). Such tools are excluded from the
+// read_skill catalog's "provides" list because the LLM invokes them directly
+// by name. It shares resolveSkillScript with registerSkillTools, so the set of
+// "what's a first-class tool" can never drift between registration and catalog.
 func (r *Runner) skillEntryHasScript(skillDir, toolName string) bool {
-	scriptName := strings.ReplaceAll(toolName, "_", "-")
-	if skillDir != "" {
-		if _, err := os.Stat(filepath.Join(r.cfg.WorkDir, "skills", skillDir, "scripts", scriptName+".sh")); err == nil {
-			return true
-		}
-	}
-	if _, err := os.Stat(filepath.Join(r.cfg.WorkDir, "skills", "scripts", scriptName+".sh")); err == nil {
-		return true
-	}
-	return false
+	_, _, found := r.resolveSkillScript(skillDir, toolName)
+	return found
 }
 
 func (r *Runner) buildSkillCatalog() string {

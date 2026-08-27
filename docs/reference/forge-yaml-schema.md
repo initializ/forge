@@ -98,6 +98,54 @@ egress:
   capabilities:                     # Capability bundles
     - "slack"
   allow_private_ips: false          # Allow RFC 1918 IPs (auto: true in containers)
+  allowed_private_cidrs:            # Narrow the private-IP block to specific CIDRs
+    - "10.4.0.0/16"                 #   (instead of all-or-nothing allow_private_ips) — issue #337/#348
+  allowed_tcp:                      # Raw-TCP (SOCKS5) egress allowlist, host:port — issue #337/#355
+    - "db.internal:5432"            #   See docs/security/egress-control.md § Raw-TCP Egress
+
+mcp:                                 # Model Context Protocol servers (tools register as <name>__<op>)
+  token_store_path: ""              # override the encrypted OAuth-token store (default ~/.forge/mcp-tokens.enc)
+  servers:
+    - name: "atlassian"             # tool namespace prefix + audit id
+      transport: "http"             # http only (stdio rejected at validate)
+      url: "https://mcp.atlassian.com/v1/sse"
+      required: false               # true = a failed connect aborts `forge run`
+      timeout: 60s
+      tools:                        # allow/deny cannot BOTH be empty — be explicit
+        allow: ["*"]
+      auth:
+        type: "oauth"               # oauth | bearer | static | platform | user
+        # bearer/static: token_env names the env var holding the token
+        token_env: "ATLASSIAN_TOKEN"
+        # oauth: ClientID/AuthorizeURL/TokenURL optional — discovered via
+        #   RFC 9728/8414 + dynamic client registration (RFC 7591) at first
+        #   `forge mcp login`. Set them to override discovery. Issue #316/#320.
+        # agent-principal (2LO, #324): grant: client_credentials + client_secret_env
+        grant: ""                   # "client_credentials" for agent-principal OAuth
+        client_secret_env: ""       # env var for the client secret (client_credentials)
+    - name: "member-service"
+      transport: "http"
+      url: "https://member-mcp.internal/mcp"
+      auth:
+        type: "platform"           # managed: agent-principal token from platform.token_endpoint
+    - name: "atlassian-write"
+      transport: "http"
+      url: "https://mcp.atlassian.com/v1/sse"
+      auth:
+        type: "user"               # managed: DELEGATED per-user token (lazy consent, cannot be required)
+
+apis:                                # Per-operation API tools from admitted OpenAPI entries — issue #400
+  servers:                           # (platform-materialized; each op registers as <name>__<op>)
+    - name: "memberservice"
+      base_url: "https://member-service.internal"   # host must be on the egress allowlist
+      timeout: 30s
+      auth:
+        token_env: "MEMBERSERVICE_TOKEN"             # bearer/static only (oauth rejected for apis)
+      operations:
+        - name: "reverse_fee"       # tool suffix → memberservice__reverse_fee
+          method: "POST"
+          path: "/accounts/{account_id}/reversals"
+          description: "Reverse a fee on an account"
 
 cors_origins:                       # CORS allowed origins for A2A server
   - "https://app.example.com"      # (default: localhost variants)
@@ -394,11 +442,21 @@ security:
   defer:
     enabled: true
     default_timeout: 10m
+    default_approvers: [sec-lead@corp.com]   # email allowlist applied when a tool omits its own (#313)
     tools:
       cli_execute:
         to: channel:slack:#oncall
         timeout: 10m
         context_template: "agent about to run {tool} args {args}"
+        approvers: [alice@corp.com]           # only these emails may resolve this tool's deferrals (#315)
+
+  # Managed PDP (Policy Decision Point) — platform-driven per-tool-call authz (#399).
+  # When enabled it is the SINGLE decision source and the static defer.tools map is ignored.
+  pdp:
+    enabled: false
+    endpoint: ${PDP_ENDPOINT}      # full decide URL, POSTed verbatim; ${VAR} env-expanded at load
+    fail: closed                   # only "closed" honored — an authz path must never fail open (§14.5)
+    timeout: 3s
 ```
 
 | Field | Default | Notes |
@@ -407,7 +465,8 @@ security:
 | `intent_alignment.*` | off | Governance R3 — per-tool-call cosine similarity between the stated task intent and the tool's description+args. `threshold` and `hard_threshold` are `*float64` so an explicit `0` is preserved (the collision with the zero-value default that stopped the warn-only rollout on the initial PR is fixed). Cosine range is `[-1, 1]`; set `hard_threshold: -1` to run warn-only during rollout. Fail-closed on embedder error. |
 | `intent_drift.*` | off | Governance R7 — rolling-window analyzer that sits on top of R3's scores. `drift_threshold` is `*float64` for the same reason as R3. `monotone_n` must be `≤ window` (rejected at startup otherwise — the ring would never accumulate enough scores). Emits `intent_drift` events on state transitions only (no per-call flood). |
 | `step_up.*` | off | Governance R4b — per-tool `acr` requirement enforced from the caller's authenticated identity. Startup rejects `enabled: true` with an empty `tools` map. Missing acr → RFC 9470 401 challenge (`WWW-Authenticate: Bearer error="step_up_required", acr_values="<value>"`). |
-| `defer.*` | off | Governance R4c — per-tool pause-and-resume. When a listed tool is invoked, the executor blocks on `POST /tasks/{id}/decisions`. Startup rejects `enabled: true` with an empty `tools` map. Timeout auto-denies. The pause blocks the caller's HTTP request for up to `timeout`; long-window approvals should use `tasks/sendSubscribe` (SSE). |
+| `defer.*` | off | Governance R4c — per-tool pause-and-resume. When a listed tool is invoked, the executor blocks on `POST /tasks/{id}/decisions`. Startup rejects `enabled: true` with an empty `tools` map. Timeout auto-denies. `approvers` / `default_approvers` are an email allowlist that fail-closed limits who may resolve a deferral (#313/#315). Synchronous `tasks/send` execution is **detached** from the HTTP request (#402), so a long approval survives a client disconnect — see [Deferred authorization](../security/defer-decisions.md). |
+| `pdp.*` | off | Managed **P**olicy **D**ecision **P**oint (#399) — when `enabled`, every governed tool call is authorized by an external decision service (`endpoint`) at `BeforeToolExec` instead of the static `defer.tools` map (which is then ignored). `fail: closed` is enforced at startup — `open` is rejected so an authz path can never fail open (§14.5). `endpoint` supports `${VAR}` expansion. |
 
 Every sub-block ships **off by default** — an absent block leaves the corresponding hook unregistered and the wire shape unchanged from a pre-governance Forge deployment.
 

@@ -23,6 +23,18 @@ User message → Memory → LLM → tool_calls? → Execute tools → LLM → ..
 
 The loop terminates when `len(ToolCalls) == 0`. `FinishReason` is intentionally ignored — some providers return `"stop"` even when tool calls are present. Only the tool call list determines whether execution continues.
 
+### Message parts → prompt projection
+
+An inbound A2A message is a list of typed parts. `a2a.Message.PromptText()` projects them into the single string the LLM sees as the turn's content:
+
+- **Text parts** are included verbatim (joined by newlines).
+- **Data parts** (`{"kind":"data","data":{…}}`) are appended as a fenced ` ```json ` block of the part's fields. This means structured input — e.g. a workflow step's output dispatched as a data part with no text part — still reaches the model instead of producing an empty prompt (a message with only a data part must never execute as empty).
+- **File parts** are not projected into prompt text (their bytes/URIs aren't text).
+
+The same projection feeds the inbound guardrail and intent-alignment scanners, so the security checks see exactly what the model sees — a payload carried in a data part can't reach the LLM while bypassing them. Each data part's projected block is capped (~16KiB, rune-safe) — the cap applies identically to the scanners and the prompt, so truncation can't open a divergence.
+
+**Note for guardrail pattern authors:** parts join with **newlines** (matching what the model sees). A pattern intended to match content that may span a part boundary should use `\s+` rather than a literal space — a payload split across two text parts joins as `…end\nstart…`.
+
 ### Session Recovery Deduplication
 
 When a session is recovered from the [session store](memory-system.md#session-store-backends) (e.g., after a premature loop exit, on any pod for the remote backend), the executor checks whether the recovered conversation already ends with an identical user message. If so, the duplicate is skipped to prevent the same message from appearing twice in the context window. This handles the common case where a user retries the same prompt after a crash or timeout.

@@ -27,7 +27,9 @@ Script-backed skills are automatically registered as **first-class LLM tools** a
 
 1. Parses the skill's SKILL.md for tool definitions, descriptions, and input schemas
 2. Creates a named tool for each `## Tool:` entry (e.g., `tavily_research` becomes a tool the LLM can call directly)
-3. Executes the skill's shell script with JSON input when the LLM invokes it
+3. Executes the backing script with JSON input when the LLM invokes it, under the interpreter matching its extension — `scripts/<name>.sh` (bash), `.py` (python3), or `.js` (node). A `## Tool: foo_bar` binds to **either** `scripts/foo_bar.<ext>` **or** `scripts/foo-bar.<ext>` (the underscore and hyphen forms both work; the hyphenated form wins only if both files exist). Shell wins if several extensions exist. Ensure the interpreter is provisioned (`python3`/`node` in `requires.bins`; bash is built in).
+
+> **Silent-failure guard.** If the backing script is missing, or a `**Input:**` parameter yields a JSON-schema property key outside `^[a-zA-Z0-9_.-]{1,64}$`, the runtime drops that tool at startup with only a log line. Run [`forge skills validate`](skills-cli.md) to catch both — plus orphan scripts with no `## Tool:` heading — before you ship; it exits non-zero on any error, so you can gate CI on it.
 
 This means the LLM sees skill tools alongside builtins like `web_search` and `http_request` — no generic `cli_execute` indirection needed.
 
@@ -71,10 +73,11 @@ against the skill dir (path-confined — no `..` or absolute escapes):
   JSON supplied in the tool's `args` is passed to the script as its first
   positional argument (`$1`). TypeScript must be shipped as compiled `.js`.
 
-This is distinct from a `## Tool:` entry backed by `scripts/<name>.sh`, which
-is registered as a first-class callable tool the model invokes by name (see
-above). Skill-relative scripts are invoked by path via `run_skill_script` and
-can be any of the three languages.
+This is distinct from a `## Tool:` entry backed by `scripts/<name>.{sh,py,js}`,
+which is registered as a first-class callable tool the model invokes by name
+(see above) — all three languages get first-class registration. Skill-relative
+scripts that DON'T correspond to a `## Tool:` heading are still reachable by
+path via `run_skill_script`.
 
 ## Skill Execution Security
 
@@ -83,7 +86,7 @@ Skill scripts run in a restricted environment via `SkillCommandExecutor`:
 - **Isolated environment**: Only `PATH`, `HOME`, and the env vars the skill declared in `metadata.forge.requires.env` are passed through. Values may live in the shell, a `.env` file, or the encrypted secrets store — the runtime overlays each declared key from the provider chain at startup (see [Secret Management — Skill-Declared Secrets](../security/secret-management.md#skill-declared-secrets))
 - **OAuth token resolution**: When `OPENAI_API_KEY` is set to `__oauth__`, the executor resolves OAuth credentials and injects the access token, `OPENAI_BASE_URL`, and the configured model as `REVIEW_MODEL`
 - **Configurable timeout**: Each skill declares a `timeout_hint` in its YAML frontmatter (e.g., 300s for research)
-- **No shell execution**: Scripts run via `bash <script> <json-input>`, not through a shell interpreter
+- **No shell string execution**: a `## Tool:` script runs as `<interpreter> <script> <json-input>` — interpreter chosen by extension (`.sh`/`.bash` → `bash`, `.py` → `python3`, `.js` → `node`; #405 D2), NOT via a shell string, so the JSON argument is a single opaque `argv[1]`. A `## Tool:` whose interpreter (`python3`/`node`) is absent from PATH is skipped with a warning rather than failing at call time.
 - **Egress proxy enforcement**: When egress mode is `allowlist` or `deny-all`, a local HTTP/HTTPS proxy is started and `HTTP_PROXY`/`HTTPS_PROXY` env vars are injected into subprocess environments, ensuring `curl`, `wget`, Python `requests`, and other HTTP clients route through the same domain allowlist used by in-process tools (see [Egress Security](../security/egress-control.md))
 
 ### Symlink Escape Detection

@@ -293,7 +293,9 @@ The agent loop calls tools the LLM asks for. The registry merges:
   `http_request`, `json_parse`, `csv_parse`, `datetime_now`,
   `uuid_generate`, `math_calculate`, `cli_execute`, `read_skill`.
 - **Skill tools**: script-backed `SKILL.md` skills auto-register as
-  first-class LLM tools (one tool per `## Tool:` heading). Binary-backed
+  first-class LLM tools (one tool per `## Tool:` heading). A tool `foo_bar`
+  binds to `scripts/foo-bar.{sh,py,js}` and runs under bash/python3/node
+  respectively (#405 D2; shell wins if several exist). Binary-backed
   skills inline their full body into the system prompt instead.
 - **MCP tools**: discovered from MCP servers declared in `forge.yaml`'s
   `mcp.servers[]` block. Names are namespaced `<server>__<tool>` (e.g.
@@ -835,7 +837,7 @@ enterprise raw-capture path.
 
 ### 12.11 Governance framework R1–R10 (#216 umbrella)
 
-Six MUST + three SHOULD requirements from an agent-runtime governance framework, complete on `main` after #245 / #246 / #247 / #248 land (R4c is the last piece). **R10 (delegated identity) is a proposed fourth SHOULD** — not yet implemented; see #317 / #318.
+Six MUST + three SHOULD requirements from an agent-runtime governance framework, complete on `main` after #245 / #246 / #247 / #248 land (R4c is the last piece). **R10 (delegated identity) is now IMPLEMENTED** — delegated per-user MCP auth (`auth.type: user`) with a per-user connection pool, lazy consent, and an auth-required gate shipped via #317 / #327 / #329 / #330 / #331 / #332 / #344, plus Slack consent delivery (#343 / #345) and agent-principal 2LO (#324 / #325). See `docs/mcp/configuration.md` and `docs/mcp/delegated-consent.md`.
 
 | # | Requirement | Type | Where it lives | Related PR |
 |---|---|:-:|---|:-:|
@@ -850,7 +852,7 @@ Six MUST + three SHOULD requirements from an agent-runtime governance framework,
 | R7 | Semantic distance | SHOULD | `forge-core/security/intent/drift.go`; `security.intent_drift` on top of R3. Rolling-window mean-below-threshold + monotone-decrease trip conditions. State-transition dedup (one `entered`, one `recovered` — no per-call flood). | #246 |
 | R8 | OpenTelemetry export | SHOULD | `observability.tracing` in yaml. Real tracer provider; OTLP HTTP/gRPC export. Audit events carry `trace_id` + `span_id` closing the loop between the SIEM channel and the APM channel. Baseline (#108). | — |
 | R9 | Least-privilege credentials | SHOULD | `forge-core/credentials/`; top-level `credentials:` in yaml. Providers: `static`, `sts_assume_role`. Fresh credentials per tool call; injected into subprocess env (`cli_execute`) or outbound headers (`http_request`). `credential_issued` / `credential_revoked` audit events. **No credential material in audit payloads.** | #236 |
-| R10 | Delegated identity / on-behalf-of authorization | SHOULD (proposed) | Downstream tool calls (esp. remote MCP) execute under the **requesting user's** delegated identity, not a shared service grant — per-user, per-session, on-behalf-of. Where R9 scopes *what a tool may do*, R10 scopes *whose authority it acts under*. One `BearerToken(server, subject, session)` seam, **resolver behind it** (`design-tool-registry.md` §18): the **Forge-local resolver** (interactive OAuth, ephemeral per session; standalone-capable — #317) and the **managed broker resolver** (vaulted 3LO → ID-JAG; holds the IdP trust relationship — initializ, `initializ/aip/mcp-delegated-identity-broker.md`; #318 = the thin `id_jag` `method:` sliver in the Forge repo). Forge never learns which resolver answered. Delegation follows authorization (never mint speculatively); token injected at egress, never through the agent; writes still route through DEFER regardless of token validity (§18.5). Planned audit events: `mcp_auth_requested` / `mcp_auth_completed` / `mcp_auth_denied`. | #317 / #318 |
+| R10 | Delegated identity / on-behalf-of authorization | SHOULD (**implemented**) | Downstream tool calls (esp. remote MCP) execute under the **requesting user's** delegated identity, not a shared service grant — per-user, per-session, on-behalf-of. Where R9 scopes *what a tool may do*, R10 scopes *whose authority it acts under*. One `BearerToken(server, subject, session)` seam, **resolver behind it** (`design-tool-registry.md` §18): the **Forge-local resolver** (interactive OAuth, ephemeral per session; standalone-capable — #317) and the **managed broker resolver** (vaulted 3LO → ID-JAG; holds the IdP trust relationship — initializ, `initializ/aip/mcp-delegated-identity-broker.md`; #318 = the thin `id_jag` `method:` sliver in the Forge repo). Forge never learns which resolver answered. Delegation follows authorization (never mint speculatively); token injected at egress, never through the agent; writes still route through DEFER regardless of token validity (§18.5). Real audit events: `mcp_auth_required` / `mcp_auth_resolved` / `mcp_auth_timeout` (single-emit, attributed to the parked invocation — #366). | #317/#327/#329/#330/#332 |
 
 **Config off by default.** Every governance block ships disabled — an absent block leaves the hook unregistered and the wire shape unchanged from a pre-governance Forge. Rollout: turn each on independently, warn-only first (`hard_threshold: -1`), gather the score distribution against your embedder + workload, then set `hard_threshold` a bit **below** the observed floor of your normal traffic (typically ~0.2–0.3; the default is `0.3`). `hard_threshold` is "score below → deny", so a high value like `0.85` would deny almost all legitimate calls — aligned actions cluster well above it (0.6–0.9 on OpenAI `text-embedding-3-small`).
 
@@ -863,7 +865,7 @@ Six MUST + three SHOULD requirements from an agent-runtime governance framework,
 - `docs/security/audit-signing.md` (R6)
 - `docs/security/audit-tamper-evidence.md` (R5)
 - `docs/security/least-privilege-credentials.md` (R9)
-- R10 (delegated identity) — proposed; authority `design-tool-registry.md` §18; #317 (Forge-local interactive resolver) / #318 (`id_jag` sliver) / `initializ/aip/mcp-delegated-identity-broker.md` (broker resolvers).
+- R10 (delegated identity) — **implemented** (delegated per-user MCP `auth.type: user` + auth-required gate + Slack consent, #317/#327/#329/#330/#332/#343); authority `design-tool-registry.md` §18; `initializ/aip/mcp-delegated-identity-broker.md` (broker resolvers).
 - `docs/security/policy-decisions.md` (five-decision enum reference)
 
 ---
@@ -889,7 +891,7 @@ Full reference: `docs/reference/cli-reference.md`.
 | Subcommand | Purpose | Key flags |
 |---|---|---|
 | `forge try` | Instant demo: scaffold a keyless demo agent (native executor + `weather` skill + safe builtins) into a temp dir and chat in-process with the tool/egress loop rendered inline. No server/build. Credential auto-resolved (flags → env key → OpenAI OAuth → Ollama → picker); nothing on disk unless `--keep`. Same runtime as `forge run`, no A2A server | `--provider`, `--model`, `--once <prompt>`, `--keep`, `--quiet`, `--audit` |
-| `forge init` | Scaffold a new agent: `forge.yaml`, `.env`, `SKILL.md`, `guardrails.json`. Interactive TUI by default; `--non-interactive` for CI | `--model-provider`, `--model-name`, `--channels`, `--auth`, `--from-skills`, `--compression` |
+| `forge init` | Scaffold a new agent: `forge.yaml`, `.env`, `SKILL.md`, `guardrails.json`. Interactive TUI by default; `--non-interactive` for CI. `--from-skill-dir <folder>` vendors an external skill folder (SKILL.md + scripts + reference files) into the new agent and wires its egress/env (#405) | `--model-provider`, `--model-name`, `--channels`, `--auth`, `--from-skills`, `--from-skill-dir`, `--compression` |
 | `forge build` | Run the build pipeline → `.forge-output/agent.json` + container Dockerfile + K8s manifests + (optional) signature | `--output-dir`, `--sign` |
 | `forge validate` | Lint `forge.yaml` + SKILL.md. `--platform-policy=PATH` lints a policy file standalone | `--strict`, `--command-compat`, `--platform-policy` |
 | `forge run` | Dev-mode A2A server with hot-reload | `--port`, `--host`, `--with slack,telegram`, `--mock-tools`, `--no-auth`, `--cors-origins`, `--audit-socket`, `--audit-http-endpoint`, `--rate-limit-*`, `--otel-enabled`, `--otel-endpoint`, `--otel-sampler`, `--compression[=false]` |
@@ -903,7 +905,7 @@ Full reference: `docs/reference/cli-reference.md`.
 | `forge secret set \| get \| list \| delete` | Encrypted secrets | |
 | `forge auth show-token \| mint-token \| secret-yaml \| logout` | Operator UX for the internal bearer token at `<root>/.forge/runtime.token` (same token channel adapters + K8s CronJob trigger pods use). `secret-yaml` prints a ready-to-apply K8s Secret manifest sourced from the local token; `mint-token` is for first-deploy bootstrap. `logout [provider]` clears a stored LLM OAuth credential (default openai) so the next `forge init`/`forge try` re-prompts sign-in — laptop/dev only, **refuses inside an agent runtime** (container or `FORGE_PLATFORM_TOKEN` set). `forge.agent.id` label always tracks `forge.yaml` `agent_id`, never the `--name` override. (#162 part 1, PR #168) | `--namespace`, `--name` |
 | `forge key generate \| sign \| verify` | Ed25519 build artifact signing | |
-| `forge skills add \| list \| validate \| audit` | Registry: install, search, validate binary/env deps, security audit `--embedded` | `--category`, `--tags`, `--embedded` |
+| `forge skills add \| import \| list \| validate \| audit` | Registry: `add` installs from the embedded registry; `import <folder>` vendors an EXTERNAL skill folder (SKILL.md + scripts + reference files) into the current project + wires egress/env, and a vendored `skills/<name>/requirements.txt` is pip-installed at `forge build` (python3/pip auto-provisioned) (#405); for a plain SKILL.md with no `metadata.forge`, `import` infers a suggested block (requires.bins from interpreters; egress/env candidates for review) and `--write-forge-meta` injects requires.bins (#412); `list`/`validate`/`audit` search + check binary/env deps + security audit `--embedded` | `--category`, `--tags`, `--embedded`, `--name`, `--overwrite`, `--write-forge-meta` |
 | `forge mcp list \| test \| login \| logout` | Manage MCP servers + OAuth tokens | `--call <tool>`, `--args '<json>'` |
 | `forge ui` | Launch the local Web Dashboard | `--port` |
 
@@ -1089,7 +1091,8 @@ A Forge skill is a Markdown file with YAML frontmatter. Two flavors:
   existing CLIs (kubectl, gh, git, terraform).
 - **Script-backed** — provides executable scripts under `scripts/`;
   each `## Tool: <name>` becomes a first-class LLM tool the model
-  calls directly. Tool name `my_search` → `scripts/my-search.sh`.
+  calls directly. Tool name `my_search` → `scripts/my-search.{sh,py,js}`,
+  run under bash/python3/node (#405 D2; shell wins if several exist).
 
 Minimal frontmatter:
 

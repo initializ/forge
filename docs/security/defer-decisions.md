@@ -312,17 +312,28 @@ gate are future work.
 > ⏱ **Approval window for channel-initiated conversations.** A conversation
 > that arrives *through* a channel adapter (Slack/Telegram → agent) is
 > served synchronously: the channel router holds the request open for
-> `channels.SyncRequestTimeout` (**6 minutes**). Because the agent loop
-> runs under that request's context, if the approval doesn't land within
-> ~6 minutes the HTTP call times out, the context is cancelled, and the
-> **deferral is abandoned** (the tool call fails; a later click gets a
-> `404`). So for channel-routed approvals, **set `timeout` ≤ 6m** — Forge
-> warns at startup if a channel target's `timeout` exceeds the sync
-> window. Direct A2A clients that hold the connection (or poll `tasks/get`)
-> aren't bound by this. The proper fix — detaching the deferred task and
-> delivering the result asynchronously so long approvals survive — is
-> tracked in #314. The session itself always resumes intact on approval
-> (the deferral is keyed on the task id, not the channel).
+> `channels.SyncRequestTimeout` (**6 minutes**).
+>
+> **The deferred task now survives a caller disconnect (#402).** The
+> non-streaming `tasks/send` execution context is detached from the request
+> (`context.WithoutCancel`), so when the synchronous caller (including the
+> channel router at the 6-minute mark) gives up, the task is **no longer
+> cancelled** — it stays alive, parked on the deferral until its own
+> `timeout`, and resumes intact on approval. It remains retrievable via
+> `GET /tasks/{id}` and explicitly cancellable via `tasks/cancel`. So a
+> click after 6 minutes no longer hits a dead task.
+>
+> What the 6-minute window still bounds is **synchronous result delivery back
+> over that held request**: if the approval lands after the channel request
+> has timed out, the task completes but its result isn't pushed back over the
+> original (now-closed) channel connection — you'd read it via
+> `GET /tasks/{id}`. Delivering a long-approval result back to the channel
+> asynchronously (and the same for the streaming/SSE path) is the remaining
+> follow-up (this is defer piece 1; see #404 for the SSE path). For approvals
+> you expect to resolve within the window, keeping `timeout` ≤ 6m still gives
+> the cleanest synchronous UX; Forge warns at startup if a channel target's
+> `timeout` exceeds the sync window. Direct A2A clients that hold the
+> connection (or poll `tasks/get`) aren't bound by this at all.
 
 ### Custom notify path
 

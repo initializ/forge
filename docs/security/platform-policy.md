@@ -287,6 +287,71 @@ Command patterns are a scalpel for dangerous *invocations of allowed binaries*, 
 - **Always set `message`.** It turns a block from a silent retry-loop into a redirect that steers the model to the sanctioned alternative.
 - **Trial in a workspace layer first.** Ship a new pattern to the narrowest layer, watch the `guardrail_check` (`source: platform`) events for false positives, then promote it to the system layer once it's clean.
 
+## Managed PDP — per-call authorization decisions (#399)
+
+Where `denied_command_patterns` is a static, operator-authored denylist, the
+**Policy Decision Point (PDP)** delegates the whole allow/deny/modify decision to
+an external managed service, consulted on **every governed tool call** at
+`BeforeToolExec`. It's the managed counterpart to the standalone/OSS static
+[`security.defer`](defer-decisions.md) map.
+
+```yaml
+security:
+  pdp:
+    enabled: true
+    endpoint: ${PDP_ENDPOINT}   # full decide URL, POSTed verbatim; ${VAR} env-expanded at load
+    fail: closed                # only "closed" is honored (see below)
+    timeout: 3s
+```
+
+Semantics:
+
+- **Single decision source.** When `pdp.enabled` is true, the PDP is authoritative and the static `security.defer.tools` map is **ignored** — you use one or the other, not both.
+- **Fail-closed, always.** `fail` accepts only `closed` (the default). `open` — or any other value — is **rejected at startup**, so nobody can accidentally ship an authorization path that fails open when the PDP is unreachable (§14.5). An unreachable/slow PDP therefore denies the call rather than allowing it.
+- **Attribution.** The invocation id is sent with each decision request so the platform verdict attributes to the specific turn.
+- **Scope.** It governs namespaced registry operations (MCP `<server>__<op>`, API `<name>__<op>`); builtin/script tools follow the standalone governance path.
+
+Reach the PDP over the platform callout contract (bearer + `Org-Id`/`Workspace-Id`, see [Tenancy](tenancy.md)). Full field reference: [`security.pdp` schema](../reference/forge-yaml-schema.md#security--build-time--runtime-governance).
+
+### Default-deny: govern the tool the LLM picks, not just the ones you listed
+
+The PDP fires at the **execution** boundary, not the decision boundary — it does
+not matter *how* the model chose the call. A prose skill that vaguely says
+"use Linear to file a ticket" still ends up emitting a concrete `tool_use` for a
+registered, namespaced tool (`linear__create_issue`), and that invocation is
+intercepted at `BeforeToolExec` and sent to the PDP like any other. There is no
+runtime "discover-and-call" path that escapes the registry: MCP/API operations
+are enumerated at build/startup, filtered by `tools.allow`, and registered as
+fixed `<name>__<op>` tools — the model can only pick from that set, and every
+pick is governed.
+
+So the real control isn't *whether* the PDP is consulted (it always is) — it's
+what your policy decides for an operation you didn't anticipate the model
+reaching for. Write the policy **default-deny**: allow the operations the agent
+is meant to use, and deny everything else by default. Then an unexpected pick is
+denied even though the PDP fired.
+
+```jsonc
+// PDP decide response for an operation with no explicit allow rule.
+// With a default-deny policy the fallback is deny, not allow:
+{ "decision": "deny", "reason": "no matching allow rule (default-deny)", "policy_version": 7 }
+```
+
+This is the key contrast with the static [`security.defer.tools`](defer-decisions.md)
+map: a tool **absent** from that map has *no* requirement and simply **runs** —
+static defer is allow-by-default for anything you forgot to list. Managed PDP
+lets you invert that to deny-by-default. Two levers combine for defense in depth:
+
+1. **Narrow `tools.allow`** on each MCP/API server so operations you never intend
+   (e.g. `linear__delete_issue`) are not registered at all — the model cannot
+   select what isn't in the registry.
+2. **Default-deny in the PDP policy** so anything that *is* callable but lacks an
+   explicit allow rule is denied rather than silently permitted.
+
+Rely on `security.defer.tools` alone and vague prose becomes a real gap — not
+because the PDP is skipped, but because an unlisted tool is ungoverned. Move
+enforcement to a default-deny PDP and the looseness of the prompt stops mattering.
+
 ## Conflict semantics
 
 When `forge.yaml` declares an egress / tool / model / size value any layer forbids, the runner:

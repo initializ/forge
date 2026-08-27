@@ -36,8 +36,15 @@ kubectl create secret generic datadog-secret -n monitoring \
   --from-literal=DD_API_KEY=<your-datadog-api-key>
 helm upgrade --install otel-collector open-telemetry/opentelemetry-collector \
   --namespace monitoring --values helm/values.yaml
-kubectl -n monitoring rollout status daemonset/otel-collector
+# In daemonset mode the chart names the workload "<release>-agent":
+kubectl -n monitoring rollout status daemonset/otel-collector-agent --timeout=300s
 ```
+
+> First-boot note: the Datadog exporter probes host metadata at startup, which
+> is slow on non-cloud clusters, so the pod can take ~20–30s to become ready.
+> `helm/values.yaml` sets `livenessProbe.initialDelaySeconds` and
+> `host_metadata.hostname_source: first_resource` to prevent the kubelet from
+> liveness-killing the pod mid-start (which otherwise CrashLoops the daemonset).
 
 Why these values (`helm/values.yaml`):
 
@@ -72,8 +79,16 @@ your `agent_id`.
 ## Verify
 
 ```bash
-kubectl -n monitoring rollout status daemonset/otel-collector
-kubectl -n monitoring logs -l app.kubernetes.io/name=opentelemetry-collector | grep -iE 'datadog|Everything is ready'
+kubectl -n monitoring rollout status daemonset/otel-collector-agent --timeout=300s
+kubectl -n monitoring logs -l app.kubernetes.io/instance=otel-collector | grep -iE 'datadog|Everything is ready'
+
+# Optional end-to-end smoke test (expect HTTP 200), then confirm the span in
+# Datadog APM under service:forge-otel-smoketest:
+NOW=$(date +%s)
+kubectl -n monitoring run otel-smoketest --rm -i --restart=Never \
+  --image=curlimages/curl:8.10.1 -- -sS -o /dev/null -w 'HTTP %{http_code}\n' \
+  -X POST http://otel-collector.monitoring.svc.cluster.local:4318/v1/traces \
+  -H 'Content-Type: application/json' -d '{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"forge-otel-smoketest"}}]},"scopeSpans":[{"spans":[{"traceId":"5b8efff798038103d269b633813fc60c","spanId":"eee19b7ec3c1b174","name":"llm.completion","kind":2,"startTimeUnixNano":"'${NOW}'000000000","endTimeUnixNano":"'$((NOW+1))'000000000","attributes":[{"key":"gen_ai.provider.name","value":{"stringValue":"anthropic"}}]}]}]}]}'
 ```
 
 In Datadog: **APM → Traces**, filter `service:<agent_id>`. Spans include

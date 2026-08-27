@@ -30,5 +30,8 @@ helm upgrade --install "$RELEASE" open-telemetry/opentelemetry-collector \
   --namespace "$NAMESPACE" \
   --values "$VALUES"
 
-kubectl -n "$NAMESPACE" rollout status daemonset/"$RELEASE" --timeout=120s
-echo "Collector ready. Point Forge at http://otel-collector.${NAMESPACE}.svc.cluster.local:4318/v1/traces"
+# In daemonset mode the chart suffixes the workload name with "-agent".
+# Each pod waits out livenessProbe.initialDelaySeconds, and the daemonset rolls
+# one pod at a time, so allow generous time on multi-node clusters.
+kubectl -n "$NAMESPACE" rollout status daemonset/"$RELEASE"-agent --timeout=300s
+echo "Collector ready. Point Forge at http://${RELEASE}.${NAMESPACE}.svc.cluster.local:4318/v1/traces"

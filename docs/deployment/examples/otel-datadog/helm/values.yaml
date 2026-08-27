@@ -58,6 +58,21 @@ resources:
   requests: { cpu: 200m, memory: 400Mi }
   limits:   { cpu: "1",  memory: 1Gi }
 
+# The Datadog exporter's host-metadata step probes cloud-metadata endpoints at
+# startup; on bare-metal / non-cloud clusters those calls hang to timeout and
+# push first-boot past 20s. Give the probes headroom so the kubelet doesn't
+# liveness-kill the pod mid-start (which otherwise CrashLoops the daemonset).
+# host_metadata.hostname_source: first_resource (below) also cuts that time by
+# taking the node name from resource attributes instead of cloud probing.
+livenessProbe:
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  failureThreshold: 5
+readinessProbe:
+  initialDelaySeconds: 15
+  periodSeconds: 10
+  failureThreshold: 5
+
 # Uncomment to also collect traces from workloads on control-plane nodes.
 # tolerations:
 #   - key: node-role.kubernetes.io/control-plane
@@ -115,6 +130,11 @@ config:
       api:
         site: datadoghq.com          # US1
         key: ${env:DD_API_KEY}
+      host_metadata:
+        # Derive the DD host from resource attributes (k8s.node.name, set by the
+        # kubernetesAttributes preset + resourcedetection) instead of probing
+        # cloud-metadata endpoints — avoids multi-second startup hangs off-cloud.
+        hostname_source: first_resource
 
   service:
     pipelines:

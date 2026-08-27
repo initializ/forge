@@ -1,0 +1,136 @@
+# Helm values for open-telemetry/opentelemetry-collector — PRODUCTION daemonset
+# shipping Forge GenAI traces to Datadog (US1).
+#
+#   helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+#   helm repo update
+#   kubectl create namespace monitoring
+#   kubectl create secret generic datadog-secret -n monitoring --from-literal=DD_API_KEY=<key>
+#   helm upgrade --install otel-collector open-telemetry/opentelemetry-collector \
+#     --namespace monitoring --values values.yaml
+#
+# One collector pod per node (agent pattern). Forge sends OTLP to the collector
+# on its OWN node via a stable Service (see `service` below).
+
+mode: daemonset
+
+# Stable name -> Service DNS otel-collector.monitoring.svc.cluster.local, the
+# host Forge points at (and allowlists for egress at `forge build`).
+fullnameOverride: otel-collector
+
+image:
+  # MUST be -contrib. The Datadog exporter and the `datadog` connector are NOT
+  # in the -k8s / core distributions — using those crashloops with
+  # "unknown type: datadog". Pin to a contrib release you have validated:
+  # https://github.com/open-telemetry/opentelemetry-collector-releases/releases
+  repository: otel/opentelemetry-collector-contrib
+  tag: "0.119.0"
+
+# The contrib image's binary is `otelcol-contrib`; the chart's command name
+# must match or the pod fails to start.
+command:
+  name: otelcol-contrib
+
+# Node-local routing WITHOUT hostPort. A ClusterIP Service with
+# internalTrafficPolicy: Local delivers each agent's OTLP to the daemonset pod
+# on the SAME node, while keeping a STABLE DNS name. The stable name is what
+# makes this work with Forge: `forge build` allowlists the collector HOST for
+# egress; a dynamic node IP (hostPort / HOST_IP downward-API) can't be
+# allowlisted at build time and would be blocked by the egress enforcer.
+service:
+  enabled: true
+  internalTrafficPolicy: Local
+
+# Adds the k8sattributes processor + the RBAC it needs (ServiceAccount +
+# ClusterRole/Binding) and, in daemonset mode, the node-local pod filter.
+# Enriches every span with pod / namespace / deployment / node tags.
+presets:
+  kubernetesAttributes:
+    enabled: true
+
+extraEnvs:
+  - name: DD_API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: datadog-secret
+        key: DD_API_KEY
+
+resources:
+  requests: { cpu: 200m, memory: 400Mi }
+  limits:   { cpu: "1",  memory: 1Gi }
+
+# Uncomment to also collect traces from workloads on control-plane nodes.
+# tolerations:
+#   - key: node-role.kubernetes.io/control-plane
+#     operator: Exists
+#     effect: NoSchedule
+
+# Only OTLP is needed for Forge. Turn the chart's other receiver ports off.
+ports:
+  otlp:
+    enabled: true
+    containerPort: 4317
+    servicePort: 4317
+    protocol: TCP
+  otlp-http:
+    enabled: true
+    containerPort: 4318
+    servicePort: 4318
+    protocol: TCP
+  jaeger-compact: { enabled: false }
+  jaeger-thrift:  { enabled: false }
+  jaeger-grpc:    { enabled: false }
+  zipkin:         { enabled: false }
+
+# Merged over the chart defaults. The kubernetesAttributes preset injects its
+# `k8s_attributes` processor into every pipeline automatically — do NOT list it
+# in the pipelines below, or the injected + explicit entries clash.
+config:
+  # Drop the chart's default non-OTLP receivers; Forge speaks OTLP only.
+  receivers:
+    jaeger: null
+    zipkin: null
+    prometheus: null
+
+  processors:
+    memory_limiter:
+      check_interval: 5s
+      limit_percentage: 80
+      spike_limit_percentage: 25
+    batch:
+      send_batch_size: 100
+      send_batch_max_size: 1000
+      timeout: 10s
+    resourcedetection:
+      detectors: [env, system]
+      timeout: 5s
+      override: false
+
+  connectors:
+    # Computes APM trace stats (hits/errors/latency) from the spans and
+    # forwards them onward.
+    datadog/connector: {}
+
+  exporters:
+    datadog:
+      api:
+        site: datadoghq.com          # US1
+        key: ${env:DD_API_KEY}
+
+  service:
+    pipelines:
+      # 1) OTLP in → connector (which computes APM stats + forwards spans).
+      #    (k8s_attributes is prepended here by the preset.)
+      traces:
+        receivers: [otlp]
+        processors: [memory_limiter, resourcedetection, batch]
+        exporters: [datadog/connector]
+      # 2) Connector → Datadog APM.
+      traces/export:
+        receivers: [datadog/connector]
+        processors: [memory_limiter, batch]
+        exporters: [datadog]
+      # 3) APM trace metrics the connector produced.
+      metrics:
+        receivers: [datadog/connector]
+        processors: [memory_limiter, batch]
+        exporters: [datadog]

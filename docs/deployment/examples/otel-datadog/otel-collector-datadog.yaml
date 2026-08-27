@@ -1,5 +1,8 @@
 # OpenTelemetry Collector → Datadog (US1) for Forge GenAI traces.
 #
+# PLAIN-MANIFEST ALTERNATIVE (single Deployment). For production, prefer the
+# Helm daemonset in ./helm/ — see README.md.
+#
 # Pipeline: Forge --OTLP--> this collector --datadog exporter--> Datadog APM.
 # The `datadog/connector` computes APM trace stats (hits/errors/latency) from
 # the incoming spans, so the APM UI shows service/resource stats for the

@@ -3,6 +3,7 @@ package runtime
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,11 +19,21 @@ import (
 // to the externally-reachable origin (e.g. https://agent.example.com) so A2A clients
 // that dial the card's `url` reach the agent — not the pod-local default. Unset (the
 // standalone / local-dev case) falls back to http://localhost:<port>.
+//
+// A scheme-less or otherwise malformed override is rejected with a warning and the
+// local fallback, so a misconfiguration surfaces loudly at startup instead of
+// silently handing A2A clients an undialable card url.
 func agentCardBaseURL(port int) string {
-	if u := strings.TrimSpace(os.Getenv("FORGE_A2A_PUBLIC_URL")); u != "" {
-		return strings.TrimRight(u, "/")
+	fallback := fmt.Sprintf("http://localhost:%d", port)
+	u := strings.TrimRight(strings.TrimSpace(os.Getenv("FORGE_A2A_PUBLIC_URL")), "/")
+	if u == "" {
+		return fallback
 	}
-	return fmt.Sprintf("http://localhost:%d", port)
+	if pu, err := url.Parse(u); err != nil || pu.Scheme == "" || pu.Host == "" {
+		fmt.Fprintf(os.Stderr, "forge: FORGE_A2A_PUBLIC_URL=%q is not a valid absolute URL (want scheme://host); advertising %q in the Agent Card instead\n", u, fallback)
+		return fallback
+	}
+	return u
 }
 
 // BuildAgentCard constructs an AgentCard from available sources.

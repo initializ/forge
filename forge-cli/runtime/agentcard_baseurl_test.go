@@ -21,4 +21,12 @@ func TestAgentCardBaseURL(t *testing.T) {
 			t.Errorf("got %q, want the trailing slash trimmed", got)
 		}
 	})
+	t.Run("rejects a scheme-less / malformed override and falls back to localhost", func(t *testing.T) {
+		for _, bad := range []string{"agent.example.com", "://nope", "https://"} {
+			t.Setenv("FORGE_A2A_PUBLIC_URL", bad)
+			if got := agentCardBaseURL(8080); got != "http://localhost:8080" {
+				t.Errorf("override %q should fall back to localhost, got %q", bad, got)
+			}
+		}
+	})
 }

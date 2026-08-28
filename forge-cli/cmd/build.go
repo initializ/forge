@@ -153,6 +153,9 @@ func parseLocalBins(args []string) (map[string]string, error) {
 			return nil, fmt.Errorf("invalid --local-bin format %q: expected name=/path/to/file", arg)
 		}
 		name, path := parts[0], parts[1]
+		if !validate.ValidBinOverrideName(name) {
+			return nil, fmt.Errorf("invalid --local-bin name %q: must be a plain binary basename matching ^[a-zA-Z0-9_.-]{1,64}$ (and not \".\" or \"..\")", name)
+		}
 		absPath, err := filepath.Abs(path)
 		if err != nil {
 			return nil, fmt.Errorf("resolving path for --local-bin %s: %w", name, err)

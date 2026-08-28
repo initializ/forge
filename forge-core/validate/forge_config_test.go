@@ -255,3 +255,37 @@ func TestValidateForgeConfig_OrgIDOnOpenAI(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateForgeConfig_BinOverrideNames pins the bin-override name
+// validation (PR #374 follow-up): the name flows verbatim into the
+// .local-bins/ filesystem path, the Dockerfile COPY line, and the
+// .dockerignore negation, so only plain basenames may pass.
+func TestValidateForgeConfig_BinOverrideNames(t *testing.T) {
+	valid := []string{"forge", "jq", "kubectl", "my-tool_2", "tool.v2", "a"}
+	for _, name := range valid {
+		cfg := validConfig()
+		cfg.Package.BinOverrides = map[string]types.BinOverride{name: {LocalPath: "/x"}}
+		if r := ValidateForgeConfig(cfg); hasSubstr(r.Errors, "bin_overrides") {
+			t.Errorf("name %q should be accepted, got errors: %v", name, r.Errors)
+		}
+	}
+
+	invalid := []string{
+		"../escape",             // path traversal into the fs sink
+		"..",                    // pure-dot traversal — passes the charset alone
+		".",                     // pure-dot
+		"a/b",                   // path separator
+		"bad\nname",             // newline → .dockerignore line injection
+		"!important",            // dockerignore negation metacharacter
+		"*",                     // glob re-includes the whole stash
+		"name with space",       // whitespace
+		strings.Repeat("a", 65), // over length cap
+	}
+	for _, name := range invalid {
+		cfg := validConfig()
+		cfg.Package.BinOverrides = map[string]types.BinOverride{name: {LocalPath: "/x"}}
+		if r := ValidateForgeConfig(cfg); !hasSubstr(r.Errors, "bin_overrides") {
+			t.Errorf("name %q should be rejected, got errors: %v", name, r.Errors)
+		}
+	}
+}

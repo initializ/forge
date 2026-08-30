@@ -173,7 +173,7 @@ A2A response headers carry the same per-invocation totals inline so an orchestra
 
 | Header | Value |
 |---|---|
-| `X-Forge-Tokens-In` | Sum of `input_tokens` across all LLM calls in the invocation |
+| `X-Forge-Tokens-In` | Sum of `total_input_tokens` across all LLM calls in the invocation — the true input incl. Anthropic cache read/creation (#431), so an orchestrator's cost ceiling-check can't be fooled by a cache-heavy stage. Never reports below the summed uncached `input_tokens` delta |
 | `X-Forge-Tokens-Out` | Sum of `output_tokens` across all LLM calls in the invocation |
 | `X-Forge-Duration-Ms` | Wall-clock invocation duration (auth → dispatch → engine → response) |
 | `X-Forge-Model` | Most-recently-used model |

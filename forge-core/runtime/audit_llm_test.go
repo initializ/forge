@@ -57,6 +57,107 @@ func TestEmitLLMCall_FullUsage(t *testing.T) {
 	}
 }
 
+func TestEmitLLMCall_CacheTokens_EmitsBreakdownAndSummedTotalInput(t *testing.T) {
+	// Issue #431: under Anthropic prompt caching, input_tokens is only
+	// the uncached delta. The llm_call event must carry the cache
+	// breakdown AND a summed total_input_tokens so a consumer reading
+	// total_input_tokens alone can't undercount.
+	var buf bytes.Buffer
+	audit := NewAuditLogger(&buf)
+
+	audit.EmitLLMCall(context.Background(), LLMCallAuditArgs{
+		Model:    "claude-sonnet-4-6",
+		Provider: "anthropic",
+		Usage: LLMUsage{
+			InputTokens:              12,
+			OutputTokens:             8,
+			CacheReadInputTokens:     4000,
+			CacheCreationInputTokens: 200,
+		},
+		Duration: 10 * time.Millisecond,
+	})
+
+	var evt AuditEvent
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &evt); err != nil {
+		t.Fatalf("decode: %v\n%s", err, buf.String())
+	}
+	if evt.InputTokens == nil || *evt.InputTokens != 12 {
+		t.Errorf("InputTokens (uncached delta) want 12, got %v", evt.InputTokens)
+	}
+	if evt.CacheReadInputTokens == nil || *evt.CacheReadInputTokens != 4000 {
+		t.Errorf("CacheReadInputTokens want 4000, got %v", evt.CacheReadInputTokens)
+	}
+	if evt.CacheCreationInputTokens == nil || *evt.CacheCreationInputTokens != 200 {
+		t.Errorf("CacheCreationInputTokens want 200, got %v", evt.CacheCreationInputTokens)
+	}
+	if evt.TotalInputTokens == nil || *evt.TotalInputTokens != 4212 {
+		t.Errorf("TotalInputTokens want 4212 (12+4000+200), got %v", evt.TotalInputTokens)
+	}
+	if evt.TokensUnavailable {
+		t.Errorf("TokensUnavailable must be false — the call consumed cached input")
+	}
+	// Wire-name check: the emitted JSON must use the exact field names
+	// security-next#36 reads.
+	js := buf.String()
+	for _, want := range []string{`"cache_read_input_tokens":4000`, `"cache_creation_input_tokens":200`, `"total_input_tokens":4212`} {
+		if !strings.Contains(js, want) {
+			t.Errorf("expected %s in JSON, got: %s", want, js)
+		}
+	}
+}
+
+func TestEmitLLMCall_NoCaching_TotalInputEqualsInputAndCacheFieldsOmitted(t *testing.T) {
+	// Non-cached call (or non-Anthropic provider): total_input_tokens is
+	// still emitted (so the security-next fallback stays on its fast
+	// path) and equals input_tokens, while the two cache fields omit
+	// cleanly to preserve the pre-#431 JSON shape.
+	var buf bytes.Buffer
+	audit := NewAuditLogger(&buf)
+	audit.EmitLLMCall(context.Background(), LLMCallAuditArgs{
+		Model:    "gpt-4o",
+		Provider: "openai",
+		Usage:    LLMUsage{InputTokens: 30, OutputTokens: 5, TotalTokens: 35},
+		Duration: 1 * time.Millisecond,
+	})
+	var evt AuditEvent
+	_ = json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &evt)
+	if evt.TotalInputTokens == nil || *evt.TotalInputTokens != 30 {
+		t.Errorf("TotalInputTokens want 30 (== input when no caching), got %v", evt.TotalInputTokens)
+	}
+	if evt.CacheReadInputTokens != nil || evt.CacheCreationInputTokens != nil {
+		t.Errorf("cache fields must omit when zero, got read=%v creation=%v",
+			evt.CacheReadInputTokens, evt.CacheCreationInputTokens)
+	}
+	js := buf.String()
+	for _, forbidden := range []string{`"cache_read_input_tokens"`, `"cache_creation_input_tokens"`} {
+		if strings.Contains(js, forbidden) {
+			t.Errorf("zero cache field %s must omit, got: %s", forbidden, js)
+		}
+	}
+}
+
+func TestEmitLLMCall_CacheReadOnly_NotFlaggedUnavailable(t *testing.T) {
+	// A fully-cached turn reports input_tokens=0 but cache_read>0 — real
+	// input was consumed, so tokens_unavailable must stay false (else
+	// billing mistakes a large cached call for a free one).
+	var buf bytes.Buffer
+	audit := NewAuditLogger(&buf)
+	audit.EmitLLMCall(context.Background(), LLMCallAuditArgs{
+		Model:    "claude-sonnet-4-6",
+		Provider: "anthropic",
+		Usage:    LLMUsage{InputTokens: 0, OutputTokens: 40, CacheReadInputTokens: 5000},
+		Duration: 5 * time.Millisecond,
+	})
+	var evt AuditEvent
+	_ = json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &evt)
+	if evt.TokensUnavailable {
+		t.Errorf("cache-read-only call consumed input; TokensUnavailable must be false, got %+v", evt)
+	}
+	if evt.TotalInputTokens == nil || *evt.TotalInputTokens != 5000 {
+		t.Errorf("TotalInputTokens want 5000, got %v", evt.TotalInputTokens)
+	}
+}
+
 func TestEmitLLMCall_TokensUnavailable_OllamaMissingUsage(t *testing.T) {
 	// Self-hosted setups (some Ollama models) don't return token counts.
 	// EmitLLMCall must flag tokens_unavailable=true rather than emit

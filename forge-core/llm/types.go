@@ -96,4 +96,23 @@ type UsageInfo struct {
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
 	TotalTokens  int `json:"total_tokens"`
+
+	// Prompt-cache token counts (Anthropic). When prompt caching is
+	// active, the provider's input_tokens is only the UNCACHED delta;
+	// the cached prefix is billed separately as cache_read_input_tokens
+	// (hit, ~10% rate) and cache_creation_input_tokens (write, one-time).
+	// Recording them here lets the audit/usage layer report true input
+	// consumption instead of the delta alone (issue #431). Zero for
+	// providers that fold cached input into InputTokens (OpenAI's
+	// prompt_tokens already includes it) or when caching is off.
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+}
+
+// TotalInputTokens returns the true input consumption: the uncached
+// delta plus cache-read plus cache-creation tokens. For providers whose
+// InputTokens already includes cached input (OpenAI), the cache fields
+// are zero and this equals InputTokens.
+func (u UsageInfo) TotalInputTokens() int {
+	return u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
 }

@@ -455,6 +455,18 @@ type AuditEvent struct {
 	OutputTokens      *int `json:"output_tokens,omitempty"`
 	TokensUnavailable bool `json:"tokens_unavailable,omitempty"`
 
+	// Prompt-cache token breakdown + summed true input (issue #431).
+	// When Anthropic prompt caching is active, input_tokens is only the
+	// uncached delta; cache_read_input_tokens / cache_creation_input_tokens
+	// carry the cached prefix. total_input_tokens = input + cache_read +
+	// cache_creation is emitted whenever input_tokens is, so a consumer
+	// reading it alone (security-next#36's `total_input_tokens ?? input_tokens`
+	// fallback) can't undercount. The two cache fields use omitempty so
+	// non-cached calls and non-Anthropic providers keep the pre-#431 shape.
+	CacheReadInputTokens     *int `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens *int `json:"cache_creation_input_tokens,omitempty"`
+	TotalInputTokens         *int `json:"total_input_tokens,omitempty"`
+
 	// DurationMs is the wall-clock duration in milliseconds. Populated on
 	// llm_call, tool_exec, and invocation_complete events.
 	DurationMs *int64 `json:"duration_ms,omitempty"`
@@ -1010,6 +1022,21 @@ type LLMUsage struct {
 	InputTokens  int
 	OutputTokens int
 	TotalTokens  int
+	// Prompt-cache counts (Anthropic). InputTokens is only the uncached
+	// delta when caching is active; these carry the cached prefix so the
+	// emitted total_input_tokens reflects true input consumption instead
+	// of undercounting (issue #431). Zero for providers that fold cached
+	// input into InputTokens.
+	CacheReadInputTokens     int
+	CacheCreationInputTokens int
+}
+
+// TotalInputTokens returns the true input consumption for the call:
+// uncached delta + cache read + cache creation. Downstream cost/usage
+// consumers read this so a cache-heavy call is not undercounted by
+// reading InputTokens (the delta) alone.
+func (u LLMUsage) TotalInputTokens() int {
+	return u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
 }
 
 // EmitLLMCall builds and emits an llm_call (or llm_call_cancelled)
@@ -1041,7 +1068,25 @@ func (a *AuditLogger) EmitLLMCall(ctx context.Context, args LLMCallAuditArgs) {
 	in, out := args.Usage.InputTokens, args.Usage.OutputTokens
 	evt.InputTokens = &in
 	evt.OutputTokens = &out
-	if in == 0 && out == 0 {
+	// Emit total_input_tokens alongside input_tokens ALWAYS (even when it
+	// equals input_tokens, i.e. no caching): security-next#36 reads
+	// `total_input_tokens ?? input_tokens`, so a consistently-present field
+	// keeps that fallback on the fast path and prevents any reader from
+	// undercounting a cache-heavy call by reading the uncached delta alone
+	// (issue #431).
+	totalIn := args.Usage.TotalInputTokens()
+	evt.TotalInputTokens = &totalIn
+	// The cache breakdown is Anthropic-only detail — omitempty keeps the
+	// pre-#431 JSON shape for non-cached / non-Anthropic calls.
+	if cr := args.Usage.CacheReadInputTokens; cr != 0 {
+		evt.CacheReadInputTokens = &cr
+	}
+	if cc := args.Usage.CacheCreationInputTokens; cc != 0 {
+		evt.CacheCreationInputTokens = &cc
+	}
+	// Unavailable only when the provider reported NO usage at all — a
+	// cache-read-only turn (in==0 but cache_read>0) did consume input.
+	if totalIn == 0 && out == 0 {
 		evt.TokensUnavailable = true
 	}
 	d := args.Duration.Milliseconds()

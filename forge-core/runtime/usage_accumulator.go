@@ -20,15 +20,18 @@ import (
 // whether OTel tracing is enabled — they're the orchestration channel,
 // not the observability channel. See issue #87 / FWS-3.
 type LLMUsageAccumulator struct {
-	mu               sync.Mutex
-	invocationStart  time.Time
-	inputTokensSum   int
-	outputTokensSum  int
-	llmTimeSum       time.Duration
-	primaryModel     string
-	primaryProvider  string
-	llmCallCount     int
-	tokensUnavailHit bool
+	mu                     sync.Mutex
+	invocationStart        time.Time
+	inputTokensSum         int
+	outputTokensSum        int
+	cacheReadTokensSum     int
+	cacheCreationTokensSum int
+	totalInputTokensSum    int
+	llmTimeSum             time.Duration
+	primaryModel           string
+	primaryProvider        string
+	llmCallCount           int
+	tokensUnavailHit       bool
 }
 
 // NewLLMUsageAccumulator returns a fresh accumulator with its invocation
@@ -47,6 +50,12 @@ func (a *LLMUsageAccumulator) AddLLMCall(model, provider string, usage LLMUsage,
 	defer a.mu.Unlock()
 	a.inputTokensSum += usage.InputTokens
 	a.outputTokensSum += usage.OutputTokens
+	a.cacheReadTokensSum += usage.CacheReadInputTokens
+	a.cacheCreationTokensSum += usage.CacheCreationInputTokens
+	// Aggregate TRUE input (delta + cache read + cache creation) so the
+	// run total reflects real consumption on cache-heavy runs, not the
+	// uncached delta (issue #431).
+	a.totalInputTokensSum += usage.TotalInputTokens()
 	a.llmTimeSum += duration
 	a.llmCallCount++
 	if model != "" {
@@ -55,7 +64,7 @@ func (a *LLMUsageAccumulator) AddLLMCall(model, provider string, usage LLMUsage,
 	if provider != "" {
 		a.primaryProvider = provider
 	}
-	if usage.InputTokens == 0 && usage.OutputTokens == 0 {
+	if usage.TotalInputTokens() == 0 && usage.OutputTokens == 0 {
 		a.tokensUnavailHit = true
 	}
 }
@@ -64,14 +73,21 @@ func (a *LLMUsageAccumulator) AddLLMCall(model, provider string, usage LLMUsage,
 // at a single point in time. Returned by Snapshot for use by the A2A
 // response handler.
 type LLMUsageSnapshot struct {
-	InputTokens        int
-	OutputTokens       int
-	LLMTimeTotal       time.Duration // sum of per-LLM-call durations
-	InvocationDuration time.Duration // wall-clock since accumulator creation
-	PrimaryModel       string
-	PrimaryProvider    string
-	LLMCallCount       int
-	TokensUnavailable  bool
+	InputTokens  int
+	OutputTokens int
+	// Cache breakdown + true input aggregate (issue #431). InputTokens is
+	// the summed uncached delta; TotalInputTokens = InputTokens +
+	// CacheReadInputTokens + CacheCreationInputTokens is the real input
+	// consumption for the invocation. All zero for non-caching providers.
+	CacheReadInputTokens     int
+	CacheCreationInputTokens int
+	TotalInputTokens         int
+	LLMTimeTotal             time.Duration // sum of per-LLM-call durations
+	InvocationDuration       time.Duration // wall-clock since accumulator creation
+	PrimaryModel             string
+	PrimaryProvider          string
+	LLMCallCount             int
+	TokensUnavailable        bool
 }
 
 // Snapshot returns the current totals. Safe to call from a goroutine
@@ -80,14 +96,17 @@ func (a *LLMUsageAccumulator) Snapshot() LLMUsageSnapshot {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return LLMUsageSnapshot{
-		InputTokens:        a.inputTokensSum,
-		OutputTokens:       a.outputTokensSum,
-		LLMTimeTotal:       a.llmTimeSum,
-		InvocationDuration: time.Since(a.invocationStart),
-		PrimaryModel:       a.primaryModel,
-		PrimaryProvider:    a.primaryProvider,
-		LLMCallCount:       a.llmCallCount,
-		TokensUnavailable:  a.tokensUnavailHit && a.inputTokensSum == 0 && a.outputTokensSum == 0,
+		InputTokens:              a.inputTokensSum,
+		OutputTokens:             a.outputTokensSum,
+		CacheReadInputTokens:     a.cacheReadTokensSum,
+		CacheCreationInputTokens: a.cacheCreationTokensSum,
+		TotalInputTokens:         a.totalInputTokensSum,
+		LLMTimeTotal:             a.llmTimeSum,
+		InvocationDuration:       time.Since(a.invocationStart),
+		PrimaryModel:             a.primaryModel,
+		PrimaryProvider:          a.primaryProvider,
+		LLMCallCount:             a.llmCallCount,
+		TokensUnavailable:        a.tokensUnavailHit && a.totalInputTokensSum == 0 && a.outputTokensSum == 0,
 	}
 }
 

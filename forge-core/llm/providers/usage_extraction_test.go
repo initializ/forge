@@ -48,6 +48,55 @@ func TestAnthropic_PopulatesUsageWithOTelAlignedNames(t *testing.T) {
 	}
 }
 
+func TestAnthropic_PopulatesCacheTokens_TotalInputCountsCachedPrefix(t *testing.T) {
+	// Under prompt caching the Anthropic usage.input_tokens is only the
+	// uncached delta; the cached prefix is billed as cache_read /
+	// cache_creation. Dropping those undercounts real input by orders of
+	// magnitude (issue #431). The provider must surface them and fold
+	// them into TotalTokens.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":          "msg_cache",
+			"content":     []map[string]any{{"type": "text", "text": "ok"}},
+			"stop_reason": "end_turn",
+			"usage": map[string]int{
+				"input_tokens":                12,
+				"output_tokens":               8,
+				"cache_read_input_tokens":     4000,
+				"cache_creation_input_tokens": 200,
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c := NewAnthropicClient(llm.ClientConfig{APIKey: "x", BaseURL: srv.URL, Model: "claude-3-5-sonnet"})
+	resp, err := c.Chat(context.Background(), &llm.ChatRequest{
+		Model:    "claude-3-5-sonnet",
+		Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if resp.Usage.InputTokens != 12 {
+		t.Errorf("InputTokens (uncached delta) = %d, want 12", resp.Usage.InputTokens)
+	}
+	if resp.Usage.CacheReadInputTokens != 4000 {
+		t.Errorf("CacheReadInputTokens = %d, want 4000", resp.Usage.CacheReadInputTokens)
+	}
+	if resp.Usage.CacheCreationInputTokens != 200 {
+		t.Errorf("CacheCreationInputTokens = %d, want 200", resp.Usage.CacheCreationInputTokens)
+	}
+	if got := resp.Usage.TotalInputTokens(); got != 4212 {
+		t.Errorf("TotalInputTokens() = %d, want 4212 (12+4000+200)", got)
+	}
+	// TotalTokens now folds the cached prefix + output, matching OpenAI's
+	// inclusive semantics: 12 + 4000 + 200 + 8.
+	if resp.Usage.TotalTokens != 4220 {
+		t.Errorf("TotalTokens = %d, want 4220 (input+cache_read+cache_creation+output)", resp.Usage.TotalTokens)
+	}
+}
+
 func TestOpenAI_PopulatesUsageWithOTelAlignedNames(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)

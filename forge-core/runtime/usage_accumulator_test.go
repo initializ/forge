@@ -30,6 +30,48 @@ func TestLLMUsageAccumulator_AggregatesAcrossCalls(t *testing.T) {
 	}
 }
 
+func TestLLMUsageAccumulator_SumsCacheTokensAndTrueInput(t *testing.T) {
+	// Issue #431: the run aggregate must sum total_input_tokens (delta +
+	// cache read + cache creation), not just the uncached delta, so a
+	// cache-heavy run's invocation_complete reflects real consumption.
+	acc := NewLLMUsageAccumulator()
+	// Cold call: seeds the cache (creation), small delta.
+	acc.AddLLMCall("claude", "anthropic",
+		LLMUsage{InputTokens: 12, OutputTokens: 8, CacheCreationInputTokens: 4000}, time.Millisecond)
+	// Warm call: reads the cached prefix, small fresh delta.
+	acc.AddLLMCall("claude", "anthropic",
+		LLMUsage{InputTokens: 20, OutputTokens: 10, CacheReadInputTokens: 4000}, time.Millisecond)
+
+	snap := acc.Snapshot()
+	if snap.InputTokens != 32 {
+		t.Errorf("InputTokens (uncached delta sum) = %d, want 32", snap.InputTokens)
+	}
+	if snap.CacheCreationInputTokens != 4000 {
+		t.Errorf("CacheCreationInputTokens sum = %d, want 4000", snap.CacheCreationInputTokens)
+	}
+	if snap.CacheReadInputTokens != 4000 {
+		t.Errorf("CacheReadInputTokens sum = %d, want 4000", snap.CacheReadInputTokens)
+	}
+	if snap.TotalInputTokens != 8032 {
+		t.Errorf("TotalInputTokens = %d, want 8032 (32 delta + 4000 creation + 4000 read)", snap.TotalInputTokens)
+	}
+}
+
+func TestLLMUsageAccumulator_CacheReadOnlyDoesNotLatchUnavailable(t *testing.T) {
+	// A run made entirely of fully-cached turns (input delta 0, cache
+	// read > 0) consumed real input — TokensUnavailable must stay false.
+	acc := NewLLMUsageAccumulator()
+	acc.AddLLMCall("claude", "anthropic",
+		LLMUsage{InputTokens: 0, OutputTokens: 40, CacheReadInputTokens: 5000}, time.Millisecond)
+	snap := acc.Snapshot()
+	if snap.TokensUnavailable {
+		t.Errorf("cache-read-only run consumed input; TokensUnavailable must be false, got %+v", snap)
+	}
+	if snap.TotalInputTokens != 5000 {
+		t.Errorf("TotalInputTokens = %d, want 5000", snap.TotalInputTokens)
+	}
+}
+
 func TestLLMUsageAccumulator_PrimaryIsMostRecentNonEmpty(t *testing.T) {
 	// Spec: X-Forge-Model / X-Forge-Provider report "the primary model
 	// used (most recent if multiple)." This matches the most common

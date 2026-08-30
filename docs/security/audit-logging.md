@@ -20,7 +20,7 @@ All runtime security events are emitted as structured NDJSON to stderr with corr
 | `llm_call` | LLM API call completed (with `input_tokens`, `output_tokens`, `model`, `provider`, `duration_ms`, `request_id`, and `fields.url` — the actual endpoint the request hit, e.g. a Kong base URL + `/v1/messages`; recorded even when payload capture is off since the URL is header-authed metadata, not payload). Any `user:pass@` userinfo in the base URL is **stripped** from the recorded `fields.url` so an inline-credential base URL doesn't leak into the audit stream (#358). See [Token usage and duration](#token-usage-and-execution-duration). |
 | `llm_call_cancelled` | Streaming LLM call cancelled mid-flight; carries partial token counts captured up to cancellation. |
 | `llm_call_failed` | An LLM API call failed (transport error or non-2xx) on the request path (#361). Carries `provider` / `model` / `duration_ms` and `fields.error` (the failure reason) — `fields.error` is **always** secret-scrubbed and length-capped regardless of the payload-capture toggle (see [What gets scrubbed](#what-gets-scrubbed)). Lets operators alert on provider/gateway outages without enabling payload capture. |
-| `invocation_complete` | A2A invocation finished (auth → dispatch → engine → response). Carries `duration_ms` (wall-clock) plus aggregated `input_tokens_total` / `output_tokens_total` / `llm_call_count` / `model` / `provider`. When [context compression](../core-concepts/context-compression.md) is enabled it also carries `compression_saved_tokens_total` — REALIZED savings: tokens this invocation's LLM calls did not send because compression markers rode in place of originals, compounding on every resend of compressed history (this is the number that matches the provider bill) — plus `compression_event_saved_tokens` (the one-time per-compression deltas, matching the sum of this invocation's `context_compressed` events), `compression_count`, and `expansion_count` when nonzero. Accumulated per invocation by correlation ID so concurrent tasks never cross-contaminate. |
+| `invocation_complete` | A2A invocation finished (auth → dispatch → engine → response). Carries `duration_ms` (wall-clock) plus aggregated `input_tokens_total` / `output_tokens_total` / `total_input_tokens_total` (the bill-from sum incl. Anthropic cache read/creation — see [Token usage](#token-usage-and-execution-duration)) / `llm_call_count` / `model` / `provider`. When prompt caching was active it also carries `cache_read_input_tokens_total` / `cache_creation_input_tokens_total`. When [context compression](../core-concepts/context-compression.md) is enabled it also carries `compression_saved_tokens_total` — REALIZED savings: tokens this invocation's LLM calls did not send because compression markers rode in place of originals, compounding on every resend of compressed history (this is the number that matches the provider bill) — plus `compression_event_saved_tokens` (the one-time per-compression deltas, matching the sum of this invocation's `context_compressed` events), `compression_count`, and `expansion_count` when nonzero. Accumulated per invocation by correlation ID so concurrent tasks never cross-contaminate. |
 | `invocation_cancelled` | A2A invocation cancelled mid-flight via `tasks/cancel` (or internal cancellation like parent ctx deadline). Carries `fields.reason` (one of `workflow_failure` / `cost_limit_exceeded` / `timeout` / `external_signal`), `duration_ms` up to cancellation, and any partial token totals consumed before the signal. See [Cancellation](#cancellation). |
 | `task_admission_denied` | A new inbound `tasks/send` was rejected by the platform admission middleware (issue #201; opt-in via `FORGE_ADMISSION_URL` + `FORGE_PLATFORM_TOKEN`). Carries `fields.reason` (platform-defined: `cost_limit_exceeded`, `billing_overdue`, …), `fields.scope` (`agent` / `workspace` / `org`), `fields.window` (`hourly` / `daily` / `monthly` / `billing_cycle`), `fields.reset_at` (RFC 3339), and `fields.cached` (`true` when served from the 5s per-agent cache). Caller observes HTTP 402 Payment Required with `Retry-After`. Since admission sits between auth and dispatch and emits via `EmitFromContext`, it carries the ingress-minted `correlation_id` (#278) — so admission denials group with the `auth_verify` of the same request in per-invocation views. See [Platform Admission Hook](admission.md). |
 | `guardrail_check` | Guardrail mask / block / warn decision. Carries `fields.gate` (`input` / `context` / `tool_call` / `output` / `stream` — sourced from the library `Result.Gate`), `fields.decision` (`masked` / `warned` / `blocked`), `fields.guardrail` + `fields.category` from the triggering violation, and `fields.violation_count`. `fields.tool` is present on `tool_call` and on `output` events for tool return text. With `FORGE_GUARDRAIL_CAPTURE_EVIDENCE=true` operators also opt into `fields.evidence` carrying the redacted + truncated triggering text. **Platform command denial (#238):** when a call matches a platform-policy `denied_command_patterns` entry, this event fires with `fields.source: "platform"`, `fields.guardrail: "platform_command_deny"`, `fields.pattern`, `fields.layer` (first-denying layer), `fields.policy_source` (file path), and the operator `fields.message` — the operator-authored, org-wide command control from [Platform Policy — Runtime command denial](platform-policy.md#runtime-command-denial). See [Guardrails — Audit Events](guardrails.md#audit-events). |
@@ -132,6 +132,8 @@ See [Tenancy stamping reference](tenancy.md) for the precedence rules and the ag
 
 Every `llm_call` audit event carries the normalized token counts the provider returned in its response metadata, plus the wall-clock time spent in the provider call. Field naming aligns with [OTel GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/) (`gen_ai.usage.input_tokens` / `gen_ai.usage.output_tokens`) so audit consumers can correlate Forge audit events with OTel traces without a translation table.
 
+**Prompt caching and `total_input_tokens`.** When Anthropic prompt caching is active (Forge sets `cache_control` breakpoints on the tools + system prefix), the provider's `input_tokens` is only the **uncached delta** — the bulk of the prompt is billed separately as `cache_read_input_tokens` (a cache hit, ~10% rate) and `cache_creation_input_tokens` (the one-time write that seeds the cache). Reading `input_tokens` alone therefore undercounts real input by orders of magnitude on cache-heavy runs. To make correct usage the default, every `llm_call` also carries **`total_input_tokens` = `input_tokens` + `cache_read_input_tokens` + `cache_creation_input_tokens`** — always present, even when caching is off (where it equals `input_tokens`). Bill from `total_input_tokens`. OpenAI is unaffected: its `prompt_tokens` already folds cached input into the total, so the cache fields stay absent.
+
 ```json
 {
   "ts": "2026-06-04T15:21:09Z",
@@ -142,6 +144,9 @@ Every `llm_call` audit event carries the normalized token counts the provider re
   "provider": "anthropic",
   "input_tokens": 1240,
   "output_tokens": 387,
+  "cache_read_input_tokens": 18004,
+  "cache_creation_input_tokens": 512,
+  "total_input_tokens": 19756,
   "duration_ms": 2150,
   "request_id": "msg_01H8…"
 }
@@ -149,9 +154,12 @@ Every `llm_call` audit event carries the normalized token counts the provider re
 
 | Field | Source | Notes |
 |---|---|---|
-| `input_tokens` | Provider response usage | Maps to `gen_ai.usage.input_tokens` |
+| `input_tokens` | Provider response usage | Maps to `gen_ai.usage.input_tokens`. Under prompt caching this is the **uncached delta only** — bill from `total_input_tokens` instead |
 | `output_tokens` | Provider response usage | Maps to `gen_ai.usage.output_tokens` |
-| `tokens_unavailable` | Audit emitter | `true` when both counts are zero — some self-hosted Ollama setups don't return usage; billing consumers must distinguish "not measured" from "zero tokens used" |
+| `cache_read_input_tokens` | Provider response usage | Anthropic prompt-cache hit — cached-prefix tokens read this call. Omitted when zero / non-Anthropic |
+| `cache_creation_input_tokens` | Provider response usage | Anthropic prompt-cache write — tokens spent seeding the cache. Omitted when zero / non-Anthropic |
+| `total_input_tokens` | Audit emitter | `input_tokens` + `cache_read_input_tokens` + `cache_creation_input_tokens` — the true input consumption. **Always present** (equals `input_tokens` when caching is off). This is the bill-from field |
+| `tokens_unavailable` | Audit emitter | `true` when `total_input_tokens` **and** `output_tokens` are both zero — some self-hosted Ollama setups don't return usage; billing consumers must distinguish "not measured" from "zero tokens used". A cache-read-only turn (`input_tokens` 0 but `cache_read_input_tokens` > 0) is **not** flagged — it consumed real input |
 | `model` | Runtime model config | The model identifier the executor was configured with |
 | `provider` | Runtime model config | One of `anthropic`, `openai`, `ollama`, `custom` |
 | `duration_ms` | Captured at call site | Wall-clock time spent in `client.Chat`, in milliseconds |
@@ -193,6 +201,7 @@ Cancellation latency is bounded by the time for the current LLM call or tool cal
     "state": "canceled",
     "input_tokens_total": 940,
     "output_tokens_total": 215,
+    "total_input_tokens_total": 18744,
     "llm_call_count": 2,
     "model": "claude-sonnet-4-6",
     "provider": "anthropic"
@@ -520,6 +529,8 @@ Every emitted event carries:
 | `workflow_id` / `workflow_execution_id` / `stage_id` / `step_id` / `invocation_caller` | string | optional | Populated when the request carried `X-Workflow-*` headers (FWS-2). `workflow_id` is the workflow definition (stable across runs); `workflow_execution_id` is the per-run instance (FORGE-2 / #185 split). |
 | `model` / `provider` | string | optional | LLM call attribution (FWS-3) |
 | `input_tokens` / `output_tokens` / `tokens_unavailable` | int / bool | optional | LLM call usage (FWS-3) |
+| `total_input_tokens` | int | optional | True input = `input_tokens` + cache read + cache creation; the bill-from field. Present on every LLM call (#431) |
+| `cache_read_input_tokens` / `cache_creation_input_tokens` | int | Anthropic caching only | Prompt-cache read (hit) / creation (write) token counts; omitted when zero (#431) |
 | `duration_ms` | int64 | optional | Wall-clock duration (FWS-3) |
 | `request_id` | string | optional | Provider-specific call identifier (FWS-3) |
 | `trace_id` / `span_id` | string | tracing-on only | W3C-format lowercase hex (32/16 chars) of the OTel span active at emit time. Pivots audit row ↔ trace tree. See [trace cross-link](#trace-cross-link-otel-v1-105). |

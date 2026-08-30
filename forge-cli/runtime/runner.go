@@ -1733,6 +1733,15 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 			if snap.LLMCallCount > 0 {
 				fields["input_tokens_total"] = snap.InputTokens
 				fields["output_tokens_total"] = snap.OutputTokens
+				// True input incl. Anthropic cache read/creation (issue #431);
+				// the cache breakdown is added only when caching was active.
+				fields["total_input_tokens_total"] = snap.TotalInputTokens
+				if snap.CacheReadInputTokens > 0 {
+					fields["cache_read_input_tokens_total"] = snap.CacheReadInputTokens
+				}
+				if snap.CacheCreationInputTokens > 0 {
+					fields["cache_creation_input_tokens_total"] = snap.CacheCreationInputTokens
+				}
 				fields["llm_call_count"] = snap.LLMCallCount
 				if snap.PrimaryModel != "" {
 					fields["model"] = snap.PrimaryModel
@@ -2018,6 +2027,15 @@ func (r *Runner) executeTask(
 		if snap.LLMCallCount > 0 {
 			fields["input_tokens_total"] = snap.InputTokens
 			fields["output_tokens_total"] = snap.OutputTokens
+			// True input incl. Anthropic cache read/creation (issue #431);
+			// the cache breakdown is added only when caching was active.
+			fields["total_input_tokens_total"] = snap.TotalInputTokens
+			if snap.CacheReadInputTokens > 0 {
+				fields["cache_read_input_tokens_total"] = snap.CacheReadInputTokens
+			}
+			if snap.CacheCreationInputTokens > 0 {
+				fields["cache_creation_input_tokens_total"] = snap.CacheCreationInputTokens
+			}
 			fields["llm_call_count"] = snap.LLMCallCount
 			if snap.PrimaryModel != "" {
 				fields["model"] = snap.PrimaryModel
@@ -2307,6 +2325,15 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 			if snap.LLMCallCount > 0 {
 				fields["input_tokens_total"] = snap.InputTokens
 				fields["output_tokens_total"] = snap.OutputTokens
+				// True input incl. Anthropic cache read/creation (issue #431);
+				// the cache breakdown is added only when caching was active.
+				fields["total_input_tokens_total"] = snap.TotalInputTokens
+				if snap.CacheReadInputTokens > 0 {
+					fields["cache_read_input_tokens_total"] = snap.CacheReadInputTokens
+				}
+				if snap.CacheCreationInputTokens > 0 {
+					fields["cache_creation_input_tokens_total"] = snap.CacheCreationInputTokens
+				}
 				fields["llm_call_count"] = snap.LLMCallCount
 				if snap.PrimaryModel != "" {
 					fields["model"] = snap.PrimaryModel
@@ -2707,6 +2734,11 @@ func (r *Runner) registerAuditHooks(hooks *coreruntime.HookRegistry, auditLogger
 			usage.InputTokens = hctx.Response.Usage.InputTokens
 			usage.OutputTokens = hctx.Response.Usage.OutputTokens
 			usage.TotalTokens = hctx.Response.Usage.TotalTokens
+			// Carry Anthropic prompt-cache counts through so the llm_call
+			// event emits cache_read/creation + a summed total_input_tokens
+			// instead of undercounting to the uncached delta (issue #431).
+			usage.CacheReadInputTokens = hctx.Response.Usage.CacheReadInputTokens
+			usage.CacheCreationInputTokens = hctx.Response.Usage.CacheCreationInputTokens
 			requestID = hctx.Response.ID
 		}
 		// FWS-8 payload-capture surfaces. Fields stays nil in the

@@ -339,6 +339,14 @@ type anthropicResponse struct {
 	Usage      struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
+		// Prompt-cache counts. Under the cache_control breakpoints set in
+		// buildAnthropicRequest, input_tokens is only the uncached delta;
+		// the cached prefix is billed here — cache_read on a hit, and
+		// cache_creation on the write that seeds it. Dropping these
+		// undercounts real input by orders of magnitude on cache-heavy
+		// runs (issue #431).
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 	} `json:"usage"`
 }
 
@@ -379,9 +387,16 @@ func (c *AnthropicClient) parseAnthropicResponse(body io.Reader) (*llm.ChatRespo
 		Model:   resp.Model,
 		Message: msg,
 		Usage: llm.UsageInfo{
-			InputTokens:  resp.Usage.InputTokens,
-			OutputTokens: resp.Usage.OutputTokens,
-			TotalTokens:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			InputTokens:              resp.Usage.InputTokens,
+			OutputTokens:             resp.Usage.OutputTokens,
+			CacheReadInputTokens:     resp.Usage.CacheReadInputTokens,
+			CacheCreationInputTokens: resp.Usage.CacheCreationInputTokens,
+			// True total: uncached delta + cache read + cache creation +
+			// output. Under caching the old input+output sum undercounted
+			// (issue #431); this mirrors OpenAI, whose prompt_tokens
+			// already folds cached input into the total.
+			TotalTokens: resp.Usage.InputTokens + resp.Usage.CacheReadInputTokens +
+				resp.Usage.CacheCreationInputTokens + resp.Usage.OutputTokens,
 		},
 		FinishReason: finishReason,
 	}, nil

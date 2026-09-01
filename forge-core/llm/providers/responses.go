@@ -372,6 +372,11 @@ func (c *ResponsesClient) readStream(r io.Reader, ch chan<- llm.StreamDelta) {
 	pendingFCs := make(map[int]*pendingFC)
 
 	scanner := bufio.NewScanner(r)
+	// A single SSE `data:` frame can carry the full terminal response —
+	// `response.completed` embeds the entire output[] + usage — which
+	// overruns bufio.Scanner's default 64KB line cap on a large answer and
+	// aborts the stream mid-parse. Give it generous headroom.
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	var currentEvent string
 
 	for scanner.Scan() {
@@ -387,7 +392,24 @@ func (c *ResponsesClient) readStream(r io.Reader, ch chan<- llm.StreamDelta) {
 			continue
 		}
 
-		switch currentEvent {
+		// Determine the event type. The OpenAI Responses API sends BOTH an
+		// SSE `event:` line and a `type` field inside the data payload, but
+		// `event:` is optional per the SSE spec and some gateways (e.g. the
+		// Bedrock openai-sigv4 shim fronting this provider) omit it, carrying
+		// the type only in the JSON. Dispatching on the `event:` line alone
+		// drops EVERY frame from such a server — empty content, zero usage,
+		// empty finish reason. Prefer the payload `type` (authoritative and
+		// present in both dialects); fall back to the `event:` line when the
+		// payload carries no type.
+		eventType := currentEvent
+		var typed struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal([]byte(data), &typed) == nil && typed.Type != "" {
+			eventType = typed.Type
+		}
+
+		switch eventType {
 		case "response.output_text.delta":
 			var ev streamTextDelta
 			if err := json.Unmarshal([]byte(data), &ev); err != nil {

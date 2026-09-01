@@ -212,7 +212,10 @@ threaded into context, stamped on every audit event:
 - `X-Invocation-Caller` — upstream caller identifier
 
 **Response headers** (FWS-3): `X-Forge-Tokens-In`, `X-Forge-Tokens-Out`,
-`X-Forge-Duration-Ms`, `X-Forge-Model`, `X-Forge-Provider`.
+`X-Forge-Duration-Ms`, `X-Forge-Model`, `X-Forge-Provider`. `X-Forge-Tokens-In`
+bills from the TRUE input — summed `total_input_tokens` incl. Anthropic cache
+read/creation (#431), guarded to never fall below the uncached delta — so a
+cache-heavy stage can't slip past an orchestrator cost ceiling-check.
 
 **Agent Card** carries `name`, `description`, `url`, `version`,
 `protocolVersion: "0.3.0"`, `defaultInputModes` /
@@ -279,7 +282,12 @@ Credentials read from `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSI
 Token usage and request IDs are captured per provider at the call site
 and folded into the `llm_call` audit event (FWS-3) and into the
 per-invocation `LLMUsageAccumulator` so the response headers + the
-final `invocation_complete` event carry totals.
+final `invocation_complete` event carry totals. Under Anthropic prompt
+caching the provider's `input_tokens` is only the uncached delta, so the
+parser also captures `cache_read_input_tokens` / `cache_creation_input_tokens`
+and every layer carries a summed `total_input_tokens` (= delta + cache
+read + creation) as the bill-from figure (#431). OpenAI is unaffected —
+its `prompt_tokens` already folds in cached input.
 
 **Read**: `docs/core-concepts/runtime-engine.md`, `forge-core/llm/`.
 
@@ -1163,7 +1171,7 @@ when OTel tracing is enabled (OTel v1 / Phase 4 / #105). Both use
 | `AuditToolExec` | `tool_exec` | Tool execution `phase: start` / `phase: end`; carries `tool`, `args_size`, `result_size`, `duration_ms` |
 | `AuditEgressAllowed` | `egress_allowed` | Outbound request allowed (with domain, mode, source) |
 | `AuditEgressBlocked` | `egress_blocked` | Outbound request blocked |
-| `AuditLLMCall` | `llm_call` | LLM provider call complete; `model`, `provider`, `input_tokens`, `output_tokens`, `duration_ms`, `request_id` |
+| `AuditLLMCall` | `llm_call` | LLM provider call complete; `model`, `provider`, `input_tokens`, `output_tokens`, `total_input_tokens` (always; = input + cache read + creation — bill from this), `cache_read_input_tokens` / `cache_creation_input_tokens` (Anthropic caching only, omitempty), `duration_ms`, `request_id`. Under caching `input_tokens` is only the uncached delta (#431); `tokens_unavailable` keys off total input so a cache-read-only turn isn't misflagged as free |
 | `AuditLLMCallCancelled` | `llm_call_cancelled` | Streaming call aborted mid-flight; partial usage counts |
 | `AuditGuardrail` | `guardrail_check` | Mask / block / warn decision. Fields: `gate` (`input` / `context` / `tool_call` / `output` / `stream` — from library `Result.Gate`), `decision` (`masked` / `warned` / `blocked`), `guardrail`, `category`, `violation_count`, optional `tool`. Opt-in `evidence` (redacted + truncated triggering text) via `FORGE_GUARDRAIL_CAPTURE_EVIDENCE=true`. |
 | `AuditScheduleFire` | `schedule_fire` | Cron task triggered |
@@ -1183,7 +1191,7 @@ when OTel tracing is enabled (OTel v1 / Phase 4 / #105). Both use
 | `context_compressed` | `context_compressed` | Context compression shrank content; `seam` (`tool_output` / `request`), `tool`, `tokens_before` / `tokens_after` / `saved_tokens` + running totals (tokenizer estimates) |
 | `context_expanded` | `context_expanded` | Model retrieved offloaded content via `context_expand`; `hash`, `hit`, `bytes`, producing `tool`, mined `candidates` (≤5, for fleet-wide learning aggregation) + running totals |
 | `context_pattern_suggested` | `context_pattern_suggested` | Learning loop surfaced a keep_patterns candidate (3+ expansions); `pattern`, `expansions`, `tools` |
-| `AuditInvocationComplete` | `invocation_complete` | A2A invocation closed; `duration_ms`, `input_tokens_total`, `output_tokens_total`, `llm_call_count`, `model`, `provider` (FWS-3); with compression enabled also `compression_saved_tokens_total` (realized wire savings, compounds per history resend), `compression_event_saved_tokens`, `compression_count`, `expansion_count` |
+| `AuditInvocationComplete` | `invocation_complete` | A2A invocation closed; `duration_ms`, `input_tokens_total`, `output_tokens_total`, `total_input_tokens_total` (bill-from sum incl. Anthropic cache read/creation, #431), `llm_call_count`, `model`, `provider` (FWS-3); with caching also `cache_read_input_tokens_total` / `cache_creation_input_tokens_total`; with compression enabled also `compression_saved_tokens_total` (realized wire savings, compounds per history resend), `compression_event_saved_tokens`, `compression_count`, `expansion_count` |
 | `AuditInvocationCancelled` | `invocation_cancelled` | A2A invocation cancelled via `tasks/cancel`; classified `reason` + partial token totals (FWS-4) |
 | `AuditTaskAdmissionDenied` | `task_admission_denied` | Inbound `tasks/send` denied by the platform admission middleware (#201; opt-in via `FORGE_ADMISSION_URL` + `FORGE_PLATFORM_TOKEN`); `reason`, `scope`, `window`, `reset_at`, `cached`. Caller sees HTTP 402 Payment Required. |
 | `AuditPolicyLoaded` | `policy_loaded` | One per non-empty policy layer at startup; `layer`, `source`, per-list size counters (FWS-5/6) |

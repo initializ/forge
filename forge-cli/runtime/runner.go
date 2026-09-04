@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/initializ/forge/forge-cli/server"
@@ -185,6 +186,7 @@ type Runner struct {
 	standaloneSubjectStore mcp.SubjectTokenStore             // #332 shared per-subject token cache: standalone resolver reads, callback writes; nil unless a standalone type:user server exists
 	taskStore              *a2a.TaskStore                    // shared task store, populated once srv is built; read by defer hook when it fires
 	platformCommandGuard   *coreruntime.PlatformCommandGuard // #238 (ASI02) operator-authored command deny, applied to every tool call; empty when no layer declares denied_command_patterns
+	killed                 atomic.Bool                       // kill switch: set by the admin/kill handler; when true, tasks/send + tasks/sendSubscribe refuse new work (in-flight work is cancelled via cancelRegistry.CancelAll, then the platform scales the workload to zero)
 }
 
 // NewRunner creates a Runner from the given config.
@@ -1635,6 +1637,9 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 	// JSON-RPC path goes through the same audit + accumulator wiring as
 	// REST POST /tasks/send. See issue #87 / FWS-3.
 	srv.RegisterHandler("tasks/send", func(ctx context.Context, id any, rawParams json.RawMessage) *a2a.JSONRPCResponse {
+		if r.killed.Load() {
+			return a2a.NewErrorResponse(id, a2a.ErrCodeInternal, "agent disabled by kill switch: not accepting new tasks")
+		}
 		var params a2a.SendTaskParams
 		if err := json.Unmarshal(rawParams, &params); err != nil {
 			return a2a.NewErrorResponse(id, a2a.ErrCodeInvalidParams, "invalid params: "+err.Error())
@@ -1680,6 +1685,10 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 
 	// tasks/sendSubscribe — SSE streaming
 	srv.RegisterSSEHandler("tasks/sendSubscribe", func(ctx context.Context, id any, rawParams json.RawMessage, w http.ResponseWriter, flusher http.Flusher) {
+		if r.killed.Load() {
+			server.WriteSSEEvent(w, flusher, "error", a2a.NewErrorResponse(id, a2a.ErrCodeInternal, "agent disabled by kill switch: not accepting new tasks")) //nolint:errcheck
+			return
+		}
 		var params a2a.SendTaskParams
 		if err := json.Unmarshal(rawParams, &params); err != nil {
 			server.WriteSSEEvent(w, flusher, "error", a2a.NewErrorResponse(id, a2a.ErrCodeInvalidParams, err.Error())) //nolint:errcheck
@@ -1942,6 +1951,43 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 		// and orchestrator state. The response echoes whatever the
 		// store has so the orchestrator reads the actual outcome.
 		return a2a.NewResponse(id, task)
+	})
+
+	// admin/kill — the agent kill switch. Flips the accepting gate so
+	// tasks/send + tasks/sendSubscribe refuse new work, then cancels
+	// EVERY in-flight invocation via cancelRegistry.CancelAll. Each
+	// cancelled invocation emits its own invocation_cancelled audit
+	// event with reason=kill_switch. The platform (agent-builder) calls
+	// this over the in-cluster A2A channel, then scales the workload to
+	// zero regardless of the outcome here.
+	//
+	// Auth: the server-wide AuthMiddleware already gates every JSON-RPC
+	// method, so only an authenticated caller reaches this handler; the
+	// primary access control is agent-builder's admin-RBAC on the
+	// /kill endpoint. TODO(kill-switch hardening): additionally restrict
+	// to the platform/agent-runtime identity via the verified role claim.
+	// Idempotent: a second kill just re-signals an empty registry (0).
+	srv.RegisterHandler("admin/kill", func(ctx context.Context, id any, rawParams json.RawMessage) *a2a.JSONRPCResponse {
+		var params struct {
+			Reason string `json:"reason"`
+		}
+		_ = json.Unmarshal(rawParams, &params) // reason optional; body may be empty
+		reason := coreruntime.CancellationReason(params.Reason)
+		if reason == "" {
+			reason = coreruntime.CancelReasonKillSwitch
+		}
+		r.killed.Store(true)
+		cancelled := r.cancelRegistry.CancelAll(reason)
+		caller := ""
+		if idn := auth.IdentityFromContext(ctx); idn != nil {
+			caller = idn.Email
+		}
+		r.logger.Info("admin/kill", map[string]any{
+			"cancelled": cancelled,
+			"reason":    string(reason),
+			"caller":    caller,
+		})
+		return a2a.NewResponse(id, map[string]any{"killed": true, "cancelled": cancelled})
 	})
 }
 

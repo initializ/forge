@@ -1638,7 +1638,7 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 	// REST POST /tasks/send. See issue #87 / FWS-3.
 	srv.RegisterHandler("tasks/send", func(ctx context.Context, id any, rawParams json.RawMessage) *a2a.JSONRPCResponse {
 		if r.killed.Load() {
-			return a2a.NewErrorResponse(id, a2a.ErrCodeInternal, "agent disabled by kill switch: not accepting new tasks")
+			return a2a.NewErrorResponse(id, a2a.ErrCodeUnavailable, "agent disabled by kill switch: not accepting new tasks")
 		}
 		var params a2a.SendTaskParams
 		if err := json.Unmarshal(rawParams, &params); err != nil {
@@ -1686,7 +1686,7 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 	// tasks/sendSubscribe — SSE streaming
 	srv.RegisterSSEHandler("tasks/sendSubscribe", func(ctx context.Context, id any, rawParams json.RawMessage, w http.ResponseWriter, flusher http.Flusher) {
 		if r.killed.Load() {
-			server.WriteSSEEvent(w, flusher, "error", a2a.NewErrorResponse(id, a2a.ErrCodeInternal, "agent disabled by kill switch: not accepting new tasks")) //nolint:errcheck
+			server.WriteSSEEvent(w, flusher, "error", a2a.NewErrorResponse(id, a2a.ErrCodeUnavailable, "agent disabled by kill switch: not accepting new tasks")) //nolint:errcheck
 			return
 		}
 		var params a2a.SendTaskParams
@@ -1982,6 +1982,18 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 		if idn := auth.IdentityFromContext(ctx); idn != nil {
 			caller = idn.Email
 		}
+		// Record the kill in the tamper-evident audit chain UNCONDITIONALLY —
+		// even when nothing was in flight (cancelled==0), so a destructive
+		// admin action never lacks a forensic record + actor. The cancelled
+		// invocations additionally each emit invocation_cancelled(kill_switch).
+		auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
+			Event: coreruntime.AuditAdminKill,
+			Fields: map[string]any{
+				"caller":    caller,
+				"reason":    string(reason),
+				"cancelled": cancelled,
+			},
+		})
 		r.logger.Info("admin/kill", map[string]any{
 			"cancelled": cancelled,
 			"reason":    string(reason),
@@ -2249,6 +2261,10 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 
 	// POST /tasks/send — synchronous REST endpoint
 	srv.RegisterHTTPHandler("POST /tasks/send", func(w http.ResponseWriter, req *http.Request) {
+		if r.killed.Load() {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "agent disabled by kill switch: not accepting new tasks"})
+			return
+		}
 		var body restTaskRequest
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body: " + err.Error()})
@@ -2302,6 +2318,10 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 
 	// POST /tasks/sendSubscribe — SSE streaming REST endpoint
 	srv.RegisterHTTPHandler("POST /tasks/sendSubscribe", func(w http.ResponseWriter, req *http.Request) {
+		if r.killed.Load() {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "agent disabled by kill switch: not accepting new tasks"})
+			return
+		}
 		flusher, ok := w.(http.Flusher)
 		if !ok {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming not supported"})

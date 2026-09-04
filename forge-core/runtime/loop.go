@@ -369,6 +369,8 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 		mem.Append(newMsg)
 	}
 
+	e.persistSession(task.ID, mem)
+
 	// Build tool definitions
 	var toolDefs []llm.ToolDefinition
 	if e.tools != nil {
@@ -434,6 +436,7 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 		// runner, which maps it to TaskStateCanceled +
 		// invocation_cancelled audit. See issue #88 / FWS-4.
 		if err := ctx.Err(); err != nil {
+			e.persistSession(task.ID, mem)
 			return nil, err
 		}
 
@@ -511,6 +514,7 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 			// route to invocation_cancelled instead of state=failed.
 			// See issue #88 / FWS-4.
 			if cerr := ctx.Err(); cerr != nil {
+				e.persistSession(task.ID, mem)
 				return nil, cerr
 			}
 			_ = e.hooks.Fire(ctx, OnError, &HookContext{
@@ -768,6 +772,7 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 			// orchestrators that cancel mid-iteration get fast exit
 			// without burning more LLM/tool spend. See issue #88 / FWS-4.
 			if err := ctx.Err(); err != nil {
+				e.persistSession(task.ID, mem)
 				return nil, err
 			}
 			toolsUsed = append(toolsUsed, tc.Function.Name)

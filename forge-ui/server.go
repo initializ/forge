@@ -80,6 +80,7 @@ func (s *UIServer) Start(ctx context.Context) error {
 	mux.HandleFunc("POST /api/agents/{id}/chat", s.handleChat)
 	mux.HandleFunc("GET /api/agents/{id}/sessions", s.handleListSessions)
 	mux.HandleFunc("GET /api/agents/{id}/sessions/{sid}", s.handleGetSession)
+	mux.HandleFunc("GET /api/agents/{id}/sessions/{sid}/status", s.handleSessionStatus)
 
 	// Phase 3: Create & Configure routes
 	mux.HandleFunc("GET /api/wizard/meta", s.handleGetWizardMeta)

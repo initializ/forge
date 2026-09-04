@@ -528,10 +528,25 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 		// then close the span. Doing this BEFORE the AfterLLMCall hook
 		// keeps the hook's redaction / audit work outside the LLM
 		// span's duration — the span is the provider call alone.
-		llmSpan.SetAttributes(
+		usageAttrs := []attribute.KeyValue{
 			attribute.Int(observability.AttrGenAIUsageInputTokens, resp.Usage.InputTokens),
 			attribute.Int(observability.AttrGenAIUsageOutputTokens, resp.Usage.OutputTokens),
-		)
+		}
+		// Prompt-cache stats (#441): stamp only when present so non-caching /
+		// non-Anthropic calls keep their span shape. Mirrors the llm_call
+		// audit event (#431/#432) so a span and its audit row agree on cache
+		// tokens. total_input_tokens is emitted whenever caching contributed,
+		// matching the audit event's always-present bill-from field.
+		if resp.Usage.CacheReadInputTokens > 0 {
+			usageAttrs = append(usageAttrs, attribute.Int(observability.AttrGenAIUsageCacheReadInputTokens, resp.Usage.CacheReadInputTokens))
+		}
+		if resp.Usage.CacheCreationInputTokens > 0 {
+			usageAttrs = append(usageAttrs, attribute.Int(observability.AttrGenAIUsageCacheCreationInputTokens, resp.Usage.CacheCreationInputTokens))
+		}
+		if resp.Usage.CacheReadInputTokens > 0 || resp.Usage.CacheCreationInputTokens > 0 {
+			usageAttrs = append(usageAttrs, attribute.Int(observability.AttrGenAIUsageTotalInputTokens, resp.Usage.TotalInputTokens()))
+		}
+		llmSpan.SetAttributes(usageAttrs...)
 		if resp.ID != "" {
 			llmSpan.SetAttributes(attribute.String(observability.AttrGenAIResponseID, resp.ID))
 		}

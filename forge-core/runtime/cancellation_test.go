@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -36,6 +37,56 @@ func TestCancellationRegistry_RegisterCancelReleaseLifecycle(t *testing.T) {
 	release()
 	if reg.Len() != 0 {
 		t.Errorf("after release: Len()=%d, want 0", reg.Len())
+	}
+}
+
+func TestCancellationRegistry_CancelAll_SignalsEveryInflightWithReason(t *testing.T) {
+	// The kill-switch primitive: CancelAll must cancel every registered
+	// invocation, stamp the given reason on each cause, and report the count.
+	reg := NewCancellationRegistry()
+	const n = 5
+	ctxs := make([]context.Context, n)
+	releases := make([]func(), n)
+	for i := 0; i < n; i++ {
+		ctx, cancel := context.WithCancelCause(context.Background())
+		ctxs[i] = ctx
+		releases[i] = reg.Register(fmt.Sprintf("task-%d", i), cancel)
+	}
+	if reg.Len() != n {
+		t.Fatalf("Len()=%d, want %d", reg.Len(), n)
+	}
+
+	if got := reg.CancelAll(CancelReasonKillSwitch); got != n {
+		t.Errorf("CancelAll returned %d, want %d", got, n)
+	}
+	for i, ctx := range ctxs {
+		if ctx.Err() == nil {
+			t.Errorf("ctx[%d] should be cancelled after CancelAll", i)
+		}
+		if r := CancellationReasonFromCause(ctx); r != CancelReasonKillSwitch {
+			t.Errorf("ctx[%d] reason=%q, want kill_switch", i, r)
+		}
+	}
+	// CancelAll does not delete entries; each invocation's own release() does.
+	for _, release := range releases {
+		release()
+	}
+	if reg.Len() != 0 {
+		t.Errorf("after releases: Len()=%d, want 0", reg.Len())
+	}
+}
+
+func TestCancellationRegistry_CancelAll_EmptyIsZero(t *testing.T) {
+	// A second kill (or a kill with no in-flight work) is a no-op returning 0.
+	reg := NewCancellationRegistry()
+	if got := reg.CancelAll(CancelReasonKillSwitch); got != 0 {
+		t.Errorf("CancelAll on empty registry returned %d, want 0", got)
+	}
+}
+
+func TestCancellationReason_KillSwitchIsValid(t *testing.T) {
+	if !CancelReasonKillSwitch.IsValid() {
+		t.Errorf("CancelReasonKillSwitch should be a documented (valid) reason")
 	}
 }
 

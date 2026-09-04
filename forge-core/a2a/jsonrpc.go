@@ -9,6 +9,13 @@ const (
 	ErrCodeMethodNotFound = -32601
 	ErrCodeInvalidParams  = -32602
 	ErrCodeInternal       = -32603
+
+	// ErrCodeUnavailable is a server-defined code (JSON-RPC reserves
+	// -32000..-32099 for implementation-defined server errors). Signals a
+	// deliberate refusal to serve — e.g. the agent kill switch is tripped
+	// and the runtime is not accepting new tasks — as distinct from an
+	// unexpected internal fault (ErrCodeInternal).
+	ErrCodeUnavailable = -32000
 )
 
 // JSONRPCRequest is an incoming JSON-RPC 2.0 request.

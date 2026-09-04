@@ -43,7 +43,7 @@ func TestRunner_KillSwitch_RefusesNewWorkOnEveryIngress(t *testing.T) {
 	token, _ := auth.LoadToken(dir)
 
 	// Trip the kill switch. Idle agent → cancelled=0, but the call must still
-	// succeed and flip the gate (and, per Finding 2, emit admin_kill regardless).
+	// succeed and flip the gate (and, per Finding 2, emit admin_killed regardless).
 	killBody := []byte(`{"jsonrpc":"2.0","id":1,"method":"admin/kill","params":{"reason":"test"}}`)
 	resp, err := authPost(baseURL+"/", token, killBody)
 	if err != nil {

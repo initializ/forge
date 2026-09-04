@@ -205,7 +205,7 @@ const (
 	// calls completed before the cancel signal. See issue #88 / FWS-4.
 	AuditInvocationCancelled = "invocation_cancelled"
 
-	// AuditAdminKill is emitted when the agent kill switch is tripped via
+	// AuditAdminKilled is emitted when the agent kill switch is tripped via
 	// the admin/kill A2A verb. Recorded UNCONDITIONALLY — even when no
 	// invocation was in flight (Fields["cancelled"] == 0) — so a
 	// destructive admin action always has a forensic record in the
@@ -213,7 +213,7 @@ const (
 	// email, "" if unauthenticated context), reason, cancelled (count of
 	// in-flight invocations signalled). Each of those invocations also
 	// emits its own invocation_cancelled with reason=kill_switch.
-	AuditAdminKill = "admin_kill"
+	AuditAdminKilled = "admin_killed"
 
 	// AuditTaskAdmissionDenied is emitted when the admission middleware
 	// rejects an inbound A2A invocation based on a platform-side quota

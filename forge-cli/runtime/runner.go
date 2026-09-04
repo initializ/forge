@@ -1987,7 +1987,7 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 		// admin action never lacks a forensic record + actor. The cancelled
 		// invocations additionally each emit invocation_cancelled(kill_switch).
 		auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
-			Event: coreruntime.AuditAdminKill,
+			Event: coreruntime.AuditAdminKilled,
 			Fields: map[string]any{
 				"caller":    caller,
 				"reason":    string(reason),

@@ -220,7 +220,9 @@ Forge mixes OTel GenAI semconv with Forge-specific `forge.*` namespaced attribut
 | `gen_ai.request.model` | `agent.execute`, `llm.completion` | requested model |
 | `gen_ai.response.model` | `llm.completion` | vendor-reported model (falls back to request model) |
 | `gen_ai.response.id` | `llm.completion` | provider completion id |
-| `gen_ai.usage.input_tokens` / `.output_tokens` | `llm.completion` | provider usage block |
+| `gen_ai.usage.input_tokens` / `.output_tokens` | `llm.completion` | provider usage block. Under Anthropic prompt caching `input_tokens` is only the uncached delta |
+| `gen_ai.usage.cache_read_input_tokens` / `.cache_creation_input_tokens` | `llm.completion` | Anthropic prompt-cache hit / write tokens. Stamped only when non-zero; absent for non-caching / non-Anthropic calls (#441) |
+| `gen_ai.usage.total_input_tokens` | `llm.completion` | `input + cache_read + cache_creation` — the bill-from sum, matching the `llm_call` audit event's `total_input_tokens`. Present only when caching contributed (#441) |
 | `gen_ai.response.finish_reasons` | `llm.completion` | provider stop reason |
 | `gen_ai.tool.name` | `tool.<tool_name>` | tool function name |
 | `gen_ai.tool.call.id` | `tool.<tool_name>` | LLM-assigned tool-call id |
@@ -240,7 +242,7 @@ Prompts, completions, tool args, and tool results are **off by default** — Pha
 |---|---|---|
 | (always) | `agent.execute` | `gen_ai.provider.name`, `gen_ai.agent.id`, `gen_ai.agent.name`, `gen_ai.agent.version`, `gen_ai.conversation.id`, `gen_ai.request.model` |
 | `capture_content: true` | `agent.execute` | `gen_ai.tool.definitions` (JSON array of the tool catalog available to the agent — potentially large, hence opt-in) |
-| (always) | `llm.completion` | `gen_ai.operation.name` (`chat`), `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.response.id`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.response.finish_reasons` |
+| (always) | `llm.completion` | `gen_ai.operation.name` (`chat`), `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.response.id`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.response.finish_reasons` (+ `gen_ai.usage.cache_read_input_tokens` / `.cache_creation_input_tokens` / `.total_input_tokens` when Anthropic prompt caching contributed, #441) |
 | `capture_content: true` | `llm.completion` | `gen_ai.input.messages` (JSON array of role+content pairs sent to the model), `gen_ai.output.messages` (JSON single-element array of role+content for the model's response) — current OTel GenAI semconv, supersedes the deprecated flat-string `gen_ai.prompt` / `gen_ai.completion` |
 | (always) | `tool.<name>` | `gen_ai.operation.name` (`execute_tool`), `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.tool.type`, `mcp.method.name` (MCP only), `error.type` (on failure) |
 | `capture_content: true` | `tool.<name>` | `gen_ai.tool.call.arguments` (raw arguments JSON), `gen_ai.tool.call.result` (raw output), `gen_ai.tool.description` (from the tool definition) |

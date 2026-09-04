@@ -53,6 +53,21 @@ const (
 	AttrGenAIUsageInputTokens  = "gen_ai.usage.input_tokens"
 	AttrGenAIUsageOutputTokens = "gen_ai.usage.output_tokens"
 
+	// Prompt-cache usage (Anthropic; #441). Under caching input_tokens is
+	// only the uncached delta — these carry the cached prefix so traces
+	// show cache stats and stay consistent with the llm_call audit event
+	// (#431/#432). OTel GenAI semconv does not standardize cache-token
+	// attributes yet, so these follow forge's existing gen_ai.usage.*
+	// prefix. Stamped only when non-zero; absent for non-caching /
+	// non-Anthropic calls.
+	//   - CacheRead     : cached-prefix tokens read this call (a cache hit)
+	//   - CacheCreation : tokens spent seeding the cache (a cache write)
+	//   - TotalInput    : input + cache_read + cache_creation — the bill-from
+	//                     sum, matching the audit event's total_input_tokens
+	AttrGenAIUsageCacheReadInputTokens     = "gen_ai.usage.cache_read_input_tokens"
+	AttrGenAIUsageCacheCreationInputTokens = "gen_ai.usage.cache_creation_input_tokens"
+	AttrGenAIUsageTotalInputTokens         = "gen_ai.usage.total_input_tokens"
+
 	// AttrGenAIResponseFinishReasons mirrors the Anthropic/OpenAI
 	// "stop_reason" / "finish_reason" — "stop", "tool_use",
 	// "max_tokens", "end_turn", etc.

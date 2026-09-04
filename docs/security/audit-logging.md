@@ -440,7 +440,7 @@ streams:
 
 | Pivot direction | How |
 |---|---|
-| **audit row → trace** | Paste the row's `trace_id` into Tempo / Jaeger / Honeycomb to land on the matching trace. Paste the `span_id` to jump directly to the span (an `llm_call` row's `span_id` resolves to the `llm.completion` span carrying matching `gen_ai.usage.*` tokens). |
+| **audit row → trace** | Paste the row's `trace_id` into Tempo / Jaeger / Honeycomb to land on the matching trace. Paste the `span_id` to jump directly to the span (an `llm_call` row's `span_id` resolves to the `llm.completion` span carrying matching `gen_ai.usage.*` tokens — input, output, and, under Anthropic prompt caching, `cache_read_input_tokens` / `cache_creation_input_tokens` / `total_input_tokens` too, #441). |
 | **trace → audit row** | Copy `trace_id` from a trace browser; grep the audit log for the corresponding row to get the FWS-8 payload metadata the trace does not carry. |
 
 Format: lowercase hex matching W3C `traceparent` semantics — 32-char

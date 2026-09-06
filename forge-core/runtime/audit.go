@@ -453,6 +453,32 @@ type AuditEvent struct {
 	EntityID   string `json:"entity_id,omitempty"`
 	EntityType string `json:"entity_type,omitempty"`
 
+	// Agentic-identity promoted columns (agent-identity L1–L4, #444 item 2;
+	// schema promoted in security-next#41). Populated as their source flows
+	// land — all use omitempty so events without a value keep the pre-#444
+	// JSON shape:
+	//   - ActorAgentID / AttestationLevel / DelegationMode are stamped now
+	//     (process-static; see AuditLogger.WithAgentIdentity). DelegationMode
+	//     is agent_own today — the agent acts as its own principal.
+	//   - PrincipalSub / PrincipalIss accompany a delegated DelegationMode and
+	//     are populated by items 3 (chain) / L2 (connected-account, mandate).
+	//     They MUST stay empty under agent_own (a principal there is a phantom).
+	//   - ActorWorkloadID needs the SA-ref source (not parsed from the token).
+	//   - MandateID / GrantRef come from the L2 delegation flows.
+	//   - ChainID / ChainHop come from item 3's ChainContext (X-Agent-Chain-Token).
+	PrincipalSub     string `json:"principal_sub,omitempty"`
+	PrincipalIss     string `json:"principal_iss,omitempty"`
+	DelegationMode   string `json:"delegation_mode,omitempty"`
+	ActorAgentID     string `json:"actor_agent_id,omitempty"`
+	ActorWorkloadID  string `json:"actor_workload_id,omitempty"`
+	AttestationLevel string `json:"attestation_level,omitempty"`
+	MandateID        string `json:"mandate_id,omitempty"`
+	GrantRef         string `json:"grant_ref,omitempty"`
+	ChainID          string `json:"chain_id,omitempty"`
+	// ChainHop is a pointer: hop 0 (chain origin) is meaningful, so it must be
+	// distinguishable from "no chain" (nil → omitted).
+	ChainHop *int `json:"chain_hop,omitempty"`
+
 	// LLM call attribution (llm_call, llm_call_cancelled, invocation_complete).
 	Model    string `json:"model,omitempty"`
 	Provider string `json:"provider,omitempty"`
@@ -566,6 +592,16 @@ type AuditLogger struct {
 	// See issue #164.
 	tenantEntityID   string
 	tenantEntityType string
+
+	// Static agentic-identity stamp, installed once at startup via
+	// WithAgentIdentity() (#444 item 2). These are process-static today:
+	// actor_agent_id is the agent's own id, attestation_level is derived
+	// from WORKLOAD_IDENTITY_MODE, and delegation_mode is agent_own (the
+	// agent acts as its own principal). Per-request identity (delegated
+	// principals, chain_id/chain_hop) is layered on later by items 3 / L2.
+	agentActorID          string
+	agentAttestationLevel string
+	agentDelegationMode   string
 }
 
 // WithTenancy installs the deployment-time tenancy stamp on the
@@ -633,6 +669,35 @@ func (a *AuditLogger) entityStamp() (entityID, entityType string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.tenantEntityID, a.tenantEntityType
+}
+
+// WithAgentIdentity installs the deployment-time agentic-identity stamp
+// (#444 item 2): the agent's own id (actor_agent_id), the attestation level
+// derived from WORKLOAD_IDENTITY_MODE (attested:placement in k8s_sa mode, else
+// ""), and the delegation mode (agent_own today — the agent acts as its own
+// principal). Empty arguments disable the corresponding field. Called once at
+// runner startup alongside WithEntity. Returns the receiver for fluent
+// construction.
+//
+// Precedence at emit time mirrors WithEntity: an explicit value on the event
+// wins; otherwise this static stamp fills in. Per-request identity fields
+// (principal_sub, chain_id/chain_hop, delegated modes) are NOT set here — they
+// arrive via later items and are set on the event directly.
+func (a *AuditLogger) WithAgentIdentity(actorAgentID, attestationLevel, delegationMode string) *AuditLogger {
+	a.mu.Lock()
+	a.agentActorID = actorAgentID
+	a.agentAttestationLevel = attestationLevel
+	a.agentDelegationMode = delegationMode
+	a.mu.Unlock()
+	return a
+}
+
+// agentIdentityStamp returns the static agentic-identity stamp under lock.
+// Internal — emit paths use this.
+func (a *AuditLogger) agentIdentityStamp() (actorAgentID, attestationLevel, delegationMode string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.agentActorID, a.agentAttestationLevel, a.agentDelegationMode
 }
 
 // NewAuditLogger creates a single-sink AuditLogger wrapping the given
@@ -762,6 +827,22 @@ func (a *AuditLogger) Emit(event AuditEvent) {
 		}
 		if event.EntityType == "" {
 			event.EntityType = staticEntityType
+		}
+	}
+	// Deployment-time agentic-identity stamp (#444 item 2). Process-static,
+	// so — like the entity stamp — it has no ctx layer. Explicit values on
+	// the event (e.g. a per-request delegated principal set by a later item)
+	// take precedence.
+	if event.ActorAgentID == "" || event.AttestationLevel == "" || event.DelegationMode == "" {
+		staticActorID, staticAttestation, staticDelegation := a.agentIdentityStamp()
+		if event.ActorAgentID == "" {
+			event.ActorAgentID = staticActorID
+		}
+		if event.AttestationLevel == "" {
+			event.AttestationLevel = staticAttestation
+		}
+		if event.DelegationMode == "" {
+			event.DelegationMode = staticDelegation
 		}
 	}
 	// Governance R5 (#212, chain) + R6 (#213, signing) integration.

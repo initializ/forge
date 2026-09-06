@@ -32,6 +32,8 @@ order: 3
 | `FORGE_AGENT_ID` | Agent identifier for audit entity identity (falls back to `agent_id` in YAML) |
 | `FORGE_ORG_ID` | Organization identifier for tenancy stamping / audit |
 | `FORGE_PASSPHRASE` | Passphrase for encrypted secrets file |
+| `WORKLOAD_IDENTITY_MODE` | Set to `k8s_sa` to present the per-agent workload token (`X-Workload-Token`) on platform callouts (agent-identity L1). Unset/other → not presented. See [Tenancy → platform callouts](../security/tenancy.md#outbound-propagation-platform-callouts) |
+| `INITIALIZ_WORKLOAD_TOKEN_PATH` | Path to the projected ServiceAccount token file read (fresh, uncached) when `WORKLOAD_IDENTITY_MODE=k8s_sa`. Default `/var/run/secrets/initializ.ai/workload/token` |
 
 ## Audit
 

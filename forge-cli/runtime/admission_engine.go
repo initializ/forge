@@ -200,6 +200,9 @@ func (c *PlatformAdmissionChecker) fetchDecision(ctx context.Context) coreruntim
 	if c.workspaceID != "" {
 		req.Header.Set("Workspace-Id", c.workspaceID)
 	}
+	// Present the per-agent workload token (agent-identity L1, #444); read
+	// fresh per request, omitted when workload identity is not active.
+	coreruntime.StampWorkloadToken(req.Header)
 
 	resp, err := c.client.Do(req)
 	if err != nil {

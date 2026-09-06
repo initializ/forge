@@ -261,6 +261,9 @@ func (r *RemoteSessionStore) setHeaders(req *http.Request) {
 	if r.workspaceID != "" {
 		req.Header.Set("Workspace-Id", r.workspaceID)
 	}
+	// Present the per-agent workload token (agent-identity L1, #444); read
+	// fresh per request, omitted when workload identity is not active.
+	StampWorkloadToken(req.Header)
 }
 
 func (r *RemoteSessionStore) remember(taskID, version string, data *SessionData) {

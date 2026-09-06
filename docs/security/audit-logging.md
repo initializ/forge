@@ -527,6 +527,8 @@ Every emitted event carries:
 | `correlation_id` | string | request-scoped only | Per-invocation ID; groups all events for one A2A invocation |
 | `task_id` | string | request-scoped only | A2A task identifier (`params.id` on `tasks/send`) |
 | `workflow_id` / `workflow_execution_id` / `stage_id` / `step_id` / `invocation_caller` | string | optional | Populated when the request carried `X-Workflow-*` headers (FWS-2). `workflow_id` is the workflow definition (stable across runs); `workflow_execution_id` is the per-run instance (FORGE-2 / #185 split). |
+| `actor_agent_id` / `attestation_level` / `delegation_mode` | string | optional | Agentic-identity promoted columns (agent-identity L1–L4, #444). `actor_agent_id` = the agent's own id; `attestation_level` = `attested:placement` in `WORKLOAD_IDENTITY_MODE=k8s_sa` (else omitted); `delegation_mode` = `agent_own` — the agent acts as its own principal. |
+| `principal_sub` / `principal_iss` / `actor_workload_id` / `mandate_id` / `grant_ref` / `chain_id` / `chain_hop` | string / int | optional | Agentic-identity columns declared now, populated as their source flows land (chain fields via `X-Agent-Chain-Token`; delegated-principal + mandate/grant via L2). `principal_sub` MUST stay empty under `delegation_mode: agent_own` (a principal there is a phantom). Omitted until populated. |
 | `model` / `provider` | string | optional | LLM call attribution (FWS-3) |
 | `input_tokens` / `output_tokens` / `tokens_unavailable` | int / bool | optional | LLM call usage (FWS-3) |
 | `total_input_tokens` | int | optional | True input = `input_tokens` + cache read + cache creation; the bill-from field. Present on every LLM call (#431) |

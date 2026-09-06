@@ -13,13 +13,14 @@ import (
 
 func testResolver(endpoint string) *pdpResolver {
 	return &pdpResolver{
-		endpoint:    endpoint,
-		token:       "tok",
-		orgID:       "org_x",
-		workspaceID: "ws_1",
-		agentID:     "member-service",
-		timeout:     2 * time.Second,
-		client:      &http.Client{},
+		endpoint:       endpoint,
+		token:          "tok",
+		orgID:          "org_x",
+		workspaceID:    "ws_1",
+		agentID:        "member-service",
+		delegationMode: coreruntime.DelegationAgentOwn,
+		timeout:        2 * time.Second,
+		client:         &http.Client{},
 	}
 }
 
@@ -57,6 +58,17 @@ func TestPDPResolver_Allow(t *testing.T) {
 		}
 		if req.Caller.Subject != "agent:member-service" || req.Caller.EntitledAccounts != nil {
 			t.Errorf("caller = %+v, want subject agent:member-service, no entitled_accounts", req.Caller)
+		}
+		// Agentic-identity (#444 item 2): the caller carries actor_agent_id +
+		// delegation_mode (agent_own). No principal_sub under agent_own.
+		if req.Caller.ActorAgentID != "member-service" {
+			t.Errorf("caller.actor_agent_id = %q, want member-service", req.Caller.ActorAgentID)
+		}
+		if req.Caller.DelegationMode != coreruntime.DelegationAgentOwn {
+			t.Errorf("caller.delegation_mode = %q, want %q", req.Caller.DelegationMode, coreruntime.DelegationAgentOwn)
+		}
+		if req.Caller.PrincipalSub != "" {
+			t.Errorf("caller.principal_sub = %q, want empty under agent_own", req.Caller.PrincipalSub)
 		}
 		// The turn's correlation id + task id must be sent so the platform-written
 		// tool_call_decided event attributes to the same invocation as this agent's

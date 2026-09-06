@@ -75,6 +75,13 @@ type pdpRequest struct {
 	// invocation timeline (otherwise the platform verdict is "unattributed").
 	InvocationID string         `json:"invocation_id,omitempty"`
 	Context      map[string]any `json:"context,omitempty"`
+
+	// Agent-to-agent chain correlation (#444 item 2 + item 3). Populated by
+	// item 3's ChainContext (X-Agent-Chain-Token); omitted until then.
+	// ChainHop is a pointer so hop 0 (chain origin) is distinguishable from
+	// "no chain".
+	ChainID  string `json:"chain_id,omitempty"`
+	ChainHop *int   `json:"chain_hop,omitempty"`
 }
 
 type pdpCaller struct {
@@ -82,6 +89,22 @@ type pdpCaller struct {
 	// EntitledAccounts is RESERVED for the relational rule (deferred): Forge has
 	// no end-user subject at BeforeToolExec, so it is always null in v0.0.1.
 	EntitledAccounts []string `json:"entitled_accounts,omitempty"`
+
+	// Agentic-identity fields (agent-identity L1–L4, #444 item 2). Stamped now:
+	// ActorAgentID, AttestationLevel, DelegationMode (agent_own — the agent
+	// acts as its own principal). Populated by later flows: PrincipalSub /
+	// PrincipalIss accompany a delegated DelegationMode (items 3 / L2) and MUST
+	// stay empty under agent_own (else the platform's phantom-principal guard
+	// trips); ActorWorkloadID needs the SA-ref source; MandateID / GrantRef come
+	// from the L2 delegation flows. All omitempty → pre-#444 wire shape when unset.
+	PrincipalSub     string `json:"principal_sub,omitempty"`
+	PrincipalIss     string `json:"principal_iss,omitempty"`
+	DelegationMode   string `json:"delegation_mode,omitempty"`
+	ActorAgentID     string `json:"actor_agent_id,omitempty"`
+	ActorWorkloadID  string `json:"actor_workload_id,omitempty"`
+	AttestationLevel string `json:"attestation_level,omitempty"`
+	MandateID        string `json:"mandate_id,omitempty"`
+	GrantRef         string `json:"grant_ref,omitempty"`
 }
 
 type pdpResponse struct {
@@ -110,9 +133,13 @@ type pdpResolver struct {
 	orgID       string
 	workspaceID string
 	agentID     string
-	timeout     time.Duration
-	client      *http.Client
-	logger      pdpLogger
+	// attestationLevel + delegationMode are the process-static agentic-identity
+	// values sent on every PDP caller (#444 item 2), resolved once at build.
+	attestationLevel string
+	delegationMode   string
+	timeout          time.Duration
+	client           *http.Client
+	logger           pdpLogger
 }
 
 // BuildPDPResolver constructs the managed resolver from config + the platform
@@ -123,14 +150,16 @@ type pdpResolver struct {
 func BuildPDPResolver(cfg *types.ForgeConfig, logger pdpLogger) *pdpResolver {
 	pc := cfg.Security.Pdp
 	return &pdpResolver{
-		endpoint:    pc.Endpoint,
-		token:       os.Getenv(EnvPlatformToken),
-		orgID:       os.Getenv(EnvOrgID),
-		workspaceID: os.Getenv(EnvWorkspaceID),
-		agentID:     cfg.AgentID,
-		timeout:     pc.Timeout,
-		client:      &http.Client{},
-		logger:      logger,
+		endpoint:         pc.Endpoint,
+		token:            os.Getenv(EnvPlatformToken),
+		orgID:            os.Getenv(EnvOrgID),
+		workspaceID:      os.Getenv(EnvWorkspaceID),
+		agentID:          cfg.AgentID,
+		attestationLevel: coreruntime.AttestationLevelForMode(),
+		delegationMode:   coreruntime.DelegationAgentOwn,
+		timeout:          pc.Timeout,
+		client:           &http.Client{},
+		logger:           logger,
 	}
 }
 
@@ -153,10 +182,17 @@ func (p *pdpResolver) Resolve(ctx context.Context, hctx *coreruntime.HookContext
 	}
 
 	reqBody := pdpRequest{
-		Tool:    hctx.ToolName,
-		Op:      op,
-		Args:    args,
-		Caller:  pdpCaller{Subject: "agent:" + p.agentID},
+		Tool: hctx.ToolName,
+		Op:   op,
+		Args: args,
+		Caller: pdpCaller{
+			Subject: "agent:" + p.agentID,
+			// Agentic-identity (#444 item 2): the agent acts as its own
+			// principal, so no principal_sub accompanies agent_own.
+			ActorAgentID:     p.agentID,
+			AttestationLevel: p.attestationLevel,
+			DelegationMode:   p.delegationMode,
+		},
 		Agent:   p.agentID,
 		Session: hctx.TaskID,
 		// Same source as the sibling pdp_decision event (emitPDPDecision uses

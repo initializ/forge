@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -78,6 +79,30 @@ func TestWorkloadToken_ReadsFreshOnEachCall_NoCaching(t *testing.T) {
 	}
 	if got := WorkloadToken(); got != "jwt-v2" {
 		t.Errorf("second read = %q, want jwt-v2 — token must be read fresh, never cached", got)
+	}
+}
+
+func TestWorkloadToken_EmptyWhenFileOversized(t *testing.T) {
+	// The path is operator-controlled; a misconfigured/oversized file must
+	// fail closed to "" rather than load an arbitrarily large header value.
+	big := make([]byte, maxWorkloadTokenBytes+1)
+	for i := range big {
+		big[i] = 'a'
+	}
+	t.Setenv(EnvWorkloadIdentityMode, WorkloadIdentityModeK8sSA)
+	t.Setenv(EnvWorkloadTokenPath, writeTokenFile(t, string(big)))
+	if got := WorkloadToken(); got != "" {
+		t.Errorf("WorkloadToken() len=%d, want \"\" — oversized file must fail closed", len(got))
+	}
+}
+
+func TestWorkloadToken_ReadsTokenAtCapBoundary(t *testing.T) {
+	// A token exactly at the cap is still read (off-by-one guard).
+	tok := strings.Repeat("a", maxWorkloadTokenBytes)
+	t.Setenv(EnvWorkloadIdentityMode, WorkloadIdentityModeK8sSA)
+	t.Setenv(EnvWorkloadTokenPath, writeTokenFile(t, tok))
+	if got := WorkloadToken(); got != tok {
+		t.Errorf("WorkloadToken() len=%d, want %d (a token exactly at the cap must still read)", len(got), len(tok))
 	}
 }
 

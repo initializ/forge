@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/initializ/forge/forge-core/runtime"
 )
 
 // Platform token resolver — the managed half of the resolver seam (design
@@ -154,6 +156,11 @@ func doPlatformTokenRequest(ctx context.Context, client *http.Client, rawEndpoin
 	if ws := os.Getenv("FORGE_WORKSPACE_ID"); ws != "" {
 		req.Header.Set("Workspace-Id", ws)
 	}
+	// Present the per-agent workload token (agent-identity L1, #444) so the
+	// platform's §19.13 entitlement check can bind this token fetch to the
+	// agent's workload identity. Read fresh per request; omitted when workload
+	// identity is not active.
+	runtime.StampWorkloadToken(req.Header)
 
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}
@@ -221,6 +228,9 @@ func FetchAuthorizeURL(ctx context.Context, client *http.Client, rawEndpoint, ra
 	if ws := os.Getenv("FORGE_WORKSPACE_ID"); ws != "" {
 		req.Header.Set("Workspace-Id", ws)
 	}
+	// Present the per-agent workload token (agent-identity L1, #444); read
+	// fresh per request, omitted when workload identity is not active.
+	runtime.StampWorkloadToken(req.Header)
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}
 	}

@@ -204,6 +204,9 @@ func (p *pdpResolver) Resolve(ctx context.Context, hctx *coreruntime.HookContext
 		if p.workspaceID != "" {
 			req.Header.Set("Workspace-Id", p.workspaceID)
 		}
+		// Present the per-agent workload token (agent-identity L1, #444); read
+		// fresh per request, omitted when workload identity is not active.
+		coreruntime.StampWorkloadToken(req.Header)
 
 		var doErr error
 		resp, doErr = p.client.Do(req)

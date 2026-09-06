@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -34,6 +35,12 @@ const (
 
 	// WorkloadIdentityModeK8sSA is the k8s ServiceAccount-token mode.
 	WorkloadIdentityModeK8sSA = "k8s_sa"
+
+	// maxWorkloadTokenBytes bounds the projected-token read. A projected JWT
+	// is ~1 KB; the path is operator-controlled, so cap the read and fail
+	// closed to "" on an oversized/misconfigured file rather than loading an
+	// arbitrarily large value into an outbound header.
+	maxWorkloadTokenBytes = 8 << 10 // 8 KiB
 )
 
 // WorkloadToken reads the projected ServiceAccount token FRESH from the
@@ -58,8 +65,16 @@ func WorkloadToken() string {
 	if path == "" {
 		path = DefaultWorkloadTokenPath
 	}
-	b, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
+		return ""
+	}
+	defer func() { _ = f.Close() }()
+	// Bounded read: one byte past the cap so an oversized file is detectable
+	// and rejected (fail closed to "") rather than streamed wholesale into the
+	// header.
+	b, err := io.ReadAll(io.LimitReader(f, maxWorkloadTokenBytes+1))
+	if err != nil || len(b) > maxWorkloadTokenBytes {
 		return ""
 	}
 	// Projected token files carry a trailing newline; trim so the header value

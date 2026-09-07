@@ -36,12 +36,25 @@ const (
 // Attestation levels — how strongly the agent's workload identity is bound.
 const (
 	// AttestationPlacement — a k8s_sa projected ServiceAccount token: an
-	// unbound bearer, trusted by pod placement + short TTL (#444 item 6,
-	// security-next#42 Decision #7).
+	// unbound bearer, trusted by pod placement + short TTL. Set now (#444
+	// item 2). The unbound-bearer replay model is described under #444 item 6
+	// (which adds the SPIRE alternative), security-next#42 Decision #7.
 	AttestationPlacement = "attested:placement"
-	// AttestationWorkload — a SPIRE X.509-SVID-bound token (future; item 6).
+	// AttestationWorkload — a SPIRE X.509-SVID-bound token. Future; #444 item 6.
 	AttestationWorkload = "attested:workload"
 )
+
+// AgentURN formats an agent id as the actor_agent_id value the platform's L4
+// actor-breakdown / foreign-agent reports key on (security-next develop):
+// urn:agent:<slug>. Returns "" for an empty slug so the field stays omitted
+// rather than a bare "urn:agent:". The bare id remains the form used elsewhere
+// (audit entity_id, the PDP caller.subject "agent:<id>", pdpRequest.agent).
+func AgentURN(slug string) string {
+	if slug == "" {
+		return ""
+	}
+	return "urn:agent:" + slug
+}
 
 // AttestationLevelForMode derives the attestation level from the workload
 // identity mode. Today only k8s_sa is handled → attested:placement; anything

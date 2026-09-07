@@ -411,7 +411,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// (attested:placement in k8s_sa mode) + delegation_mode. agent_own reflects
 	// the current PDP posture — the agent acts as its own principal; delegated
 	// principals + chain fields are layered on by items 3 / L2.
-	auditLogger.WithAgentIdentity(agentID, coreruntime.AttestationLevelForMode(), coreruntime.DelegationAgentOwn)
+	auditLogger.WithAgentIdentity(coreruntime.AgentURN(agentID), coreruntime.AttestationLevelForMode(), coreruntime.DelegationAgentOwn)
 
 	// Ed25519 event signing (#213). Signing is opt-in via env:
 	// FORGE_AUDIT_SIGNING_KEY_B64 (PKCS#8 DER base64, or PEM inline)

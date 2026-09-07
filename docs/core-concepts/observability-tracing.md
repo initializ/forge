@@ -160,7 +160,7 @@ Wraps the `Provider.Chain.Verify` call in `forge-core/auth/middleware.go`. Witho
 | `forge.auth.token_kind` | `jwt` / `opaque` / `sigv4` / `iap_jwt` / `empty` — mirrors the audit `token_kind` field |
 | `forge.auth.decision` | `verify` on success, `fail` on any rejection |
 | `forge.auth.user_id` / `org_id` | from `Identity` on success |
-| `forge.auth.fail_reason` | `missing_token` / `rejected` / `invalid` / `not_for_me` / `provider_unavailable` / `infrastructure` — only on failure; matches the `auth.FailReason` vocabulary used by the audit `auth_fail` event |
+| `forge.auth.fail_reason` | `missing_token` / `rejected` / `invalid` / `not_for_me` / `provider_unavailable` / `wrong_token_type` / `infrastructure` — only on failure; matches the `auth.FailReason` vocabulary used by the audit `auth_fail` event |
 
 Span closes BEFORE `installSequenceCounterMiddleware` runs, so it sits outside the per-invocation sequence counter scope — the right scope, since the question is "did the caller authenticate?", not "what did the agent do?"
 

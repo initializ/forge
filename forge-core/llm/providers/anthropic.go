@@ -435,6 +435,20 @@ type anthropicContentBlockDelta struct {
 	} `json:"delta"`
 }
 
+// anthropicMessageStart carries the initial usage on a streaming response:
+// Anthropic reports input_tokens (+ prompt-cache read/creation) on the
+// message_start event, while output_tokens accumulates onto message_delta.
+// Without parsing this, the streaming path drops ALL input tokens (#433).
+type anthropicMessageStart struct {
+	Message struct {
+		Usage struct {
+			InputTokens              int `json:"input_tokens"`
+			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		} `json:"usage"`
+	} `json:"message"`
+}
+
 type anthropicMessageDelta struct {
 	Delta struct {
 		StopReason string `json:"stop_reason"`
@@ -448,6 +462,13 @@ func (c *AnthropicClient) readAnthropicStream(r io.Reader, ch chan<- llm.StreamD
 	scanner := bufio.NewScanner(r)
 	var currentToolCall *llm.ToolCall
 	var eventType string
+	// Input + prompt-cache tokens arrive on message_start; output accumulates
+	// onto message_delta. Capture the input side here and emit the COMPLETE
+	// usage once, on the terminal message_delta — a single authoritative
+	// UsageInfo is correct whether a consumer overwrites (result.Usage =
+	// *delta.Usage) or sums per-delta, and avoids losing input on the common
+	// overwrite path (#433).
+	var inputTokens, cacheReadTokens, cacheCreationTokens int
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -463,6 +484,15 @@ func (c *AnthropicClient) readAnthropicStream(r io.Reader, ch chan<- llm.StreamD
 		}
 
 		switch eventType {
+		case "message_start":
+			var ev anthropicMessageStart
+			if json.Unmarshal([]byte(after), &ev) != nil {
+				continue
+			}
+			inputTokens = ev.Message.Usage.InputTokens
+			cacheReadTokens = ev.Message.Usage.CacheReadInputTokens
+			cacheCreationTokens = ev.Message.Usage.CacheCreationInputTokens
+
 		case "content_block_start":
 			var ev anthropicContentBlockStart
 			if json.Unmarshal([]byte(after), &ev) != nil {
@@ -512,7 +542,13 @@ func (c *AnthropicClient) readAnthropicStream(r io.Reader, ch chan<- llm.StreamD
 			ch <- llm.StreamDelta{
 				FinishReason: finishReason,
 				Usage: &llm.UsageInfo{
-					OutputTokens: ev.Usage.OutputTokens,
+					InputTokens:              inputTokens,
+					OutputTokens:             ev.Usage.OutputTokens,
+					CacheReadInputTokens:     cacheReadTokens,
+					CacheCreationInputTokens: cacheCreationTokens,
+					// True total incl. cached prefix, matching the
+					// non-streaming path (#431/#432).
+					TotalTokens: inputTokens + cacheReadTokens + cacheCreationTokens + ev.Usage.OutputTokens,
 				},
 			}
 

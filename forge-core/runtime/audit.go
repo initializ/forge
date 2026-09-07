@@ -845,6 +845,15 @@ func (a *AuditLogger) Emit(event AuditEvent) {
 			event.DelegationMode = staticDelegation
 		}
 	}
+	// Phantom-principal invariant: agent_own means the agent acts as its own
+	// principal, so a principal_sub/iss must NOT ride along. Clear defensively
+	// at this choke point so a future item (3 / L2) that starts setting
+	// principal_sub can never emit a phantom principal by pairing it with
+	// agent_own. Harmless today (principal_sub is unset).
+	if event.DelegationMode == DelegationAgentOwn {
+		event.PrincipalSub = ""
+		event.PrincipalIss = ""
+	}
 	// Governance R5 (#212, chain) + R6 (#213, signing) integration.
 	//
 	// Hold a.mu across the whole chain-mint → sign → marshal → hash →

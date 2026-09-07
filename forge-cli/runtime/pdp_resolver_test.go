@@ -59,10 +59,14 @@ func TestPDPResolver_Allow(t *testing.T) {
 		if req.Caller.Subject != "agent:member-service" || req.Caller.EntitledAccounts != nil {
 			t.Errorf("caller = %+v, want subject agent:member-service, no entitled_accounts", req.Caller)
 		}
-		// Agentic-identity (#444 item 2): the caller carries actor_agent_id +
-		// delegation_mode (agent_own). No principal_sub under agent_own.
-		if req.Caller.ActorAgentID != "member-service" {
-			t.Errorf("caller.actor_agent_id = %q, want member-service", req.Caller.ActorAgentID)
+		// Agentic-identity (#444 item 2): the caller carries actor_agent_id
+		// (urn:agent:<slug> — the L4-report form) + delegation_mode (agent_own).
+		// No principal_sub under agent_own. caller.subject stays the bare form.
+		if req.Caller.ActorAgentID != "urn:agent:member-service" {
+			t.Errorf("caller.actor_agent_id = %q, want urn:agent:member-service", req.Caller.ActorAgentID)
+		}
+		if req.Caller.Subject != "agent:member-service" {
+			t.Errorf("caller.subject = %q, want bare agent:member-service", req.Caller.Subject)
 		}
 		if req.Caller.DelegationMode != coreruntime.DelegationAgentOwn {
 			t.Errorf("caller.delegation_mode = %q, want %q", req.Caller.DelegationMode, coreruntime.DelegationAgentOwn)

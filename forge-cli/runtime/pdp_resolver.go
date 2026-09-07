@@ -189,7 +189,9 @@ func (p *pdpResolver) Resolve(ctx context.Context, hctx *coreruntime.HookContext
 			Subject: "agent:" + p.agentID,
 			// Agentic-identity (#444 item 2): the agent acts as its own
 			// principal, so no principal_sub accompanies agent_own.
-			ActorAgentID:     p.agentID,
+			// actor_agent_id is the urn:agent:<slug> form the platform's L4
+			// reports key on; caller.subject stays the bare "agent:<id>".
+			ActorAgentID:     coreruntime.AgentURN(p.agentID),
 			AttestationLevel: p.attestationLevel,
 			DelegationMode:   p.delegationMode,
 		},
@@ -200,6 +202,13 @@ func (p *pdpResolver) Resolve(ctx context.Context, hctx *coreruntime.HookContext
 		// pdp_decision carry an IDENTICAL invocation_id and group together.
 		InvocationID: hctx.CorrelationID,
 		Context:      map[string]any{},
+	}
+	// Phantom-principal invariant (mirrors the audit emitter): never send a
+	// principal_sub under agent_own. Insurance for when items 3 / L2 begin
+	// populating a delegated principal.
+	if reqBody.Caller.DelegationMode == coreruntime.DelegationAgentOwn {
+		reqBody.Caller.PrincipalSub = ""
+		reqBody.Caller.PrincipalIss = ""
 	}
 	body, err := json.Marshal(reqBody)
 	if err != nil {

@@ -33,6 +33,34 @@ func TestAttestationLevelForMode(t *testing.T) {
 	})
 }
 
+func TestAgentURN(t *testing.T) {
+	if got := AgentURN("agt-1788"); got != "urn:agent:agt-1788" {
+		t.Errorf("AgentURN() = %q, want urn:agent:agt-1788", got)
+	}
+	if got := AgentURN(""); got != "" {
+		t.Errorf("AgentURN(\"\") = %q, want \"\" (no bare urn:agent: prefix)", got)
+	}
+}
+
+func TestWithAgentIdentity_ClearsPhantomPrincipalUnderAgentOwn(t *testing.T) {
+	// Insurance for items 3 / L2: even if a caller wrongly pairs a principal
+	// with agent_own, the emitter clears it so no phantom principal reaches
+	// the audit stream / PDP.
+	var buf bytes.Buffer
+	audit := NewAuditLogger(&buf)
+	audit.WithAgentIdentity("urn:agent:x", AttestationPlacement, DelegationAgentOwn)
+	audit.EmitFromContext(context.Background(), AuditEvent{
+		Event:        AuditSessionStart,
+		PrincipalSub: "user:should-be-cleared",
+		PrincipalIss: "https://idp.example",
+	})
+	var evt AuditEvent
+	_ = json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &evt)
+	if evt.PrincipalSub != "" || evt.PrincipalIss != "" {
+		t.Errorf("agent_own must clear principal_sub/iss, got sub=%q iss=%q", evt.PrincipalSub, evt.PrincipalIss)
+	}
+}
+
 func TestWithAgentIdentity_StampsEveryEvent(t *testing.T) {
 	var buf bytes.Buffer
 	audit := NewAuditLogger(&buf)

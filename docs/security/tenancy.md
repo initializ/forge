@@ -90,6 +90,8 @@ When an agent is deployed with **`WORKLOAD_IDENTITY_MODE=k8s_sa`**, the platform
 
 The token is read **fresh from the file on every request and never cached** — the kubelet rotates the file in place, so a cached value goes stale and is rejected (the `no_token` failure class). Like the tenancy headers, `X-Workload-Token` is **omitted entirely** (never sent empty) when workload identity is inactive: no `WORKLOAD_IDENTITY_MODE=k8s_sa`, or no readable token file (the normal case for self-hosted / non-Kubernetes deploys). Presentation is additive and never blocks a callout.
 
+**Attestation level + PDP floors (rollout note).** In `k8s_sa` mode forge stamps `attestation_level: attested:placement` on the PDP request + audit events (agent-identity L2); without it the level is empty, which ranks *below* `attested:placement`. So a PDP policy with a per-tool bind-strength floor of `attested:placement` (or higher) will **DENY** a forge deployed **without** `WORKLOAD_IDENTITY_MODE=k8s_sa` once enforcement is on. This is correct-by-design (an unattested workload shouldn't clear a placement floor), but self-hosted / non-Kubernetes deployments must either run in `k8s_sa` mode or keep those floors at `asserted` (empty ranks equal to `asserted`, so an `asserted` floor does not deny).
+
 ## Backwards compatibility
 
 Both `org_id` and `workspace_id` use `omitempty`. Deployments that set neither env nor header keep emitting the pre-tenancy JSON shape verbatim. Consumers that ignore unknown keys continue to work unchanged. The audit schema version is **not** bumped — additive optional fields are schema-compatible per the documented policy.

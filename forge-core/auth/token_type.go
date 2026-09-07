@@ -31,6 +31,15 @@ const (
 // existing tokens (and any third-party OIDC token, which carries no initializ
 // typ) are unaffected — only a token that explicitly declares one of these
 // non-access purposes is refused.
+//
+// CROSS-REPO CONTRACT — keep in sync with the platform's own ingress guard,
+// api-next `helper/tokentype.go` (`ourNonPlatformTypes` / `RejectForeignTokenClass`).
+// The two denylists must name the SAME non-access classes with exact-match
+// semantics; they match as of api-next develop. There is no shared source of
+// truth across the repos, so when api-next adds a fourth non-access media type
+// this set MUST gain it in lockstep — otherwise forge silently keeps accepting
+// that class as an access token, reopening the cross-use gap. Drift is tracked
+// on the #444 enforcement epic.
 var rejectedInboundTokenTypes = map[string]bool{
 	MediaTypeChainToken:         true,
 	MediaTypeWorkloadCredential: true,

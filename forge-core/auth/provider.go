@@ -167,6 +167,12 @@ var (
 	ErrInvalidToken          = errors.New("auth: invalid token")
 	ErrProviderUnavailable   = errors.New("auth: provider unavailable")
 	ErrProviderNotConfigured = errors.New("auth: provider not configured")
+	// ErrWrongTokenType — the bearer explicitly declares (via its JWT `typ`
+	// header) a non-access initializ media type (chain token / workload
+	// credential / mandate) that must not be used as an access token
+	// (RFC 8725 explicit typing, #444 item 5). Rejected before the provider
+	// chain runs — no provider should ever see a cross-use token.
+	ErrWrongTokenType = errors.New("auth: wrong token type for access")
 )
 
 // MarkRuntimeInternal returns a copy of id marked as minted by the runtime's

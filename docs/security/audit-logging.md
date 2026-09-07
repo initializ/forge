@@ -275,6 +275,7 @@ OIDC `tid`/`org_id`-mapped claim depending on the provider.
 | `rejected` | Provider recognized + denied (allowlist miss, expired, bad sig, scope mismatch) | Check `allowed_principals` / `tenant_id` / token freshness |
 | `invalid` | Token malformed (bad base64, unsupported alg, missing required field) | Token construction bug on the caller side |
 | `provider_unavailable` | Verifier endpoint down (STS / JWKS / Graph 5xx, network error) | Provider-side incident; not a token issue |
+| `wrong_token_type` | Bearer's JWT `typ` header declares a non-access initializ media type — a chain token, workload credential, or mandate — presented where an access token is expected (RFC 8725, #444). Rejected before the provider chain runs | Token-confusion / cross-use: a token minted for another leg is being replayed as an access token. Investigate the caller |
 
 ### Token kind values (`fields.token_kind`)
 

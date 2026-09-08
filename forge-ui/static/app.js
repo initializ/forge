@@ -58,6 +58,16 @@ async function fetchSession(agentId, sessionId) {
   return res.json();
 }
 
+// Reports whether the agent process still considers this task in flight
+// ("working"/"submitted") vs settled. Used right after resuming a session
+// on page load to detect a turn that was still generating when the
+// browser was refreshed away.
+async function fetchSessionStatus(agentId, sessionId) {
+  const res = await fetch(`/api/agents/${agentId}/sessions/${sessionId}/status`);
+  if (!res.ok) return { state: 'unknown' };
+  return res.json();
+}
+
 // ── Phase 3 API Helpers ──────────────────────────────────────
 
 async function fetchWizardMeta() {
@@ -287,10 +297,15 @@ function useHashRoute() {
 
 function parseHash(hash) {
   const path = hash.replace(/^#\/?/, '') || '';
+  // #/agent/{id}/session/{sid} (session segment optional)
+  const agentSessionMatch = path.match(/^agent\/([^/]+)\/session\/(.+)$/);
+  if (agentSessionMatch) {
+    return { page: 'chat', params: { id: agentSessionMatch[1], sessionId: agentSessionMatch[2] } };
+  }
   // #/agent/{id}
-  const agentMatch = path.match(/^agent\/(.+)$/);
+  const agentMatch = path.match(/^agent\/([^/]+)$/);
   if (agentMatch) {
-    return { page: 'chat', params: { id: agentMatch[1] } };
+    return { page: 'chat', params: { id: agentMatch[1], sessionId: null } };
   }
   // #/create
   if (path === 'create') return { page: 'create', params: {} };
@@ -455,10 +470,10 @@ function formatToolContent(content) {
 
 // ── Chat Stream Hook ─────────────────────────────────────────
 
-function useChatStream(agentId) {
+function useChatStream(agentId, initialSessionId) {
   const [messages, setMessages] = useState([]);
   const [streaming, setStreaming] = useState(false);
-  const [sessionId, setSessionId] = useState(null);
+  const [sessionId, setSessionId] = useState(initialSessionId || null);
   const abortRef = useRef(null);
 
   const loadSession = useCallback(async (sid) => {
@@ -1041,17 +1056,77 @@ function MessageBubble({ message }) {
 
 // ── Chat Page Component ──────────────────────────────────────
 
-function ChatPage({ agentId, agents }) {
+function ChatPage({ agentId, initialSessionId, agents }) {
   const agent = useMemo(() => agents.find(a => a.id === agentId), [agents, agentId]);
   const isRunning = agent && (agent.status === 'running' || agent.status === 'starting');
 
-  const { messages, streaming, sessionId, sendMessage, loadSession, newSession, cancel } = useChatStream(agentId);
+  const { messages, streaming, sessionId, sendMessage, loadSession, newSession, cancel } = useChatStream(agentId, initialSessionId);
   const [sessions, setSessions] = useState([]);
   const [inputText, setInputText] = useState('');
   const messagesEndRef = useRef(null);
   const messagesContainerRef = useRef(null);
   const userScrolledUp = useRef(false);
   const textareaRef = useRef(null);
+  const loadedInitialRef = useRef(false);
+  // Tracks whether the agent process still reports this session as
+  // working/submitted, independent of local `streaming` state (which
+  // resets on reload even though the server-side turn keeps running).
+  // Gates sending so a refreshed-but-still-running turn can't be sent
+  // into twice — two concurrent Execute calls on the same task ID would
+  // each persistSession and the later write clobbers the earlier one.
+  const [remoteBusy, setRemoteBusy] = useState(false);
+
+  // Resume the session named in the URL (e.g. after a page reload) instead
+  // of starting from a blank chat. Runs once per agent mount; a fresh
+  // initialSessionId only arrives via a full navigation, which remounts
+  // this component with a new agentId/initialSessionId pair anyway.
+  //
+  // After loading, check whether the agent process still considers this
+  // task in flight — the reload may have interrupted a still-generating
+  // response. If so, poll briefly and reload the session once it settles,
+  // so the finished answer appears without the user having to guess
+  // whether their message went through.
+  useEffect(() => {
+    if (!initialSessionId || loadedInitialRef.current) return;
+    loadedInitialRef.current = true;
+    let cancelled = false;
+
+    (async () => {
+      await loadSession(initialSessionId);
+
+      const maxAttempts = 20; // ~30s at the poll interval below
+      for (let attempt = 0; attempt < maxAttempts && !cancelled; attempt++) {
+        let status;
+        try {
+          status = await fetchSessionStatus(agentId, initialSessionId);
+        } catch {
+          break;
+        }
+        const busy = status.state === 'working' || status.state === 'submitted';
+        if (!cancelled) setRemoteBusy(busy);
+        if (!busy) {
+          if (attempt > 0 && !cancelled) await loadSession(initialSessionId);
+          break;
+        }
+        await new Promise(r => setTimeout(r, 1500));
+      }
+      if (!cancelled) setRemoteBusy(false);
+    })();
+
+    return () => { cancelled = true; };
+  }, [agentId, initialSessionId, loadSession]);
+
+  // Keep the URL's session segment in sync with the active session so a
+  // reload always resumes the same conversation instead of silently
+  // forking a new one. Uses replaceState (not the hash router's
+  // navigate()) so this doesn't add reload-noise to browser history.
+  useEffect(() => {
+    if (!agentId) return;
+    const target = sessionId ? `#/agent/${agentId}/session/${sessionId}` : `#/agent/${agentId}`;
+    if (location.hash !== target) {
+      history.replaceState(null, '', target);
+    }
+  }, [agentId, sessionId]);
 
   // Load sessions on mount
   useEffect(() => {
@@ -1073,13 +1148,13 @@ function ChatPage({ agentId, agents }) {
 
   const handleSend = useCallback(() => {
     const text = inputText.trim();
-    if (!text || streaming || !isRunning) return;
+    if (!text || streaming || !isRunning || remoteBusy) return;
     setInputText('');
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
     sendMessage(text);
-  }, [inputText, streaming, isRunning, sendMessage]);
+  }, [inputText, streaming, isRunning, remoteBusy, sendMessage]);
 
   const handleKeyDown = useCallback((e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -1149,17 +1224,17 @@ function ChatPage({ agentId, agents }) {
           <textarea
             ref=${textareaRef}
             class="chat-textarea"
-            placeholder=${isRunning ? 'Type a message... (Enter to send, Shift+Enter for newline)' : 'Agent is not running'}
+            placeholder=${!isRunning ? 'Agent is not running' : remoteBusy ? 'Waiting for the in-progress response to finish...' : 'Type a message... (Enter to send, Shift+Enter for newline)'}
             value=${inputText}
             onInput=${handleInput}
             onKeyDown=${handleKeyDown}
-            disabled=${!isRunning}
+            disabled=${!isRunning || remoteBusy}
             rows="1"
           />
           <div class="chat-input-actions">
             ${streaming
               ? html`<button class="btn btn-danger btn-sm" onClick=${cancel}>Stop</button>`
-              : html`<button class="btn btn-primary btn-sm" onClick=${handleSend} disabled=${!inputText.trim() || !isRunning}>Send</button>`
+              : html`<button class="btn btn-primary btn-sm" onClick=${handleSend} disabled=${!inputText.trim() || !isRunning || remoteBusy}>Send</button>`
             }
           </div>
         </div>
@@ -3310,7 +3385,7 @@ function App() {
   const renderPage = () => {
     switch (route.page) {
       case 'chat':
-        return html`<${ChatPage} agentId=${route.params.id} agents=${agents} />`;
+        return html`<${ChatPage} agentId=${route.params.id} initialSessionId=${route.params.sessionId} agents=${agents} />`;
       case 'create':
         return html`<${CreatePage} />`;
       case 'config':

@@ -448,3 +448,76 @@ func TestInit_SelfChatCanBeDisabled(t *testing.T) {
 		t.Error("self_chat: false should disable it")
 	}
 }
+
+// --- self-chat reply prefix ---
+
+func TestApplyPrefix_PrependsMarker(t *testing.T) {
+	if got := applyPrefix("⚒ Forge: ", "hello"); got != "⚒ Forge: hello" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestApplyPrefix_EmptyPrefixIsNoop(t *testing.T) {
+	if got := applyPrefix("", "hello"); got != "hello" {
+		t.Errorf("got %q, want the chunk unchanged", got)
+	}
+}
+
+// Inlining the marker before an opening fence makes WhatsApp render the fence
+// literally instead of as a code block.
+func TestApplyPrefix_FencedCodeGetsOwnLine(t *testing.T) {
+	got := applyPrefix("⚒ Forge: ", "```go\nfmt.Println()\n```")
+	if !strings.HasPrefix(got, "⚒ Forge: \n```go") {
+		t.Errorf("marker should sit on its own line before a fence, got %q", got)
+	}
+}
+
+func TestInit_SelfChatPrefixDefault(t *testing.T) {
+	p := New()
+	if err := p.Init(cfgWith(nil)); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if p.cfg.SelfChatPrefix != defaultSelfChatPrefix {
+		t.Errorf("prefix = %q, want %q", p.cfg.SelfChatPrefix, defaultSelfChatPrefix)
+	}
+	if !strings.Contains(p.cfg.SelfChatPrefix, "Forge") {
+		t.Errorf("default prefix should name Forge, got %q", p.cfg.SelfChatPrefix)
+	}
+}
+
+func TestInit_SelfChatPrefixOverride(t *testing.T) {
+	p := New()
+	if err := p.Init(cfgWith(map[string]string{"self_chat_prefix": "🤖 bot: "})); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if p.cfg.SelfChatPrefix != "🤖 bot: " {
+		t.Errorf("prefix = %q, want the override", p.cfg.SelfChatPrefix)
+	}
+}
+
+// An explicitly empty value means "no marker" and must not fall back to the
+// default the way strOrDefault would.
+func TestInit_SelfChatPrefixCanBeDisabled(t *testing.T) {
+	p := New()
+	if err := p.Init(cfgWith(map[string]string{"self_chat_prefix": ""})); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if p.cfg.SelfChatPrefix != "" {
+		t.Errorf("prefix = %q, want it disabled", p.cfg.SelfChatPrefix)
+	}
+}
+
+// The marker exists because the self-chat has no sender distinction; a normal
+// DM already shows who sent what, so marking there would just be noise.
+func TestSelfChatPrefix_AppliesOnlyToSelfChat(t *testing.T) {
+	cfg := admissionConfig{OwnJIDs: []string{testOwnJID}}
+
+	if !cfg.isSelfChat(testOwnJID) {
+		t.Error("the owner's own chat should be recognised as the self-chat")
+	}
+	for _, chat := range []string{"14155550100@s.whatsapp.net", "120363000000000000@g.us"} {
+		if cfg.isSelfChat(chat) {
+			t.Errorf("%q must not be treated as the self-chat", chat)
+		}
+	}
+}

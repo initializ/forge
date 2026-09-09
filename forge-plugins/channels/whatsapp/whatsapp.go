@@ -33,6 +33,13 @@ const (
 	// historySoftCap bounds the injected context block, mirroring the Teams
 	// adapter's budget guard.
 	historySoftCap = 5000
+	// defaultSelfChatPrefix marks the agent's replies in the owner's self-chat.
+	//
+	// WhatsApp decides which side of the thread a message renders on from its
+	// sender, and in the self-chat the agent sends AS the owner — so its
+	// replies are visually identical to the owner's own prompts. No wire-level
+	// setting changes that; a text marker is the only way to tell them apart.
+	defaultSelfChatPrefix = "⚒ Forge: "
 	// staleGrace is how far before startup an inbound message may be dated and
 	// still be acted on.
 	//
@@ -86,6 +93,7 @@ type Plugin struct {
 
 type adapterConfig struct {
 	SessionPath          string
+	SelfChatPrefix       string
 	Admission            admissionConfig
 	IncludeRecentHistory bool
 	RecentHistoryCount   int
@@ -109,6 +117,9 @@ func (p *Plugin) Init(cfg channels.ChannelConfig) error {
 
 	ac := adapterConfig{
 		SessionPath: strOrDefault(settings["session_path"], defaultSessionPath),
+		// strOrDefault would swallow a deliberate "" (meaning "no prefix"), so
+		// the presence of the key is what decides here.
+		SelfChatPrefix: settingOrDefault(settings, "self_chat_prefix", defaultSelfChatPrefix),
 		Admission: admissionConfig{
 			Mode:           AdmitMode(strOrDefault(settings["admit"], string(AdmitDMOrGroupMention))),
 			AllowedGroups:  parseJIDSet(settings["allowed_groups"], serverGroup),
@@ -403,6 +414,15 @@ func (p *Plugin) SendResponse(event *channels.ChannelEvent, response *a2a.Messag
 	text := extractText(response)
 	body := markdown.ToWhatsAppText(text)
 
+	// Mark replies in the self-chat, where the agent sends as the owner and
+	// WhatsApp gives no visual distinction. Every chunk is marked, not just
+	// the first: an unmarked continuation is indistinguishable from something
+	// the owner typed when scrolling back.
+	prefix := ""
+	if p.cfg.SelfChatPrefix != "" && p.cfg.Admission.isSelfChat(event.WorkspaceID) {
+		prefix = p.cfg.SelfChatPrefix
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -410,6 +430,7 @@ func (p *Plugin) SendResponse(event *channels.ChannelEvent, response *a2a.Messag
 		if strings.TrimSpace(chunk) == "" {
 			continue
 		}
+		chunk = applyPrefix(prefix, chunk)
 		resp, err := p.client.SendMessage(ctx, chat, &waE2E.Message{
 			Conversation: proto.String(chunk),
 		})
@@ -585,6 +606,30 @@ func strOrDefault(s, def string) string {
 		return def
 	}
 	return strings.TrimSpace(s)
+}
+
+// applyPrefix prepends the reply marker.
+//
+// A chunk that opens with a fenced code block gets the marker on its own line:
+// inlining it would put text before the opening ``` and WhatsApp would render
+// the fence literally instead of as code.
+func applyPrefix(prefix, chunk string) string {
+	if prefix == "" {
+		return chunk
+	}
+	if strings.HasPrefix(chunk, "```") {
+		return prefix + "\n" + chunk
+	}
+	return prefix + chunk
+}
+
+// settingOrDefault returns the configured value when the key is present —
+// including when it is deliberately empty — and def when it is absent.
+func settingOrDefault(settings map[string]string, key, def string) string {
+	if v, ok := settings[key]; ok {
+		return v
+	}
+	return def
 }
 
 // isAnySender reports whether allowed_senders is the explicit opt-out that

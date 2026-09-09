@@ -52,6 +52,14 @@ settings:
   # only ever accepted in this chat, never in groups.
   self_chat: true
 
+  # Marker prepended to the agent's replies in the self-chat.
+  #
+  # WhatsApp picks which side of the thread a message renders on from its
+  # sender, and in the self-chat the agent sends AS you — so without a marker
+  # its replies look exactly like your own messages. Set to "" to disable.
+  # Only ever applied in the self-chat; a normal DM already shows who sent what.
+  self_chat_prefix: "⚒ Forge: "
+
   # Prepend recently observed messages from the chat to each dispatched
   # prompt, so the agent can answer "summarise the above" in a group.
   #

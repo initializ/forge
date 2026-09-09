@@ -190,6 +190,7 @@ settings:
   allowed_groups: ""           # comma/newline-separated group JIDs; empty = all
   allowed_senders: ""          # empty = OWNER ONLY; "anyone" opens it up
   self_chat: true              # answer your own "Message Yourself" chat
+  self_chat_prefix: "⚒ Forge: " # marks replies in the self-chat; "" disables
   include_recent_history: true
   recent_history_count: 20
 ```
@@ -201,6 +202,7 @@ settings:
 | `allowed_groups` | *(all)* | Group JIDs; the `@g.us` suffix may be omitted. |
 | `allowed_senders` | *(owner only)* | Empty admits only the paired account. List numbers to add people, or set `anyone` to open it up. The owner always passes. |
 | `self_chat` | `true` | Answer messages you send yourself. |
+| `self_chat_prefix` | `⚒ Forge: ` | Marks the agent's replies in the self-chat. `""` disables. |
 | `include_recent_history` | `true` | Injects observed chat context into the prompt. |
 | `recent_history_count` | `20` | Per-chat window; block soft-capped at ~5000 chars. |
 
@@ -218,6 +220,21 @@ That works because `self_chat` is on by default. Your own messages arrive
 flagged as self-sent, and so do the agent's replies — the loop guard is the
 dedup ring, which records every message the agent sends before it can come
 back around. Self-messages are accepted **only** in that chat, never in groups.
+
+In that chat the agent sends **as you**, so WhatsApp renders its replies on the
+same side, in the same colour, as your own messages — the sender is identical,
+and nothing on the wire can change that. Replies are therefore prefixed:
+
+```
+what is 2+2?
+⚒ Forge: 4
+```
+
+Change the marker with `self_chat_prefix`, or set it to `""` to turn it off.
+It is only applied in the self-chat; a normal DM already distinguishes sender
+from recipient. For real visual separation, message the agent from a second
+WhatsApp account instead — a group works too, but note a group containing only
+your own number will not: self-messages are accepted in the self-chat only.
 
 To have the agent serve other people instead, list them:
 

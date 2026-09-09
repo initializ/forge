@@ -91,21 +91,24 @@ var serveStartCmd = &cobra.Command{
 }
 
 var serveStopCmd = &cobra.Command{
-	Use:   "stop",
-	Short: "Stop the running agent daemon",
-	RunE:  serveStopRun,
+	Use:          "stop",
+	Short:        "Stop the running agent daemon",
+	SilenceUsage: true, // a failed stop shouldn't bury the error in flag help
+	RunE:         serveStopRun,
 }
 
 var serveStatusCmd = &cobra.Command{
-	Use:   "status",
-	Short: "Show agent daemon status",
-	RunE:  serveStatusRun,
+	Use:          "status",
+	Short:        "Show agent daemon status",
+	SilenceUsage: true,
+	RunE:         serveStatusRun,
 }
 
 var serveLogsCmd = &cobra.Command{
-	Use:   "logs",
-	Short: "Tail daemon log output",
-	RunE:  serveLogsRun,
+	Use:          "logs",
+	Short:        "Tail daemon log output",
+	SilenceUsage: true,
+	RunE:         serveLogsRun,
 }
 
 func registerServeFlags(cmd *cobra.Command) {
@@ -370,6 +373,16 @@ func serveStopRun(cmd *cobra.Command, args []string) error {
 	fmt.Fprintln(os.Stderr, "Daemon did not stop in time, sending SIGKILL...")
 	if err := sendKillSignal(proc); err != nil {
 		os.Remove(statePath) //nolint:errcheck
+
+		// The daemon can exit between the last liveness check and this
+		// kill, and killing an already-dead process is an error on both
+		// platforms (Windows reports "Access is denied"). The goal was
+		// for it to be gone, and it is — that's a successful stop.
+		if !process.IsAlive(state.PID) {
+			fmt.Fprintln(os.Stderr, "Daemon stopped.")
+			return nil
+		}
+
 		return fmt.Errorf("sending SIGKILL: %w", err)
 	}
 

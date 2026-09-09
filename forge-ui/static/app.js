@@ -3311,6 +3311,14 @@ function App() {
     // Flip to "stopping" on click. The server broadcasts this too, but
     // SSEBroker.Broadcast drops events for a full buffer, so the click
     // must not depend on the stream to feel responsive.
+    //
+    // Capture the prior status so a failure restores what was actually
+    // there. Hardcoding 'running' would mislabel an agent that was, say,
+    // already errored — the server's authoritative event reconciles it,
+    // but not before the card renders the wrong state. Read it from the
+    // rendered state rather than inside the updater, which is not
+    // guaranteed to have run by the time the request settles.
+    const prevStatus = agents.find(a => a.id === id)?.status;
     setAgents(prev => prev.map(a =>
       a.id === id ? { ...a, status: 'stopping', error: '' } : a
     ));
@@ -3318,13 +3326,13 @@ function App() {
       await stopAgent(id);
     } catch (err) {
       console.error('Failed to stop agent:', err);
-      // The server rolls its own state back; mirror that locally so the
-      // card doesn't stay stuck on "stopping" with disabled buttons.
+      // Mirror ProcessManager.Stop's rollback-to-previous so the card
+      // doesn't stay stuck on "stopping" with disabled buttons.
       setAgents(prev => prev.map(a =>
-        a.id === id ? { ...a, status: 'running', error: err.message } : a
+        a.id === id ? { ...a, status: prevStatus || 'running', error: err.message } : a
       ));
     }
-  }, []);
+  }, [agents]);
 
   const handleRescan = useCallback(async () => {
     setLoading(true);

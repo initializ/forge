@@ -89,6 +89,15 @@ func NewProcessManager(exePath string, broker *SSEBroker, basePort int) *Process
 	}
 }
 
+// broadcastStatus emits a snapshot of info rather than the pointer itself.
+// SSEBroker queues events and handleSSE marshals them when it drains the
+// channel, so sharing the pointer would let a later mutation rewrite an
+// already-queued event — a "stopping" event would serialize as "stopped".
+func (pm *ProcessManager) broadcastStatus(info *AgentInfo) {
+	snapshot := *info
+	pm.broker.Broadcast(SSEEvent{Type: "agent_status", Data: &snapshot})
+}
+
 // Start launches an agent via `forge serve start`.
 func (pm *ProcessManager) Start(agentID string, info *AgentInfo, passphrase string) error {
 	pm.mu.Lock()
@@ -124,7 +133,7 @@ func (pm *ProcessManager) Start(agentID string, info *AgentInfo, passphrase stri
 
 		info.Status = StateErrored
 		info.Error = errMsg
-		pm.broker.Broadcast(SSEEvent{Type: "agent_status", Data: info})
+		pm.broadcastStatus(info)
 
 		return fmt.Errorf("forge serve start failed: %s", errMsg)
 	}
@@ -144,7 +153,7 @@ func (pm *ProcessManager) Start(agentID string, info *AgentInfo, passphrase stri
 
 		info.Status = StateErrored
 		info.Error = errMsg
-		pm.broker.Broadcast(SSEEvent{Type: "agent_status", Data: info})
+		pm.broadcastStatus(info)
 
 		return fmt.Errorf("agent failed to start: %s", errMsg)
 	}
@@ -152,7 +161,7 @@ func (pm *ProcessManager) Start(agentID string, info *AgentInfo, passphrase stri
 	info.Status = StateRunning
 	info.Port = port
 	info.Error = ""
-	pm.broker.Broadcast(SSEEvent{Type: "agent_status", Data: info})
+	pm.broadcastStatus(info)
 
 	return nil
 }
@@ -238,15 +247,41 @@ func (pm *ProcessManager) readServeLogs(agentDir string) string {
 }
 
 // Stop stops an agent via `forge serve stop`.
-func (pm *ProcessManager) Stop(agentID string, agentDir string) error {
+//
+// Takes the full *AgentInfo so every broadcast carries a complete record:
+// fields without omitempty marshal as zero values, and the dashboard merges
+// events by object spread, so a stub event blanks the card's metadata.
+func (pm *ProcessManager) Stop(agentID string, info *AgentInfo) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
+	// Announce before the blocking cmd.Run() — the HTTP handler won't
+	// respond until it returns, so this is the only thing that can flip
+	// the card to "stopping". SSE is served on its own goroutine.
+	prevStatus, prevPort := info.Status, info.Port
+	info.Status = StateStopping
+	pm.broadcastStatus(info)
+
 	cmd := exec.Command(pm.exePath, "serve", "stop")
-	cmd.Dir = agentDir
+	cmd.Dir = info.Directory
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("forge serve stop failed: %w", err)
+		errMsg := strings.TrimSpace(stderr.String())
+		if errMsg == "" {
+			errMsg = err.Error()
+		}
+
+		// Roll back, or the card stays wedged on "stopping" with its
+		// buttons disabled.
+		info.Status = prevStatus
+		info.Port = prevPort
+		info.Error = errMsg
+		pm.broadcastStatus(info)
+
+		return fmt.Errorf("forge serve stop failed: %s", errMsg)
 	}
 
 	if port, ok := pm.allocated[agentID]; ok {
@@ -254,11 +289,11 @@ func (pm *ProcessManager) Stop(agentID string, agentDir string) error {
 		delete(pm.allocated, agentID)
 	}
 
-	pm.broker.Broadcast(SSEEvent{Type: "agent_status", Data: &AgentInfo{
-		ID:        agentID,
-		Directory: agentDir,
-		Status:    StateStopped,
-	}})
+	// Clear the port — otherwise a stopped card still shows a port tag.
+	info.Status = StateStopped
+	info.Port = 0
+	info.Error = ""
+	pm.broadcastStatus(info)
 
 	return nil
 }

@@ -3286,10 +3286,21 @@ function App() {
   }, [passphrasePrompt]);
 
   const handleStop = useCallback(async (id) => {
+    // Flip to "stopping" on click. The server broadcasts this too, but
+    // SSEBroker.Broadcast drops events for a full buffer, so the click
+    // must not depend on the stream to feel responsive.
+    setAgents(prev => prev.map(a =>
+      a.id === id ? { ...a, status: 'stopping', error: '' } : a
+    ));
     try {
       await stopAgent(id);
     } catch (err) {
       console.error('Failed to stop agent:', err);
+      // The server rolls its own state back; mirror that locally so the
+      // card doesn't stay stuck on "stopping" with disabled buttons.
+      setAgents(prev => prev.map(a =>
+        a.id === id ? { ...a, status: 'running', error: err.message } : a
+      ));
     }
   }, []);
 

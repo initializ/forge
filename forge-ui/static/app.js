@@ -461,6 +461,13 @@ function useChatStream(agentId) {
   const [sessionId, setSessionId] = useState(null);
   const abortRef = useRef(null);
 
+  // Abort any in-flight stream on unmount. Switching agents remounts this
+  // hook (ChatPage is keyed by agent id), so without this the previous
+  // agent's request keeps streaming into a dead component.
+  useEffect(() => () => {
+    if (abortRef.current) abortRef.current.abort();
+  }, []);
+
   const loadSession = useCallback(async (sid) => {
     try {
       const data = await fetchSession(agentId, sid);
@@ -3321,7 +3328,12 @@ function App() {
   const renderPage = () => {
     switch (route.page) {
       case 'chat':
-        return html`<${ChatPage} agentId=${route.params.id} agents=${agents} />`;
+        // key forces a fresh instance per agent. Without it Preact reuses
+        // the mounted ChatPage on an agentId change, and useState survives
+        // — so messages/sessionId/streaming stay on the previous agent
+        // while the header and session list (props / agentId-keyed effect)
+        // correctly re-render.
+        return html`<${ChatPage} key=${route.params.id} agentId=${route.params.id} agents=${agents} />`;
       case 'create':
         return html`<${CreatePage} />`;
       case 'config':

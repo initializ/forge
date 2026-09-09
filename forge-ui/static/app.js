@@ -256,12 +256,19 @@ function useSSE(onEvent) {
   useEffect(() => {
     const es = new EventSource('/api/events');
 
-    es.addEventListener('agent_status', (e) => {
+    // EventSource dispatches by `event:` name, so every type the server
+    // broadcasts needs an explicit listener — an unlisted one is silently
+    // dropped. agent_created (handlers_create.go) was being dropped, which
+    // is why a newly created agent only appeared after a refresh or the
+    // 60s poll. The type is forwarded so the caller can tell them apart.
+    const forward = (type) => (e) => {
       try {
-        const data = JSON.parse(e.data);
-        callbackRef.current(data);
+        callbackRef.current(type, JSON.parse(e.data));
       } catch { /* ignore parse errors */ }
-    });
+    };
+
+    es.addEventListener('agent_status', forward('agent_status'));
+    es.addEventListener('agent_created', forward('agent_created'));
 
     es.onerror = () => {
       // EventSource auto-reconnects
@@ -3240,7 +3247,15 @@ function App() {
   }, [loadAgents]);
 
   // SSE real-time updates
-  useSSE((agentData) => {
+  useSSE((type, agentData) => {
+    // agent_created carries only {id, directory}, not a full AgentInfo, so
+    // refetch to pick up the record the cards render from (model, tools,
+    // channels, status). The merge below deliberately ignores unknown ids,
+    // so a create can't be handled there.
+    if (type === 'agent_created') {
+      loadAgents();
+      return;
+    }
     setAgents(prev => {
       const idx = prev.findIndex(a => a.id === agentData.id);
       if (idx === -1) return prev;

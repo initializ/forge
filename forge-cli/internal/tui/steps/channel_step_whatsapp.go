@@ -210,8 +210,6 @@ func (s *ChannelStep) viewWhatsappPair() string {
 			b.WriteString("\n")
 		}
 
-		fmt.Fprintf(&b, "  %s\n", s.styles.ErrorTxt.Render("Use a DEDICATED number, not your personal one —"))
-		fmt.Fprintf(&b, "  %s\n\n", s.styles.ErrorTxt.Render("WhatsApp may ban numbers used for automation."))
 		fmt.Fprintf(&b, "  %s\n", s.styles.DimTxt.Render("⣾ Waiting for the scan. The code refreshes automatically."))
 		fmt.Fprintf(&b, "  %s\n", s.styles.DimTxt.Render("(Press S to skip and pair later.)"))
 		return b.String()

@@ -93,6 +93,14 @@ func NewProcessManager(exePath string, broker *SSEBroker, basePort int) *Process
 // SSEBroker queues events and handleSSE marshals them when it drains the
 // channel, so sharing the pointer would let a later mutation rewrite an
 // already-queued event — a "stopping" event would serialize as "stopped".
+//
+// The snapshot is a SHALLOW copy: it decouples the scalar fields this package
+// mutates (Status, Port, Error), but Tools, Channels and DeniedChannels still
+// alias the caller's backing arrays, and StartedAt stays a shared pointer.
+// That is safe only because Start/Stop never write through them — they are
+// populated once by Scanner.scanDir and read-only thereafter. Mutating a slice
+// element in place (rather than replacing the slice) would reintroduce the
+// aliasing bug for that field, so deep-copy here if that ever changes.
 func (pm *ProcessManager) broadcastStatus(info *AgentInfo) {
 	snapshot := *info
 	pm.broker.Broadcast(SSEEvent{Type: "agent_status", Data: &snapshot})

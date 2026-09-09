@@ -20,6 +20,8 @@ Both channels use **outbound-only connections** — no public URLs, no ngrok, no
 |---------|---------|------|-------------|
 | Slack | `slack.Plugin` | Socket Mode | 3000 |
 | Telegram | `telegram.Plugin` | Polling or Webhook | 3001 |
+| MS Teams | `msteams.Plugin` | Graph API polling | — (outbound only) |
+| WhatsApp | `whatsapp.Plugin` | WhatsApp Web (paired session) | — (outbound only) |
 
 > **Note:** Slack uses Socket Mode — an outbound WebSocket connection from the agent to Slack's servers. No public URL or ngrok is needed for local development.
 
@@ -31,6 +33,9 @@ forge channel add slack
 
 # Add Telegram adapter
 forge channel add telegram
+
+# Add WhatsApp adapter (then pair: forge channel whatsapp-login)
+forge channel add whatsapp
 ```
 
 This command:
@@ -174,6 +179,131 @@ Environment variables:
 Mode options:
 - `polling` (default) — Long-polling via `getUpdates`
 - `webhook` — Receives updates via HTTP webhook (loopback-only binding with secret token verification)
+
+### WhatsApp (`whatsapp-config.yaml`)
+
+```yaml
+adapter: whatsapp
+settings:
+  session_path: .forge/channels/whatsapp-session.db
+  admit: dm_or_group_mention   # dm | group_mention | dm_or_group_mention
+  allowed_groups: ""           # comma/newline-separated group JIDs; empty = all
+  allowed_senders: ""          # empty = OWNER ONLY; "anyone" opens it up
+  self_chat: true              # answer your own "Message Yourself" chat
+  include_recent_history: true
+  recent_history_count: 20
+```
+
+| Setting | Default | Notes |
+|---|---|---|
+| `session_path` | `.forge/channels/whatsapp-session.db` | The paired session. **This file is the credential.** |
+| `admit` | `dm_or_group_mention` | Group traffic always requires an explicit @-mention. |
+| `allowed_groups` | *(all)* | Group JIDs; the `@g.us` suffix may be omitted. |
+| `allowed_senders` | *(owner only)* | Empty admits only the paired account. List numbers to add people, or set `anyone` to open it up. The owner always passes. |
+| `self_chat` | `true` | Answer messages you send yourself. |
+| `include_recent_history` | `true` | Injects observed chat context into the prompt. |
+| `recent_history_count` | `20` | Per-chat window; block soft-capped at ~5000 chars. |
+
+Unlike every other adapter's list settings, **a space is not a separator** in
+`allowed_senders` — a space is part of a written phone number
+(`+1 (415) 555-0100`). Use commas or newlines.
+
+### Talking to your own agent
+
+The paired number *is* the agent. The simplest way to use it is WhatsApp's
+**Message Yourself** chat: open it on the paired phone and type. No second
+account needed.
+
+That works because `self_chat` is on by default. Your own messages arrive
+flagged as self-sent, and so do the agent's replies — the loop guard is the
+dedup ring, which records every message the agent sends before it can come
+back around. Self-messages are accepted **only** in that chat, never in groups.
+
+To have the agent serve other people instead, list them:
+
+```yaml
+allowed_senders: "+1 (415) 555-0100, +44 7700 900123"
+```
+
+`allowed_senders` is **owner-only when empty** — a stranger who happens to have
+the number gets nothing. That is deliberate: an open agent spends your LLM
+budget and reaches whatever tools it has. Opening it up is an explicit choice:
+
+```yaml
+allowed_senders: anyone
+```
+
+### Messages from before the agent started
+
+Reconnecting delivers a backlog, and a restart begins with an empty dedup ring.
+Messages dated more than five minutes before the process started are dropped
+rather than answered, so a restart doesn't reply to a replayed conversation —
+and, in the self-chat, doesn't answer the agent's own replayed replies.
+
+A brief restart still picks up anything sent while the agent was down.
+
+## WhatsApp Setup
+
+WhatsApp has no bot token. The adapter authenticates by linking itself as a
+WhatsApp Web device, exactly like the desktop client:
+
+```bash
+forge channel add whatsapp
+forge channel whatsapp-login     # renders a QR code in the terminal
+# phone: WhatsApp → Settings → Linked Devices → Link a Device → scan
+forge run --with whatsapp
+```
+
+The pairing is written to `session_path`. Keep it out of version control and
+off shared volumes — anyone holding that file can send messages as the linked
+account. Re-pairing requires `--force`, so re-running the login command by
+accident cannot revoke a working session.
+
+### Terms of Service and ban risk
+
+This adapter speaks the **WhatsApp Web multidevice protocol** (via
+[whatsmeow](https://pkg.go.dev/go.mau.fi/whatsmeow)), not the official WhatsApp
+Cloud API and not Twilio. Automating that protocol is against WhatsApp's Terms
+of Service and can get the linked number banned. The ban attaches to the phone
+number, not the machine, and is not reliably reversible.
+
+**Pair a dedicated number, never a personal one.** If you need a
+ToS-sanctioned path, the WhatsApp Cloud API is a different integration and is
+not what this adapter implements.
+
+### Identities: phone numbers and LIDs
+
+WhatsApp is migrating group participants to hidden-number identifiers (LIDs,
+`<id>@lid`) instead of phone numbers. The adapter tracks both identities for
+the paired account, so an @-mention resolves under either. For
+`allowed_senders`, a LID sender is matched via the phone-number alternate the
+server supplies; when no alternate is available the message is dropped and the
+log line names the LID so you can add it to the list directly.
+
+### Group history is observed, not fetched
+
+`include_recent_history` works differently here than in the Teams adapter.
+Microsoft Graph exposes `/chats/{id}/messages`, so Teams can fetch prior
+messages on demand. WhatsApp has no equivalent for a linked device — history
+reaches one only through a sync push at pairing time. The adapter therefore
+builds its context window from traffic it observes while running.
+
+The consequence: **context covers messages seen since the adapter started, and
+is lost on restart.** An agent restarted mid-conversation will not see what
+came before.
+
+### Not supported
+
+- **DEFER approvals and MCP delegated consent.** WhatsApp's interactive
+  message types are unreliable over the Web protocol, so the adapter
+  implements neither `ApprovalDeliverer` nor `ConsentDeliverer`. A
+  `security.defer` route naming `whatsapp` will warn at startup; resolve those
+  approvals via `POST /tasks/{id}/decisions` instead.
+- **`UserEmail` on inbound events.** WhatsApp has no email identity, so
+  delegated (`auth.type: user`) MCP tools cannot resolve an on-behalf-of
+  subject on this channel.
+- **Media.** Attachments are not downloaded or sent; captions on inbound media
+  are read as prompt text.
 
 ### Telegram Webhook Security
 

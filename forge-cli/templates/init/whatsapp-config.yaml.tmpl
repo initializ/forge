@@ -1,0 +1,67 @@
+adapter: whatsapp
+
+settings:
+  # Paired session store, written by `forge channel whatsapp-login`.
+  # Relative paths resolve against the project root.
+  #
+  # This file IS the credential — anyone holding it can send messages as the
+  # linked account. Keep it out of version control and off shared volumes.
+  session_path: .forge/channels/whatsapp-session.db
+
+  # Admission policy: which messages reach the agent.
+  # - "dm": only 1:1 chats
+  # - "group_mention": only group messages that @-mention the agent
+  # - "dm_or_group_mention" (default, recommended): either
+  #
+  # An agent in a group must not answer every line of an unrelated human
+  # conversation, so group traffic always requires an explicit mention.
+  admit: dm_or_group_mention
+
+  # Restrict which groups the agent acts in. Empty = every group it is a
+  # member of, still subject to `admit`. Comma- or newline-separated group
+  # JIDs ("120363000000000000@g.us"); the "@g.us" suffix may be omitted.
+  allowed_groups: ""
+
+  # Who may invoke the agent.
+  #
+  # EMPTY MEANS OWNER ONLY — the paired account is the sole permitted sender.
+  # Anyone who has the number can otherwise reach the agent, spend its LLM
+  # budget and use whatever it can access, so the closed default is the safe
+  # one. The owner always passes regardless of this list.
+  #
+  # To admit other people, list them: comma- or newline-separated phone
+  # numbers in any written form ("+1 (415) 555-0100") or full JIDs.
+  # To open the agent to anyone with the number, set: allowed_senders: anyone
+  #
+  # NOTE: space is NOT a separator here, unlike other adapters' list settings —
+  # a space is part of a written phone number.
+  #
+  # WhatsApp is migrating group participants to hidden-number LIDs. A LID
+  # sender is matched via its phone-number alternate when the server supplies
+  # one; when it doesn't, the message is dropped and the reason names the LID
+  # so you can add it to this list directly.
+  allowed_senders: ""
+
+  # Answer messages you send to yourself, in WhatsApp's "Message Yourself"
+  # chat. This is the personal-agent flow: pair once, then talk to the agent
+  # from the same phone, with no second account.
+  #
+  # Your own messages are what the agent reads there, and its own replies look
+  # identical on the wire — the loop guard is the dedup ring, which records
+  # every message the agent sends before it can come back. Self-messages are
+  # only ever accepted in this chat, never in groups.
+  self_chat: true
+
+  # Prepend recently observed messages from the chat to each dispatched
+  # prompt, so the agent can answer "summarise the above" in a group.
+  #
+  # LIMITATION: unlike the MS Teams adapter, this window is built from traffic
+  # the adapter itself observed — WhatsApp has no server-side "fetch recent
+  # messages" API for a linked device. Context therefore covers messages seen
+  # since the adapter started and is lost on restart.
+  include_recent_history: true
+
+  # How many recent messages to keep per chat and inject as context. The
+  # rendered block is soft-capped at ~5000 chars to protect the LLM context
+  # budget, so very long messages may be trimmed before this count is reached.
+  recent_history_count: 20

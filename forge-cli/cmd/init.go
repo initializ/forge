@@ -17,6 +17,7 @@ import (
 	"github.com/initializ/forge/forge-cli/internal/tui/steps"
 	"github.com/initializ/forge/forge-cli/skills"
 	"github.com/initializ/forge/forge-cli/templates"
+	"github.com/initializ/forge/forge-core/catalog"
 	"github.com/initializ/forge/forge-core/llm/oauth"
 	"github.com/initializ/forge/forge-core/secrets"
 	"github.com/initializ/forge/forge-core/tools/builtins"
@@ -1242,20 +1243,15 @@ func buildTemplateData(opts *initOptions) templateData {
 	return data
 }
 
-// defaultModelNameForProvider returns the default model name for wizard templates.
+// defaultModelNameForProvider returns the default model name for wizard
+// templates, sourced from the catalog so it cannot drift from the model
+// pickers it scaffolds alongside. "default" is the custom-provider
+// placeholder (custom entries carry no DefaultModel).
 func defaultModelNameForProvider(provider string) string {
-	switch provider {
-	case "openai":
-		return "gpt-5.4"
-	case "anthropic":
-		return "claude-sonnet-4-20250514"
-	case "gemini":
-		return "gemini-2.5-flash"
-	case "ollama":
-		return "llama3"
-	default:
-		return "default"
+	if p, ok := catalog.ProviderByID(provider); ok && p.DefaultModel != "" {
+		return p.DefaultModel
 	}
+	return "default"
 }
 
 // buildEnvVars builds the list of environment variables for the .env file.

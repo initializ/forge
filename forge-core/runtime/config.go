@@ -149,7 +149,9 @@ func ResolveModelConfig(cfg *types.ForgeConfig, envVars map[string]string, provi
 func defaultModelForProvider(provider string) string {
 	switch provider {
 	case "openai", llm.ProviderOpenAIResponses:
-		return "gpt-5.4"
+		// gpt-5.4 retired from Codex ChatGPT sign-in on 2026-08-31, so it
+		// cannot be the default an OAuth agent falls back to.
+		return "gpt-5.6-terra"
 	case "anthropic":
 		return "claude-sonnet-4-20250514"
 	case "gemini":

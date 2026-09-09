@@ -39,8 +39,8 @@ func TestResolveModelConfig_OpenAIResponses(t *testing.T) {
 	if mc.Client.OrgID != "org-abc" {
 		t.Errorf("OrgID = %q, want org-abc", mc.Client.OrgID)
 	}
-	if mc.Client.Model != "gpt-5.4" {
-		t.Errorf("Model = %q, want the openai default gpt-5.4", mc.Client.Model)
+	if mc.Client.Model != "gpt-5.6-terra" {
+		t.Errorf("Model = %q, want the openai default gpt-5.6-terra", mc.Client.Model)
 	}
 	if mc.Client.AuthScheme != "apikey_header" {
 		t.Errorf("AuthScheme = %q, want apikey_header carried onto the client", mc.Client.AuthScheme)
@@ -429,7 +429,8 @@ func TestDefaultModelForProvider(t *testing.T) {
 		provider string
 		expected string
 	}{
-		{"openai", "gpt-5.4"},
+		// gpt-5.4 retired from Codex ChatGPT sign-in on 2026-08-31.
+		{"openai", "gpt-5.6-terra"},
 		{"anthropic", "claude-sonnet-4-20250514"},
 		{"gemini", "gemini-2.5-flash"},
 		{"ollama", "llama3"},

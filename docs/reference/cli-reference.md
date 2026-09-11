@@ -606,6 +606,20 @@ The `forge.agent.id` label on the generated Secret is always sourced from `forge
 
 ---
 
+## `forge settings`
+
+Inspect the effective forge [settings](settings.md) — the developer-surface config (enabled channels, default model + gateway, builtin tools) resolved across the user → project → CLI → managed layers.
+
+```bash
+forge settings                                  # loaded layers + effective settings
+forge settings show --json                      # machine-readable
+forge settings show --settings ./ci.json        # add a CLI-precedence layer
+```
+
+Output lists each loaded layer lowest → highest with its file path, flags a managed `available_models` **LOCK**, and prints the merged result. Settings are the positive/developer surface; the deny surface is [platform policy](../security/platform-policy.md). See the [Settings reference](settings.md) for the schema, precedence, and managed (MDM) file locations.
+
+---
+
 ## `forge key`
 
 Manage Ed25519 signing keys.

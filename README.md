@@ -124,6 +124,7 @@ You write a `SKILL.md`. Forge compiles it into a secure, runnable agent with egr
 | [A2A Agent Card](docs/reference/a2a-agent-card.md) | Spec-conformant Agent Card at `/.well-known/agent-card.json` (A2A 0.3.0) |
 | [Commands](docs/reference/cli-reference.md) | Full CLI reference |
 | [Configuration](docs/reference/forge-yaml-schema.md) | `forge.yaml` schema and environment variables |
+| [Settings](docs/reference/settings.md) | Layered developer settings (user + managed/MDM) — enabled channels, model default + gateway, builtin tools |
 | [Dashboard](docs/reference/web-dashboard.md) | Web UI features and architecture |
 | [Deployment](docs/deployment/kubernetes.md) | Container packaging, Kubernetes, air-gap |
 | [Scheduler — Kubernetes](docs/deployment/scheduler-kubernetes.md) | Hybrid file/CronJob scheduler backend, RBAC, token plumbing |

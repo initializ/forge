@@ -11,6 +11,7 @@ import (
 	"github.com/initializ/forge/forge-cli/internal/devicecode"
 	"github.com/initializ/forge/forge-cli/internal/tui"
 	"github.com/initializ/forge/forge-cli/internal/tui/components"
+	"github.com/initializ/forge/forge-cli/internal/wapair"
 
 	"github.com/initializ/forge/forge-core/catalog"
 )
@@ -24,6 +25,7 @@ const (
 	channelMsteamsClientIDPhase
 	channelMsteamsClientSecretPhase
 	channelMsteamsDeviceLoginPhase
+	channelWhatsappPairPhase
 	channelDonePhase
 )
 
@@ -47,6 +49,26 @@ type msteamsRefreshTokenReadyMsg struct {
 	err   error
 }
 
+// whatsapp QR-pairing sub-states inside channelWhatsappPairPhase.
+type whatsappPairStatus int
+
+const (
+	whatsappPairConnecting whatsappPairStatus = iota // opening the socket
+	whatsappPairScanning                             // showing a QR, waiting for the scan
+	whatsappPairFinalizing                           // scanned; post-pair handshake running
+	whatsappPairErr                                  // failed; show retry/skip
+)
+
+// Tea messages produced by the pairing goroutine.
+type whatsappSessionStartedMsg struct {
+	session *wapair.Session
+	err     error
+}
+type whatsappPairEventMsg struct {
+	event wapair.Event
+	ok    bool // false once the event stream closes
+}
+
 // ChannelStep handles channel connector selection.
 type ChannelStep struct {
 	styles   *tui.StyleSet
@@ -62,6 +84,17 @@ type ChannelStep struct {
 	loginErr    string
 	channel     string
 	tokens      map[string]string
+
+	// whatsapp QR-pairing state. The session is paired into a temp store
+	// because the project directory does not exist yet at wizard time;
+	// scaffold moves the file into place afterwards.
+	pairStatus      whatsappPairStatus
+	pairSession     *wapair.Session
+	pairSessionPath string
+	pairQR          string
+	pairErr         string
+	pairJID         string
+	pairTempDir     string
 }
 
 // channelSelectItems projects the catalog channels into TUI select items.
@@ -140,6 +173,8 @@ func (s *ChannelStep) Update(msg tea.Msg) (tui.Step, tea.Cmd) {
 		return s.updateMsteamsClientSecretPhase(msg)
 	case channelMsteamsDeviceLoginPhase:
 		return s.updateMsteamsDeviceLoginPhase(msg)
+	case channelWhatsappPairPhase:
+		return s.updateWhatsappPairPhase(msg)
 	}
 
 	return s, nil
@@ -157,6 +192,13 @@ func (s *ChannelStep) updateSelectPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
 		case "none":
 			s.complete = true
 			return s, func() tea.Msg { return tui.StepCompleteMsg{} }
+		case "whatsapp":
+			// No token to collect — WhatsApp authenticates by QR pairing, run
+			// inline here against a live socket.
+			s.phase = channelWhatsappPairPhase
+			s.pairStatus = whatsappPairConnecting
+			s.pairErr = ""
+			return s, s.startWhatsappPairCmd()
 		case "telegram":
 			s.phase = channelTokenPhase
 			s.keyInput = components.NewSecretInput(
@@ -496,6 +538,8 @@ func (s *ChannelStep) View(width int) string {
 		return ins + s.keyInput.View(width)
 	case channelMsteamsDeviceLoginPhase:
 		return s.viewMsteamsDeviceLogin()
+	case channelWhatsappPairPhase:
+		return s.viewWhatsappPair()
 	}
 	return ""
 }
@@ -552,6 +596,8 @@ func (s *ChannelStep) Summary() string {
 		return "Slack"
 	case "msteams":
 		return "MS Teams"
+	case "whatsapp":
+		return "WhatsApp"
 	}
 	return s.channel
 }

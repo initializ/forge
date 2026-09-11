@@ -711,6 +711,14 @@ func parseSkillsFile(path string) ([]toolEntry, error) {
 	return tools, nil
 }
 
+// initTemplateFuncs are the helpers available to the init templates.
+// yamlScalar quotes values that would otherwise be misparsed — notably a
+// wildcard egress domain ("*.whatsapp.net"), whose leading "*" YAML reads as
+// an alias reference.
+var initTemplateFuncs = template.FuncMap{
+	"yamlScalar": yamlScalar,
+}
+
 func scaffold(opts *initOptions) error {
 	normalizeCustomProvider(opts)
 
@@ -733,6 +741,11 @@ func scaffold(opts *initOptions) error {
 		}
 	}
 
+	// Move a session paired inline by the wizard into the project. Consumes
+	// the synthetic key BEFORE buildTemplateData so the temp path can never
+	// reach the generated .env.
+	whatsappPaired, whatsappRelocErr := relocateWhatsappSession(opts, dir)
+
 	data := buildTemplateData(opts)
 	manifest := getFileManifest(opts)
 
@@ -742,7 +755,7 @@ func scaffold(opts *initOptions) error {
 			return fmt.Errorf("reading template %s: %w", f.TemplatePath, err)
 		}
 
-		tmpl, err := template.New(f.TemplatePath).Parse(tmplContent)
+		tmpl, err := template.New(f.TemplatePath).Funcs(initTemplateFuncs).Parse(tmplContent)
 		if err != nil {
 			return fmt.Errorf("parsing template %s: %w", f.TemplatePath, err)
 		}
@@ -860,6 +873,13 @@ func scaffold(opts *initOptions) error {
 		return nil
 	}
 
+	// Surface a failed session relocation here rather than aborting: the
+	// project is scaffolded and usable, only the pairing is missing.
+	if whatsappRelocErr != nil {
+		fmt.Printf("\n  Warning: could not install the paired WhatsApp session: %v\n", whatsappRelocErr)
+		fmt.Printf("  Re-pair with: forge channel whatsapp-login\n")
+	}
+
 	fmt.Printf("\nCreated agent project in ./%s\n", opts.AgentID)
 
 	// Show channel-specific reminders
@@ -867,6 +887,16 @@ func scaffold(opts *initOptions) error {
 		if ch == "slack" {
 			fmt.Println()
 			fmt.Println("  Slack reminder: /invite @YourBot in each channel you want it active in.")
+		}
+		if ch == "whatsapp" {
+			fmt.Println()
+			if whatsappPaired {
+				fmt.Println("  WhatsApp: paired. The session is at .forge/channels/whatsapp-session.db")
+				fmt.Println("  — that file is the credential; keep it out of version control.")
+			} else {
+				fmt.Println("  WhatsApp: not paired yet. Run `forge channel whatsapp-login`")
+				fmt.Println("  from the project directory before `forge run --with whatsapp`.")
+			}
 		}
 	}
 

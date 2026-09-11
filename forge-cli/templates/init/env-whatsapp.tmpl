@@ -1,0 +1,11 @@
+# WhatsApp channel adapter.
+#
+# There is no bot token: WhatsApp Web authenticates by QR pairing, and the
+# resulting session lives in the file named by session_path in
+# whatsapp-config.yaml (default .forge/channels/whatsapp-session.db).
+# Pair with:  forge channel whatsapp-login
+#
+# Optional — override the session store location. Uncomment and set to use a
+# path other than the one in whatsapp-config.yaml (for example a mounted
+# volume in a container deployment).
+# WHATSAPP_SESSION_PATH=

@@ -40,6 +40,16 @@ var channels = []Channel{
 			{EnvVar: "MSTEAMS_CLIENT_SECRET", Prompt: "MS Teams Client Secret (from Entra app)", Secret: true},
 		},
 	},
+	{
+		ID:          "whatsapp",
+		Label:       "WhatsApp",
+		Description: "QR pairing via WhatsApp Web, no public URL needed",
+		Icon:        "\U0001F4AC",
+		// WhatsApp has no bot token. The session is a QR pairing captured by
+		// an interactive device-login flow, so there is nothing to prompt for
+		// here — same reason MSTEAMS_REFRESH_TOKEN is absent above.
+		Credentials: nil,
+	},
 }
 
 // AllChannels returns the catalog of messaging channels in display order.

@@ -24,7 +24,7 @@ func (s *UIServer) handleGetWizardMeta(w http.ResponseWriter, _ *http.Request) {
 	meta := WizardMetadata{
 		Providers:  []string{"openai", "anthropic", "gemini", "ollama", "custom"},
 		Frameworks: []string{"forge", "crewai", "langchain"},
-		Channels:   []string{"slack", "telegram"},
+		Channels:   []string{"slack", "telegram", "msteams", "whatsapp"},
 	}
 
 	// Per-provider model lists

@@ -9,6 +9,11 @@ var DefaultCapabilityBundles = map[string][]string{
 	// (graph.microsoft.us / microsoftgraph.chinacloudapi.cn / their respective
 	// login hosts) via egress.allowed_domains.
 	"msteams": {"graph.microsoft.com", "login.microsoftonline.com"},
+	// WhatsApp Web multidevice. The websocket is a fixed host; media hosts are
+	// handed to the client at runtime by the server (mmg, mmg-fallback and
+	// regional media-*.cdn names), so the media side has to be a wildcard —
+	// pinning today's hostnames would break on the next CDN reshuffle.
+	"whatsapp": {"web.whatsapp.com", "*.whatsapp.net"},
 }
 
 // ResolveCapabilities returns a deduplicated list of domains for the given capability names.

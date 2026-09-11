@@ -25,18 +25,37 @@ const (
 // layers' FORGE_SYSTEM_POLICY. EnvManagedSettings points at the managed file;
 // its sibling managed-settings.d/ directory is derived from it.
 //
-// NOTE: EnvManagedSettings is honored unconditionally, so the managed layer's
-// SOURCE is user-redirectable — settings are the developer surface, an org
-// *default/preference*, not a tamper-proof boundary. Do not rely on a managed
-// available_models list as a hard control: non-overridable forbidden-model
-// enforcement lives in platform policy (server-side, control-plane injected;
-// see forge-core/security/platform_policy_layers.go). This mirrors the policy
-// loader, whose FORGE_SYSTEM_POLICY is likewise redirectable — the authoritative
-// enforcement in both cases is the control plane, not a local file.
-const (
-	EnvManagedSettings = "FORGE_MANAGED_SETTINGS"
-	EnvUserSettings    = "FORGE_USER_SETTINGS"
-)
+// EnvUserSettings redirects the USER layer's file (test isolation /
+// XDG-style installs). Redirecting the user's own lowest-precedence layer is
+// harmless — managed settings still override it — so this env is honored in
+// production.
+//
+// There is deliberately NO env override for the MANAGED layer. Managed
+// settings are the enterprise tier and MUST NOT be developer-overridable: the
+// whole point of the MDM/managed source is that a developer running the
+// shipped binary cannot redirect, replace, or drop it. Production reads only
+// the fixed OS system path (managedDir), whose tamper-resistance is the OS file
+// permissions on a managed machine (root-owned; the same model as Claude Code's
+// fixed managed-settings.json path). Tests inject a managed dir via
+// SetManagedDirForTest — an in-code hook reachable only by recompiling, never
+// by env/flag/config at runtime.
+const EnvUserSettings = "FORGE_USER_SETTINGS"
+
+// managedDirOverride is a TEST-ONLY injection point for the managed system
+// directory, set via SetManagedDirForTest. It is never populated from any
+// runtime input (env, flag, config), so it cannot be used to override managed
+// settings on the shipped binary.
+var managedDirOverride string
+
+// SetManagedDirForTest points the managed layer at dir (containing
+// managed-settings.json and an optional managed-settings.d/) and returns a
+// restore func. TEST-ONLY: nothing in the production code path calls it, so a
+// developer cannot use it to override managed settings without recompiling.
+func SetManagedDirForTest(dir string) (restore func()) {
+	prev := managedDirOverride
+	managedDirOverride = dir
+	return func() { managedDirOverride = prev }
+}
 
 // Layer is one loaded settings source. Path is the file it came from (or the
 // managed primary file); ManagedLock is true only for the managed layer when
@@ -68,27 +87,27 @@ func UserSettingsPath() string {
 	return filepath.Join(home, ".forge", "settings.json")
 }
 
-// ManagedSettingsPath returns the OS system-directory managed-settings.json
-// (or the EnvManagedSettings override), mirroring Claude Code's locations.
+// ManagedSettingsPath returns the fixed OS system-directory
+// managed-settings.json, mirroring Claude Code's locations. There is no
+// runtime override — see EnvUserSettings's comment.
 func ManagedSettingsPath() string {
-	if p := os.Getenv(EnvManagedSettings); p != "" {
-		return p
-	}
 	return filepath.Join(managedDir(), "managed-settings.json")
 }
 
 // managedDir is the OS system directory holding managed-settings.json and the
-// managed-settings.d/ drop-in directory.
+// managed-settings.d/ drop-in directory. The paths are FIXED (not derived from
+// user-settable env like %ProgramFiles%) so a developer cannot redirect the
+// managed layer at runtime; tamper-resistance is the OS file permissions on a
+// managed machine. managedDirOverride is honored ONLY for tests.
 func managedDir() string {
+	if managedDirOverride != "" {
+		return managedDirOverride
+	}
 	switch runtime.GOOS {
 	case "darwin":
 		return "/Library/Application Support/forge"
 	case "windows":
-		base := os.Getenv("ProgramFiles")
-		if base == "" {
-			base = `C:\Program Files`
-		}
-		return filepath.Join(base, "forge")
+		return `C:\Program Files\forge`
 	default: // linux, wsl, others
 		return "/etc/forge"
 	}
@@ -222,11 +241,12 @@ func loadFile(path string) (s Settings, present bool, err error) {
 
 // Resolve folds the layers (lowest → highest precedence) into the effective
 // Settings. The managed layer's AvailableModels, when set, REPLACES the merged
-// union rather than adding to it — so no lower SETTINGS layer can widen the
-// org's allowlist. This is the authoritative allowlist among settings layers,
-// an org default/preference — NOT a tamper-proof control (the managed source is
-// redirectable via FORGE_MANAGED_SETTINGS; see that const). Non-overridable
-// forbidden-model enforcement is platform policy's job (server-side).
+// union rather than adding to it — so no lower layer can widen the org's
+// allowlist. Because the managed layer loads from a fixed OS path with no
+// runtime override (see managedDir / EnvUserSettings comment), a developer
+// cannot redirect it either; the allowlist is bounded by the OS file
+// permissions on the managed path. Platform policy (server-side) is the
+// defense-in-depth forbidden-model enforcement.
 func Resolve(layers []Layer) Settings {
 	var out Settings
 	managedAvailable := []string(nil)

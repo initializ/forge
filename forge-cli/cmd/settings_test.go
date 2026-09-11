@@ -20,7 +20,9 @@ func TestSettingsShow_MasksEnvValuesInHumanView(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	t.Setenv(settings.EnvUserSettings, userFile)
-	t.Setenv(settings.EnvManagedSettings, filepath.Join(dir, "no-managed.json"))
+	// Point the managed layer at an empty dir so the test doesn't pick up a
+	// real /etc/forge managed file (hermetic).
+	defer settings.SetManagedDirForTest(filepath.Join(dir, "no-managed"))()
 
 	// Human view: value masked, key shown.
 	var human bytes.Buffer

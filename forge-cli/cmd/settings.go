@@ -23,11 +23,11 @@ offered. They layer, highest precedence first:
   3. Project    (.forge/settings.local.json, then .forge/settings.json)
   4. User       (~/.forge/settings.json)
 
-Managed settings sit at the top and win over lower layers; a managed
-models.available_models is the authoritative allowlist among the settings
-layers (an org default). Settings are the developer surface, not a tamper-proof
-control — the non-overridable deny/forbidden-model enforcement is platform
-policy (forge-core/security), injected server-side by the control plane.`,
+Managed settings sit at the top and cannot be overridden by lower layers or by
+a developer at runtime: they load from a FIXED OS system path with no env/flag
+override, so a managed models.available_models is a real allowlist (bounded by
+the OS file permissions on that path). Platform policy (forge-core/security),
+injected server-side by the control plane, is the defense-in-depth deny surface.`,
 	RunE: settingsShowRun,
 }
 

@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -107,7 +109,7 @@ func TestLoadAllLayers_DiscoveryPrecedenceAndResolve(t *testing.T) {
 	writeJSON(t, managedFile, `{"models":{"default":{"provider":"anthropic","model":"claude-sonnet-4-6"},"available_models":["anthropic/claude-sonnet-4-6"]}}`)
 
 	t.Setenv(EnvUserSettings, userFile)
-	t.Setenv(EnvManagedSettings, managedFile)
+	defer SetManagedDirForTest(filepath.Join(dir, "managed"))()
 
 	layers, err := LoadAllLayers(LoadOptions{WorkingDir: wd})
 	if err != nil {
@@ -134,6 +136,27 @@ func TestLoadAllLayers_DiscoveryPrecedenceAndResolve(t *testing.T) {
 	}
 }
 
+func TestManagedSettingsPath_NotRuntimeOverridable(t *testing.T) {
+	// A developer running the shipped binary MUST NOT be able to redirect the
+	// managed layer. The removed FORGE_MANAGED_SETTINGS (and any env like
+	// ProgramFiles) must have no effect — production reads only the fixed OS
+	// system path.
+	t.Setenv("FORGE_MANAGED_SETTINGS", filepath.Join(t.TempDir(), "attacker.json"))
+	t.Setenv("ProgramFiles", filepath.Join(t.TempDir(), "evil"))
+	got := ManagedSettingsPath()
+	fixed := map[string]string{
+		"darwin":  "/Library/Application Support/forge/managed-settings.json",
+		"linux":   "/etc/forge/managed-settings.json",
+		"windows": `C:\Program Files\forge\managed-settings.json`,
+	}
+	if want, ok := fixed[runtime.GOOS]; ok && got != want {
+		t.Errorf("managed path = %q, want fixed %q (must not be env-redirectable)", got, want)
+	}
+	if strings.Contains(got, "attacker.json") || strings.Contains(got, "evil") {
+		t.Fatalf("managed path is redirectable by a developer: %q", got)
+	}
+}
+
 func TestManagedEmptyAvailableModels_IsUnsetNotLock(t *testing.T) {
 	// An empty (or absent) managed available_models must NOT lock to zero —
 	// it's "unset", so a lower layer's entries survive. []string can't
@@ -143,7 +166,7 @@ func TestManagedEmptyAvailableModels_IsUnsetNotLock(t *testing.T) {
 	writeJSON(t, managedFile, `{"models":{"available_models":[]}}`)
 	userFile := filepath.Join(dir, "user.json")
 	writeJSON(t, userFile, `{"models":{"available_models":["openai/gpt-4o"]}}`)
-	t.Setenv(EnvManagedSettings, managedFile)
+	defer SetManagedDirForTest(dir)()
 	t.Setenv(EnvUserSettings, userFile)
 
 	layers, err := LoadAllLayers(LoadOptions{WorkingDir: filepath.Join(dir, "empty")})
@@ -167,7 +190,7 @@ func TestLoadManagedDropins_MergedAlphabetically(t *testing.T) {
 	writeJSON(t, managedFile, `{"channels":{"enabled":["slack"]}}`)
 	writeJSON(t, filepath.Join(dir, "managed-settings.d", "20-tools.json"), `{"tools":{"builtins":{"enabled":["http_request"]}}}`)
 	writeJSON(t, filepath.Join(dir, "managed-settings.d", "10-channels.json"), `{"channels":{"enabled":["telegram"]}}`)
-	t.Setenv(EnvManagedSettings, managedFile)
+	defer SetManagedDirForTest(dir)()
 	// Neutralize the real user/home layer so the test is hermetic.
 	t.Setenv(EnvUserSettings, filepath.Join(dir, "no-such-user.json"))
 

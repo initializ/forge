@@ -39,14 +39,15 @@ type ModelSettings struct {
 	Default *ModelDefault `json:"default,omitempty"`
 
 	// AvailableModels is the allowlist of "<provider>/<model>" (or bare model)
-	// identifiers a user may select. When a MANAGED layer sets it, it becomes
-	// the authoritative allowlist AMONG THE SETTINGS LAYERS (Resolve replaces
-	// the union with it, so no lower settings layer can widen it) — an org
-	// default/preference, the positive counterpart to a policy forbidden-model
-	// deny. It is NOT a tamper-proof boundary: the managed source is
-	// redirectable via FORGE_MANAGED_SETTINGS, so real non-overridable
-	// forbidden-model enforcement lives in platform policy (server-side). When
-	// only non-managed layers set it, entries are merged (union).
+	// identifiers a user may select. When a MANAGED layer sets it, it is the
+	// authoritative allowlist (Resolve replaces the union with it) — no lower
+	// layer, and no developer at runtime, can widen it: managed settings load
+	// from a fixed OS path with no env/flag override (see layers.go), so on a
+	// managed machine the allowlist is bounded by the OS file permissions on
+	// that path. It is the positive counterpart to a policy forbidden-model
+	// deny; platform policy (server-side, control-plane injected) remains the
+	// defense-in-depth enforcement. When only non-managed layers set it,
+	// entries are merged (union).
 	AvailableModels []string `json:"available_models,omitempty"`
 
 	// Gateway injects the model endpoint (base_url + outbound auth scheme).

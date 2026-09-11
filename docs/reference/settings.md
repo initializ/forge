@@ -16,7 +16,7 @@ Highest wins. A managed value cannot be overridden by a lower layer.
 
 | # | Layer | Source |
 |---|---|---|
-| 1 | **Managed** | `managed-settings.json` in the OS system dir (+ `managed-settings.d/*.json`), or `FORGE_MANAGED_SETTINGS` |
+| 1 | **Managed** | `managed-settings.json` in the fixed OS system dir (+ `managed-settings.d/*.json`) — no env/flag override |
 | 2 | **Command line** | `--settings <file>` |
 | 3 | **Project local** | `.forge/settings.local.json` |
 | 4 | **Shared project** | `.forge/settings.json` |
@@ -24,7 +24,9 @@ Highest wins. A managed value cannot be overridden by a lower layer.
 
 **Merge:** list keys (`channels.enabled`, `tools.builtins.enabled`, and — when unlocked — `models.available_models`) are **unioned** across layers. Scalars (`models.default.*`, `models.gateway.*`) take the highest layer's non-empty value. `env` maps merge with higher keys winning.
 
-**Managed lock:** when a **managed** layer sets `models.available_models`, it replaces the union rather than adding to it, so no lower **settings** layer widens it — the authoritative allowlist *among the settings layers*, an org default. It is **not a tamper-proof control**: the managed source is redirectable via `FORGE_MANAGED_SETTINGS` (as the policy loader's system path is via `FORGE_SYSTEM_POLICY`), so a determined user can point it elsewhere. Non-overridable **forbidden-model enforcement is [platform policy](../security/platform-policy.md)'s job** — server-side, control-plane injected. Use settings for the org's preferred/default set; use policy to actually forbid. An empty/absent `available_models` is "unset" (no lock), not "lock to zero models".
+**Managed settings are not developer-overridable.** They load from a **fixed OS system path with no env or flag override** — a developer running the shipped binary cannot redirect, replace, or drop the managed layer (matching Claude Code, whose managed path is fixed for exactly this reason). Tamper-resistance is the OS file permissions on that path: on a managed machine it is root-owned and not user-writable.
+
+**Managed lock:** when a **managed** layer sets `models.available_models`, it replaces the union rather than adding to it, so no lower layer — and no developer at runtime — can widen it. Combined with the fixed path above, this is a real allowlist within the settings surface. [Platform policy](../security/platform-policy.md) (server-side, control-plane injected) remains the defense-in-depth forbidden-model enforcement — use settings for the org's allowed/default set, policy to hard-forbid regardless of client state. An empty/absent `available_models` is "unset" (no lock), not "lock to zero models".
 
 ### Managed settings locations (per OS)
 
@@ -34,7 +36,7 @@ Highest wins. A managed value cannot be overridden by a lower layer.
 | Linux / WSL | `/etc/forge/managed-settings.json` |
 | Windows | `C:\Program Files\forge\managed-settings.json` |
 
-Drop-in directory `managed-settings.d/` next to the file is merged in alphabetical order (primary first) — name files `10-…`, `20-…` to control order. Deliver via MDM, an image build, or config management. Managed settings can be dropped **alongside** a `policy.yaml` (the deny layer) on the same fleet.
+These paths are **fixed** — there is no env var to redirect them (a developer must not be able to point the managed layer at a file they control). Drop-in directory `managed-settings.d/` next to the file is merged in alphabetical order (primary first) — name files `10-…`, `20-…` to control order. Deliver via MDM, an image build, or config management, and ensure the path is root-owned / not user-writable. The forge system dir is shared with the policy layer, so managed settings sit **alongside** `policy.yaml` (the deny layer) — e.g. `/etc/forge/managed-settings.json` next to `/etc/forge/policy.yaml`.
 
 ## Schema
 
@@ -59,7 +61,7 @@ Drop-in directory `managed-settings.d/` next to the file is merged in alphabetic
 |---|---|---|
 | `channels.enabled` | `[]string` | Channel adapters offered/enabled by `forge init` / `run --with` / `channel add` |
 | `models.default` | `{provider, model}` | Default provider+model when none is given explicitly (seeds `forge try`/`init`) |
-| `models.available_models` | `[]string` | Allowlist of `<provider>/<model>`; a **managed** value is the authoritative settings-layer allowlist (an org default, not a hard boundary — see Managed lock). Empty = unset |
+| `models.available_models` | `[]string` | Allowlist of `<provider>/<model>`; a **managed** value is the authoritative allowlist (no lower layer or developer can widen it — see Managed lock). Empty = unset |
 | `models.gateway` | `{base_url, auth_scheme, auth_header_name}` | Model gateway endpoint injected into the scaffolded `forge.yaml` model block — mirrors the [`model` config](forge-yaml-schema.md) fields and the outbound [`auth_scheme`](../security/authentication.md) |
 | `tools.builtins.enabled` | `[]string` | Builtin tools offered/defaulted |
 | `env` | `map[string]string` | Environment defaults |

@@ -24,7 +24,7 @@ Highest wins. A managed value cannot be overridden by a lower layer.
 
 **Merge:** list keys (`channels.enabled`, `tools.builtins.enabled`, and — when unlocked — `models.available_models`) are **unioned** across layers. Scalars (`models.default.*`, `models.gateway.*`) take the highest layer's non-empty value. `env` maps merge with higher keys winning.
 
-**Managed lock:** when a **managed** layer sets `models.available_models`, it is **authoritative** — it replaces the union rather than adding to it, so a lower layer cannot widen what the org permits.
+**Managed lock:** when a **managed** layer sets `models.available_models`, it replaces the union rather than adding to it, so no lower **settings** layer widens it — the authoritative allowlist *among the settings layers*, an org default. It is **not a tamper-proof control**: the managed source is redirectable via `FORGE_MANAGED_SETTINGS` (as the policy loader's system path is via `FORGE_SYSTEM_POLICY`), so a determined user can point it elsewhere. Non-overridable **forbidden-model enforcement is [platform policy](../security/platform-policy.md)'s job** — server-side, control-plane injected. Use settings for the org's preferred/default set; use policy to actually forbid. An empty/absent `available_models` is "unset" (no lock), not "lock to zero models".
 
 ### Managed settings locations (per OS)
 
@@ -59,7 +59,7 @@ Drop-in directory `managed-settings.d/` next to the file is merged in alphabetic
 |---|---|---|
 | `channels.enabled` | `[]string` | Channel adapters offered/enabled by `forge init` / `run --with` / `channel add` |
 | `models.default` | `{provider, model}` | Default provider+model when none is given explicitly (seeds `forge try`/`init`) |
-| `models.available_models` | `[]string` | Allowlist of `<provider>/<model>`; a **managed** value is an authoritative lock |
+| `models.available_models` | `[]string` | Allowlist of `<provider>/<model>`; a **managed** value is the authoritative settings-layer allowlist (an org default, not a hard boundary — see Managed lock). Empty = unset |
 | `models.gateway` | `{base_url, auth_scheme, auth_header_name}` | Model gateway endpoint injected into the scaffolded `forge.yaml` model block — mirrors the [`model` config](forge-yaml-schema.md) fields and the outbound [`auth_scheme`](../security/authentication.md) |
 | `tools.builtins.enabled` | `[]string` | Builtin tools offered/defaulted |
 | `env` | `map[string]string` | Environment defaults |
@@ -72,7 +72,7 @@ forge settings show --json
 forge settings show --settings ./ci-settings.json   # add a CLI-precedence layer
 ```
 
-The output lists each loaded layer lowest → highest, flags a managed `available_models` **LOCK**, and prints the merged effective settings.
+The output lists each loaded layer lowest → highest, flags a managed `available_models` **LOCK**, and prints the merged effective settings. The default (human) view **masks `env` values** as `***` (keys shown) since `env` may carry secrets; `--json` emits values **verbatim** for your own machine-readable dump — don't paste it into shared channels.
 
 ## What consumes settings today
 

@@ -18,6 +18,7 @@ import (
 	"github.com/initializ/forge/forge-cli/internal/tryview"
 	"github.com/initializ/forge/forge-cli/runtime"
 	"github.com/initializ/forge/forge-core/llm/oauth"
+	"github.com/initializ/forge/forge-core/settings"
 	"github.com/initializ/forge/forge-core/types"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -84,6 +85,22 @@ func runTry(cmd *cobra.Command, args []string) error {
 	interactive := term.IsTerminal(int(os.Stdin.Fd()))
 	printTryHeader(out, accent, color)
 
+	// Forge settings (developer surface, #454): a configured default
+	// provider/model seeds resolution when no flag is given, and a configured
+	// model gateway is injected into the scaffolded agent below.
+	set, err := settings.Load(settings.LoadOptions{})
+	if err != nil {
+		return err
+	}
+	if d := set.Models.Default; d != nil {
+		if flags.provider == "" && d.Provider != "" {
+			flags.provider = d.Provider
+		}
+		if flags.model == "" && d.Model != "" {
+			flags.model = d.Model
+		}
+	}
+
 	res, err := resolveTryProvider(cmd.Context(), flags, os.Stdin, out, interactive, color)
 	if err != nil {
 		return err
@@ -101,6 +118,14 @@ func runTry(cmd *cobra.Command, args []string) error {
 	opts := quickstartPreset(res.Provider, res.Model)
 	opts.OutputDir = dir
 	opts.Force = true // forge owns this dir (a temp dir, or ./forge-quickstart)
+	// Inject the model gateway from settings (models.gateway, #454): base_url
+	// + outbound auth scheme land in the scaffolded forge.yaml model block, so
+	// an org points `forge try` at its gateway without per-agent config.
+	if gw := set.Models.Gateway; gw != nil {
+		opts.ModelBaseURL = gw.BaseURL
+		opts.ModelAuthScheme = gw.AuthScheme
+		opts.ModelAuthHeaderName = gw.AuthHeaderName
+	}
 
 	if err := scaffold(opts); err != nil {
 		return err

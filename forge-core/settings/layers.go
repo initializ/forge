@@ -21,10 +21,6 @@ const (
 	LayerManaged      = "managed"
 )
 
-// Env overrides (test isolation / non-standard installs), mirroring the policy
-// layers' FORGE_SYSTEM_POLICY. EnvManagedSettings points at the managed file;
-// its sibling managed-settings.d/ directory is derived from it.
-//
 // EnvUserSettings redirects the USER layer's file (test isolation /
 // XDG-style installs). Redirecting the user's own lowest-precedence layer is
 // harmless — managed settings still override it — so this env is honored in

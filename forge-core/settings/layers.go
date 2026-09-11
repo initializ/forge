@@ -24,6 +24,15 @@ const (
 // Env overrides (test isolation / non-standard installs), mirroring the policy
 // layers' FORGE_SYSTEM_POLICY. EnvManagedSettings points at the managed file;
 // its sibling managed-settings.d/ directory is derived from it.
+//
+// NOTE: EnvManagedSettings is honored unconditionally, so the managed layer's
+// SOURCE is user-redirectable — settings are the developer surface, an org
+// *default/preference*, not a tamper-proof boundary. Do not rely on a managed
+// available_models list as a hard control: non-overridable forbidden-model
+// enforcement lives in platform policy (server-side, control-plane injected;
+// see forge-core/security/platform_policy_layers.go). This mirrors the policy
+// loader, whose FORGE_SYSTEM_POLICY is likewise redirectable — the authoritative
+// enforcement in both cases is the control plane, not a local file.
 const (
 	EnvManagedSettings = "FORGE_MANAGED_SETTINGS"
 	EnvUserSettings    = "FORGE_USER_SETTINGS"
@@ -175,6 +184,12 @@ func loadManagedLayer() (*Layer, error) {
 		if !present {
 			continue
 		}
+		// A non-empty managed available_models makes it the authoritative
+		// settings-layer allowlist (Resolve replaces the union with it). An
+		// empty/absent list is "unset", NOT "lock to zero models": []string
+		// cannot distinguish JSON null/absent from [], and locking to zero
+		// models is degenerate (an org permitting nothing would not deploy the
+		// agent). Lock therefore requires >= 1 entry.
 		if len(s.Models.AvailableModels) > 0 {
 			lockedAvailable = true
 		}
@@ -207,8 +222,11 @@ func loadFile(path string) (s Settings, present bool, err error) {
 
 // Resolve folds the layers (lowest → highest precedence) into the effective
 // Settings. The managed layer's AvailableModels, when set, REPLACES the merged
-// union (a hard allowlist lock) rather than adding to it — so a lower layer
-// cannot widen what the org permits.
+// union rather than adding to it — so no lower SETTINGS layer can widen the
+// org's allowlist. This is the authoritative allowlist among settings layers,
+// an org default/preference — NOT a tamper-proof control (the managed source is
+// redirectable via FORGE_MANAGED_SETTINGS; see that const). Non-overridable
+// forbidden-model enforcement is platform policy's job (server-side).
 func Resolve(layers []Layer) Settings {
 	var out Settings
 	managedAvailable := []string(nil)

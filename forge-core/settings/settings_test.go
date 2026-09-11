@@ -134,6 +134,33 @@ func TestLoadAllLayers_DiscoveryPrecedenceAndResolve(t *testing.T) {
 	}
 }
 
+func TestManagedEmptyAvailableModels_IsUnsetNotLock(t *testing.T) {
+	// An empty (or absent) managed available_models must NOT lock to zero —
+	// it's "unset", so a lower layer's entries survive. []string can't
+	// distinguish JSON [] from absent, and lock-to-zero is degenerate.
+	dir := t.TempDir()
+	managedFile := filepath.Join(dir, "managed-settings.json")
+	writeJSON(t, managedFile, `{"models":{"available_models":[]}}`)
+	userFile := filepath.Join(dir, "user.json")
+	writeJSON(t, userFile, `{"models":{"available_models":["openai/gpt-4o"]}}`)
+	t.Setenv(EnvManagedSettings, managedFile)
+	t.Setenv(EnvUserSettings, userFile)
+
+	layers, err := LoadAllLayers(LoadOptions{WorkingDir: filepath.Join(dir, "empty")})
+	if err != nil {
+		t.Fatalf("LoadAllLayers: %v", err)
+	}
+	for _, l := range layers {
+		if l.Source == LayerManaged && l.ManagedLock {
+			t.Error("empty managed available_models must NOT set ManagedLock")
+		}
+	}
+	got := Resolve(layers).Models.AvailableModels
+	if !reflect.DeepEqual(got, []string{"openai/gpt-4o"}) {
+		t.Errorf("empty managed list should leave the user entry: got %v", got)
+	}
+}
+
 func TestLoadManagedDropins_MergedAlphabetically(t *testing.T) {
 	dir := t.TempDir()
 	managedFile := filepath.Join(dir, "managed-settings.json")

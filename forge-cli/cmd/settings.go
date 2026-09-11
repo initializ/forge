@@ -23,9 +23,11 @@ offered. They layer, highest precedence first:
   3. Project    (.forge/settings.local.json, then .forge/settings.json)
   4. User       (~/.forge/settings.json)
 
-Managed settings sit at the top and cannot be overridden by lower layers; a
-managed models.available_models is an authoritative allowlist (a lock). This is
-distinct from platform policy (forge-core/security), which is the deny surface.`,
+Managed settings sit at the top and win over lower layers; a managed
+models.available_models is the authoritative allowlist among the settings
+layers (an org default). Settings are the developer surface, not a tamper-proof
+control — the non-overridable deny/forbidden-model enforcement is platform
+policy (forge-core/security), injected server-side by the control plane.`,
 	RunE: settingsShowRun,
 }
 
@@ -75,10 +77,30 @@ func settingsShowRun(cmd *cobra.Command, _ []string) error {
 	}
 
 	_, _ = fmt.Fprintln(out, "\nEffective settings:")
-	b, err := json.MarshalIndent(effective, "  ", "  ")
+	// Mask env VALUES in the human view — env is the field most likely to carry
+	// a secret. Keys are shown so operators see what's set. The raw values are
+	// available via --json for the operator's own machine-readable dump (which
+	// prints verbatim — don't paste that into shared channels).
+	display := effective
+	display.Env = maskEnvValues(effective.Env)
+	b, err := json.MarshalIndent(display, "  ", "  ")
 	if err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(out, "  %s\n", b)
 	return nil
+}
+
+// maskEnvValues returns a copy of env with each value replaced by "***" so the
+// human `forge settings show` output never prints a value that might be a
+// secret. Returns nil for empty input (keeps the field omitted).
+func maskEnvValues(env map[string]string) map[string]string {
+	if len(env) == 0 {
+		return nil
+	}
+	masked := make(map[string]string, len(env))
+	for k := range env {
+		masked[k] = "***"
+	}
+	return masked
 }

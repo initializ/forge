@@ -79,8 +79,9 @@ The output lists each loaded layer lowest → highest, flags a managed `availabl
 ## What consumes settings today
 
 - **`forge try`**: a configured `models.default` seeds the provider/model when no flag is given; a configured `models.gateway` is injected into the scaffolded agent's `forge.yaml` model block (`base_url` / `auth_scheme` / `auth_header_name`) — so an org points `forge try` at its model gateway with no per-agent config.
+- **`channels.enabled` gating**: when non-empty, `channels.enabled` is the allowlist of adapters that may run. **`forge run --with <x>`** refuses `x` if it isn't enabled (before the [policy](../security/platform-policy.md) deny filter), and **`forge channel add <x>`** refuses to scaffold a non-enabled adapter. Empty = unconstrained (every registered adapter available). This is the positive enablement surface; policy remains the deny surface — settings decide "is it offered?", policy decides "is it forbidden?".
 
-Additional consumers (`forge init`, `forge run --with` channel gating, builtin-tool offering) land in follow-up work tracked on the settings epic.
+Additional consumers (`forge init`, builtin-tool offering) land in follow-up work tracked on the settings epic.
 
 ## See also
 

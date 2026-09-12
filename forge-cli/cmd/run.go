@@ -22,6 +22,7 @@ import (
 	corechannels "github.com/initializ/forge/forge-core/channels"
 	coreruntime "github.com/initializ/forge/forge-core/runtime"
 	"github.com/initializ/forge/forge-core/security"
+	"github.com/initializ/forge/forge-core/settings"
 	"github.com/initializ/forge/forge-core/types"
 	"github.com/spf13/cobra"
 )
@@ -284,6 +285,23 @@ func runRun(cmd *cobra.Command, args []string) error {
 				trimmed = append(trimmed, n)
 			}
 		}
+
+		// Settings channel enablement (#454): channels.enabled is the POSITIVE
+		// offered set — the developer/managed surface for "which adapters may
+		// run". When non-empty it is an allowlist; a --with for a channel not
+		// in it fails loudly (an explicit request for a disabled adapter is a
+		// mistake, not something to silently drop). Empty = unconstrained
+		// (every registered adapter available). This is distinct from, and runs
+		// BEFORE, the policy deny filter below: settings decides "is it
+		// offered?", policy decides "is it forbidden?".
+		set, settingsErr := settings.Load(settings.LoadOptions{WorkingDir: workDir})
+		if settingsErr != nil {
+			return fmt.Errorf("loading settings for channel enablement: %w", settingsErr)
+		}
+		if err := channelsEnabledBySettings(trimmed, set.Channels.Enabled); err != nil {
+			return err
+		}
+
 		effective, skipped := security.EffectiveChannels(trimmed, channelLayers)
 		channelAudit := coreruntime.NewAuditLogger(os.Stderr)
 		for _, s := range skipped {

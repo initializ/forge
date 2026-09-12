@@ -15,6 +15,7 @@ import (
 	corechannels "github.com/initializ/forge/forge-core/channels"
 	coreruntime "github.com/initializ/forge/forge-core/runtime"
 	"github.com/initializ/forge/forge-core/security"
+	"github.com/initializ/forge/forge-core/settings"
 	"github.com/initializ/forge/forge-plugins/channels/msteams"
 	"github.com/initializ/forge/forge-plugins/channels/slack"
 	"github.com/initializ/forge/forge-plugins/channels/telegram"
@@ -105,6 +106,29 @@ func init() {
 	channelCmd.AddCommand(channelEnableCmd)
 }
 
+// channelsEnabledBySettings enforces the settings channels.enabled allowlist
+// (#454): the POSITIVE developer/managed surface for "which adapters may run".
+// When enabled is non-empty, every requested channel must be in it or this
+// returns an error naming the enabled set. Empty enabled = unconstrained (nil).
+// Distinct from — and applied before — the policy deny filter: settings decide
+// "is it offered?", policy decides "is it forbidden?".
+func channelsEnabledBySettings(requested, enabled []string) error {
+	if len(enabled) == 0 {
+		return nil
+	}
+	allow := make(map[string]bool, len(enabled))
+	for _, c := range enabled {
+		allow[c] = true
+	}
+	for _, name := range requested {
+		if !allow[name] {
+			return fmt.Errorf("channel %q is not enabled in settings (enabled: %s); see `forge settings`",
+				name, strings.Join(enabled, ", "))
+		}
+	}
+	return nil
+}
+
 func runChannelAdd(cmd *cobra.Command, args []string) error {
 	adapter := args[0]
 	if adapter != "slack" && adapter != "telegram" && adapter != "msteams" {
@@ -114,6 +138,18 @@ func runChannelAdd(cmd *cobra.Command, args []string) error {
 	wd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getting working directory: %w", err)
+	}
+
+	// Settings channel enablement (#454): don't scaffold an adapter the
+	// settings don't offer. When channels.enabled is non-empty it is an
+	// allowlist; empty = unconstrained. Same positive-surface gate as
+	// `forge run --with`, applied at scaffold time.
+	set, settingsErr := settings.Load(settings.LoadOptions{WorkingDir: wd})
+	if settingsErr != nil {
+		return fmt.Errorf("loading settings for channel enablement: %w", settingsErr)
+	}
+	if err := channelsEnabledBySettings([]string{adapter}, set.Channels.Enabled); err != nil {
+		return err
 	}
 
 	// 1. Generate {adapter}-config.yaml

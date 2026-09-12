@@ -84,3 +84,48 @@ func TestChannelAdd_GatedBySettings(t *testing.T) {
 		}
 	})
 }
+
+// forge channel serve (the standalone runner) must honor channels.enabled too,
+// else a non-enabled adapter could still be started via that path (#458 review).
+func TestChannelServe_GatedBySettings(t *testing.T) {
+	origDir, _ := os.Getwd()
+	defer func() { _ = os.Chdir(origDir) }()
+
+	t.Run("disabled adapter refused before start", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Chdir(dir); err != nil {
+			t.Fatal(err)
+		}
+		p := filepath.Join(dir, "user.json")
+		if err := os.WriteFile(p, []byte(`{"channels":{"enabled":["telegram"]}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv(settings.EnvUserSettings, p)
+		settings.SetManagedDirForTest(filepath.Join(dir, "no-managed"))
+
+		err := runChannelServe(channelServeCmd, []string{"slack"})
+		if err == nil || !strings.Contains(err.Error(), "not enabled in settings") {
+			t.Fatalf("channel serve of a disabled adapter must be refused by the enablement gate, got %v", err)
+		}
+	})
+
+	t.Run("enabled adapter passes the gate", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Chdir(dir); err != nil {
+			t.Fatal(err)
+		}
+		p := filepath.Join(dir, "user.json")
+		if err := os.WriteFile(p, []byte(`{"channels":{"enabled":["slack"]}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv(settings.EnvUserSettings, p)
+		settings.SetManagedDirForTest(filepath.Join(dir, "no-managed"))
+
+		// No slack-config.yaml / AGENT_URL here, so serve fails LATER — the
+		// point is it must NOT fail with the enablement error (the gate passed).
+		err := runChannelServe(channelServeCmd, []string{"slack"})
+		if err != nil && strings.Contains(err.Error(), "not enabled in settings") {
+			t.Fatalf("enabled adapter must pass the gate; got enablement error: %v", err)
+		}
+	})
+}

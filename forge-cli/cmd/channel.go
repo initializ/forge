@@ -200,6 +200,21 @@ func runChannelServe(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("unsupported adapter: %s (supported: slack, telegram, msteams)", adapter)
 	}
 
+	// Settings channel enablement (#454). `channel serve` is the standalone
+	// runner (one adapter per container under docker-compose / k8s), so it must
+	// honor the same channels.enabled allowlist as `forge run --with` and
+	// `forge channel add` — otherwise a non-enabled adapter could still be
+	// STARTED here, defeating the "adapters that may run" guarantee. Enablement
+	// (is it offered?) precedes the policy deny (is it forbidden?) below.
+	// WorkingDir defaults to cwd, the same dir the channel config loads from.
+	set, settingsErr := settings.Load(settings.LoadOptions{})
+	if settingsErr != nil {
+		return fmt.Errorf("loading settings for channel enablement: %w", settingsErr)
+	}
+	if err := channelsEnabledBySettings([]string{adapter}, set.Channels.Enabled); err != nil {
+		return err
+	}
+
 	// Honor every layer's denied_channels list (issue #90 / FWS-6
 	// three-layer). Standalone serve typically runs one container per
 	// channel under docker-compose / k8s; each container loads the

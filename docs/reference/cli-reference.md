@@ -518,7 +518,7 @@ forge channel add <slack|telegram>
 
 ### `forge channel serve`
 
-Run a standalone channel adapter.
+Run a standalone channel adapter. Refuses to start an adapter not in [settings](settings.md) `channels.enabled` when that allowlist is set (same gate as `forge run --with`), then applies the policy deny filter.
 
 ```bash
 forge channel serve <slack|telegram>

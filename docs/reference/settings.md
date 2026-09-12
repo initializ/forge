@@ -22,7 +22,7 @@ Highest wins. A managed value cannot be overridden by a lower layer.
 | 4 | **Shared project** | `.forge/settings.json` |
 | 5 | **User** | `~/.forge/settings.json` (or `FORGE_USER_SETTINGS`) |
 
-**Merge:** list keys (`channels.enabled`, `tools.builtins.enabled`, and — when unlocked — `models.available_models`) are **unioned** across layers. Scalars (`models.default.*`, `models.gateway.*`) take the highest layer's non-empty value. `env` maps merge with higher keys winning.
+**Merge:** list keys (`channels.enabled`, `tools.builtins.enabled`, `skills.enabled`, and — when unlocked — `models.available_models`) are **unioned** across layers. Scalars (`models.default.*`, `models.gateway.*`) take the highest layer's non-empty value. `env` maps merge with higher keys winning.
 
 **Managed settings are not developer-overridable.** They load from a **fixed OS system path with no env or flag override** — a developer running the shipped binary cannot redirect, replace, or drop the managed layer (matching Claude Code, whose managed path is fixed for exactly this reason). Tamper-resistance is the OS file permissions on that path: on a managed machine it is root-owned and not user-writable.
 
@@ -53,6 +53,9 @@ These paths are **fixed** — there is no env var to redirect them (a developer 
   "tools": {
     "builtins": { "enabled": ["http_request", "datetime_now", "math_calculate"] }
   },
+  "skills": {
+    "enabled": ["weather", "github"]
+  },
   "env": { "HTTP_PROXY": "http://proxy.corp:8080" }
 }
 ```
@@ -64,6 +67,7 @@ These paths are **fixed** — there is no env var to redirect them (a developer 
 | `models.available_models` | `[]string` | Allowlist of `<provider>/<model>`; a **managed** value is the authoritative allowlist (no lower layer or developer can widen it — see Managed lock). Empty = unset |
 | `models.gateway` | `{base_url, auth_scheme, auth_header_name}` | Model gateway endpoint injected into the scaffolded `forge.yaml` model block — mirrors the [`model` config](forge-yaml-schema.md) fields and the outbound [`auth_scheme`](../security/authentication.md) |
 | `tools.builtins.enabled` | `[]string` | Builtin tools offered/defaulted |
+| `skills.enabled` | `[]string` | Registry skills offered/defaulted in `forge init` (the wizard offers only these; non-interactive `--skills` is gated). Empty = all registry skills |
 | `env` | `map[string]string` | Environment defaults |
 
 ## Inspect
@@ -79,10 +83,10 @@ The output lists each loaded layer lowest → highest, flags a managed `availabl
 ## What consumes settings today
 
 - **`forge try`**: a configured `models.default` seeds the provider/model when no flag is given; `models.gateway` is injected into the scaffolded `forge.yaml` model block (`base_url` / `auth_scheme` / `auth_header_name`); `tools.builtins.enabled`, when set, overrides the quickstart's default builtin set.
-- **`forge init`**: `models.gateway` is injected into the scaffolded `forge.yaml` (both modes). In **non-interactive** mode, `models.default` seeds the provider/model and `tools.builtins.enabled` seeds builtins when the corresponding flag is omitted — so a settings default even satisfies the otherwise-required `--model-provider`. `channels.enabled` gates the chosen channels: non-interactive `--channels` fails immediately, while interactive picks are validated at the end (the wizard doesn't yet filter its options by the allowlist — a late failure until wizard-filtering lands). (Interactive-wizard defaulting is a follow-up; the wizard is authoritative for what it collects, and only the gateway — which has no wizard step — is injected there.)
+- **`forge init`**: `models.gateway` is injected into the scaffolded `forge.yaml` (both modes). In **non-interactive** mode, `models.default` seeds the provider/model and `tools.builtins.enabled` / `skills.enabled` seed builtins / skills when the corresponding flag is omitted — so a settings default even satisfies the otherwise-required `--model-provider`. `channels.enabled` and `skills.enabled` are enforced: non-interactive `--channels` / `--skills` fail immediately on a non-enabled entry, and the **interactive wizard offers only the enabled channels and skills** (so a disabled one can't be picked; the end-of-wizard gate remains a backstop). Remaining interactive-defaulting work: pre-selecting `models.default` in the provider step (needs a preselect capability in the select component) — until then the wizard's provider default is unchanged and the gateway (no wizard step) is injected regardless.
 - **`channels.enabled` gating**: when non-empty, `channels.enabled` is the allowlist of adapters that may run. It gates **all three** channel entry points: **`forge run --with <x>`** and **`forge channel serve <x>`** (the standalone runner) refuse to start a non-enabled adapter, and **`forge channel add <x>`** refuses to scaffold one. The gate runs before the [policy](../security/platform-policy.md) deny filter. Empty = unconstrained (every registered adapter available). This is the positive enablement surface; policy remains the deny surface — settings decide "is it offered?", policy decides "is it forbidden?".
 
-Remaining follow-ups (tracked on the settings epic): interactive-wizard defaulting for `forge init`, and additional managed delivery mechanisms (server-managed control-plane fetch, macOS config profile, Windows registry).
+Remaining follow-ups (tracked on the settings epic): pre-selecting `models.default` in the interactive provider step (needs a preselect capability in the select component; channel/skill wizard filtering is done), and additional managed delivery mechanisms (server-managed control-plane fetch, macOS config profile, Windows registry).
 
 ## See also
 

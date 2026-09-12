@@ -55,6 +55,18 @@ func TestResolve_ListsUnion(t *testing.T) {
 	}
 }
 
+func TestResolve_SkillsUnion(t *testing.T) {
+	layers := []Layer{
+		{Source: LayerUser, Settings: Settings{Skills: SkillSettings{Enabled: []string{"weather"}}}},
+		{Source: LayerProject, Settings: Settings{Skills: SkillSettings{Enabled: []string{"github", "weather"}}}},
+	}
+	got := Resolve(layers).Skills.Enabled
+	want := []string{"weather", "github"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("skills union = %v, want %v (deduped, stable)", got, want)
+	}
+}
+
 func TestResolve_ManagedAvailableModelsLock(t *testing.T) {
 	// A managed allowlist is authoritative: a lower layer cannot WIDEN it.
 	layers := []Layer{

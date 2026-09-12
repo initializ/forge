@@ -19,6 +19,7 @@ type Settings struct {
 	Channels ChannelSettings   `json:"channels,omitempty"`
 	Models   ModelSettings     `json:"models,omitempty"`
 	Tools    ToolSettings      `json:"tools,omitempty"`
+	Skills   SkillSettings     `json:"skills,omitempty"`
 	Env      map[string]string `json:"env,omitempty"`
 }
 
@@ -81,6 +82,14 @@ type BuiltinToolSettings struct {
 	Enabled []string `json:"enabled,omitempty"`
 }
 
+// SkillSettings governs which registry skills forge offers/defaults in
+// `forge init` / `forge try`. Merged as a union across layers.
+type SkillSettings struct {
+	// Enabled is the set of registry skill names offered/enabled (e.g.
+	// "weather", "github"). Empty = unset (all registry skills offered).
+	Enabled []string `json:"enabled,omitempty"`
+}
+
 // merge folds a higher-precedence layer (hi) onto a lower one (lo), returning
 // the combined result. Semantics:
 //   - scalars (Model default fields, Gateway fields): hi wins when non-empty,
@@ -97,6 +106,7 @@ func merge(lo, hi Settings) Settings {
 
 	out.Channels.Enabled = unionStrings(lo.Channels.Enabled, hi.Channels.Enabled)
 	out.Tools.Builtins.Enabled = unionStrings(lo.Tools.Builtins.Enabled, hi.Tools.Builtins.Enabled)
+	out.Skills.Enabled = unionStrings(lo.Skills.Enabled, hi.Skills.Enabled)
 	out.Models.AvailableModels = unionStrings(lo.Models.AvailableModels, hi.Models.AvailableModels)
 
 	out.Models.Default = mergeModelDefault(lo.Models.Default, hi.Models.Default)

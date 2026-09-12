@@ -225,6 +225,25 @@ func applyInitSettings(opts *initOptions, set coresettings.Settings, nonInteract
 	if len(opts.BuiltinTools) == 0 {
 		opts.BuiltinTools = set.Tools.Builtins.Enabled
 	}
+	if len(opts.Skills) == 0 {
+		opts.Skills = set.Skills.Enabled
+	}
+}
+
+// filterSkillInfos keeps only the skills whose Name is in enabled, preserving
+// order — the wizard then offers just the org's allowed registry skills (#454).
+func filterSkillInfos(all []steps.SkillInfo, enabled []string) []steps.SkillInfo {
+	allow := make(map[string]bool, len(enabled))
+	for _, e := range enabled {
+		allow[e] = true
+	}
+	out := make([]steps.SkillInfo, 0, len(all))
+	for _, s := range all {
+		if allow[s.Name] {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func runInit(cmd *cobra.Command, args []string) error {
@@ -299,7 +318,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if nonInteractive {
 		err = collectNonInteractive(opts)
 	} else {
-		err = collectInteractive(opts)
+		err = collectInteractive(opts, set)
 	}
 	if err != nil {
 		return err
@@ -318,6 +337,12 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if err := channelsEnabledBySettings(opts.Channels, set.Channels.Enabled); err != nil {
 		return err
 	}
+	// skills.enabled gates the selected registry skills (#454). Non-interactive
+	// --skills fails immediately; interactive picks are validated here too (the
+	// wizard also filters its skill options by the allowlist below).
+	if err := enabledBySettings("skill", opts.Skills, set.Skills.Enabled); err != nil {
+		return err
+	}
 
 	// Derive agent ID
 	opts.AgentID = util.Slugify(opts.Name)
@@ -334,7 +359,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	return scaffold(opts)
 }
 
-func collectInteractive(opts *initOptions) error {
+func collectInteractive(opts *initOptions, set coresettings.Settings) error {
 	// Detect theme
 	theme := tui.DetectTheme(themeOverride)
 	styles := tui.NewStyleSet(theme)
@@ -359,6 +384,12 @@ func collectInteractive(opts *initOptions) error {
 				})
 			}
 		}
+	}
+	// Settings skills.enabled (#454): filter the wizard's skill options to the
+	// org's allowlist so a disabled skill can't be picked (the interactive
+	// counterpart to the skills gate + models/channels wizard defaulting).
+	if len(set.Skills.Enabled) > 0 {
+		skillInfos = filterSkillInfos(skillInfos, set.Skills.Enabled)
 	}
 
 	// Build the egress derivation callback (avoids circular import).
@@ -412,7 +443,7 @@ func collectInteractive(opts *initOptions) error {
 		steps.NewNameStep(styles, opts.Name),
 		steps.NewProviderStep(styles, validateKeyFn, oauthFlowFn),
 		steps.NewFallbackStep(styles, validateKeyFn),
-		steps.NewChannelStep(styles),
+		steps.NewChannelStep(styles, set.Channels.Enabled),
 		steps.NewWebSearchStep(styles, validateWebSearchKeyFn),
 		steps.NewSkillsStep(styles, skillInfos),
 		steps.NewCompressionStep(styles),

@@ -20,7 +20,7 @@ Complete reference for all Forge CLI commands.
 
 Initialize a new agent project. Without `--non-interactive`, a TUI wizard walks through: name → model provider → fallbacks → channel → tools → skills → context compression → authentication → egress review → summary.
 
-Honors [settings](settings.md): a `models.gateway` is injected into the scaffolded `forge.yaml` (both modes); in `--non-interactive` mode a `models.default` seeds `--model-provider`/model and `tools.builtins.enabled` seeds `--tools` when omitted; and `channels.enabled` gates `--channels`.
+Honors [settings](settings.md): a `models.gateway` is injected into the scaffolded `forge.yaml` (both modes); in `--non-interactive` mode a `models.default` seeds `--model-provider`/model and `tools.builtins.enabled` / `skills.enabled` seed `--tools` / `--skills` when omitted; `channels.enabled` and `skills.enabled` gate `--channels` / `--skills`, and the interactive wizard offers only the enabled channels and skills.
 
 ```
 forge init [name] [flags]

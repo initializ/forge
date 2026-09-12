@@ -196,10 +196,20 @@ func init() {
 // when the corresponding flag was omitted (so a settings default satisfies the
 // required-flag checks). Interactive-wizard defaulting is a follow-up.
 func applyInitSettings(opts *initOptions, set coresettings.Settings, nonInteractive bool) {
+	// Gateway injects per-field, only when unset — so "flag wins" stays uniform
+	// with the provider/model/builtins guards below. (There is no init gateway
+	// flag today, so these are always empty here; the guard future-proofs
+	// against one being added.)
 	if gw := set.Models.Gateway; gw != nil {
-		opts.ModelBaseURL = gw.BaseURL
-		opts.ModelAuthScheme = gw.AuthScheme
-		opts.ModelAuthHeaderName = gw.AuthHeaderName
+		if opts.ModelBaseURL == "" {
+			opts.ModelBaseURL = gw.BaseURL
+		}
+		if opts.ModelAuthScheme == "" {
+			opts.ModelAuthScheme = gw.AuthScheme
+		}
+		if opts.ModelAuthHeaderName == "" {
+			opts.ModelAuthHeaderName = gw.AuthHeaderName
+		}
 	}
 	if !nonInteractive {
 		return
@@ -298,6 +308,13 @@ func runInit(cmd *cobra.Command, args []string) error {
 	// Enforce channels.enabled on the collected channel set (#454), same gate
 	// as `forge run --with` / `forge channel add/serve` — settings decide
 	// "is it offered?" before policy's "is it forbidden?".
+	//
+	// NOTE: in INTERACTIVE mode this is a deliberate LATE failure — the wizard
+	// does not yet filter its channel options by channels.enabled (that's part
+	// of the deferred interactive-wizard-defaulting follow-up), so a user can
+	// pick a disabled channel and only hit this error at the end. Non-interactive
+	// --channels fails immediately. Filtering the wizard options will move this
+	// earlier for interactive mode.
 	if err := channelsEnabledBySettings(opts.Channels, set.Channels.Enabled); err != nil {
 		return err
 	}

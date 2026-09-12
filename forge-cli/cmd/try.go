@@ -122,9 +122,17 @@ func runTry(cmd *cobra.Command, args []string) error {
 	// + outbound auth scheme land in the scaffolded forge.yaml model block, so
 	// an org points `forge try` at its gateway without per-agent config.
 	if gw := set.Models.Gateway; gw != nil {
-		opts.ModelBaseURL = gw.BaseURL
-		opts.ModelAuthScheme = gw.AuthScheme
-		opts.ModelAuthHeaderName = gw.AuthHeaderName
+		// Per-field guard keeps "explicit wins" uniform (future-proof: no try
+		// gateway flag today, so these are empty here).
+		if opts.ModelBaseURL == "" {
+			opts.ModelBaseURL = gw.BaseURL
+		}
+		if opts.ModelAuthScheme == "" {
+			opts.ModelAuthScheme = gw.AuthScheme
+		}
+		if opts.ModelAuthHeaderName == "" {
+			opts.ModelAuthHeaderName = gw.AuthHeaderName
+		}
 	}
 	// Builtin-tool offering (settings tools.builtins.enabled, #454): when set,
 	// it overrides the quickstart's default builtin set for the demo agent.

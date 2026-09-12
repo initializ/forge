@@ -106,27 +106,33 @@ func init() {
 	channelCmd.AddCommand(channelEnableCmd)
 }
 
-// channelsEnabledBySettings enforces the settings channels.enabled allowlist
-// (#454): the POSITIVE developer/managed surface for "which adapters may run".
-// When enabled is non-empty, every requested channel must be in it or this
-// returns an error naming the enabled set. Empty enabled = unconstrained (nil).
-// Distinct from — and applied before — the policy deny filter: settings decide
-// "is it offered?", policy decides "is it forbidden?".
-func channelsEnabledBySettings(requested, enabled []string) error {
+// enabledBySettings enforces a settings enablement allowlist (#454): the
+// POSITIVE developer/managed surface for "which <noun>s are offered". When
+// enabled is non-empty, every requested item must be in it or this returns an
+// error naming the enabled set. Empty enabled = unconstrained (nil). Distinct
+// from — and applied before — the policy deny filter: settings decide "is it
+// offered?", policy decides "is it forbidden?".
+func enabledBySettings(noun string, requested, enabled []string) error {
 	if len(enabled) == 0 {
 		return nil
 	}
 	allow := make(map[string]bool, len(enabled))
-	for _, c := range enabled {
-		allow[c] = true
+	for _, e := range enabled {
+		allow[e] = true
 	}
 	for _, name := range requested {
 		if !allow[name] {
-			return fmt.Errorf("channel %q is not enabled in settings (enabled: %s); see `forge settings`",
-				name, strings.Join(enabled, ", "))
+			return fmt.Errorf("%s %q is not enabled in settings (enabled: %s); see `forge settings`",
+				noun, name, strings.Join(enabled, ", "))
 		}
 	}
 	return nil
+}
+
+// channelsEnabledBySettings gates channel adapters (run --with / channel
+// add|serve). Thin wrapper over enabledBySettings for the "channel" noun.
+func channelsEnabledBySettings(requested, enabled []string) error {
+	return enabledBySettings("channel", requested, enabled)
 }
 
 func runChannelAdd(cmd *cobra.Command, args []string) error {

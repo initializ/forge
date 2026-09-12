@@ -337,9 +337,15 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if err := channelsEnabledBySettings(opts.Channels, set.Channels.Enabled); err != nil {
 		return err
 	}
-	// skills.enabled gates the selected registry skills (#454). Non-interactive
+	// skills.enabled gates the selected REGISTRY skills (#454). Non-interactive
 	// --skills fails immediately; interactive picks are validated here too (the
 	// wizard also filters its skill options by the allowlist below).
+	//
+	// Scope: opts.Skills holds registry-skill names only. Custom skill imports
+	// (--from-skills / --from-skill-dir) populate opts.SkillsFile / opts.SkillDir
+	// (→ opts.Tools), NOT opts.Skills, and are DELIBERATELY not gated here —
+	// skills.enabled is a developer-surface registry-selection default, not a
+	// hard skill boundary. Forbidding skills fleet-wide is platform policy's job.
 	if err := enabledBySettings("skill", opts.Skills, set.Skills.Enabled); err != nil {
 		return err
 	}

@@ -49,6 +49,7 @@ func init() {
 	rootCmd.AddCommand(mcpCmd)
 	rootCmd.AddCommand(authCmd)
 	rootCmd.AddCommand(guardrailsCmd)
+	rootCmd.AddCommand(settingsCmd)
 }
 
 // SetVersionInfo sets the version and commit for display.

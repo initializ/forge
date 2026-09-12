@@ -256,12 +256,19 @@ function useSSE(onEvent) {
   useEffect(() => {
     const es = new EventSource('/api/events');
 
-    es.addEventListener('agent_status', (e) => {
+    // EventSource dispatches by `event:` name, so every type the server
+    // broadcasts needs an explicit listener — an unlisted one is silently
+    // dropped. agent_created (handlers_create.go) was being dropped, which
+    // is why a newly created agent only appeared after a refresh or the
+    // 60s poll. The type is forwarded so the caller can tell them apart.
+    const forward = (type) => (e) => {
       try {
-        const data = JSON.parse(e.data);
-        callbackRef.current(data);
+        callbackRef.current(type, JSON.parse(e.data));
       } catch { /* ignore parse errors */ }
-    });
+    };
+
+    es.addEventListener('agent_status', forward('agent_status'));
+    es.addEventListener('agent_created', forward('agent_created'));
 
     es.onerror = () => {
       // EventSource auto-reconnects
@@ -460,6 +467,13 @@ function useChatStream(agentId) {
   const [streaming, setStreaming] = useState(false);
   const [sessionId, setSessionId] = useState(null);
   const abortRef = useRef(null);
+
+  // Abort any in-flight stream on unmount. Switching agents remounts this
+  // hook (ChatPage is keyed by agent id), so without this the previous
+  // agent's request keeps streaming into a dead component.
+  useEffect(() => () => {
+    if (abortRef.current) abortRef.current.abort();
+  }, []);
 
   const loadSession = useCallback(async (sid) => {
     try {
@@ -3233,7 +3247,15 @@ function App() {
   }, [loadAgents]);
 
   // SSE real-time updates
-  useSSE((agentData) => {
+  useSSE((type, agentData) => {
+    // agent_created carries only {id, directory}, not a full AgentInfo, so
+    // refetch to pick up the record the cards render from (model, tools,
+    // channels, status). The merge below deliberately ignores unknown ids,
+    // so a create can't be handled there.
+    if (type === 'agent_created') {
+      loadAgents();
+      return;
+    }
     setAgents(prev => {
       const idx = prev.findIndex(a => a.id === agentData.id);
       if (idx === -1) return prev;
@@ -3286,12 +3308,31 @@ function App() {
   }, [passphrasePrompt]);
 
   const handleStop = useCallback(async (id) => {
+    // Flip to "stopping" on click. The server broadcasts this too, but
+    // SSEBroker.Broadcast drops events for a full buffer, so the click
+    // must not depend on the stream to feel responsive.
+    //
+    // Capture the prior status so a failure restores what was actually
+    // there. Hardcoding 'running' would mislabel an agent that was, say,
+    // already errored — the server's authoritative event reconciles it,
+    // but not before the card renders the wrong state. Read it from the
+    // rendered state rather than inside the updater, which is not
+    // guaranteed to have run by the time the request settles.
+    const prevStatus = agents.find(a => a.id === id)?.status;
+    setAgents(prev => prev.map(a =>
+      a.id === id ? { ...a, status: 'stopping', error: '' } : a
+    ));
     try {
       await stopAgent(id);
     } catch (err) {
       console.error('Failed to stop agent:', err);
+      // Mirror ProcessManager.Stop's rollback-to-previous so the card
+      // doesn't stay stuck on "stopping" with disabled buttons.
+      setAgents(prev => prev.map(a =>
+        a.id === id ? { ...a, status: prevStatus || 'running', error: err.message } : a
+      ));
     }
-  }, []);
+  }, [agents]);
 
   const handleRescan = useCallback(async () => {
     setLoading(true);
@@ -3310,7 +3351,12 @@ function App() {
   const renderPage = () => {
     switch (route.page) {
       case 'chat':
-        return html`<${ChatPage} agentId=${route.params.id} agents=${agents} />`;
+        // key forces a fresh instance per agent. Without it Preact reuses
+        // the mounted ChatPage on an agentId change, and useState survives
+        // — so messages/sessionId/streaming stay on the previous agent
+        // while the header and session list (props / agentId-keyed effect)
+        // correctly re-render.
+        return html`<${ChatPage} key=${route.params.id} agentId=${route.params.id} agents=${agents} />`;
       case 'create':
         return html`<${CreatePage} />`;
       case 'config':

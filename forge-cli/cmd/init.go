@@ -51,8 +51,13 @@ type initOptions struct {
 	NonInteractive bool   // skip auto-run in non-interactive mode
 	Force          bool   // overwrite existing directory
 	CustomModel    string // custom provider model name
-	AuthMethod     string // "apikey" or "oauth"
-	Compression    bool   // reversible context compression (ctxzip) — compression.enabled in forge.yaml
+	// Model gateway (settings models.gateway, #454): base_url + outbound
+	// auth scheme injected into the scaffolded forge.yaml model block.
+	ModelBaseURL        string
+	ModelAuthScheme     string
+	ModelAuthHeaderName string
+	AuthMethod          string // "apikey" or "oauth"
+	Compression         bool   // reversible context compression (ctxzip) — compression.enabled in forge.yaml
 
 	// OutputDir overrides the scaffold target directory. Empty falls back
 	// to ./<AgentID> (the classic `forge init` layout). `forge try` sets
@@ -85,15 +90,20 @@ type templateData struct {
 	ModelProvider  string
 	ModelName      string
 	OrganizationID string
-	Fallbacks      []fallbackTmplData
-	Channels       []string
-	Tools          []toolEntry
-	BuiltinTools   []string
-	SkillEntries   []skillTmplData
-	EgressDomains  []string
-	EnvVars        []envVarEntry
-	HasSecrets     bool
-	Compression    bool
+	// Model gateway endpoint + outbound auth, injected from settings
+	// (models.gateway, #454). Empty → provider default endpoint / native auth.
+	ModelBaseURL        string
+	ModelAuthScheme     string
+	ModelAuthHeaderName string
+	Fallbacks           []fallbackTmplData
+	Channels            []string
+	Tools               []toolEntry
+	BuiltinTools        []string
+	SkillEntries        []skillTmplData
+	EgressDomains       []string
+	EnvVars             []envVarEntry
+	HasSecrets          bool
+	Compression         bool
 
 	// Auth chain rendering (see forge.yaml.tmpl). Pre-rendered as a YAML
 	// fragment because nested maps in the settings block (e.g. claim_map)
@@ -1159,10 +1169,15 @@ func buildTemplateData(opts *initOptions) templateData {
 		Language:       opts.Language,
 		ModelProvider:  opts.ModelProvider,
 		OrganizationID: opts.OrganizationID,
-		Channels:       opts.Channels,
-		Tools:          opts.Tools,
-		BuiltinTools:   opts.BuiltinTools,
-		Compression:    opts.Compression,
+
+		ModelBaseURL:        opts.ModelBaseURL,
+		ModelAuthScheme:     opts.ModelAuthScheme,
+		ModelAuthHeaderName: opts.ModelAuthHeaderName,
+
+		Channels:     opts.Channels,
+		Tools:        opts.Tools,
+		BuiltinTools: opts.BuiltinTools,
+		Compression:  opts.Compression,
 	}
 
 	// Set entrypoint based on framework (only for subprocess-based frameworks)

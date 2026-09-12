@@ -30,6 +30,22 @@ var providers = []Provider{
 		DefaultModel: "claude-sonnet-4-20250514",
 	},
 	{
+		ID:             "bedrock",
+		Label:          "AWS Bedrock",
+		Description:    "Claude, Nova, Llama, Mistral, Titan via the native Converse API (SigV4)",
+		Icon:           "🟨",
+		NeedsAWSRegion: true,
+		DefaultModel:   "anthropic.claude-sonnet-4-20250514-v1:0",
+		Models: []Model{
+			{Label: "Claude Sonnet 4", ModelID: "anthropic.claude-sonnet-4-20250514-v1:0"},
+			{Label: "Claude 3.5 Haiku", ModelID: "anthropic.claude-3-5-haiku-20241022-v1:0"},
+			{Label: "Amazon Nova Pro", ModelID: "amazon.nova-pro-v1:0"},
+			{Label: "Amazon Nova Lite", ModelID: "amazon.nova-lite-v1:0"},
+			{Label: "Llama 3.3 70B", ModelID: "meta.llama3-3-70b-instruct-v1:0"},
+			{Label: "Mistral Large 2", ModelID: "mistral.mistral-large-2407-v1:0"},
+		},
+	},
+	{
 		ID:           "gemini",
 		Label:        "Google Gemini",
 		Description:  "Gemini 2.5 Flash, Pro",

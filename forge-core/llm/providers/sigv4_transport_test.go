@@ -77,6 +77,27 @@ func TestSigV4Transport_StampsAuthorizationAndAmzDate(t *testing.T) {
 	}
 }
 
+// TestCanonicalURI_DoubleEncodesEscapedPath pins the SigV4 double-encoding
+// rule that a live Bedrock Converse call surfaced (#205): the wire path is
+// already percent-encoded (%3A for the model-id colon), and the canonical
+// request must encode it a SECOND time (%253A) for every service except S3.
+// Single-encoding here produced SignatureDoesNotMatch against real Bedrock.
+func TestCanonicalURI_DoubleEncodesEscapedPath(t *testing.T) {
+	got := canonicalURI("/model/us.amazon.nova-2-lite-v1%3A0/converse")
+	want := "/model/us.amazon.nova-2-lite-v1%253A0/converse"
+	if got != want {
+		t.Errorf("canonicalURI = %q; want %q (double-encoded)", got, want)
+	}
+	// Unreserved-only paths (the #202 openai/anthropic passthrough) are a
+	// no-op under the second encoding — EscapedPath == Path, nothing to encode.
+	if got := canonicalURI("/v1/messages"); got != "/v1/messages" {
+		t.Errorf("canonicalURI(/v1/messages) = %q; want unchanged", got)
+	}
+	if got := canonicalURI("/chat/completions"); got != "/chat/completions" {
+		t.Errorf("canonicalURI(/chat/completions) = %q; want unchanged", got)
+	}
+}
+
 // TestSigV4Transport_StampsSecurityTokenWhenTemporary pins the
 // behavior for temporary credentials (STS, IRSA, EC2 metadata): the
 // X-Amz-Security-Token header MUST be present and reflect the session

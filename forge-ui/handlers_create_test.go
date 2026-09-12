@@ -102,6 +102,86 @@ func TestHandleCreateAgentMissingName(t *testing.T) {
 	}
 }
 
+// TestHandleCreateAgent_BedrockRequiresRegion covers #205: the native
+// Bedrock provider signs with SigV4 for a region-scoped endpoint, so the
+// server rejects a create request that omits aws_region and accepts one
+// that includes it.
+func TestHandleCreateAgent_BedrockRequiresRegion(t *testing.T) {
+	t.Run("missing region rejected", func(t *testing.T) {
+		srv, _ := setupTestServerWithCreate(t)
+		body, _ := json.Marshal(AgentCreateOptions{
+			Name:          "bedrock-agent",
+			ModelProvider: "bedrock",
+			ModelName:     "anthropic.claude-sonnet-4-20250514-v1:0",
+		})
+		req := httptest.NewRequest(http.MethodPost, "/api/agents", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.handleCreateAgent(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d; body: %s", w.Code, http.StatusBadRequest, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "aws_region") {
+			t.Errorf("expected an aws_region error, got %s", w.Body.String())
+		}
+	})
+
+	t.Run("region present accepted", func(t *testing.T) {
+		srv, _ := setupTestServerWithCreate(t)
+		body, _ := json.Marshal(AgentCreateOptions{
+			Name:          "bedrock-agent",
+			ModelProvider: "bedrock",
+			ModelName:     "anthropic.claude-sonnet-4-20250514-v1:0",
+			AWSRegion:     "us-east-1",
+		})
+		req := httptest.NewRequest(http.MethodPost, "/api/agents", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.handleCreateAgent(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want %d; body: %s", w.Code, http.StatusCreated, w.Body.String())
+		}
+	})
+}
+
+// TestWizardMeta_BedrockPresent pins the Bedrock wizard entry: it appears
+// in the provider list and its model metadata flags NeedsAWSRegion with no
+// API key. #205.
+func TestWizardMeta_BedrockPresent(t *testing.T) {
+	srv, _ := setupTestServerWithCreate(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/wizard/meta", nil)
+	w := httptest.NewRecorder()
+	srv.handleGetWizardMeta(w, req)
+
+	var meta WizardMetadata
+	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+
+	found := false
+	for _, p := range meta.Providers {
+		if p == "bedrock" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected bedrock in providers list")
+	}
+	pm, ok := meta.ProviderModels["bedrock"]
+	if !ok {
+		t.Fatal("expected bedrock in provider_models")
+	}
+	if !pm.NeedsAWSRegion {
+		t.Error("bedrock provider_models must set needs_aws_region")
+	}
+	if pm.NeedsKey {
+		t.Error("bedrock must not need an API key")
+	}
+	if len(pm.APIKey) == 0 || pm.Default == "" {
+		t.Error("bedrock must provide a model list and default")
+	}
+}
+
 func TestHandleCreateAgentNoFunc(t *testing.T) {
 	root := t.TempDir()
 	srv := NewUIServer(UIServerConfig{

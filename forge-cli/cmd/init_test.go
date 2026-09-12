@@ -795,6 +795,7 @@ func TestBuildTemplateData_DefaultModels(t *testing.T) {
 	}{
 		{"openai", "gpt-5.4"},
 		{"anthropic", "claude-sonnet-4-20250514"},
+		{"bedrock", "anthropic.claude-sonnet-4-20250514-v1:0"},
 		{"gemini", "gemini-2.5-flash"},
 		{"ollama", "llama3"},
 	}
@@ -829,6 +830,72 @@ func TestCollectNonInteractive_GeminiProvider(t *testing.T) {
 	}
 	if opts.EnvVars["GEMINI_API_KEY"] != "gem-key" {
 		t.Errorf("expected GEMINI_API_KEY=gem-key, got %q", opts.EnvVars["GEMINI_API_KEY"])
+	}
+}
+
+func TestCollectNonInteractive_BedrockRequiresRegion(t *testing.T) {
+	t.Run("missing region errors", func(t *testing.T) {
+		opts := &initOptions{
+			Name:          "test",
+			AgentID:       "test",
+			Framework:     "forge",
+			ModelProvider: "bedrock",
+			EnvVars:       map[string]string{},
+		}
+		err := collectNonInteractive(opts)
+		if err == nil || !strings.Contains(err.Error(), "aws-region") {
+			t.Fatalf("expected an aws-region error, got %v", err)
+		}
+	})
+
+	t.Run("region present is accepted", func(t *testing.T) {
+		opts := &initOptions{
+			Name:          "test",
+			AgentID:       "test",
+			Framework:     "forge",
+			ModelProvider: "bedrock",
+			AWSRegion:     "us-east-1",
+			EnvVars:       map[string]string{},
+		}
+		if err := collectNonInteractive(opts); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
+func TestScaffold_Bedrock(t *testing.T) {
+	tmpDir := t.TempDir()
+	origDir, _ := os.Getwd()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(origDir) }()
+
+	opts := &initOptions{
+		Name:           "Bedrock Agent",
+		AgentID:        "bedrock-agent",
+		Framework:      "forge",
+		ModelProvider:  "bedrock",
+		AWSRegion:      "us-east-1",
+		EnvVars:        map[string]string{},
+		NonInteractive: true,
+	}
+	if err := scaffold(opts); err != nil {
+		t.Fatalf("scaffold error: %v", err)
+	}
+
+	cfg, err := config.LoadForgeConfig(filepath.Join("bedrock-agent", "forge.yaml"))
+	if err != nil {
+		t.Fatalf("LoadForgeConfig error: %v", err)
+	}
+	if cfg.Model.Provider != "bedrock" {
+		t.Errorf("provider = %q; want bedrock", cfg.Model.Provider)
+	}
+	if cfg.Model.AWSRegion != "us-east-1" {
+		t.Errorf("aws_region = %q; want us-east-1", cfg.Model.AWSRegion)
+	}
+	if cfg.Model.Name != "anthropic.claude-sonnet-4-20250514-v1:0" {
+		t.Errorf("name = %q; want the bedrock default model", cfg.Model.Name)
 	}
 }
 

@@ -22,7 +22,7 @@ import (
 // per-provider model lists, and web search provider options.
 func (s *UIServer) handleGetWizardMeta(w http.ResponseWriter, _ *http.Request) {
 	meta := WizardMetadata{
-		Providers:  []string{"openai", "anthropic", "gemini", "ollama", "custom"},
+		Providers:  []string{"openai", "anthropic", "bedrock", "gemini", "ollama", "custom"},
 		Frameworks: []string{"forge", "crewai", "langchain"},
 		Channels:   []string{"slack", "telegram"},
 	}
@@ -61,6 +61,21 @@ func (s *UIServer) handleGetWizardMeta(w http.ResponseWriter, _ *http.Request) {
 				{DisplayName: "Claude Sonnet 4", ModelID: "claude-sonnet-4-20250514"},
 				{DisplayName: "Claude Haiku 3.5", ModelID: "claude-3-5-haiku-20241022"},
 				{DisplayName: "Claude Opus 4", ModelID: "claude-opus-4-20250514"},
+			},
+		},
+		"bedrock": {
+			// Native Bedrock Converse API (#205): SigV4 from AWS env creds,
+			// so no API key — the wizard collects an AWS region instead.
+			Default:        "anthropic.claude-sonnet-4-20250514-v1:0",
+			NeedsKey:       false,
+			NeedsAWSRegion: true,
+			APIKey: []ModelOption{
+				{DisplayName: "Claude Sonnet 4", ModelID: "anthropic.claude-sonnet-4-20250514-v1:0"},
+				{DisplayName: "Claude 3.5 Haiku", ModelID: "anthropic.claude-3-5-haiku-20241022-v1:0"},
+				{DisplayName: "Amazon Nova Pro", ModelID: "amazon.nova-pro-v1:0"},
+				{DisplayName: "Amazon Nova Lite", ModelID: "amazon.nova-lite-v1:0"},
+				{DisplayName: "Llama 3.3 70B", ModelID: "meta.llama3-3-70b-instruct-v1:0"},
+				{DisplayName: "Mistral Large 2", ModelID: "mistral.mistral-large-2407-v1:0"},
 			},
 		},
 		"gemini": {
@@ -167,6 +182,14 @@ func (s *UIServer) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if opts.ModelProvider == "" {
 		writeError(w, http.StatusBadRequest, "model_provider is required")
+		return
+	}
+
+	// Bedrock signs with SigV4 for a region-scoped endpoint, so the region
+	// is required (drives host + signature scope). Reject early rather than
+	// scaffold a forge.yaml that only fails at `forge validate`/run. #205.
+	if opts.ModelProvider == "bedrock" && strings.TrimSpace(opts.AWSRegion) == "" {
+		writeError(w, http.StatusBadRequest, "aws_region is required for model_provider \"bedrock\"")
 		return
 	}
 

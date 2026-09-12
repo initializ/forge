@@ -244,6 +244,7 @@ type AgentCreateOptions struct {
 	APIKey            string             `json:"api_key,omitempty"`
 	AuthMethod        string             `json:"auth_method,omitempty"` // "apikey" or "oauth"
 	OrganizationID    string             `json:"organization_id,omitempty"`
+	AWSRegion         string             `json:"aws_region,omitempty"` // required for model_provider "bedrock" (#205)
 	Channels          []string           `json:"channels,omitempty"`
 	BuiltinTools      []string           `json:"builtin_tools,omitempty"`
 	Skills            []string           `json:"skills,omitempty"`
@@ -326,6 +327,10 @@ type ProviderModels struct {
 	IsCustom      bool          `json:"is_custom,omitempty"`
 	BaseURLEnv    string        `json:"base_url_env,omitempty"` // e.g. "OPENAI_BASE_URL"
 	SupportsOrgID bool          `json:"supports_org_id,omitempty"`
+	// NeedsAWSRegion prompts the wizard for an AWS region (submitted as
+	// aws_region) instead of an API key — provider "bedrock" signs with
+	// SigV4 from AWS env credentials. Issue #205.
+	NeedsAWSRegion bool `json:"needs_aws_region,omitempty"`
 }
 
 // WebSearchProviderOption describes a web search provider.

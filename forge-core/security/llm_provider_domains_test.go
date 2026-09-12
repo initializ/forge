@@ -207,3 +207,42 @@ func TestLLMProviderDomains_BedrockHostExtracted(t *testing.T) {
 		t.Errorf("Bedrock hostname not in allowlist; got %v want %v", got, want)
 	}
 }
+
+// TestLLMProviderDomains_BedrockDerivedFromRegion pins the #205
+// invariant: for the native `provider: bedrock` client the operator
+// typically sets only `aws_region` (base_url defaults to
+// bedrock-runtime.<region>.amazonaws.com in the client), so the egress
+// allowlist must derive that host from the region even when base_url is
+// unset — otherwise the generated NetworkPolicy blocks Bedrock.
+func TestLLMProviderDomains_BedrockDerivedFromRegion(t *testing.T) {
+	cfg := &types.ForgeConfig{
+		Model: types.ModelRef{
+			Provider:  "bedrock",
+			Name:      "anthropic.claude-sonnet-4-20250514-v1:0",
+			AWSRegion: "ap-south-1",
+		},
+	}
+	got := security.LLMProviderDomains(cfg)
+	want := []string{"bedrock-runtime.ap-south-1.amazonaws.com"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("derived Bedrock host missing; got %v want %v", got, want)
+	}
+}
+
+// An explicit base_url (e.g. a govcloud host or a proxy) wins over the
+// region-derived default and is not duplicated.
+func TestLLMProviderDomains_BedrockExplicitBaseURLWins(t *testing.T) {
+	cfg := &types.ForgeConfig{
+		Model: types.ModelRef{
+			Provider:  "bedrock",
+			Name:      "anthropic.claude-sonnet-4-20250514-v1:0",
+			BaseURL:   "https://bedrock.example.internal",
+			AWSRegion: "us-east-1",
+		},
+	}
+	got := security.LLMProviderDomains(cfg)
+	want := []string{"bedrock.example.internal"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v want %v", got, want)
+	}
+}

@@ -20,6 +20,7 @@ type WizardContext struct {
 	AuthMethod     string // "apikey" or "oauth" — how the user authenticated
 	ModelName      string // selected model ID (e.g. "gpt-5.4")
 	OrganizationID string // OpenAI enterprise organization ID
+	AWSRegion      string // AWS region for provider "bedrock" (model.aws_region, #205)
 	Fallbacks      []FallbackProvider
 	Channel        string
 	ChannelTokens  map[string]string

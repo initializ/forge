@@ -98,6 +98,20 @@ func ValidateForgeConfig(cfg *types.ForgeConfig) *ValidationResult {
 		r.Warnings = append(r.Warnings, fmt.Sprintf("model.organization_id is set but provider is %q (only used by openai / openai-responses)", cfg.Model.Provider))
 	}
 
+	// Native Bedrock (provider: bedrock, #205) signs every request with
+	// SigV4 for a region-scoped endpoint, so the region is required — it
+	// drives both the default host (bedrock-runtime.<region>.amazonaws.com)
+	// and the signature scope. auth_scheme is not needed (signing is
+	// intrinsic); warn if it's set since the bedrock client ignores it.
+	if cfg.Model.Provider == llm.ProviderBedrock {
+		if cfg.Model.AWSRegion == "" {
+			r.Errors = append(r.Errors, "model.aws_region is required for provider \"bedrock\" (drives the endpoint host and SigV4 signature scope)")
+		}
+		if cfg.Model.AuthScheme != "" {
+			r.Warnings = append(r.Warnings, "model.auth_scheme is ignored for provider \"bedrock\"; SigV4 signing is intrinsic")
+		}
+	}
+
 	// model.auth_scheme validation (#202 / #302). An unrecognized value
 	// silently degrades to native-headers-only — reproducing the exact 401
 	// the apikey_header scheme exists to fix — so reject it here.

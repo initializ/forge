@@ -10,6 +10,17 @@ import "context"
 // resolver reference one spelling.
 const ProviderOpenAIResponses = "openai-responses"
 
+// ProviderBedrock selects the native AWS Bedrock Converse API client
+// (POST <baseURL>/model/<modelId>/converse[-stream]). Unlike the
+// aws_sigv4 auth_scheme — which signs an OpenAI or Anthropic wire-format
+// request and only reaches Bedrock via its compat endpoints or a proxy —
+// this client speaks Bedrock's own model-agnostic Converse wire format,
+// so any Bedrock model (Claude, Nova, Llama, Mistral, Titan, …) works
+// through one translation. SigV4 signing is intrinsic (no auth_scheme
+// needed) and the base URL defaults to
+// https://bedrock-runtime.<aws_region>.amazonaws.com. Issue #205.
+const ProviderBedrock = "bedrock"
+
 // Outbound LLM auth schemes (ClientConfig.AuthScheme / ModelRef.auth_scheme).
 const (
 	// AuthSchemeAWSSigV4 signs every outbound request with AWS SigV4

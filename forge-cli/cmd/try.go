@@ -126,6 +126,11 @@ func runTry(cmd *cobra.Command, args []string) error {
 		opts.ModelAuthScheme = gw.AuthScheme
 		opts.ModelAuthHeaderName = gw.AuthHeaderName
 	}
+	// Builtin-tool offering (settings tools.builtins.enabled, #454): when set,
+	// it overrides the quickstart's default builtin set for the demo agent.
+	if len(set.Tools.Builtins.Enabled) > 0 {
+		opts.BuiltinTools = set.Tools.Builtins.Enabled
+	}
 
 	if err := scaffold(opts); err != nil {
 		return err

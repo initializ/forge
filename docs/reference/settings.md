@@ -78,10 +78,11 @@ The output lists each loaded layer lowest → highest, flags a managed `availabl
 
 ## What consumes settings today
 
-- **`forge try`**: a configured `models.default` seeds the provider/model when no flag is given; a configured `models.gateway` is injected into the scaffolded agent's `forge.yaml` model block (`base_url` / `auth_scheme` / `auth_header_name`) — so an org points `forge try` at its model gateway with no per-agent config.
+- **`forge try`**: a configured `models.default` seeds the provider/model when no flag is given; `models.gateway` is injected into the scaffolded `forge.yaml` model block (`base_url` / `auth_scheme` / `auth_header_name`); `tools.builtins.enabled`, when set, overrides the quickstart's default builtin set.
+- **`forge init`**: `models.gateway` is injected into the scaffolded `forge.yaml` (both modes). In **non-interactive** mode, `models.default` seeds the provider/model and `tools.builtins.enabled` seeds builtins when the corresponding flag is omitted — so a settings default even satisfies the otherwise-required `--model-provider`. (Interactive-wizard defaulting is a follow-up; the wizard is authoritative for what it collects, and only the gateway — which has no wizard step — is injected there.)
 - **`channels.enabled` gating**: when non-empty, `channels.enabled` is the allowlist of adapters that may run. It gates **all three** channel entry points: **`forge run --with <x>`** and **`forge channel serve <x>`** (the standalone runner) refuse to start a non-enabled adapter, and **`forge channel add <x>`** refuses to scaffold one. The gate runs before the [policy](../security/platform-policy.md) deny filter. Empty = unconstrained (every registered adapter available). This is the positive enablement surface; policy remains the deny surface — settings decide "is it offered?", policy decides "is it forbidden?".
 
-Additional consumers (`forge init`, builtin-tool offering) land in follow-up work tracked on the settings epic.
+Remaining follow-ups (tracked on the settings epic): interactive-wizard defaulting for `forge init`, and additional managed delivery mechanisms (server-managed control-plane fetch, macOS config profile, Windows registry).
 
 ## See also
 

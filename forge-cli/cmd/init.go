@@ -19,6 +19,7 @@ import (
 	"github.com/initializ/forge/forge-cli/templates"
 	"github.com/initializ/forge/forge-core/llm/oauth"
 	"github.com/initializ/forge/forge-core/secrets"
+	coresettings "github.com/initializ/forge/forge-core/settings"
 	"github.com/initializ/forge/forge-core/tools/builtins"
 	"github.com/initializ/forge/forge-core/util"
 	"github.com/initializ/forge/forge-skills/contract"
@@ -189,6 +190,33 @@ func init() {
 	initCmd.Flags().String("auth-azure-groups-mode", "", "azure_ad groups mode: claim (default) or graph")
 }
 
+// applyInitSettings folds forge settings (#454) into the scaffold options: the
+// model gateway is injected ALWAYS (no wizard step collides with it); in
+// NON-INTERACTIVE mode the default provider/model and builtin tools fill in
+// when the corresponding flag was omitted (so a settings default satisfies the
+// required-flag checks). Interactive-wizard defaulting is a follow-up.
+func applyInitSettings(opts *initOptions, set coresettings.Settings, nonInteractive bool) {
+	if gw := set.Models.Gateway; gw != nil {
+		opts.ModelBaseURL = gw.BaseURL
+		opts.ModelAuthScheme = gw.AuthScheme
+		opts.ModelAuthHeaderName = gw.AuthHeaderName
+	}
+	if !nonInteractive {
+		return
+	}
+	if d := set.Models.Default; d != nil {
+		if opts.ModelProvider == "" {
+			opts.ModelProvider = d.Provider
+		}
+		if opts.CustomModel == "" {
+			opts.CustomModel = d.Model
+		}
+	}
+	if len(opts.BuiltinTools) == 0 {
+		opts.BuiltinTools = set.Tools.Builtins.Enabled
+	}
+}
+
 func runInit(cmd *cobra.Command, args []string) error {
 	opts := &initOptions{
 		EnvVars: make(map[string]string),
@@ -224,6 +252,22 @@ func runInit(cmd *cobra.Command, args []string) error {
 	opts.NonInteractive = nonInteractive
 	opts.Force, _ = cmd.Flags().GetBool("force")
 
+	// Forge settings (developer surface, #454). Applied here so a configured
+	// default/gateway/builtins flow into the scaffold:
+	//   - models.gateway is injected into the forge.yaml model block ALWAYS
+	//     (no wizard step collides with it).
+	//   - In NON-INTERACTIVE mode, models.default seeds the provider/model and
+	//     tools.builtins.enabled seeds builtins when the corresponding flag was
+	//     omitted — so a settings default satisfies the required-flag checks in
+	//     collectNonInteractive. (Interactive defaulting into the wizard steps
+	//     is a follow-up.)
+	//   - channels.enabled gates opts.Channels after collection (both modes).
+	set, settingsErr := coresettings.Load(coresettings.LoadOptions{})
+	if settingsErr != nil {
+		return fmt.Errorf("loading settings: %w", settingsErr)
+	}
+	applyInitSettings(opts, set, nonInteractive)
+
 	// Auth chain flags.
 	authMode, _ := cmd.Flags().GetString("auth")
 	if authMode != "" {
@@ -248,6 +292,13 @@ func runInit(cmd *cobra.Command, args []string) error {
 		err = collectInteractive(opts)
 	}
 	if err != nil {
+		return err
+	}
+
+	// Enforce channels.enabled on the collected channel set (#454), same gate
+	// as `forge run --with` / `forge channel add/serve` — settings decide
+	// "is it offered?" before policy's "is it forbidden?".
+	if err := channelsEnabledBySettings(opts.Channels, set.Channels.Enabled); err != nil {
 		return err
 	}
 

@@ -106,11 +106,18 @@ type ProviderStep struct {
 	validating        bool
 	valErr            error
 	oauthRunning      bool
+	// defaultModel is settings models.default.model (#454); used to preselect
+	// the model in the OpenAI model-selector phase when it's in the list.
+	defaultModel string
 }
 
-// NewProviderStep creates a new provider selection step.
-// oauthFn is optional — pass nil to disable OAuth login.
-func NewProviderStep(styles *tui.StyleSet, validateFn ValidateKeyFunc, oauthFn ...OAuthFlowFunc) *ProviderStep {
+// NewProviderStep creates a new provider selection step. defaultProvider /
+// defaultModel are the settings models.default (#454): the provider is
+// pre-highlighted in the selector (the user still confirms), and defaultModel
+// preselects the model where a model-selector phase applies (OpenAI). Empty
+// values leave the built-in defaults. oauthFn is optional — pass nil to disable
+// OAuth login.
+func NewProviderStep(styles *tui.StyleSet, validateFn ValidateKeyFunc, defaultProvider, defaultModel string, oauthFn ...OAuthFlowFunc) *ProviderStep {
 	items := providerSelectItems()
 
 	selector := components.NewSingleSelect(
@@ -126,16 +133,21 @@ func NewProviderStep(styles *tui.StyleSet, validateFn ValidateKeyFunc, oauthFn .
 		styles.KbdDesc,
 	)
 
+	// Pre-highlight the settings default provider (#454). No-op when empty /
+	// not a known provider; does not auto-confirm.
+	selector.SelectByValue(defaultProvider)
+
 	var oFn OAuthFlowFunc
 	if len(oauthFn) > 0 {
 		oFn = oauthFn[0]
 	}
 
 	return &ProviderStep{
-		styles:     styles,
-		selector:   selector,
-		validateFn: validateFn,
-		oauthFn:    oFn,
+		styles:       styles,
+		selector:     selector,
+		validateFn:   validateFn,
+		oauthFn:      oFn,
+		defaultModel: defaultModel,
 	}
 }
 
@@ -461,6 +473,8 @@ func (s *ProviderStep) showModelSelector() tea.Cmd {
 		s.styles.KbdKey,
 		s.styles.KbdDesc,
 	)
+	// Preselect the settings default model (#454) when it's in this list.
+	s.modelSelector.SelectByValue(s.defaultModel)
 	s.phase = providerModelPhase
 	return s.modelSelector.Init()
 }

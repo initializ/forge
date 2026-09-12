@@ -597,14 +597,31 @@ forge auth secret-yaml --name custom-secret-name
 forge auth secret-yaml | kubectl apply -f -
 
 # Remove a stored LLM OAuth credential (default: openai) so the next
-# `forge init` / `forge try` prompts you to sign in again.
+# `forge init` / `forge try` prompts you to sign in again. Also clears any
+# cached model-gateway token for that provider (see below).
 forge auth logout
 forge auth logout openai
+
+# --- Model gateway credential (api_key_helper, #455) ---
+
+# Log in to the model gateway by running the api_key_helper configured in
+# settings (models.gateway(s).api_key_helper); caches the minted token. With
+# multiple gateways, pass the provider. This is the MANUAL path — a MANAGED
+# helper logs you in automatically before run/try/serve.
+forge auth login
+forge auth login openai
+
+# Show whether a gateway token is cached and when it expires (metadata only —
+# never prints the token). No arg lists every configured gateway.
+forge auth status
+forge auth status openai
 ```
 
 The `forge.agent.id` label on the generated Secret is always sourced from `forge.yaml`'s `agent_id` (or the `"forge-agent"` fallback), never from the `--name` override — so operators using `--name` to match an existing cluster convention still see telemetry and label-selectors keyed on the real agent ID.
 
 `forge auth logout` is an operator/laptop command: it deletes the OAuth credential from `~/.forge/credentials` and the encrypted store, and **refuses to run inside an agent runtime** — a container, or when `FORGE_PLATFORM_TOKEN` is set. A deployed agent authenticates with an injected API key or platform token, not the OAuth credential store, so there is nothing there for the runtime to log out of; the refusal is defense-in-depth so Forge is never the tool an agent shells out to in order to wipe an operator's credential.
+
+**`forge auth login` / `logout` / `status` — the model gateway credential.** These operate on the short-lived token an [`api_key_helper`](settings.md#local-dev-gateway-overlay--api_key_helper) mints for a model gateway — distinct from `show-token`/`mint-token` (the internal A2A bearer token) and from the native provider OAuth session. `login` runs the helper configured in settings and caches the token; `status` reports its presence/expiry (never the token); `logout <provider>` clears it (folded into the native-OAuth logout above). When the helper is set in **managed** settings, `run`/`try`/`serve` log in automatically (the login gate); use these commands for the **user-settings** case. `login` shares the same laptop-only refusal as `logout`.
 
 ---
 

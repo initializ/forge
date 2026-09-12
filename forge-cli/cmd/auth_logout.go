@@ -7,8 +7,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/initializ/forge/forge-cli/runtime"
 	"github.com/initializ/forge/forge-core/llm/oauth"
 	"github.com/initializ/forge/forge-core/security"
+	"github.com/initializ/forge/forge-core/settings"
 )
 
 // authLogoutCmd removes a stored LLM OAuth credential so the next sign-in
@@ -61,17 +63,40 @@ func runAuthLogout(cmd *cobra.Command, args []string) error {
 	}
 
 	out := cmd.OutOrStdout()
-	// Only report "nothing to do" when the store is DEFINITIVELY empty. On a
-	// read error (e.g. a corrupt token file) fall through to delete so logout
-	// still clears it, rather than silently leaving it in place.
+
+	// Clear the native OAuth credential. Only report "nothing to do" when the
+	// store is DEFINITIVELY empty; on a read error (e.g. a corrupt token file)
+	// fall through to delete so logout still clears it.
+	nativeCleared := true
 	if tok, err := oauth.LoadCredentials(provider); err == nil && tok == nil {
+		nativeCleared = false
+	}
+	if nativeCleared {
+		if err := oauth.DeleteCredentials(provider); err != nil {
+			return fmt.Errorf("removing %s credentials: %w", provider, err)
+		}
+		_, _ = fmt.Fprintf(out, "Logged out of %s. The next sign-in will prompt again.\n", provider)
+	}
+
+	// Also clear any cached gateway (api_key_helper) token for this provider
+	// (#455) — from the user's mental model, "log out of openai" should drop the
+	// gateway token too, not just the native OAuth credential. This runs even
+	// when there was no native credential, so a gateway-only user can log out.
+	gatewayCleared := false
+	if set, serr := settings.Load(settings.LoadOptions{}); serr == nil {
+		if gw := set.Models.GatewayForProvider(provider); gw != nil && strings.TrimSpace(gw.APIKeyHelper) != "" {
+			if err := runtime.ClearGatewayToken(gw.APIKeyHelper); err != nil {
+				_, _ = fmt.Fprintf(out, "Warning: could not clear gateway token for %s: %v\n", provider, err)
+			} else {
+				gatewayCleared = true
+				_, _ = fmt.Fprintf(out, "Cleared gateway token for %s.\n", provider)
+			}
+		}
+	}
+
+	if !nativeCleared && !gatewayCleared {
 		_, _ = fmt.Fprintf(out, "No %s credential stored; nothing to do.\n", provider)
-		return nil
 	}
-	if err := oauth.DeleteCredentials(provider); err != nil {
-		return fmt.Errorf("removing %s credentials: %w", provider, err)
-	}
-	_, _ = fmt.Fprintf(out, "Logged out of %s. The next sign-in will prompt again.\n", provider)
 	return nil
 }
 

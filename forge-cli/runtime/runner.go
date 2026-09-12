@@ -49,6 +49,7 @@ import (
 	deferengine "github.com/initializ/forge/forge-core/security/deferpolicy"
 	"github.com/initializ/forge/forge-core/security/intent"
 	"github.com/initializ/forge/forge-core/security/stepup"
+	"github.com/initializ/forge/forge-core/settings"
 	"github.com/initializ/forge/forge-core/tools"
 	"github.com/initializ/forge/forge-core/tools/adapters"
 	"github.com/initializ/forge/forge-core/tools/builtins"
@@ -1260,6 +1261,10 @@ func (r *Runner) Run(ctx context.Context) error {
 			// Try LLM executor, fall back to stub
 			mc := coreruntime.ResolveModelConfig(r.cfg.Config, envVars, r.cfg.ProviderOverride)
 			if mc != nil {
+				// Overlay the local-dev model gateway from settings (#455) before
+				// building the client: may redirect base_url/auth and inject a
+				// cached gateway token. No-op without a matching settings gateway.
+				r.applyGatewaySettings(mc)
 				r.modelConfig = mc
 				// Export org ID for skill scripts
 				if mc.Client.OrgID != "" {
@@ -3058,6 +3063,92 @@ func (r *Runner) registerPlatformCommandGuardHook(hooks *coreruntime.HookRegistr
 		}
 		return fmt.Errorf("platform policy: %s", msg)
 	})
+}
+
+// applyGatewaySettings overlays the local-dev model gateway from settings (#455)
+// onto the resolved model config and, when the matching gateway declares an
+// api_key_helper, injects the cached gateway token as the model credential.
+//
+// It is deliberately provider-scoped and non-fatal:
+//   - No gateway matches the resolved provider → no-op (native auth untouched).
+//     A checked-in forge.yaml therefore runs unchanged on the server (no local
+//     settings) and a provider with no matching gateway runs natively locally.
+//   - api_key_helper set but no cached token → warn and proceed (the managed
+//     login gate, or a manual `forge auth login`, acquires the token; build-time
+//     injection only READS the cache).
+//   - resolved model outside a managed available_models lock → warn only;
+//     runtime model-deny remains a server-side platform-policy concern (#454).
+func (r *Runner) applyGatewaySettings(mc *coreruntime.ModelConfig) {
+	if mc == nil {
+		return
+	}
+	layers, err := settings.LoadAllLayers(settings.LoadOptions{WorkingDir: r.cfg.WorkDir})
+	if err != nil {
+		r.logger.Warn("loading settings for gateway overlay", map[string]any{"error": err.Error()})
+		return
+	}
+	set := settings.Resolve(layers)
+
+	r.warnIfModelNotInManagedLock(layers, set, mc)
+
+	gw := set.Models.GatewayForProvider(mc.Provider)
+	if gw == nil {
+		return // no matching gateway → leave native auth in place
+	}
+
+	// Overlay endpoint fields (override-when-set): a local gateway redirects the
+	// dev's native forge.yaml endpoint through the corporate gateway.
+	if gw.BaseURL != "" {
+		mc.Client.BaseURL = gw.BaseURL
+	}
+	if gw.AuthScheme != "" {
+		mc.Client.AuthScheme = gw.AuthScheme
+	}
+	if gw.AuthHeaderName != "" {
+		mc.Client.AuthHeaderName = gw.AuthHeaderName
+	}
+
+	// Credential routing. Helper configured → inject the cached token; otherwise
+	// the native APIKey resolved by ResolveModelConfig stays. (A future OAuth
+	// branch belongs here and must be openai-only — never the anthropic public
+	// URL; not implemented in this slice.)
+	if gw.APIKeyHelper == "" {
+		return
+	}
+	tok, err := CachedGatewayToken(gw.APIKeyHelper)
+	if err != nil {
+		r.logger.Warn("loading cached gateway token", map[string]any{"provider": mc.Provider, "error": err.Error()})
+		return
+	}
+	if tok != nil && tok.AccessToken != "" {
+		mc.Client.APIKey = tok.AccessToken
+		return
+	}
+	r.logger.Warn("gateway api_key_helper is configured but no cached token was found; run 'forge auth login'",
+		map[string]any{"provider": mc.Provider})
+}
+
+// warnIfModelNotInManagedLock emits a one-line, non-fatal heads-up when a
+// MANAGED available_models lock is in effect and the resolved provider/model is
+// not on it. It never rejects — enforcement stays server-side (#454).
+func (r *Runner) warnIfModelNotInManagedLock(layers []settings.Layer, set settings.Settings, mc *coreruntime.ModelConfig) {
+	managed := settings.ManagedLayer(layers)
+	if managed == nil || !managed.ManagedLock {
+		return
+	}
+	allow := set.Models.AvailableModels
+	model := mc.Client.Model
+	if len(allow) == 0 || model == "" {
+		return
+	}
+	full := mc.Provider + "/" + model
+	for _, a := range allow {
+		if a == full || a == model {
+			return
+		}
+	}
+	r.logger.Warn("resolved model is not in your org's managed available_models; running with native auth",
+		map[string]any{"provider": mc.Provider, "model": model, "available_models": allow})
 }
 
 // buildLLMClient creates the LLM client from the resolved model config.

@@ -22,7 +22,7 @@ Highest wins. A managed value cannot be overridden by a lower layer.
 | 4 | **Shared project** | `.forge/settings.json` |
 | 5 | **User** | `~/.forge/settings.json` (or `FORGE_USER_SETTINGS`) |
 
-**Merge:** list keys (`channels.enabled`, `tools.builtins.enabled`, `skills.enabled`, and — when unlocked — `models.available_models`) are **unioned** across layers. Scalars (`models.default.*`, `models.gateway.*`) take the highest layer's non-empty value. `env` maps merge with higher keys winning.
+**Merge:** list keys (`channels.enabled`, `tools.builtins.enabled`, `skills.enabled`, and — when unlocked — `models.available_models`) are **unioned** across layers. Scalars (`models.default.*`, `models.gateway.*`) take the highest layer's non-empty value. `models.gateways` merges **per provider** — a higher layer's entry for a given provider replaces the lower one, others are kept. `env` maps merge with higher keys winning.
 
 **Managed settings are not developer-overridable.** They load from a **fixed OS system path with no env or flag override** — a developer running the shipped binary cannot redirect, replace, or drop the managed layer (matching Claude Code, whose managed path is fixed for exactly this reason). Tamper-resistance is the OS file permissions on that path: on a managed machine it is root-owned and not user-writable.
 
@@ -48,7 +48,11 @@ These paths are **fixed** — there is no env var to redirect them (a developer 
   "models": {
     "default":         { "provider": "anthropic", "model": "claude-sonnet-4-6" },
     "available_models": ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"],
-    "gateway":         { "base_url": "https://gw.corp/v1", "auth_scheme": "apikey_header", "auth_header_name": "apikey" }
+    "gateway":         { "base_url": "https://gw.corp/v1", "auth_scheme": "apikey_header", "auth_header_name": "apikey" },
+    "gateways": [
+      { "provider": "openai",    "base_url": "https://gw.corp/openai/v1",    "auth_scheme": "bearer", "api_key_helper": "/opt/forge/openai-helper.sh" },
+      { "provider": "anthropic", "base_url": "https://gw.corp/anthropic/v1", "auth_scheme": "bearer", "api_key_helper": "/opt/forge/anthropic-helper.sh" }
+    ]
   },
   "tools": {
     "builtins": { "enabled": ["http_request", "datetime_now", "math_calculate"] }
@@ -65,7 +69,9 @@ These paths are **fixed** — there is no env var to redirect them (a developer 
 | `channels.enabled` | `[]string` | Channel adapters offered/enabled by `forge init` / `run --with` / `channel add` |
 | `models.default` | `{provider, model}` | Default provider+model when none is given explicitly (seeds `forge try`/`init`) |
 | `models.available_models` | `[]string` | Allowlist of `<provider>/<model>`; a **managed** value is the authoritative allowlist (no lower layer or developer can widen it — see Managed lock). Empty = unset |
-| `models.gateway` | `{base_url, auth_scheme, auth_header_name}` | Model gateway endpoint injected into the scaffolded `forge.yaml` model block — mirrors the [`model` config](forge-yaml-schema.md) fields and the outbound [`auth_scheme`](../security/authentication.md) |
+| `models.gateway` | `{provider, base_url, auth_scheme, auth_header_name, api_key_helper}` | Model gateway endpoint. The singular form is the **provider-less catch-all** ("one URL for all providers"). Injected into the scaffolded `forge.yaml` model block by `forge init`/`try`, and consumed by the **runtime overlay** (below) — mirrors the [`model` config](forge-yaml-schema.md) fields and the outbound [`auth_scheme`](../security/authentication.md) |
+| `models.gateways` | `[{provider, base_url, auth_scheme, auth_header_name, api_key_helper}]` | **Per-provider** model gateways (one for anthropic, one for openai, …). Consumed by the **runtime overlay** only (not scaffold injection). Merged per-provider (a higher layer's entry for a provider replaces the lower one). See [Local-dev gateway overlay](#local-dev-gateway-overlay--api_key_helper) |
+| `models.gateway(s).api_key_helper` | `string` | External command that prints a short-lived token to stdout (the Claude Code apiKeyHelper contract). When set, the runtime injects a helper-minted token as the model credential per `auth_scheme`, instead of a native static API key. A **managed** helper arms the login gate; a user-layer helper uses `forge auth login\|logout\|status` |
 | `tools.builtins.enabled` | `[]string` | Builtin tools offered/defaulted |
 | `skills.enabled` | `[]string` | **Registry** skills offered/defaulted in `forge init` (the wizard offers only these; non-interactive `--skills` is gated). Empty = all registry skills. Governs registry-skill *selection* only — NOT `--from-skills` / `--from-skill-dir` custom imports (a developer's own local skills). It is a developer-surface offering, not a hard skill boundary; to forbid skills fleet-wide, use platform policy |
 | `env` | `map[string]string` | Environment defaults |
@@ -86,7 +92,21 @@ The output lists each loaded layer lowest → highest, flags a managed `availabl
 - **`forge init`**: `models.gateway` is injected into the scaffolded `forge.yaml` (both modes). In **non-interactive** mode, `models.default` seeds the provider/model and `tools.builtins.enabled` / `skills.enabled` seed builtins / skills when the corresponding flag is omitted — so a settings default even satisfies the otherwise-required `--model-provider`. `channels.enabled` and `skills.enabled` are enforced: non-interactive `--channels` / `--skills` fail immediately on a non-enabled entry, and the **interactive wizard offers only the enabled channels and skills** (so a disabled one can't be picked; the end-of-wizard gate remains a backstop). Note `skills.enabled` scopes to **registry** skills only — `--from-skills` / `--from-skill-dir` custom imports are the developer's own local skills and are not gated by it (a hard skill boundary is a [platform policy](../security/platform-policy.md) concern, not this developer-surface setting). The interactive wizard also **pre-selects `models.default`**: the provider step highlights the default provider, and the default model — but interactive model pre-selection applies **only where a model-selector step exists (OpenAI today)**; providers with a fixed model default (e.g. anthropic, gemini) have no model step, so their `models.default.model` is *not* applied in the interactive wizard (the provider is still highlighted). The model default **is always honored non-interactively** (and via the scaffolded `forge.yaml` gateway). The user still confirms each wizard choice; the gateway (no wizard step) is injected regardless.
 - **`channels.enabled` gating**: when non-empty, `channels.enabled` is the allowlist of adapters that may run. It gates **all three** channel entry points: **`forge run --with <x>`** and **`forge channel serve <x>`** (the standalone runner) refuse to start a non-enabled adapter, and **`forge channel add <x>`** refuses to scaffold one. The gate runs before the [policy](../security/platform-policy.md) deny filter. Empty = unconstrained (every registered adapter available). This is the positive enablement surface; policy remains the deny surface — settings decide "is it offered?", policy decides "is it forbidden?".
 
-Remaining follow-ups (tracked on the settings epic): additional managed delivery mechanisms (server-managed control-plane fetch, macOS config profile, Windows registry). The interactive-wizard defaulting (channel/skill filtering + provider/model pre-selection) is complete.
+## Local-dev gateway overlay + `api_key_helper`
+
+This is the model for **forge on the server**: a developer checks in a `forge.yaml` with a native `provider` + `auth_scheme` + API keys, and the deployed agent uses those. **Local development** is different — a developer testing on their laptop often must reach the model through the org's **gateway** (Kong/Bedrock) behind an IdP (Okta/Entra), which issues a short-lived token. Rather than editing (and risking committing) the native `forge.yaml`, **managed or user settings auto-wire the call locally**: at runtime, before building the model client, forge overlays the matching settings `gateway` onto the resolved model config.
+
+**Provider-scoped.** The overlay picks the `models.gateways` entry whose `provider` matches the resolved model provider (a provider match wins; a provider-less `models.gateway` is the catch-all). If **none** matches — e.g. `forge.yaml` is `openai` but settings define only an anthropic gateway — there is **no overlay** and the run stays on native auth. So a laptop's settings can define one gateway per provider and each agent picks up only its own.
+
+**`api_key_helper` (the token).** When the matched gateway sets `api_key_helper`, forge runs that external command (the [Claude Code apiKeyHelper](https://code.claude.com/docs/en/settings#apikeyhelper) contract: it prints a token to stdout), caches the token by its JWT `exp`, and injects it as the model credential per the gateway's `auth_scheme` (`bearer` → `Authorization: Bearer`, `apikey_header` → the named header). The command comes from trusted settings (managed = root-owned; user = the developer's own `~/.forge`), never from agent/LLM input, and is run without a shell. The token is stored like every other credential: encrypted when `FORGE_PASSPHRASE` is set, else a `0600` file under `~/.forge/credentials`; it is never logged.
+
+**Login gate (managed) vs. manual (user).** When a **managed** gateway sets `api_key_helper`, an LLM-touching command (`forge run`, `forge try`, `forge serve`/`serve start`) that finds the cached token missing or expired runs the helper to (re)log-in **before** proceeding. When the helper is only in **user** settings, there is no auto-gate — the developer manages the token with [`forge auth login | logout | status`](cli-reference.md#forge-auth). A browser-based helper is a local-dev affordance; headless servers use native auth and would not deploy a managed helper.
+
+**`available_models` mismatch is a warning, not a block.** If a resolved model isn't in a **managed** `available_models` lock, forge prints a one-line warning and proceeds with native auth — runtime model-deny remains a server-side [platform policy](../security/platform-policy.md) concern (see **Managed lock** above), not a client-side rejection.
+
+> **Note (OAuth roadmap).** Today the gateway credential is `api_key_helper` only. A native OAuth-login mode is planned but will be **openai-only** — it must never sign in directly against the anthropic public URL.
+
+Remaining follow-ups (tracked on the settings epic): additional managed delivery mechanisms (server-managed control-plane fetch, macOS config profile, Windows registry); per-fallback / per-endpoint gateway auth (today the overlay is primary-endpoint only); native OIDC login modes. The interactive-wizard defaulting (channel/skill filtering + provider/model pre-selection) is complete.
 
 ## See also
 

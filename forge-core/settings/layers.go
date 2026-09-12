@@ -260,6 +260,19 @@ func Resolve(layers []Layer) Settings {
 	return out
 }
 
+// ManagedLayer returns the managed layer from a loaded set, or nil when no
+// managed settings are present. The login gate (#455) uses this: only a
+// MANAGED-layer gateway helper arms the auto-login gate — a user-layer helper
+// stays on the manual `forge auth` path.
+func ManagedLayer(layers []Layer) *Layer {
+	for i := range layers {
+		if layers[i].Source == LayerManaged {
+			return &layers[i]
+		}
+	}
+	return nil
+}
+
 // Load discovers all layers and returns the resolved effective settings. The
 // per-layer detail (for `forge settings` provenance) comes from LoadAllLayers.
 func Load(opts LoadOptions) (Settings, error) {

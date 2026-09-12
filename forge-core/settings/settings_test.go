@@ -110,6 +110,59 @@ func TestResolve_GatewayFieldMerge(t *testing.T) {
 	}
 }
 
+func TestResolve_GatewaysMergePerProvider(t *testing.T) {
+	// Higher layer's entry for a provider REPLACES the lower one; other
+	// providers union; order is stable (lo providers first, then new hi ones).
+	layers := []Layer{
+		{Source: LayerUser, Settings: Settings{Models: ModelSettings{Gateways: []ModelGateway{
+			{Provider: "openai", BaseURL: "https://user-openai", APIKeyHelper: "old.sh"},
+			{Provider: "gemini", BaseURL: "https://user-gemini"},
+		}}}},
+		{Source: LayerManaged, Settings: Settings{Models: ModelSettings{Gateways: []ModelGateway{
+			{Provider: "openai", BaseURL: "https://managed-openai", APIKeyHelper: "new.sh"},
+			{Provider: "anthropic", BaseURL: "https://managed-anthropic"},
+		}}}},
+	}
+	got := Resolve(layers).Models.Gateways
+	want := []ModelGateway{
+		{Provider: "openai", BaseURL: "https://managed-openai", APIKeyHelper: "new.sh"}, // replaced
+		{Provider: "gemini", BaseURL: "https://user-gemini"},                            // kept
+		{Provider: "anthropic", BaseURL: "https://managed-anthropic"},                   // appended
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("gateways merge = %+v, want %+v", got, want)
+	}
+}
+
+func TestGatewayForProvider_MatchAndCatchAll(t *testing.T) {
+	ms := ModelSettings{
+		Gateways: []ModelGateway{
+			{Provider: "anthropic", BaseURL: "https://anthropic-gw", APIKeyHelper: "a.sh"},
+		},
+		Gateway: &ModelGateway{BaseURL: "https://catch-all"}, // provider-less
+	}
+
+	// Exact provider match wins.
+	if gw := ms.GatewayForProvider("anthropic"); gw == nil || gw.BaseURL != "https://anthropic-gw" {
+		t.Errorf("anthropic should match its scoped gateway, got %+v", gw)
+	}
+	// A provider with no scoped entry falls back to the catch-all.
+	if gw := ms.GatewayForProvider("openai"); gw == nil || gw.BaseURL != "https://catch-all" {
+		t.Errorf("openai should fall back to catch-all, got %+v", gw)
+	}
+}
+
+func TestGatewayForProvider_NoMatchNoCatchAll(t *testing.T) {
+	// forge.yaml provider=openai, but the only gateway defines anthropic and
+	// there is no catch-all → nil (no overlay; the run stays on native auth).
+	ms := ModelSettings{Gateways: []ModelGateway{
+		{Provider: "anthropic", BaseURL: "https://anthropic-gw", APIKeyHelper: "a.sh"},
+	}}
+	if gw := ms.GatewayForProvider("openai"); gw != nil {
+		t.Errorf("openai must NOT match an anthropic-only gateway set, got %+v", gw)
+	}
+}
+
 func TestLoadAllLayers_DiscoveryPrecedenceAndResolve(t *testing.T) {
 	dir := t.TempDir()
 	userFile := filepath.Join(dir, "user-settings.json")

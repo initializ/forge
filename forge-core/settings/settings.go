@@ -54,7 +54,22 @@ type ModelSettings struct {
 	// Gateway injects the model endpoint (base_url + outbound auth scheme).
 	// This is how an org points every agent at its model gateway centrally
 	// instead of per-agent forge.yaml. Scalar fields — highest layer wins.
+	//
+	// The singular Gateway is the provider-less CATCH-ALL ("one URL for all
+	// providers"). For per-provider endpoints ("one URL for anthropic, one for
+	// openai"), use Gateways below. `forge init`/`forge try` scaffolding reads
+	// this singular field to bake base_url/auth into a generated forge.yaml;
+	// the runtime overlay (#455) reads the effective set (Gateways + Gateway).
 	Gateway *ModelGateway `json:"gateway,omitempty"`
+
+	// Gateways is the list of PER-PROVIDER model gateways (#455). Each entry
+	// carries a Provider it applies to (empty = provider-less catch-all). A
+	// laptop's managed/user settings realistically define one per provider (the
+	// dev runs an openai agent one day, an anthropic agent the next). The
+	// runtime overlay picks the entry whose Provider matches the resolved model
+	// provider (see GatewayForProvider); a provider match wins over the
+	// catch-all. Merged per-provider (higher layer's entry for a provider wins).
+	Gateways []ModelGateway `json:"gateways,omitempty"`
 }
 
 // ModelDefault is a provider+model pair.
@@ -67,9 +82,22 @@ type ModelDefault struct {
 // ModelRef fields (base_url / auth_scheme / auth_header_name; see
 // forge-core/types/config.go + forge-core/llm ClientConfig).
 type ModelGateway struct {
+	// Provider scopes this gateway to a model provider (e.g. "openai",
+	// "anthropic", "gemini"). Empty = provider-less catch-all. Used only by the
+	// runtime overlay (Gateways list) to match the resolved model provider; the
+	// scaffold-injection path ignores it.
+	Provider       string `json:"provider,omitempty"`
 	BaseURL        string `json:"base_url,omitempty"`
 	AuthScheme     string `json:"auth_scheme,omitempty"`
 	AuthHeaderName string `json:"auth_header_name,omitempty"`
+
+	// APIKeyHelper is an external command that prints a short-lived token to
+	// stdout (the Claude Code apiKeyHelper contract, #455). When set, the
+	// runtime overlay runs/caches it (by the token's JWT exp) and injects the
+	// token as the model credential per AuthScheme, instead of a native static
+	// API key. A MANAGED-layer helper additionally arms the login gate; a
+	// user-layer helper uses the manual `forge auth login|logout|status` path.
+	APIKeyHelper string `json:"api_key_helper,omitempty"`
 }
 
 // ToolSettings governs which builtin tools are offered/defaulted.
@@ -111,6 +139,7 @@ func merge(lo, hi Settings) Settings {
 
 	out.Models.Default = mergeModelDefault(lo.Models.Default, hi.Models.Default)
 	out.Models.Gateway = mergeGateway(lo.Models.Gateway, hi.Models.Gateway)
+	out.Models.Gateways = mergeGateways(lo.Models.Gateways, hi.Models.Gateways)
 	out.Env = mergeStringMap(lo.Env, hi.Env)
 
 	return out
@@ -155,6 +184,68 @@ func mergeGateway(lo, hi *ModelGateway) *ModelGateway {
 		}
 	}
 	return &out
+}
+
+// mergeGateways folds two per-provider gateway lists, keyed by Provider. A
+// higher-layer entry for a given provider REPLACES the lower one (whole-entry,
+// not field-level — a per-provider endpoint is defined atomically). Order is
+// stable: lo's providers first (in their order), then any new hi providers.
+func mergeGateways(lo, hi []ModelGateway) []ModelGateway {
+	if len(lo) == 0 && len(hi) == 0 {
+		return nil
+	}
+	var order []string
+	byProvider := make(map[string]ModelGateway, len(lo)+len(hi))
+	add := func(list []ModelGateway) {
+		for _, g := range list {
+			if _, ok := byProvider[g.Provider]; !ok {
+				order = append(order, g.Provider)
+			}
+			byProvider[g.Provider] = g
+		}
+	}
+	add(lo)
+	add(hi)
+	out := make([]ModelGateway, 0, len(order))
+	for _, p := range order {
+		out = append(out, byProvider[p])
+	}
+	return out
+}
+
+// EffectiveGateways returns the runtime gateway set: the per-provider Gateways
+// list plus the singular Gateway appended as a provider-less catch-all (when
+// set). The runtime overlay resolves against this via GatewayForProvider.
+func (m ModelSettings) EffectiveGateways() []ModelGateway {
+	if len(m.Gateways) == 0 && m.Gateway == nil {
+		return nil
+	}
+	out := make([]ModelGateway, 0, len(m.Gateways)+1)
+	out = append(out, m.Gateways...)
+	if m.Gateway != nil {
+		out = append(out, *m.Gateway)
+	}
+	return out
+}
+
+// GatewayForProvider returns the gateway that applies to the given resolved
+// model provider, or nil when none does. A gateway whose Provider matches
+// exactly wins; otherwise the first provider-less catch-all applies. This is
+// how "forge.yaml provider=openai + a gateway defining only anthropic" resolves
+// to no overlay (nil) — leaving the openai run on native auth.
+func (m ModelSettings) GatewayForProvider(provider string) *ModelGateway {
+	gws := m.EffectiveGateways()
+	for i := range gws {
+		if gws[i].Provider != "" && gws[i].Provider == provider {
+			return &gws[i]
+		}
+	}
+	for i := range gws {
+		if gws[i].Provider == "" {
+			return &gws[i]
+		}
+	}
+	return nil
 }
 
 // unionStrings returns lo followed by any hi entries not already present,

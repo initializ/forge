@@ -28,7 +28,7 @@ func TestStepInitResetsComplete(t *testing.T) {
 		}
 	})
 	t.Run("provider", func(t *testing.T) {
-		s := NewProviderStep(styles, noKey)
+		s := NewProviderStep(styles, noKey, "", "")
 		s.complete = true
 		s.Init()
 		if s.complete {

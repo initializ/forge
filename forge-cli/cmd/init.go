@@ -445,9 +445,16 @@ func collectInteractive(opts *initOptions, set coresettings.Settings) error {
 	// ordering, the egress list would miss auth hosts and a Forge instance
 	// could fail at runtime because its OIDC discovery or STS call gets
 	// blocked by the very allowlist the wizard just rendered.
+	// Settings models.default (#454): pre-highlight the provider (and, where a
+	// model-selector phase applies, the model) in the wizard.
+	var defProvider, defModel string
+	if d := set.Models.Default; d != nil {
+		defProvider, defModel = d.Provider, d.Model
+	}
+
 	wizardSteps := []tui.Step{
 		steps.NewNameStep(styles, opts.Name),
-		steps.NewProviderStep(styles, validateKeyFn, oauthFlowFn),
+		steps.NewProviderStep(styles, validateKeyFn, defProvider, defModel, oauthFlowFn),
 		steps.NewFallbackStep(styles, validateKeyFn),
 		steps.NewChannelStep(styles, set.Channels.Enabled),
 		steps.NewWebSearchStep(styles, validateWebSearchKeyFn),

@@ -444,13 +444,18 @@ func (c *AnthropicClient) readAnthropicStream(r io.Reader, ch chan<- llm.StreamD
 	scanner := bufio.NewScanner(r)
 	var currentToolCall *llm.ToolCall
 	var eventType string
-	// Input + prompt-cache tokens arrive on message_start; output accumulates
-	// onto message_delta. Capture the input side here and emit the COMPLETE
-	// usage once, on the terminal message_delta — a single authoritative
-	// UsageInfo is correct whether a consumer overwrites (result.Usage =
-	// *delta.Usage) or sums per-delta, and avoids losing input on the common
-	// overwrite path (#433).
+	// Input + prompt-cache tokens arrive on message_start; output rides
+	// message_delta. Capture the input side here and emit the COMPLETE usage
+	// EXACTLY ONCE, on the terminal message_delta (the one bearing a
+	// stop_reason, which carries the final — cumulative — output_tokens). A
+	// single authoritative UsageInfo is correct whether a consumer overwrites
+	// (result.Usage = *delta.Usage) or SUMS per-delta; the usageEmitted guard
+	// makes that an enforced invariant rather than an assumption about Anthropic
+	// sending exactly one message_delta — were it ever to send incremental
+	// message_delta updates (output_tokens is cumulative there), a summing
+	// consumer would otherwise multi-count input + cache (#433 review).
 	var inputTokens, cacheReadTokens, cacheCreationTokens int
+	var usageEmitted bool
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -517,13 +522,24 @@ func (c *AnthropicClient) readAnthropicStream(r io.Reader, ch chan<- llm.StreamD
 			if json.Unmarshal([]byte(after), &ev) != nil {
 				continue
 			}
+			// Only the terminal message_delta carries a stop_reason (with the
+			// final cumulative output_tokens). Non-terminal deltas — which
+			// Anthropic does not send today, but might as incremental usage
+			// updates — carry no finish reason and no authoritative usage, so
+			// skip them rather than emit a premature/duplicate Usage.
+			if ev.Delta.StopReason == "" {
+				continue
+			}
 			finishReason := "stop"
 			if ev.Delta.StopReason == "tool_use" {
 				finishReason = "tool_calls"
 			}
-			ch <- llm.StreamDelta{
-				FinishReason: finishReason,
-				Usage: &llm.UsageInfo{
+			delta := llm.StreamDelta{FinishReason: finishReason}
+			// Attach the one complete Usage here, guarded so it is emitted at
+			// most once across the whole stream.
+			if !usageEmitted {
+				usageEmitted = true
+				delta.Usage = &llm.UsageInfo{
 					InputTokens:              inputTokens,
 					OutputTokens:             ev.Usage.OutputTokens,
 					CacheReadInputTokens:     cacheReadTokens,
@@ -531,8 +547,9 @@ func (c *AnthropicClient) readAnthropicStream(r io.Reader, ch chan<- llm.StreamD
 					// True total incl. cached prefix, matching the
 					// non-streaming path (#431/#432).
 					TotalTokens: inputTokens + cacheReadTokens + cacheCreationTokens + ev.Usage.OutputTokens,
-				},
+				}
 			}
+			ch <- delta
 
 		case "message_stop":
 			ch <- llm.StreamDelta{Done: true}

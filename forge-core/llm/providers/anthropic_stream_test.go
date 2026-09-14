@@ -73,6 +73,64 @@ func TestAnthropicChatStream_CapturesInputAndCacheTokens(t *testing.T) {
 	}
 }
 
+// #433 review: the COMPLETE usage must be emitted EXACTLY ONCE, even if the
+// stream carries multiple message_delta events. This drives an incremental
+// (no-stop_reason) message_delta followed by the terminal one and asserts (a)
+// exactly one delta carries a non-nil Usage and (b) it uses the terminal
+// (final, cumulative) output_tokens — so a summing consumer can't multi-count
+// input/cache.
+func TestAnthropicChatStream_EmitsUsageExactlyOnce(t *testing.T) {
+	sse := "event: message_start\n" +
+		`data: {"type":"message_start","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":100,"cache_creation_input_tokens":20,"output_tokens":1}}}` + "\n\n" +
+		"event: content_block_delta\n" +
+		`data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}` + "\n\n" +
+		// Incremental usage update, NO stop_reason (hypothetical future shape).
+		"event: message_delta\n" +
+		`data: {"type":"message_delta","delta":{},"usage":{"output_tokens":15}}` + "\n\n" +
+		// Terminal delta: stop_reason + the final cumulative output.
+		"event: message_delta\n" +
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":40}}` + "\n\n" +
+		"event: message_stop\n" +
+		`data: {"type":"message_stop"}` + "\n\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(sse))
+	}))
+	defer srv.Close()
+
+	c := NewAnthropicClient(llm.ClientConfig{APIKey: "x", BaseURL: srv.URL, Model: "claude-sonnet-4-6"})
+	ch, err := c.ChatStream(context.Background(), &llm.ChatRequest{
+		Model:    "claude-sonnet-4-6",
+		Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+
+	usageCount := 0
+	var usage llm.UsageInfo
+	for delta := range ch {
+		if delta.Usage != nil {
+			usageCount++
+			usage = *delta.Usage
+		}
+	}
+
+	if usageCount != 1 {
+		t.Fatalf("exactly one delta must carry Usage, got %d (a summing consumer would multi-count)", usageCount)
+	}
+	if usage.InputTokens != 10 || usage.CacheReadInputTokens != 100 || usage.CacheCreationInputTokens != 20 {
+		t.Errorf("input/cache = %+v, want input=10 read=100 creation=20", usage)
+	}
+	if usage.OutputTokens != 40 {
+		t.Errorf("OutputTokens = %d, want 40 (terminal cumulative, not the 15 incremental)", usage.OutputTokens)
+	}
+	if usage.TotalTokens != 170 {
+		t.Errorf("TotalTokens = %d, want 170 (10+100+20+40)", usage.TotalTokens)
+	}
+}
+
 // A non-cached stream: input + output populate, cache fields stay zero.
 func TestAnthropicChatStream_NoCaching(t *testing.T) {
 	sse := "event: message_start\n" +

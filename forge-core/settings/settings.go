@@ -12,6 +12,8 @@
 // is the positive counterpart to a policy *deny*; both can coexist. See #454.
 package settings
 
+import "strings"
+
 // Settings is the merged, effective forge configuration for a session. Every
 // field is optional; a zero Settings means "nothing configured" and callers
 // fall back to their built-in defaults, preserving pre-#454 behavior.
@@ -173,6 +175,9 @@ func mergeGateway(lo, hi *ModelGateway) *ModelGateway {
 		out = *lo
 	}
 	if hi != nil {
+		if hi.Provider != "" {
+			out.Provider = hi.Provider
+		}
 		if hi.BaseURL != "" {
 			out.BaseURL = hi.BaseURL
 		}
@@ -181,6 +186,9 @@ func mergeGateway(lo, hi *ModelGateway) *ModelGateway {
 		}
 		if hi.AuthHeaderName != "" {
 			out.AuthHeaderName = hi.AuthHeaderName
+		}
+		if hi.APIKeyHelper != "" {
+			out.APIKeyHelper = hi.APIKeyHelper
 		}
 	}
 	return &out
@@ -235,8 +243,10 @@ func (m ModelSettings) EffectiveGateways() []ModelGateway {
 // to no overlay (nil) — leaving the openai run on native auth.
 func (m ModelSettings) GatewayForProvider(provider string) *ModelGateway {
 	gws := m.EffectiveGateways()
+	// Provider names are compared case-insensitively — a config value of
+	// "OpenAI" must still match a resolved "openai".
 	for i := range gws {
-		if gws[i].Provider != "" && gws[i].Provider == provider {
+		if gws[i].Provider != "" && strings.EqualFold(gws[i].Provider, provider) {
 			return &gws[i]
 		}
 	}

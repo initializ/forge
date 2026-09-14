@@ -54,6 +54,40 @@ func TestAnthropicClient_BearerAuthSchemeSendsAuthorization(t *testing.T) {
 	}
 }
 
+// TestOpenAIClients_BearerAuthSchemeIsNativeNoop pins the documented contract
+// that auth_scheme=bearer is a NO-OP for openai / openai-responses: Bearer is
+// already their native presentation, so bearer must send exactly one
+// `Authorization: Bearer` and no stray gateway/x-api-key header. Guards the
+// gateway contract against a future change to openai's header logic.
+func TestOpenAIClients_BearerAuthSchemeIsNativeNoop(t *testing.T) {
+	cfg := llm.ClientConfig{APIKey: "gw-jwt", Model: "gpt-test", AuthScheme: llm.AuthSchemeBearer}
+
+	t.Run("openai", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodPost, "https://gw.corp/v1/chat/completions", nil)
+		NewOpenAIClient(cfg).setHeaders(req)
+		if got := req.Header.Get("Authorization"); got != "Bearer gw-jwt" {
+			t.Errorf("Authorization = %q, want Bearer gw-jwt", got)
+		}
+		if got := req.Header.Get("x-api-key"); got != "" {
+			t.Errorf("openai bearer must not send x-api-key, got %q", got)
+		}
+		if got := req.Header.Get("apikey"); got != "" {
+			t.Errorf("openai bearer must not send a gateway header, got %q", got)
+		}
+	})
+
+	t.Run("openai-responses", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodPost, "https://gw.corp/v1/responses", nil)
+		NewResponsesClient(cfg).setHeaders(req)
+		if got := req.Header.Get("Authorization"); got != "Bearer gw-jwt" {
+			t.Errorf("Authorization = %q, want Bearer gw-jwt", got)
+		}
+		if got := req.Header.Get("apikey"); got != "" {
+			t.Errorf("responses bearer must not send a gateway header, got %q", got)
+		}
+	})
+}
+
 // TestAnthropicClient_SigV4AuthSchemeOmitsXAPIKey is the Phase 2
 // invariant: when the client is configured for SigV4 outbound, the
 // per-request x-api-key header MUST NOT be sent. The SigV4 transport

@@ -44,6 +44,15 @@ const (
 	// DefaultAPIKeyHeaderName is the header the apikey_header schemes use
 	// when AuthHeaderName is unset — Kong key-auth's default key_names.
 	DefaultAPIKeyHeaderName = "apikey"
+
+	// AuthSchemeBearer sends the credential as `Authorization: Bearer <key>`
+	// and SUPPRESSES the provider-native API-key header. For openai this is
+	// already the native presentation (so it's a no-op there); for anthropic
+	// it REPLACES the native `x-api-key` with a Bearer token — the shape an
+	// IdP gateway (e.g. a Kong OIDC route in front of Bedrock/Claude) expects
+	// when the api_key_helper token is an OIDC JWT (#455). Distinct from the
+	// apikey_header schemes, which put the key in a NON-native custom header.
+	AuthSchemeBearer = "bearer"
 )
 
 // Client is the interface for interacting with an LLM provider.

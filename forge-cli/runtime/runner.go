@@ -3125,6 +3125,16 @@ func (r *Runner) applyGatewaySettings(ctx context.Context, mc *coreruntime.Model
 	// injected into the request (which the gateway would 401). This is the
 	// universal refresh path for both managed and user layers; the managed login
 	// gate (root PersistentPreRunE) is the eager, fail-early variant for managed.
+	//
+	// NOTE: unlike the cache-only overlay before it, this site now EXECS the
+	// helper (on expiry). That is trust-safe: `gw` is resolved from
+	// TrustedGatewayLayers above, so the checked-in project .forge/settings.json
+	// can never supply the command — same trust scope as `forge auth login`.
+	// Deliberately NOT guarded by deniedInAgentRuntime (which blocks the operator
+	// `auth login`/`logout` commands inside a sandbox): a DEPLOYED runtime
+	// legitimately re-acquires its OWN model credential here via a non-interactive
+	// (e.g. client_credentials) managed helper. An interactive helper in a
+	// headless runtime simply fails → the warn-and-proceed path below.
 	tok, err := EnsureGatewayToken(ctx, gw.APIKeyHelper, gw.Env)
 	if err != nil {
 		r.logger.Warn("gateway login failed; run 'forge auth login' (proceeding without a gateway token)",

@@ -67,7 +67,7 @@ func TestAuthGateway_LoginStatusLogoutRoundTrip(t *testing.T) {
 	if !strings.Contains(buf.String(), "Logged in to gateway openai") {
 		t.Errorf("login output = %q", buf.String())
 	}
-	if tok, _ := runtime.CachedGatewayToken(helper); tok == nil || tok.AccessToken == "" {
+	if tok, _ := runtime.CachedGatewayToken(helper, nil); tok == nil || tok.AccessToken == "" {
 		t.Fatal("expected a cached token after login")
 	}
 
@@ -88,7 +88,7 @@ func TestAuthGateway_LoginStatusLogoutRoundTrip(t *testing.T) {
 	if !strings.Contains(buf.String(), "Cleared gateway token for openai") {
 		t.Errorf("logout output = %q", buf.String())
 	}
-	if tok, _ := runtime.CachedGatewayToken(helper); tok != nil && tok.AccessToken != "" {
+	if tok, _ := runtime.CachedGatewayToken(helper, nil); tok != nil && tok.AccessToken != "" {
 		t.Error("gateway token should be cleared after logout")
 	}
 }

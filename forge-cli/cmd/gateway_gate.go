@@ -34,14 +34,22 @@ func gatewayLoginGate(cmd *cobra.Command, _ []string) error {
 		return nil // only a managed helper arms the gate
 	}
 
-	// Dedup helper commands across managed gateways (two providers may share one).
+	// Ensure each managed gateway's credential. Dedup on the (helper, env)
+	// IDENTITY, not the helper alone: a shared helper parameterized with
+	// different env per provider (e.g. per-provider OKTA_ISSUER) mints distinct
+	// tokens and must each be fetched. runtime.GatewayCredKey gives the same
+	// (helper, env) identity the credential cache uses.
 	seen := make(map[string]bool)
 	for _, gw := range managed.Settings.Models.EffectiveGateways() {
 		h := strings.TrimSpace(gw.APIKeyHelper)
-		if h == "" || seen[h] {
+		if h == "" {
 			continue
 		}
-		seen[h] = true
+		id := runtime.GatewayCredKey(h, gw.Env)
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
 		if _, err := runtime.EnsureGatewayToken(cmd.Context(), h, gw.Env); err != nil {
 			return fmt.Errorf("gateway login failed (run 'forge auth login'): %w", err)
 		}

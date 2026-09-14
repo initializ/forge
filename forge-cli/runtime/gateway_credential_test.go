@@ -86,7 +86,7 @@ func TestEnsureGatewayToken_ExpiredReRuns(t *testing.T) {
 	helper := writeHelper(t, dir, "helper.sh", fresh, marker)
 
 	// Pre-seed an EXPIRED cached token under the helper's key.
-	if err := oauth.SaveCredentials(gatewayCredKey(helper), &oauth.Token{
+	if err := oauth.SaveCredentials(GatewayCredKey(helper, nil), &oauth.Token{
 		AccessToken: "stale", ExpiresAt: time.Now().Add(-time.Hour),
 	}); err != nil {
 		t.Fatal(err)
@@ -160,7 +160,7 @@ func TestEnsureGatewayToken_InjectsEnv(t *testing.T) {
 func TestCachedGatewayToken_AbsentIsNil(t *testing.T) {
 	oauth.SetCredentialsDir(t.TempDir())
 	t.Cleanup(func() { oauth.SetCredentialsDir("") })
-	tok, err := CachedGatewayToken("some.sh")
+	tok, err := CachedGatewayToken("some.sh", nil)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -169,15 +169,78 @@ func TestCachedGatewayToken_AbsentIsNil(t *testing.T) {
 	}
 }
 
-func TestGatewayCredKey_StableAndHelperScoped(t *testing.T) {
-	// Same helper → same key (gate and overlay must agree); different helpers →
-	// different keys.
-	a1, a2 := gatewayCredKey("a.sh"), gatewayCredKey("a.sh")
+func TestGatewayCredKey_HelperAndEnvScoped(t *testing.T) {
+	// Same (helper, env) → same key (gate and overlay must agree); different
+	// helper OR different env → different keys. env is part of the identity so a
+	// shared helper parameterized per-provider doesn't collide.
+	a1 := GatewayCredKey("a.sh", map[string]string{"ISSUER": "A"})
+	a2 := GatewayCredKey("a.sh", map[string]string{"ISSUER": "A"})
 	if a1 != a2 {
-		t.Error("key must be stable for the same helper")
+		t.Error("key must be stable for the same (helper, env)")
 	}
-	if a1 == gatewayCredKey("b.sh") {
+	if a1 == GatewayCredKey("b.sh", map[string]string{"ISSUER": "A"}) {
 		t.Error("distinct helpers must get distinct keys")
+	}
+	if a1 == GatewayCredKey("a.sh", map[string]string{"ISSUER": "B"}) {
+		t.Error("same helper with different env must get distinct keys")
+	}
+	if GatewayCredKey("a.sh", nil) == GatewayCredKey("a.sh", map[string]string{"ISSUER": "A"}) {
+		t.Error("no env vs some env must differ")
+	}
+}
+
+// TestEnsureGatewayToken_SharedHelperDifferentEnv is the review MEDIUM #1/#2
+// case: one helper reused across two gateways with different env must mint and
+// cache DISTINCT tokens (env parameterizes the token's issuer/audience), not
+// collide under a helper-only key.
+func TestEnsureGatewayToken_SharedHelperDifferentEnv(t *testing.T) {
+	dir := t.TempDir()
+	oauth.SetCredentialsDir(dir)
+	t.Cleanup(func() { oauth.SetCredentialsDir("") })
+
+	// The helper echoes whatever ISSUER it received, so the two calls yield
+	// different token strings.
+	helper := filepath.Join(dir, "shared.sh")
+	if err := os.WriteFile(helper, []byte("#!/bin/sh\nprintf 'token-%s' \"$ISSUER\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	envA := map[string]string{"ISSUER": "A"}
+	envB := map[string]string{"ISSUER": "B"}
+
+	tokA, err := EnsureGatewayToken(context.Background(), helper, envA)
+	if err != nil {
+		t.Fatalf("EnsureGatewayToken A: %v", err)
+	}
+	tokB, err := EnsureGatewayToken(context.Background(), helper, envB)
+	if err != nil {
+		t.Fatalf("EnsureGatewayToken B: %v", err)
+	}
+	if tokA.AccessToken != "token-A" || tokB.AccessToken != "token-B" {
+		t.Fatalf("tokens = %q / %q, want token-A / token-B", tokA.AccessToken, tokB.AccessToken)
+	}
+	// Each is cached under its own (helper, env) key — no collision.
+	if cached, _ := CachedGatewayToken(helper, envA); cached == nil || cached.AccessToken != "token-A" {
+		t.Errorf("envA cache = %+v, want token-A", cached)
+	}
+	if cached, _ := CachedGatewayToken(helper, envB); cached == nil || cached.AccessToken != "token-B" {
+		t.Errorf("envB cache = %+v, want token-B", cached)
+	}
+}
+
+func TestValidateHelperEnv(t *testing.T) {
+	for _, bad := range []map[string]string{
+		{"": "v"},         // empty key
+		{"BAD-KEY": "v"},  // illegal char
+		{"9LEADING": "v"}, // leading digit
+		{"K": "a\x00b"},   // NUL in value
+	} {
+		if err := validateHelperEnv(bad); err == nil {
+			t.Errorf("validateHelperEnv(%v): expected error", bad)
+		}
+	}
+	if err := validateHelperEnv(map[string]string{"OKTA_CLIENT_ID": "x", "_A9": "y"}); err != nil {
+		t.Errorf("valid env rejected: %v", err)
 	}
 }
 

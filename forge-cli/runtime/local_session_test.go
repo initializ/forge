@@ -5,13 +5,23 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/initializ/forge/forge-cli/internal/tryview"
+	"github.com/initializ/forge/forge-core/settings"
 	"github.com/initializ/forge/forge-core/types"
 )
+
+// isolateUserSettings points the user settings layer at a nonexistent temp file
+// so the runtime gateway overlay never reads the developer's real
+// ~/.forge/settings.json (which may redirect base_url/auth for this provider).
+func isolateUserSettings(t *testing.T) {
+	t.Helper()
+	t.Setenv(settings.EnvUserSettings, filepath.Join(t.TempDir(), "no-settings.json"))
+}
 
 // TestLocalSession_RunTurn drives one real turn through the in-process executor
 // against a mock OpenAI-compatible server — no real provider. It proves the
@@ -26,6 +36,7 @@ func TestLocalSession_RunTurn(t *testing.T) {
 
 	t.Setenv("OPENAI_API_KEY", "test-key")
 	t.Setenv("OPENAI_BASE_URL", srv.URL)
+	isolateUserSettings(t)
 
 	cfg := &types.ForgeConfig{
 		AgentID: "quickstart",
@@ -80,6 +91,7 @@ func TestLocalSession_RendersToolLoop(t *testing.T) {
 
 	t.Setenv("OPENAI_API_KEY", "test-key")
 	t.Setenv("OPENAI_BASE_URL", srv.URL)
+	isolateUserSettings(t)
 
 	cfg := &types.ForgeConfig{
 		AgentID: "quickstart",

@@ -53,7 +53,7 @@ func TestEnsureGatewayToken_FetchCacheReuse(t *testing.T) {
 	helper := writeHelper(t, dir, "helper.sh", token, marker)
 
 	// First call runs the helper and caches.
-	tok, err := EnsureGatewayToken(context.Background(), helper)
+	tok, err := EnsureGatewayToken(context.Background(), helper, nil)
 	if err != nil {
 		t.Fatalf("first EnsureGatewayToken: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestEnsureGatewayToken_FetchCacheReuse(t *testing.T) {
 	}
 
 	// Second call is a cache hit — helper must NOT run again.
-	if _, err := EnsureGatewayToken(context.Background(), helper); err != nil {
+	if _, err := EnsureGatewayToken(context.Background(), helper, nil); err != nil {
 		t.Fatalf("second EnsureGatewayToken: %v", err)
 	}
 	if runs := markerRuns(t, marker); runs != 1 {
@@ -92,7 +92,7 @@ func TestEnsureGatewayToken_ExpiredReRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tok, err := EnsureGatewayToken(context.Background(), helper)
+	tok, err := EnsureGatewayToken(context.Background(), helper, nil)
 	if err != nil {
 		t.Fatalf("EnsureGatewayToken: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestEnsureGatewayToken_OpaqueTokenNotCachedByExpiry(t *testing.T) {
 	marker := filepath.Join(dir, "runs")
 	helper := writeHelper(t, dir, "helper.sh", "opaque-not-a-jwt", marker)
 
-	tok, err := EnsureGatewayToken(context.Background(), helper)
+	tok, err := EnsureGatewayToken(context.Background(), helper, nil)
 	if err != nil {
 		t.Fatalf("EnsureGatewayToken: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestEnsureGatewayToken_OpaqueTokenNotCachedByExpiry(t *testing.T) {
 		t.Error("opaque token should have zero ExpiresAt")
 	}
 	// Zero expiry ⇒ always considered expired ⇒ the helper re-runs every call.
-	if _, err := EnsureGatewayToken(context.Background(), helper); err != nil {
+	if _, err := EnsureGatewayToken(context.Background(), helper, nil); err != nil {
 		t.Fatal(err)
 	}
 	if runs := markerRuns(t, marker); runs != 2 {
@@ -129,8 +129,31 @@ func TestEnsureGatewayToken_OpaqueTokenNotCachedByExpiry(t *testing.T) {
 }
 
 func TestEnsureGatewayToken_EmptyHelper(t *testing.T) {
-	if _, err := EnsureGatewayToken(context.Background(), "   "); err == nil {
+	if _, err := EnsureGatewayToken(context.Background(), "   ", nil); err == nil {
 		t.Error("expected error for empty helper command")
+	}
+}
+
+// TestEnsureGatewayToken_InjectsEnv verifies the gateway's settings `env` is
+// injected into the helper subprocess — so config like OKTA_CLIENT_ID can live
+// in settings rather than requiring a shell export.
+func TestEnsureGatewayToken_InjectsEnv(t *testing.T) {
+	dir := t.TempDir()
+	oauth.SetCredentialsDir(dir)
+	t.Cleanup(func() { oauth.SetCredentialsDir("") })
+
+	// The helper echoes the value of OKTA_CLIENT_ID it received as its token.
+	helper := filepath.Join(dir, "envhelper.sh")
+	if err := os.WriteFile(helper, []byte("#!/bin/sh\nprintf '%s' \"$OKTA_CLIENT_ID\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	tok, err := EnsureGatewayToken(context.Background(), helper, map[string]string{"OKTA_CLIENT_ID": "client-123"})
+	if err != nil {
+		t.Fatalf("EnsureGatewayToken: %v", err)
+	}
+	if tok.AccessToken != "client-123" {
+		t.Errorf("helper did not receive injected env: token = %q, want %q", tok.AccessToken, "client-123")
 	}
 }
 

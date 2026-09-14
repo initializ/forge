@@ -100,6 +100,15 @@ type ModelGateway struct {
 	// API key. A MANAGED-layer helper additionally arms the login gate; a
 	// user-layer helper uses the manual `forge auth login|logout|status` path.
 	APIKeyHelper string `json:"api_key_helper,omitempty"`
+
+	// Env is extra environment injected into the APIKeyHelper subprocess (on
+	// top of forge's own environment), so the helper's config (e.g.
+	// OKTA_CLIENT_ID / OKTA_ISSUER) lives in settings rather than requiring the
+	// developer to export it before every run. It is read only from trusted
+	// layers (the gateway itself is), so avoid putting real secrets here —
+	// client IDs / issuers / endpoints are the intended use; a secret belongs
+	// in the helper's own secret store. Merged with higher layers winning.
+	Env map[string]string `json:"env,omitempty"`
 }
 
 // ToolSettings governs which builtin tools are offered/defaulted.
@@ -190,6 +199,7 @@ func mergeGateway(lo, hi *ModelGateway) *ModelGateway {
 		if hi.APIKeyHelper != "" {
 			out.APIKeyHelper = hi.APIKeyHelper
 		}
+		out.Env = mergeStringMap(out.Env, hi.Env)
 	}
 	return &out
 }

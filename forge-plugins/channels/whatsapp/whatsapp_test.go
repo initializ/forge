@@ -521,3 +521,104 @@ func TestSelfChatPrefix_AppliesOnlyToSelfChat(t *testing.T) {
 		}
 	}
 }
+
+// --- media-caption mentions (PR review, medium) ---
+
+// Each message variant carries its own ContextInfo. Reading only the
+// extended-text one while accepting media captions as prompts meant a group
+// photo captioned "@agent what is this?" produced a valid prompt with no
+// mentions, and was dropped by the mention gate.
+func TestMentionedJIDs_MediaCaptions(t *testing.T) {
+	const own = "14155550999@s.whatsapp.net"
+	ctxInfo := func() *waE2E.ContextInfo {
+		return &waE2E.ContextInfo{MentionedJID: []string{own}}
+	}
+
+	tests := map[string]*waE2E.Message{
+		"image": {ImageMessage: &waE2E.ImageMessage{
+			Caption: proto.String("@agent what is this?"), ContextInfo: ctxInfo()}},
+		"video": {VideoMessage: &waE2E.VideoMessage{
+			Caption: proto.String("@agent summarise"), ContextInfo: ctxInfo()}},
+		"document": {DocumentMessage: &waE2E.DocumentMessage{
+			Caption: proto.String("@agent review this"), ContextInfo: ctxInfo()}},
+		"audio": {AudioMessage: &waE2E.AudioMessage{ContextInfo: ctxInfo()}},
+	}
+
+	for name, msg := range tests {
+		if got := mentionedJIDs(msg); len(got) != 1 || got[0] != own {
+			t.Errorf("%s: mentionedJIDs = %v, want [%s]", name, got, own)
+		}
+		if !isMentioned(mentionedJIDs(msg), own) {
+			t.Errorf("%s: mention not detected", name)
+		}
+	}
+}
+
+// Whatever variant supplies the prompt must supply the mentions too.
+func TestMentionedJIDs_MatchesExtractMessageTextChain(t *testing.T) {
+	const own = "14155550999@s.whatsapp.net"
+	msg := &waE2E.Message{
+		ImageMessage: &waE2E.ImageMessage{
+			Caption:     proto.String("@agent what is this?"),
+			ContextInfo: &waE2E.ContextInfo{MentionedJID: []string{own}},
+		},
+	}
+	if extractMessageText(msg) == "" {
+		t.Fatal("caption should be extracted as a prompt")
+	}
+	if !isMentioned(mentionedJIDs(msg), own) {
+		t.Error("a variant that yields a prompt must also yield its mentions")
+	}
+}
+
+// An edited message is wrapped; the text unwraps one level, so mentions must too.
+func TestMentionedJIDs_UnwrapsEditedMessage(t *testing.T) {
+	const own = "14155550999@s.whatsapp.net"
+	msg := &waE2E.Message{
+		EditedMessage: &waE2E.FutureProofMessage{
+			Message: &waE2E.Message{
+				ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+					Text:        proto.String("@agent corrected"),
+					ContextInfo: &waE2E.ContextInfo{MentionedJID: []string{own}},
+				},
+			},
+		},
+	}
+	if !isMentioned(mentionedJIDs(msg), own) {
+		t.Error("mentions inside an edited message should be found")
+	}
+}
+
+func TestMentionedJIDs_NoContextInfo(t *testing.T) {
+	for name, msg := range map[string]*waE2E.Message{
+		"nil":          nil,
+		"empty":        {},
+		"conversation": {Conversation: proto.String("plain text")},
+		"bare caption": {ImageMessage: &waE2E.ImageMessage{Caption: proto.String("no mention")}},
+	} {
+		if got := mentionedJIDs(msg); got != nil {
+			t.Errorf("%s: mentionedJIDs = %v, want nil", name, got)
+		}
+	}
+}
+
+// The end the reviewer cared about: such a message must now pass the gate.
+func TestAdmit_GroupMediaCaptionMentionIsAdmitted(t *testing.T) {
+	const own = "14155550999@s.whatsapp.net"
+	msg := &waE2E.Message{
+		ImageMessage: &waE2E.ImageMessage{
+			Caption:     proto.String("@agent what is this?"),
+			ContextInfo: &waE2E.ContextInfo{MentionedJID: []string{own}},
+		},
+	}
+	cfg := admissionConfig{
+		Mode:           AdmitDMOrGroupMention,
+		AllowAnySender: true,
+		OwnJIDs:        []string{own},
+	}
+	got := admit("120363000000000000@g.us", "14155550100@s.whatsapp.net", "",
+		false, isMentioned(mentionedJIDs(msg), own), cfg)
+	if !got.admit {
+		t.Errorf("a captioned group photo mentioning the agent must be admitted, got: %s", got.reason)
+	}
+}

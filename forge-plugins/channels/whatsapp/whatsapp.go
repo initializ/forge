@@ -86,6 +86,11 @@ type Plugin struct {
 	// staleGrace.
 	startedAt time.Time
 
+	// dispatchFn is the dispatch entry point. Production leaves it nil and
+	// onMessage falls through to p.dispatch; tests substitute a fake so the
+	// dedup → stale → admit ordering can be exercised without a live socket.
+	dispatchFn func(event *channels.ChannelEvent, chat types.JID, handler channels.EventHandler)
+
 	// Lifecycle.
 	stopCh chan struct{}
 	once   sync.Once
@@ -164,7 +169,8 @@ func (p *Plugin) Start(ctx context.Context, handler channels.EventHandler) error
 
 	// The paired account's identities are only known once the session is
 	// loaded, so the owner-dependent parts of the gate are filled in here
-	// rather than at Init.
+	// rather than at Init. This slice is the single source of truth for
+	// "who is the owner" — both admit() and the mention check read it.
 	p.cfg.Admission.OwnJIDs = []string{p.ownJID, p.ownLID}
 	p.startedAt = time.Now()
 
@@ -263,7 +269,10 @@ func (p *Plugin) onMessage(ctx context.Context, msg *events.Message, handler cha
 	// themselves admitted.
 	p.recordHistory(msg)
 
-	mentioned := isMentioned(mentionedJIDs(msg.Message), p.ownJID, p.ownLID)
+	// Read the owner identities from the admission config rather than the
+	// ownJID/ownLID fields, so the mention check and admit() share one list
+	// and cannot drift apart.
+	mentioned := isMentioned(mentionedJIDs(msg.Message), p.cfg.Admission.OwnJIDs...)
 
 	result := admit(chatJID, senderJID, senderAlt, msg.Info.IsFromMe, mentioned, p.cfg.Admission)
 	if !result.admit {
@@ -297,7 +306,11 @@ func (p *Plugin) onMessage(ctx context.Context, msg *events.Message, handler cha
 		)
 	}
 
-	go p.dispatch(event, msg.Info.Chat, handler)
+	dispatch := p.dispatchFn
+	if dispatch == nil {
+		dispatch = p.dispatch
+	}
+	go dispatch(event, msg.Info.Chat, handler)
 }
 
 // isStale reports whether an inbound message predates this adapter run by more
@@ -537,12 +550,46 @@ func extractMessageText(m *waE2E.Message) string {
 // WhatsApp carries mentions out-of-band in contextInfo.mentionedJid rather
 // than as markup in the body, so this is the only reliable source — scanning
 // the text would match a plain "@name" the sender typed by hand.
+//
+// Each message variant carries its OWN ContextInfo: a captioned photo puts the
+// mention on ImageMessage.ContextInfo, not on ExtendedTextMessage. This must
+// therefore mirror extractMessageText's fallback chain exactly — reading only
+// the extended-text variant while accepting media captions as prompts meant a
+// group photo captioned "@agent what is this?" produced a valid prompt with no
+// mentions, and was dropped by the mention gate.
 func mentionedJIDs(m *waE2E.Message) []string {
+	if ci := messageContextInfo(m); ci != nil {
+		return ci.GetMentionedJID()
+	}
+	return nil
+}
+
+// messageContextInfo returns the ContextInfo of whichever message variant is
+// present. The order matches extractMessageText so the prompt and its mentions
+// are always read from the same variant.
+func messageContextInfo(m *waE2E.Message) *waE2E.ContextInfo {
 	if m == nil {
 		return nil
 	}
 	if ci := m.GetExtendedTextMessage().GetContextInfo(); ci != nil {
-		return ci.GetMentionedJID()
+		return ci
+	}
+	if ci := m.GetImageMessage().GetContextInfo(); ci != nil {
+		return ci
+	}
+	if ci := m.GetVideoMessage().GetContextInfo(); ci != nil {
+		return ci
+	}
+	if ci := m.GetDocumentMessage().GetContextInfo(); ci != nil {
+		return ci
+	}
+	if ci := m.GetAudioMessage().GetContextInfo(); ci != nil {
+		return ci
+	}
+	// An edited message arrives wrapped; unwrap one level, as extractMessageText
+	// does for the text.
+	if e := m.GetEditedMessage().GetMessage(); e != nil {
+		return messageContextInfo(e)
 	}
 	return nil
 }

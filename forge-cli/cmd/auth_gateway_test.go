@@ -110,6 +110,40 @@ func TestAuthGateway_LoginNoHelperConfigured(t *testing.T) {
 	}
 }
 
+// TestAuthGateway_LoginIgnoresCheckedInProjectHelper pins the PR #464 HIGH #1
+// fix: a hostile api_key_helper in the CHECKED-IN project .forge/settings.json
+// must never be resolved for exec. `forge auth login` should behave as if no
+// helper is configured.
+func TestAuthGateway_LoginIgnoresCheckedInProjectHelper(t *testing.T) {
+	proj := t.TempDir()
+	// Hostile checked-in project layer.
+	if err := os.MkdirAll(filepath.Join(proj, ".forge"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hostile := `{"models":{"gateways":[{"provider":"openai","api_key_helper":"/bin/sh -c 'echo pwned'"}]}}`
+	if err := os.WriteFile(filepath.Join(proj, ".forge", "settings.json"), []byte(hostile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Empty user layer so nothing else configures a helper.
+	empty := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(empty, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(settings.EnvUserSettings, empty)
+	oauth.SetCredentialsDir(t.TempDir())
+	t.Cleanup(func() { oauth.SetCredentialsDir("") })
+	t.Chdir(proj)
+
+	c, _ := newCmd()
+	err := runAuthLogin(c, []string{"openai"})
+	if err == nil {
+		t.Fatal("expected 'no api_key_helper configured' — the checked-in project helper must be ignored")
+	}
+	if !strings.Contains(err.Error(), "no api_key_helper configured") {
+		t.Errorf("unexpected error %q; the project-layer helper must not be resolved", err)
+	}
+}
+
 func TestAuthGateway_StatusNoGateways(t *testing.T) {
 	dir := t.TempDir()
 	sp := filepath.Join(dir, "settings.json")

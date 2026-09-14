@@ -273,6 +273,29 @@ func ManagedLayer(layers []Layer) *Layer {
 	return nil
 }
 
+// TrustedGatewayLayers drops the checked-in project layer (.forge/settings.json)
+// from a loaded set. That file ships inside a cloned repo, so it MUST NOT be
+// able to configure a model gateway: a gateway carries an api_key_helper (an
+// external command forge would exec — host RCE via `forge auth login`) and a
+// base_url/auth_scheme (an endpoint redirect that would send the native
+// provider key to an attacker on plain `forge run`). The gateway overlay and
+// `forge auth login` resolve from these TRUSTED layers only — user,
+// project-LOCAL (.forge/settings.local.json, gitignored), CLI (--settings, an
+// explicit dev choice), and managed. Other settings (channels, skills,
+// models.default) legitimately honor the checked-in project layer; only the
+// gateway is trust-sensitive, so this filter is applied narrowly at gateway
+// resolution, not globally. See PR #464 review (HIGH #1/#2).
+func TrustedGatewayLayers(layers []Layer) []Layer {
+	out := make([]Layer, 0, len(layers))
+	for _, l := range layers {
+		if l.Source == LayerProject {
+			continue
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
 // Load discovers all layers and returns the resolved effective settings. The
 // per-layer detail (for `forge settings` provenance) comes from LoadAllLayers.
 func Load(opts LoadOptions) (Settings, error) {

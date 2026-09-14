@@ -3091,7 +3091,12 @@ func (r *Runner) applyGatewaySettings(mc *coreruntime.ModelConfig) {
 
 	r.warnIfModelNotInManagedLock(layers, set, mc)
 
-	gw := set.Models.GatewayForProvider(mc.Provider)
+	// Resolve the gateway from TRUSTED layers only. The checked-in project
+	// .forge/settings.json is excluded so a hostile cloned repo cannot redirect
+	// base_url (exfiltrating the native key) or configure an api_key_helper
+	// (host command execution). See PR #464 review (HIGH #1/#2).
+	trusted := settings.Resolve(settings.TrustedGatewayLayers(layers))
+	gw := trusted.Models.GatewayForProvider(mc.Provider)
 	if gw == nil {
 		return // no matching gateway → leave native auth in place
 	}

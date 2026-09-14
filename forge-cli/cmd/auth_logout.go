@@ -83,7 +83,8 @@ func runAuthLogout(cmd *cobra.Command, args []string) error {
 	// gateway token too, not just the native OAuth credential. This runs even
 	// when there was no native credential, so a gateway-only user can log out.
 	gatewayCleared := false
-	if set, serr := settings.Load(settings.LoadOptions{}); serr == nil {
+	if layers, serr := settings.LoadAllLayers(settings.LoadOptions{}); serr == nil {
+		set := settings.Resolve(settings.TrustedGatewayLayers(layers))
 		if gw := set.Models.GatewayForProvider(provider); gw != nil && strings.TrimSpace(gw.APIKeyHelper) != "" {
 			if err := runtime.ClearGatewayToken(gw.APIKeyHelper); err != nil {
 				_, _ = fmt.Fprintf(out, "Warning: could not clear gateway token for %s: %v\n", provider, err)

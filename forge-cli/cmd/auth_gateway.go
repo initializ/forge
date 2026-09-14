@@ -51,12 +51,16 @@ token itself. Pass a provider to show just that gateway.`,
 }
 
 // gatewaysWithHelper returns the configured gateways that declare an
-// api_key_helper, from merged settings.
+// api_key_helper. It resolves from TRUSTED layers only (excluding the
+// checked-in project .forge/settings.json) — `forge auth login` execs the
+// helper, so a cloned repo must not be able to inject the command. See PR #464
+// review (HIGH #1).
 func gatewaysWithHelper() ([]settings.ModelGateway, error) {
-	set, err := settings.Load(settings.LoadOptions{})
+	layers, err := settings.LoadAllLayers(settings.LoadOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("loading settings: %w", err)
 	}
+	set := settings.Resolve(settings.TrustedGatewayLayers(layers))
 	var out []settings.ModelGateway
 	for _, gw := range set.Models.EffectiveGateways() {
 		if strings.TrimSpace(gw.APIKeyHelper) != "" {
@@ -93,7 +97,7 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 	if len(args) == 1 && strings.TrimSpace(args[0]) != "" {
 		provider := strings.ToLower(strings.TrimSpace(args[0]))
 		for i := range gws {
-			if gws[i].Provider == provider {
+			if strings.EqualFold(gws[i].Provider, provider) {
 				chosen = &gws[i]
 				break
 			}
@@ -144,7 +148,7 @@ func runAuthStatus(cmd *cobra.Command, args []string) error {
 	shown := 0
 	for i := range gws {
 		gw := gws[i]
-		if filter != "" && gw.Provider != filter {
+		if filter != "" && !strings.EqualFold(gw.Provider, filter) {
 			continue
 		}
 		shown++

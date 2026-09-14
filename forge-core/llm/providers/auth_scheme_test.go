@@ -47,8 +47,10 @@ func TestAnthropicClient_BearerAuthSchemeSendsAuthorization(t *testing.T) {
 	if got := req.Header.Get("x-api-key"); got != "" {
 		t.Errorf("bearer scheme must suppress x-api-key, got %q", got)
 	}
-	if got := req.Header.Get("anthropic-version"); got != "2023-06-01" {
-		t.Errorf("anthropic-version dropped on bearer path: %q", got)
+	// A Bearer gateway (Kong/OIDC → Bedrock) is not the direct Anthropic API and
+	// rejects the direct-API version header — it must NOT be sent (#455).
+	if got := req.Header.Get("anthropic-version"); got != "" {
+		t.Errorf("bearer/gateway mode must omit anthropic-version, got %q", got)
 	}
 }
 

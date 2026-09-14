@@ -159,7 +159,15 @@ func (c *AnthropicClient) ChatStream(ctx context.Context, req *llm.ChatRequest) 
 
 func (c *AnthropicClient) setHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("anthropic-version", "2023-06-01")
+	// The `anthropic-version` header is the DIRECT Anthropic API convention. A
+	// gateway that takes a Bearer token (auth_scheme=bearer) is not the direct
+	// API — e.g. a Kong/OIDC route in front of Bedrock, which carries the
+	// version in the request BODY (`anthropic_version`) and rejects the header
+	// (observed: a 401 at the customer gateway). Omit it in that gateway mode
+	// (#455); every other scheme keeps the direct-API header.
+	if c.authScheme != llm.AuthSchemeBearer {
+		req.Header.Set("anthropic-version", "2023-06-01")
+	}
 	// The native x-api-key header is suppressed for three schemes:
 	//   - aws_sigv4 (#202): the SigV4 transport writes Authorization
 	//     instead; a stray x-api-key would join the signed-headers set

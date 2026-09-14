@@ -33,24 +33,35 @@ func gatewayLoginGate(cmd *cobra.Command, _ []string) error {
 	if managed == nil {
 		return nil // only a managed helper arms the gate
 	}
+	// A MANAGED helper is what ARMS the gate — but the credential's (helper, env)
+	// identity must be resolved from the same TRUSTED-MERGED set the runtime
+	// overlay uses to LOOK UP the token, or the gate would mint+cache under a key
+	// the overlay never reads. They can differ only for the singular catch-all,
+	// whose env merges additively across trusted layers (per-provider entries are
+	// whole-entry replaced, managed winning). Managed always wins the helper, so a
+	// lower trusted layer can only contribute env, never redirect the command.
+	merged := settings.Resolve(settings.TrustedGatewayLayers(layers))
 
-	// Ensure each managed gateway's credential. Dedup on the (helper, env)
-	// IDENTITY, not the helper alone: a shared helper parameterized with
-	// different env per provider (e.g. per-provider OKTA_ISSUER) mints distinct
-	// tokens and must each be fetched. runtime.GatewayCredKey gives the same
-	// (helper, env) identity the credential cache uses.
+	// Dedup on the (helper, env) IDENTITY, not the helper alone: a shared helper
+	// parameterized with different env per provider (e.g. per-provider
+	// OKTA_ISSUER) mints distinct tokens and must each be fetched.
 	seen := make(map[string]bool)
-	for _, gw := range managed.Settings.Models.EffectiveGateways() {
-		h := strings.TrimSpace(gw.APIKeyHelper)
-		if h == "" {
+	for _, mgw := range managed.Settings.Models.EffectiveGateways() {
+		if strings.TrimSpace(mgw.APIKeyHelper) == "" {
+			continue // only a managed helper arms the gate
+		}
+		// Resolve the effective gateway (same helper + env the overlay will look
+		// up) for this provider from the trusted-merged set.
+		eff := merged.Models.GatewayForProvider(mgw.Provider)
+		if eff == nil || strings.TrimSpace(eff.APIKeyHelper) == "" {
 			continue
 		}
-		id := runtime.GatewayCredKey(h, gw.Env)
+		id := runtime.GatewayCredKey(eff.APIKeyHelper, eff.Env)
 		if seen[id] {
 			continue
 		}
 		seen[id] = true
-		if _, err := runtime.EnsureGatewayToken(cmd.Context(), h, gw.Env); err != nil {
+		if _, err := runtime.EnsureGatewayToken(cmd.Context(), eff.APIKeyHelper, eff.Env); err != nil {
 			return fmt.Errorf("gateway login failed (run 'forge auth login'): %w", err)
 		}
 	}

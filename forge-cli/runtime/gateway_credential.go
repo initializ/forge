@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -25,11 +26,13 @@ import (
 // native (provider + api key) for the server, while managed/user settings
 // auto-wire the gateway locally (see the runtime overlay in runner.go).
 //
-// Tokens are cached keyed by the HELPER COMMAND (store key
-// "gateway-<hash(helper)>") — the helper is the token's true identity (its IdP
-// and audience), so two providers sharing a helper share one token, while
-// distinct helpers get distinct tokens. This lets the login gate (which does
-// not yet know the resolved provider) and the client-build overlay (which does)
+// Tokens are cached keyed by the HELPER COMMAND + its injected ENV (store key
+// "gateway-<hash(helper, env)>"). The (helper, env) pair is the token's true
+// identity: env parameterizes the helper (e.g. a shared okta.sh with a
+// per-provider OKTA_ISSUER / OKTA_CLIENT_ID), so the same helper with different
+// env mints DIFFERENT tokens and must not collide, while identical (helper,
+// env) legitimately shares one token. This lets the login gate (which does not
+// yet know the resolved provider) and the client-build overlay (which does)
 // derive the SAME key, and works for both provider-scoped and catch-all
 // gateways. Storage rides forge-core/llm/oauth: encrypted when FORGE_PASSPHRASE
 // is set, else a 0600 file under ~/.forge/credentials.
@@ -43,25 +46,47 @@ const gatewayHelperTimeout = 3 * time.Minute
 // real expiry, so an in-flight request never rides a token about to expire.
 const gatewayRefreshBuffer = 5 * time.Minute
 
-// gatewayCredKey is the oauth-store key for a helper's gateway token, derived
-// from the helper command so gate and overlay agree. A filesystem-safe form
-// ("gateway-<hex>", no shell/path chars) keeps the plaintext fallback file name
-// valid on every OS.
-func gatewayCredKey(helperCmd string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(helperCmd)))
+// gatewayIdentity is the stable identity of a gateway credential: its helper
+// command plus the env injected into that helper, with env keys sorted so the
+// string is deterministic. Two gateways with the same (helper, env) mint the
+// same token; differing env → different identity → different token.
+func gatewayIdentity(helperCmd string, env map[string]string) string {
+	var b strings.Builder
+	b.WriteString(strings.TrimSpace(helperCmd))
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		b.WriteByte(0) // NUL separator: cannot appear in a key or value (validated)
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(env[k])
+	}
+	return b.String()
+}
+
+// GatewayCredKey is the oauth-store key for a gateway token, derived from the
+// (helper, env) identity so the gate, overlay, and login gate all agree. It is
+// exported so the login gate can dedup on the same identity the cache uses. A
+// filesystem-safe form ("gateway-<hex>", no shell/path chars) keeps the
+// plaintext fallback file name valid on every OS.
+func GatewayCredKey(helperCmd string, env map[string]string) string {
+	sum := sha256.Sum256([]byte(gatewayIdentity(helperCmd, env)))
 	return "gateway-" + hex.EncodeToString(sum[:])[:16]
 }
 
-// CachedGatewayToken returns the stored token for a helper WITHOUT running it.
-// Returns (nil, nil) when none is cached. Used for token injection at
-// client-build time and for `forge auth status`.
-func CachedGatewayToken(helperCmd string) (*oauth.Token, error) {
-	return oauth.LoadCredentials(gatewayCredKey(helperCmd))
+// CachedGatewayToken returns the stored token for a (helper, env) WITHOUT
+// running it. Returns (nil, nil) when none is cached. Used for token injection
+// at client-build time and for `forge auth status`.
+func CachedGatewayToken(helperCmd string, env map[string]string) (*oauth.Token, error) {
+	return oauth.LoadCredentials(GatewayCredKey(helperCmd, env))
 }
 
-// ClearGatewayToken deletes a helper's cached token (`forge auth logout`).
-func ClearGatewayToken(helperCmd string) error {
-	return oauth.DeleteCredentials(gatewayCredKey(helperCmd))
+// ClearGatewayToken deletes a (helper, env) cached token (`forge auth logout`).
+func ClearGatewayToken(helperCmd string, env map[string]string) error {
+	return oauth.DeleteCredentials(GatewayCredKey(helperCmd, env))
 }
 
 // EnsureGatewayToken returns a valid token for the helper, running it to
@@ -74,7 +99,11 @@ func EnsureGatewayToken(ctx context.Context, helperCmd string, env map[string]st
 		return nil, fmt.Errorf("no api_key_helper configured")
 	}
 
-	key := gatewayCredKey(helperCmd)
+	if err := validateHelperEnv(env); err != nil {
+		return nil, err
+	}
+
+	key := GatewayCredKey(helperCmd, env)
 	if tok, err := oauth.LoadCredentials(key); err == nil && tok != nil && tok.AccessToken != "" {
 		if !tok.IsExpiredWithBuffer(gatewayRefreshBuffer) {
 			return tok, nil
@@ -121,7 +150,10 @@ func runGatewayHelper(ctx context.Context, helperCmd string, env map[string]stri
 
 	cmd := exec.CommandContext(cmdCtx, fields[0], fields[1:]...) //nolint:gosec // command is trusted settings config, not agent input
 	// The helper's config (e.g. OKTA_CLIENT_ID / OKTA_ISSUER) comes from the
-	// gateway's settings `env`, injected on top of forge's own environment.
+	// gateway's settings `env`, appended AFTER os.Environ() so a gateway value
+	// wins over an inherited one on a duplicate key (last-wins) — a gateway may
+	// deliberately override PATH/HOME for its helper. Keys are validated by
+	// EnsureGatewayToken before we get here.
 	if len(env) > 0 {
 		merged := os.Environ()
 		for k, v := range env {
@@ -139,6 +171,30 @@ func runGatewayHelper(ctx context.Context, helperCmd string, env map[string]stri
 		return "", fmt.Errorf("api_key_helper failed: %w", err)
 	}
 	return stdout.String(), nil
+}
+
+// validateHelperEnv rejects env entries that would produce a malformed process
+// environment: an empty key, a key with a shell/environ-illegal character
+// (anything outside [A-Za-z_][A-Za-z0-9_]*), or a NUL in either key or value
+// (which also breaks the NUL-separated identity used for the cache key). It is
+// a clear config error, not a silent misbehavior — trusted config, but a typo
+// should fail loudly rather than exec-fail opaquely.
+func validateHelperEnv(env map[string]string) error {
+	for k, v := range env {
+		if k == "" {
+			return fmt.Errorf("api_key_helper env has an empty key")
+		}
+		for i, r := range k {
+			ok := r == '_' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (i > 0 && r >= '0' && r <= '9')
+			if !ok {
+				return fmt.Errorf("api_key_helper env key %q is invalid (must match [A-Za-z_][A-Za-z0-9_]*)", k)
+			}
+		}
+		if strings.ContainsRune(v, 0) {
+			return fmt.Errorf("api_key_helper env value for %q contains a NUL byte", k)
+		}
+	}
+	return nil
 }
 
 // splitCommand tokenizes a command line into argv, honoring single and double

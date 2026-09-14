@@ -3120,7 +3120,7 @@ func (r *Runner) applyGatewaySettings(mc *coreruntime.ModelConfig) {
 	if gw.APIKeyHelper == "" {
 		return
 	}
-	tok, err := CachedGatewayToken(gw.APIKeyHelper)
+	tok, err := CachedGatewayToken(gw.APIKeyHelper, gw.Env)
 	if err != nil {
 		r.logger.Warn("loading cached gateway token", map[string]any{"provider": mc.Provider, "error": err.Error()})
 		return

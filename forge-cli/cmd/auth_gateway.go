@@ -152,7 +152,7 @@ func runAuthStatus(cmd *cobra.Command, args []string) error {
 			continue
 		}
 		shown++
-		tok, lerr := runtime.CachedGatewayToken(gw.APIKeyHelper)
+		tok, lerr := runtime.CachedGatewayToken(gw.APIKeyHelper, gw.Env)
 		state := gatewayTokenState(tok, lerr)
 		_, _ = fmt.Fprintf(out, "%s: %s\n", gatewayProviderLabel(gw), state)
 	}

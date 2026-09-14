@@ -86,7 +86,7 @@ func runAuthLogout(cmd *cobra.Command, args []string) error {
 	if layers, serr := settings.LoadAllLayers(settings.LoadOptions{}); serr == nil {
 		set := settings.Resolve(settings.TrustedGatewayLayers(layers))
 		if gw := set.Models.GatewayForProvider(provider); gw != nil && strings.TrimSpace(gw.APIKeyHelper) != "" {
-			if err := runtime.ClearGatewayToken(gw.APIKeyHelper); err != nil {
+			if err := runtime.ClearGatewayToken(gw.APIKeyHelper, gw.Env); err != nil {
 				_, _ = fmt.Fprintf(out, "Warning: could not clear gateway token for %s: %v\n", provider, err)
 			} else {
 				gatewayCleared = true

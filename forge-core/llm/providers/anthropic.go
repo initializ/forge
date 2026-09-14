@@ -160,7 +160,7 @@ func (c *AnthropicClient) ChatStream(ctx context.Context, req *llm.ChatRequest) 
 func (c *AnthropicClient) setHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("anthropic-version", "2023-06-01")
-	// The native x-api-key header is suppressed for two schemes:
+	// The native x-api-key header is suppressed for three schemes:
 	//   - aws_sigv4 (#202): the SigV4 transport writes Authorization
 	//     instead; a stray x-api-key would join the signed-headers set
 	//     and confuse the upstream verifier.
@@ -168,8 +168,18 @@ func (c *AnthropicClient) setHeaders(req *http.Request) {
 	//     the real upstream credential; sending Forge's gateway key as
 	//     x-api-key would reach the provider and 401 (or block a Kong
 	//     `add`-header injection).
+	//   - bearer (#455): an IdP gateway (e.g. Kong OIDC in front of
+	//     Bedrock/Claude) validates `Authorization: Bearer <jwt>`; send the
+	//     token there and suppress x-api-key.
 	// Every other scheme (including apikey_header) keeps the native header.
-	if c.authScheme != llm.AuthSchemeAWSSigV4 && c.authScheme != llm.AuthSchemeAPIKeyHeaderOnly {
+	switch c.authScheme {
+	case llm.AuthSchemeBearer:
+		if c.apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		}
+	case llm.AuthSchemeAWSSigV4, llm.AuthSchemeAPIKeyHeaderOnly:
+		// native header suppressed (transport signs / gateway injects)
+	default:
 		req.Header.Set("x-api-key", c.apiKey)
 	}
 	setGatewayAPIKeyHeader(req, c.authScheme, c.authHeaderName, c.apiKey)

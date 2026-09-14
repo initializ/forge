@@ -20,7 +20,7 @@ model:
   name: "gpt-4o"                    # Model name
   base_url: ""                      # Override the provider's default API host (issue #139)
   organization_id: "org-xxx"        # OpenAI Organization ID (enterprise, optional)
-  auth_scheme: ""                   # "" (default) / "x_api_key" / "bearer" / "aws_sigv4" (#202) / "apikey_header" (#302) / "apikey_header_only"
+  auth_scheme: ""                   # "" (default) / "x_api_key" / "bearer" (Authorization: Bearer; for anthropic replaces x-api-key — #455) / "aws_sigv4" (#202) / "apikey_header" (#302) / "apikey_header_only"
   aws_region: ""                    # Required when auth_scheme: aws_sigv4 — issue #202
   auth_header_name: ""              # apikey_header[_only] custom header name; default "apikey" — issue #302
   disable_store: false              # openai-responses only: send store=false so OpenAI doesn't retain responses — issue #383

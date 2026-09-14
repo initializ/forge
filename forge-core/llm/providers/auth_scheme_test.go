@@ -28,6 +28,30 @@ func TestAnthropicClient_DefaultAuthSchemeKeepsXAPIKey(t *testing.T) {
 	}
 }
 
+// TestAnthropicClient_BearerAuthSchemeSendsAuthorization pins the #455 gateway
+// path: with auth_scheme=bearer the Anthropic client sends the token as
+// `Authorization: Bearer` (what a Kong OIDC route validates) and SUPPRESSES the
+// native x-api-key, so the gateway key never doubles as a provider key.
+func TestAnthropicClient_BearerAuthSchemeSendsAuthorization(t *testing.T) {
+	c := NewAnthropicClient(llm.ClientConfig{
+		APIKey:     "okta-jwt",
+		Model:      "claude-test",
+		AuthScheme: llm.AuthSchemeBearer,
+	})
+	req, _ := http.NewRequest(http.MethodPost, "https://gw.corp/v1/messages", nil)
+	c.setHeaders(req)
+
+	if got := req.Header.Get("Authorization"); got != "Bearer okta-jwt" {
+		t.Errorf("bearer scheme should set Authorization: Bearer, got %q", got)
+	}
+	if got := req.Header.Get("x-api-key"); got != "" {
+		t.Errorf("bearer scheme must suppress x-api-key, got %q", got)
+	}
+	if got := req.Header.Get("anthropic-version"); got != "2023-06-01" {
+		t.Errorf("anthropic-version dropped on bearer path: %q", got)
+	}
+}
+
 // TestAnthropicClient_SigV4AuthSchemeOmitsXAPIKey is the Phase 2
 // invariant: when the client is configured for SigV4 outbound, the
 // per-request x-api-key header MUST NOT be sent. The SigV4 transport

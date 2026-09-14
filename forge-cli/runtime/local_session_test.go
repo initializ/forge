@@ -3,14 +3,19 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/initializ/forge/forge-cli/internal/tryview"
+	"github.com/initializ/forge/forge-core/llm/oauth"
 	"github.com/initializ/forge/forge-core/settings"
 	"github.com/initializ/forge/forge-core/types"
 )
@@ -21,6 +26,73 @@ import (
 func isolateUserSettings(t *testing.T) {
 	t.Helper()
 	t.Setenv(settings.EnvUserSettings, filepath.Join(t.TempDir(), "no-settings.json"))
+}
+
+// TestLocalSession_GatewayAutoRefreshesExpiredToken pins the fix for "don't call
+// the LLM with an expired gateway token": when the cached token is expired, the
+// overlay re-runs the api_key_helper (auto-login) and the FRESH token — not the
+// stale one — is what reaches the gateway. User-layer settings, no login gate.
+func TestLocalSession_GatewayAutoRefreshesExpiredToken(t *testing.T) {
+	var gotAuth atomic.Value // string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth.Store(r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"m1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-x","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	oauth.SetCredentialsDir(filepath.Join(dir, "creds"))
+	t.Cleanup(func() { oauth.SetCredentialsDir("") })
+
+	freshJWT := func() string {
+		enc := func(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
+		exp := strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)
+		return enc(`{"alg":"none"}`) + "." + enc(`{"exp":`+exp+`}`) + "." + enc("s")
+	}()
+	helper := filepath.Join(dir, "helper.sh")
+	if err := os.WriteFile(helper, []byte("#!/bin/sh\nprintf '"+freshJWT+"'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-seed an EXPIRED token under the (helper, env) key the overlay looks up.
+	if err := oauth.SaveCredentials(GatewayCredKey(helper, nil), &oauth.Token{
+		AccessToken: "STALE-EXPIRED", ExpiresAt: time.Now().Add(-time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// User-layer settings: anthropic gateway → mock server, bearer, the helper.
+	userFile := filepath.Join(dir, "settings.json")
+	body := `{"models":{"gateways":[{"provider":"anthropic","base_url":"` + srv.URL +
+		`","auth_scheme":"bearer","api_key_helper":"` + helper + `"}]}}`
+	if err := os.WriteFile(userFile, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(settings.EnvUserSettings, userFile)
+
+	cfg := &types.ForgeConfig{
+		AgentID: "quickstart",
+		Model:   types.ModelRef{Provider: "anthropic", Name: "claude-x"},
+		Egress:  types.EgressRef{Mode: "dev-open"},
+	}
+	sess, err := NewLocalSession(context.Background(), LocalSessionOptions{Config: cfg, WorkDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("NewLocalSession: %v", err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	if _, err := sess.RunTurn(context.Background(), "hi", nil); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+
+	auth, _ := gotAuth.Load().(string)
+	if auth == "Bearer STALE-EXPIRED" {
+		t.Fatal("the EXPIRED token was sent — overlay must refresh before the call")
+	}
+	if auth != "Bearer "+freshJWT {
+		t.Errorf("gateway got Authorization %q, want the freshly-minted token", auth)
+	}
 }
 
 // TestLocalSession_RunTurn drives one real turn through the in-process executor

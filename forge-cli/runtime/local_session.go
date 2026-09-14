@@ -110,7 +110,7 @@ func NewLocalSession(ctx context.Context, opts LocalSessionOptions) (*LocalSessi
 	}
 	// Overlay the local-dev model gateway from settings (#455): may redirect
 	// base_url/auth and inject a cached gateway token. No-op without settings.
-	r.applyGatewaySettings(mc)
+	r.applyGatewaySettings(ctx, mc)
 	r.modelConfig = mc
 
 	// Egress: in-process enforced client (for builtin http tools) + a local

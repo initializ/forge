@@ -1264,7 +1264,7 @@ func (r *Runner) Run(ctx context.Context) error {
 				// Overlay the local-dev model gateway from settings (#455) before
 				// building the client: may redirect base_url/auth and inject a
 				// cached gateway token. No-op without a matching settings gateway.
-				r.applyGatewaySettings(mc)
+				r.applyGatewaySettings(ctx, mc)
 				r.modelConfig = mc
 				// Export org ID for skill scripts
 				if mc.Client.OrgID != "" {
@@ -3078,7 +3078,7 @@ func (r *Runner) registerPlatformCommandGuardHook(hooks *coreruntime.HookRegistr
 //     injection only READS the cache).
 //   - resolved model outside a managed available_models lock → warn only;
 //     runtime model-deny remains a server-side platform-policy concern (#454).
-func (r *Runner) applyGatewaySettings(mc *coreruntime.ModelConfig) {
+func (r *Runner) applyGatewaySettings(ctx context.Context, mc *coreruntime.ModelConfig) {
 	if mc == nil {
 		return
 	}
@@ -3113,24 +3113,27 @@ func (r *Runner) applyGatewaySettings(mc *coreruntime.ModelConfig) {
 		mc.Client.AuthHeaderName = gw.AuthHeaderName
 	}
 
-	// Credential routing. Helper configured → inject the cached token; otherwise
-	// the native APIKey resolved by ResolveModelConfig stays. (A future OAuth
-	// branch belongs here and must be openai-only — never the anthropic public
-	// URL; not implemented in this slice.)
+	// Credential routing. Helper configured → ensure a FRESH token; otherwise the
+	// native APIKey resolved by ResolveModelConfig stays. (A future OAuth branch
+	// belongs here and must be openai-only — never the anthropic public URL; not
+	// implemented in this slice.)
 	if gw.APIKeyHelper == "" {
 		return
 	}
-	tok, err := CachedGatewayToken(gw.APIKeyHelper, gw.Env)
+	// EnsureGatewayToken returns the cached token when it is still valid, else
+	// re-runs the helper (auto-login on expiry) — so an EXPIRED token is never
+	// injected into the request (which the gateway would 401). This is the
+	// universal refresh path for both managed and user layers; the managed login
+	// gate (root PersistentPreRunE) is the eager, fail-early variant for managed.
+	tok, err := EnsureGatewayToken(ctx, gw.APIKeyHelper, gw.Env)
 	if err != nil {
-		r.logger.Warn("loading cached gateway token", map[string]any{"provider": mc.Provider, "error": err.Error()})
+		r.logger.Warn("gateway login failed; run 'forge auth login' (proceeding without a gateway token)",
+			map[string]any{"provider": mc.Provider, "error": err.Error()})
 		return
 	}
 	if tok != nil && tok.AccessToken != "" {
 		mc.Client.APIKey = tok.AccessToken
-		return
 	}
-	r.logger.Warn("gateway api_key_helper is configured but no cached token was found; run 'forge auth login'",
-		map[string]any{"provider": mc.Provider})
 }
 
 // warnIfModelNotInManagedLock emits a one-line, non-fatal heads-up when a

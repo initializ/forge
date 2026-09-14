@@ -172,3 +172,36 @@ func TestParseJIDSet_NormalizesDeviceSuffix(t *testing.T) {
 		t.Errorf("expected device suffix stripped, got %v", set)
 	}
 }
+
+// An operator writing an allowlist by hand naturally writes the "+" of an
+// E.164 number. A real JID never has one, so leaving it in produced a key no
+// inbound JID could match — silently denying the sender it was meant to admit.
+func TestJIDUser_StripsE164Plus(t *testing.T) {
+	tests := map[string]string{
+		"+14155550100@s.whatsapp.net":   "14155550100",
+		"+14155550100:3@s.whatsapp.net": "14155550100",
+		"14155550100@s.whatsapp.net":    "14155550100",
+	}
+	for in, want := range tests {
+		if got := JIDUser(in); got != want {
+			t.Errorf("JIDUser(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestNormalizeJID_StripsE164Plus(t *testing.T) {
+	if got := NormalizeJID("+14155550100@s.whatsapp.net"); got != "14155550100@s.whatsapp.net" {
+		t.Errorf("NormalizeJID = %q, want the plus stripped", got)
+	}
+}
+
+// The end that matters: such an entry must match a real inbound sender.
+func TestParseJIDSet_PlusPrefixedFullJIDMatches(t *testing.T) {
+	set := parseJIDSet("+14155550100@s.whatsapp.net", serverUser)
+	if !set["14155550100@s.whatsapp.net"] {
+		t.Errorf("a +-prefixed full JID must normalise to a matchable key, got %v", set)
+	}
+	if !senderAllowed("14155550100@s.whatsapp.net", "", set) {
+		t.Error("a real inbound sender should match the +-prefixed entry")
+	}
+}

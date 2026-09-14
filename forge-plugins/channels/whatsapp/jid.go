@@ -60,7 +60,11 @@ func JIDUser(jid string) string {
 	if i := strings.IndexByte(user, '.'); i >= 0 {
 		user = user[:i]
 	}
-	return user
+	// A real JID never carries the "+" of an E.164 number, but an operator
+	// writing an allowlist by hand naturally does ("+14155550100@s.whatsapp.net").
+	// Left in place it produces a key no inbound JID can ever match, silently
+	// denying the sender it was meant to admit.
+	return strings.TrimPrefix(user, "+")
 }
 
 // NormalizeJID reduces a JID to its comparable form: lowercased server, and a

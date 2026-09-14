@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -68,7 +69,7 @@ func ClearGatewayToken(helperCmd string) error {
 // of expiry. This is "login". The helper's stdout is the raw token; its expiry
 // is read from the token's JWT exp claim (opaque/non-JWT tokens are cached with
 // a zero expiry, i.e. re-fetched every call).
-func EnsureGatewayToken(ctx context.Context, helperCmd string) (*oauth.Token, error) {
+func EnsureGatewayToken(ctx context.Context, helperCmd string, env map[string]string) (*oauth.Token, error) {
 	if strings.TrimSpace(helperCmd) == "" {
 		return nil, fmt.Errorf("no api_key_helper configured")
 	}
@@ -80,7 +81,7 @@ func EnsureGatewayToken(ctx context.Context, helperCmd string) (*oauth.Token, er
 		}
 	}
 
-	raw, err := runGatewayHelper(ctx, helperCmd)
+	raw, err := runGatewayHelper(ctx, helperCmd, env)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +107,7 @@ func EnsureGatewayToken(ctx context.Context, helperCmd string) (*oauth.Token, er
 // operator/developer config), never from agent, LLM, or remote input. Helpers
 // needing shell features wrap them in a script (as the reference Okta helper
 // does) and configure that script's path here.
-func runGatewayHelper(ctx context.Context, helperCmd string) (string, error) {
+func runGatewayHelper(ctx context.Context, helperCmd string, env map[string]string) (string, error) {
 	fields, err := splitCommand(helperCmd)
 	if err != nil {
 		return "", fmt.Errorf("parsing api_key_helper command: %w", err)
@@ -119,6 +120,15 @@ func runGatewayHelper(ctx context.Context, helperCmd string) (string, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(cmdCtx, fields[0], fields[1:]...) //nolint:gosec // command is trusted settings config, not agent input
+	// The helper's config (e.g. OKTA_CLIENT_ID / OKTA_ISSUER) comes from the
+	// gateway's settings `env`, injected on top of forge's own environment.
+	if len(env) > 0 {
+		merged := os.Environ()
+		for k, v := range env {
+			merged = append(merged, k+"="+v)
+		}
+		cmd.Env = merged
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

@@ -120,7 +120,7 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("multiple gateways configured — specify a provider: %s", gatewayProviderList(gws))
 	}
 
-	tok, err := runtime.EnsureGatewayToken(cmd.Context(), chosen.APIKeyHelper)
+	tok, err := runtime.EnsureGatewayToken(cmd.Context(), chosen.APIKeyHelper, chosen.Env)
 	if err != nil {
 		return err
 	}

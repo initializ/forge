@@ -42,7 +42,7 @@ func gatewayLoginGate(cmd *cobra.Command, _ []string) error {
 			continue
 		}
 		seen[h] = true
-		if _, err := runtime.EnsureGatewayToken(cmd.Context(), h); err != nil {
+		if _, err := runtime.EnsureGatewayToken(cmd.Context(), h, gw.Env); err != nil {
 			return fmt.Errorf("gateway login failed (run 'forge auth login'): %w", err)
 		}
 	}

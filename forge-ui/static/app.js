@@ -44,9 +44,9 @@ async function controlOptimizerDaemon(action) {
   return res.json();
 }
 
-// List input prices (USD per 1M tokens) for a rough dollar estimate in the UI.
-// The `forge optimizer savings` CLI supports negotiated-rate overrides; this
-// dashboard estimate uses list prices only.
+// List input prices (USD per 1M tokens); the cache-write rate is derived as
+// 1.25× (see optimizerCacheWritePrice). The `forge optimizer savings` CLI
+// supports negotiated-rate overrides; this dashboard estimate uses list prices.
 const OPTIMIZER_LIST_INPUT_PRICE = {
   'claude-fable-5': 10, 'claude-opus-4-8': 5, 'claude-opus-4-7': 5, 'claude-opus-4-6': 5,
   'claude-opus-4-5': 5, 'claude-sonnet-5': 3, 'claude-sonnet-4-6': 3, 'claude-haiku-4-5': 1,
@@ -57,6 +57,12 @@ function optimizerInputPrice(model) {
     if (model.startsWith(k)) return OPTIMIZER_LIST_INPUT_PRICE[k];
   }
   return 3; // unknown-model fallback
+}
+// Cache-WRITE rate ≈ 1.25× input (standard Anthropic ratio, matches the Go
+// pricing's withDerivedCache). Saved tokens are conversation history that would
+// otherwise be written to the prompt cache, so cost-avoided is valued here.
+function optimizerCacheWritePrice(model) {
+  return optimizerInputPrice(model) * 1.25;
 }
 function optimizerCommas(n) {
   return (n || 0).toLocaleString('en-US');
@@ -2658,7 +2664,7 @@ function OptimizerSavingsTab({ data, loading, stats, totals, dollars, sessionRow
             <${OptimizerStatTile} label="Cache read" value=${optimizerCommas(totals.cache_read_input_tokens)} sub="billed ~0.1×" />
             <${OptimizerStatTile} label="Output tokens" value=${optimizerCommas(totals.output_tokens)} />
             <${OptimizerStatTile} label="Tokens saved" value=${optimizerCommas(totals.compression_saved_tokens)} sub="vs. uncompressed" />
-            <${OptimizerStatTile} label="Cost avoided" value=${'$' + dollars.toFixed(4)} sub="list price" />
+            <${OptimizerStatTile} label="Cost avoided" value=${'$' + dollars.toFixed(4)} sub="cache-write rate" />
             <${OptimizerStatTile} label="Expansions" value=${optimizerCommas(totals.expansions)} />
           </div>
           <div class="skills-subtitle" style="margin-bottom:8px">Live sessions (${sessionRows.length})</div>
@@ -2818,7 +2824,7 @@ function OptimizerPage() {
 
   let dollars = 0;
   for (const [m, t] of Object.entries(perModel)) {
-    dollars += (t.compression_saved_tokens || 0) * optimizerInputPrice(m) / 1e6;
+    dollars += (t.compression_saved_tokens || 0) * optimizerCacheWritePrice(m) / 1e6;
   }
   const sessionRows = Object.entries(sessions)
     .sort((a, b) => (b[1].last_seen || '').localeCompare(a[1].last_seen || ''));

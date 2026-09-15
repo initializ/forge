@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/initializ/forge/forge-core/catalog"
 	"github.com/initializ/forge/forge-core/tools/builtins"
 	"github.com/initializ/forge/forge-core/types"
 	"github.com/initializ/forge/forge-core/util"
@@ -63,21 +64,6 @@ func (s *UIServer) handleGetWizardMeta(w http.ResponseWriter, _ *http.Request) {
 				{DisplayName: "Claude Opus 4", ModelID: "claude-opus-4-20250514"},
 			},
 		},
-		"bedrock": {
-			// Native Bedrock Converse API (#205): SigV4 from AWS env creds,
-			// so no API key — the wizard collects an AWS region instead.
-			Default:        "anthropic.claude-sonnet-4-20250514-v1:0",
-			NeedsKey:       false,
-			NeedsAWSRegion: true,
-			APIKey: []ModelOption{
-				{DisplayName: "Claude Sonnet 4", ModelID: "anthropic.claude-sonnet-4-20250514-v1:0"},
-				{DisplayName: "Claude 3.5 Haiku", ModelID: "anthropic.claude-3-5-haiku-20241022-v1:0"},
-				{DisplayName: "Amazon Nova Pro", ModelID: "amazon.nova-pro-v1:0"},
-				{DisplayName: "Amazon Nova Lite", ModelID: "amazon.nova-lite-v1:0"},
-				{DisplayName: "Llama 3.3 70B", ModelID: "meta.llama3-3-70b-instruct-v1:0"},
-				{DisplayName: "Mistral Large 2", ModelID: "mistral.mistral-large-2407-v1:0"},
-			},
-		},
 		"gemini": {
 			Default:  "gemini-2.5-flash",
 			NeedsKey: true,
@@ -108,6 +94,21 @@ func (s *UIServer) handleGetWizardMeta(w http.ResponseWriter, _ *http.Request) {
 			// runtime resolver never read.
 			BaseURLEnv: "OPENAI_BASE_URL",
 		},
+	}
+
+	// Bedrock is sourced from the shared catalog (not hardcoded like the
+	// other providers) so the web wizard's model list + region flag cannot
+	// drift from the CLI/TUI. #205 review (provider-metadata-drift finding).
+	if p, ok := catalog.ProviderByID("bedrock"); ok {
+		bm := ProviderModels{
+			Default:        p.DefaultModel,
+			NeedsKey:       p.NeedsAPIKey,
+			NeedsAWSRegion: p.NeedsAWSRegion,
+		}
+		for _, m := range p.Models {
+			bm.APIKey = append(bm.APIKey, ModelOption{DisplayName: m.Label, ModelID: m.ModelID})
+		}
+		meta.ProviderModels["bedrock"] = bm
 	}
 
 	// Web search providers

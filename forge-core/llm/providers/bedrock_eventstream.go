@@ -36,6 +36,11 @@ type eventStreamMessage struct {
 	Payload       []byte
 }
 
+// maxEventStreamFrame caps a single frame's total byte length. AWS caps
+// Converse event-stream messages around 24 MB; this bound rejects a
+// hostile prelude before allocating on its untrusted length.
+const maxEventStreamFrame = 32 * 1024 * 1024
+
 type eventStreamDecoder struct {
 	r io.Reader
 }
@@ -65,6 +70,14 @@ func (d *eventStreamDecoder) Next() (*eventStreamMessage, error) {
 	// leave room for the trailing CRC.
 	if totalLen < 16 || uint64(headersLen) > uint64(totalLen)-16 {
 		return nil, fmt.Errorf("eventstream: invalid frame lengths (total=%d headers=%d)", totalLen, headersLen)
+	}
+	// Bound the allocation on the untrusted wire length before make(): a
+	// prelude with a valid CRC but totalLen ~4 GB would otherwise allocate
+	// multiple GB before any payload is read (memory-exhaustion DoS reachable
+	// via a malicious/compromised endpoint or a base_url override). AWS caps
+	// Converse event-stream messages well under this bound.
+	if totalLen > maxEventStreamFrame {
+		return nil, fmt.Errorf("eventstream: frame too large (%d > %d)", totalLen, maxEventStreamFrame)
 	}
 
 	rest := make([]byte, totalLen-12)

@@ -281,6 +281,28 @@ func TestValidateForgeConfig_Bedrock(t *testing.T) {
 		}
 	})
 
+	t.Run("malformed region is an error", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Model.Provider = "bedrock"
+		cfg.Model.Name = "us.anthropic.claude-sonnet-4-20250514-v1:0"
+		cfg.Model.AWSRegion = "us-east-1x!"
+		r := ValidateForgeConfig(cfg)
+		if r.IsValid() || !hasSubstr(r.Errors, "is not a valid region") {
+			t.Fatalf("expected a region-format error, got errors=%v", r.Errors)
+		}
+	})
+
+	t.Run("empty name is a bedrock error", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Model.Provider = "bedrock"
+		cfg.Model.Name = ""
+		cfg.Model.AWSRegion = "us-east-1"
+		r := ValidateForgeConfig(cfg)
+		if r.IsValid() || !hasSubstr(r.Errors, `model.name is required for provider "bedrock"`) {
+			t.Fatalf("expected a bedrock model.name error, got errors=%v", r.Errors)
+		}
+	})
+
 	t.Run("auth_scheme warns as redundant", func(t *testing.T) {
 		cfg := validConfig()
 		cfg.Model.Provider = "bedrock"

@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/initializ/forge/forge-core/catalog"
 	"testing"
 )
 
@@ -179,6 +181,38 @@ func TestWizardMeta_BedrockPresent(t *testing.T) {
 	}
 	if len(pm.APIKey) == 0 || pm.Default == "" {
 		t.Error("bedrock must provide a model list and default")
+	}
+}
+
+// TestWizardMeta_BedrockMatchesCatalog guards against provider-metadata drift
+// (#205 review): the web wizard's Bedrock entry is sourced from the shared
+// forge-core/catalog, so its default + model list must equal the catalog's.
+func TestWizardMeta_BedrockMatchesCatalog(t *testing.T) {
+	srv, _ := setupTestServerWithCreate(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/wizard/meta", nil)
+	w := httptest.NewRecorder()
+	srv.handleGetWizardMeta(w, req)
+
+	var meta WizardMetadata
+	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	pm := meta.ProviderModels["bedrock"]
+
+	cat, ok := catalog.ProviderByID("bedrock")
+	if !ok {
+		t.Fatal("bedrock missing from catalog")
+	}
+	if pm.Default != cat.DefaultModel {
+		t.Errorf("default drift: ui=%q catalog=%q", pm.Default, cat.DefaultModel)
+	}
+	if len(pm.APIKey) != len(cat.Models) {
+		t.Fatalf("model-count drift: ui=%d catalog=%d", len(pm.APIKey), len(cat.Models))
+	}
+	for i, m := range cat.Models {
+		if pm.APIKey[i].ModelID != m.ModelID || pm.APIKey[i].DisplayName != m.Label {
+			t.Errorf("model[%d] drift: ui=%+v catalog=%+v", i, pm.APIKey[i], m)
+		}
 	}
 }
 

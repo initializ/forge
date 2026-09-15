@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"hash/crc32"
 	"io"
+	"strings"
 	"testing"
 )
 
@@ -102,6 +103,22 @@ func TestEventStreamDecoder_BadPreludeCRC(t *testing.T) {
 	dec := newEventStreamDecoder(bytes.NewReader(frame))
 	if _, err := dec.Next(); err == nil {
 		t.Fatal("expected a prelude checksum error, got nil")
+	}
+}
+
+// TestEventStreamDecoder_RejectsOversizeFrame pins the #205 review fix: a
+// prelude with a valid prelude-CRC but a huge totalLen is rejected before
+// the make([]byte, totalLen-12) allocation (memory-exhaustion DoS guard).
+func TestEventStreamDecoder_RejectsOversizeFrame(t *testing.T) {
+	var prelude [12]byte
+	binary.BigEndian.PutUint32(prelude[0:4], 0xF0000000) // ~4 GB totalLen
+	binary.BigEndian.PutUint32(prelude[4:8], 0)          // headersLen
+	binary.BigEndian.PutUint32(prelude[8:12], crc32.ChecksumIEEE(prelude[0:8]))
+
+	dec := newEventStreamDecoder(bytes.NewReader(prelude[:]))
+	_, err := dec.Next()
+	if err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("expected a frame-too-large error, got %v", err)
 	}
 }
 

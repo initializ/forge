@@ -66,8 +66,14 @@ model:
 #
 #        model:
 #          provider: "bedrock"
-#          name: "anthropic.claude-sonnet-4-20250514-v1:0"
+#          name: "us.anthropic.claude-sonnet-4-20250514-v1:0"
 #          aws_region: "us-east-1"
+#
+#      model.name is a Bedrock model id OR a cross-region inference-profile
+#      id. Most current models are invokable ONLY via a profile — the
+#      region-scoped "us."/"eu."/"apac." prefix (e.g.
+#      us.anthropic.claude-sonnet-4-20250514-v1:0) — and a bare on-demand id
+#      returns ValidationException. Match the prefix to aws_region.
 #
 #   2. auth_scheme: "aws_sigv4" on the openai / anthropic provider (#202)
 #      Signs an OpenAI or Anthropic wire-format request with AWS credentials

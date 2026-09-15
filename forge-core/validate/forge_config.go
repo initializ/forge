@@ -12,6 +12,12 @@ import (
 
 var kebabCasePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
+// awsRegionPattern is the shape of an AWS region (e.g. us-east-1,
+// eu-west-2, ap-southeast-1). Lowercase letters, digits, and hyphens —
+// the same rule the catalog's aws_region field advertises. Used to reject
+// a typo'd model.aws_region for provider "bedrock" (#205).
+var awsRegionPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
+
 // knownModelAuthSchemes is the accepted set for model.auth_scheme (outbound
 // LLM auth). "" / x_api_key / bearer all resolve to the provider-native
 // header; aws_sigv4 (#202) and apikey_header (#302) are the active schemes.
@@ -106,6 +112,15 @@ func ValidateForgeConfig(cfg *types.ForgeConfig) *ValidationResult {
 	if cfg.Model.Provider == llm.ProviderBedrock {
 		if cfg.Model.AWSRegion == "" {
 			r.Errors = append(r.Errors, "model.aws_region is required for provider \"bedrock\" (drives the endpoint host and SigV4 signature scope)")
+		} else if !awsRegionPattern.MatchString(cfg.Model.AWSRegion) {
+			// A malformed region silently produces a bad host AND poisons the
+			// region-derived egress allowlist entry, so reject it up front.
+			r.Errors = append(r.Errors, fmt.Sprintf("model.aws_region %q is not a valid region (expected e.g. us-east-1)", cfg.Model.AWSRegion))
+		}
+		// model.name is only a warning in general, but for bedrock it is the
+		// URL path segment (/model/<name>/converse) — empty yields "/model//converse".
+		if cfg.Model.Name == "" {
+			r.Errors = append(r.Errors, "model.name is required for provider \"bedrock\" (it is the /model/<id>/converse path segment)")
 		}
 		if cfg.Model.AuthScheme != "" {
 			r.Warnings = append(r.Warnings, "model.auth_scheme is ignored for provider \"bedrock\"; SigV4 signing is intrinsic")

@@ -726,6 +726,14 @@ func parseSkillsFile(path string) ([]toolEntry, error) {
 func scaffold(opts *initOptions) error {
 	normalizeCustomProvider(opts)
 
+	// Bedrock requires a region (drives host + SigV4 scope). Enforce it at
+	// the shared scaffold choke point, not just in collectNonInteractive —
+	// the forge-ui createFunc path reaches scaffold() without going through
+	// the CLI validation. #205 review.
+	if opts.ModelProvider == "bedrock" && strings.TrimSpace(opts.AWSRegion) == "" {
+		return fmt.Errorf("model-provider=bedrock requires an AWS region (--aws-region, e.g. us-east-1)")
+	}
+
 	dir := filepath.Join(".", opts.AgentID)
 	if opts.OutputDir != "" {
 		dir = opts.OutputDir
@@ -1263,7 +1271,8 @@ func defaultModelNameForProvider(provider string) string {
 	case "anthropic":
 		return "claude-sonnet-4-20250514"
 	case "bedrock":
-		return "anthropic.claude-sonnet-4-20250514-v1:0"
+		// US cross-region inference-profile id — see catalog providers.go.
+		return "us.anthropic.claude-sonnet-4-20250514-v1:0"
 	case "gemini":
 		return "gemini-2.5-flash"
 	case "ollama":

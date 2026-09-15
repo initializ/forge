@@ -625,6 +625,29 @@ func TestDeriveEgressDomains_Empty(t *testing.T) {
 // hosts (STS for aws_sigv4, AAD authority for azure_ad, etc.) to the
 // same egress list a user reviews in the Egress step. Pins the contract
 // that the operator never has to add auth hosts manually after the wizard.
+// TestDeriveEgressDomains_BedrockHost pins the #205 review fix: a scaffolded
+// Bedrock agent must get bedrock-runtime.<region>.amazonaws.com in its egress
+// allowlist (the host is region-derived, so it can't be in the static
+// providerDomains map). Without it, `forge run` blocks the agent's own
+// Converse calls when any channel/tool pushes egress into allowlist mode.
+func TestDeriveEgressDomains_BedrockHost(t *testing.T) {
+	opts := &initOptions{
+		ModelProvider: "bedrock",
+		AWSRegion:     "ap-south-1",
+		EnvVars:       map[string]string{},
+	}
+	got := deriveEgressDomains(opts, nil)
+	found := false
+	for _, d := range got {
+		if d == "bedrock-runtime.ap-south-1.amazonaws.com" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected bedrock-runtime.ap-south-1.amazonaws.com in egress domains, got %v", got)
+	}
+}
+
 func TestDeriveEgressDomains_AuthProviderHostsMerged(t *testing.T) {
 	cases := []struct {
 		name string
@@ -795,7 +818,7 @@ func TestBuildTemplateData_DefaultModels(t *testing.T) {
 	}{
 		{"openai", "gpt-5.4"},
 		{"anthropic", "claude-sonnet-4-20250514"},
-		{"bedrock", "anthropic.claude-sonnet-4-20250514-v1:0"},
+		{"bedrock", "us.anthropic.claude-sonnet-4-20250514-v1:0"},
 		{"gemini", "gemini-2.5-flash"},
 		{"ollama", "llama3"},
 	}
@@ -894,7 +917,7 @@ func TestScaffold_Bedrock(t *testing.T) {
 	if cfg.Model.AWSRegion != "us-east-1" {
 		t.Errorf("aws_region = %q; want us-east-1", cfg.Model.AWSRegion)
 	}
-	if cfg.Model.Name != "anthropic.claude-sonnet-4-20250514-v1:0" {
+	if cfg.Model.Name != "us.anthropic.claude-sonnet-4-20250514-v1:0" {
 		t.Errorf("name = %q; want the bedrock default model", cfg.Model.Name)
 	}
 }

@@ -59,7 +59,17 @@
   - **forge-ui** create-agent wizard offers Bedrock too: it renders an AWS
     region field (in place of the API-key field) when Bedrock is selected,
     requires it client-side before advancing, and the create endpoint
-    rejects a Bedrock request missing `aws_region`.
+    rejects a Bedrock request missing `aws_region`. Its Bedrock model list
+    is sourced from the shared catalog (not hardcoded), so it can't drift.
+  - Review hardening (#205): the event-stream decoder bounds a frame's
+    total length before allocating (rejects a hostile prelude claiming ~GB
+    → DoS guard); `forge init` egress derivation adds
+    `bedrock-runtime.<region>.amazonaws.com` so a scaffolded agent isn't
+    blocked at `forge run`; default model ids are US inference-profile ids
+    (`us.` prefix) since most models are no longer on-demand-invokable;
+    `model.aws_region` is format-validated and empty `model.name` is a
+    bedrock error (it is the URL path segment); the region requirement is
+    enforced at the shared `scaffold()` choke point.
 
 ## v0.17.1 — 2026-07-14
 

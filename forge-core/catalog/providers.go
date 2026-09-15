@@ -32,17 +32,22 @@ var providers = []Provider{
 	{
 		ID:             "bedrock",
 		Label:          "AWS Bedrock",
-		Description:    "Claude, Nova, Llama, Mistral, Titan via the native Converse API (SigV4)",
+		Description:    "Claude, Nova, Llama via the native Converse API (SigV4)",
 		Icon:           "🟨",
 		NeedsAWSRegion: true,
-		DefaultModel:   "anthropic.claude-sonnet-4-20250514-v1:0",
+		// Defaults are US cross-region inference-profile IDs (the `us.`
+		// prefix): most current Bedrock foundation models are no longer
+		// invokable by their bare on-demand id and require a profile, so a
+		// bare default would ValidationException on first call. The prefix is
+		// region-scoped — swap `us.` for `eu.`/`apac.` outside US regions, or
+		// use a bare model id for a model that still offers on-demand. #205.
+		DefaultModel: "us.anthropic.claude-sonnet-4-20250514-v1:0",
 		Models: []Model{
-			{Label: "Claude Sonnet 4", ModelID: "anthropic.claude-sonnet-4-20250514-v1:0"},
-			{Label: "Claude 3.5 Haiku", ModelID: "anthropic.claude-3-5-haiku-20241022-v1:0"},
-			{Label: "Amazon Nova Pro", ModelID: "amazon.nova-pro-v1:0"},
-			{Label: "Amazon Nova Lite", ModelID: "amazon.nova-lite-v1:0"},
-			{Label: "Llama 3.3 70B", ModelID: "meta.llama3-3-70b-instruct-v1:0"},
-			{Label: "Mistral Large 2", ModelID: "mistral.mistral-large-2407-v1:0"},
+			{Label: "Claude Sonnet 4 (US profile)", ModelID: "us.anthropic.claude-sonnet-4-20250514-v1:0"},
+			{Label: "Claude 3.5 Haiku (US profile)", ModelID: "us.anthropic.claude-3-5-haiku-20241022-v1:0"},
+			{Label: "Amazon Nova Pro (US profile)", ModelID: "us.amazon.nova-pro-v1:0"},
+			{Label: "Amazon Nova Lite (US profile)", ModelID: "us.amazon.nova-lite-v1:0"},
+			{Label: "Llama 3.3 70B (US profile)", ModelID: "us.meta.llama3-3-70b-instruct-v1:0"},
 		},
 	},
 	{

@@ -116,12 +116,13 @@ func printWindow(label string, w optimizer.WindowTotals) {
 		}
 		return r
 	}
-	// Ratio = saved / cache tokens (billed cache read + write). Compression shrinks
-	// the conversation history Claude Code caches, so this is the share of cached
-	// token volume removed. $ credits the cache-WRITE the dropped content avoided.
-	ratio := pct(w.SavedTokens, w.CacheTokens)
-	fmt.Printf("%s %s  %5.1f%% saved %s / %s (cache read+write)   $%.4f\n",
-		label, bar(ratio/100, 15), ratio, commaInt(w.SavedTokens), commaInt(w.CacheTokens), w.Dollars)
+	// Ratio = saved / cache-write tokens (freshly-cached bytes each turn). This is
+	// the share of newly-cached token volume compression removed; cache reads are
+	// excluded so repeated prefix re-reads don't dilute it. $ credits the
+	// cache-WRITE the dropped content avoided.
+	ratio := pct(w.SavedTokens, w.CacheWriteTokens)
+	fmt.Printf("%s %s  %5.1f%% saved %s / %s (cache write)   $%.4f\n",
+		label, bar(ratio/100, 15), ratio, commaInt(w.SavedTokens), commaInt(w.CacheWriteTokens), w.Dollars)
 }
 
 // bar renders a ratio in [0,1] as a filled/empty block bar of the given width.

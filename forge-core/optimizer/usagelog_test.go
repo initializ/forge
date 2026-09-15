@@ -29,7 +29,7 @@ func line(ago time.Duration, now time.Time, session, client, model string, saved
 	return map[string]any{
 		"time":       now.Add(-ago).UTC().Format(time.RFC3339),
 		"session_id": session, "client": client,
-		"usage":       map[string]any{"model": model, "input_tokens": 100, "output_tokens": 10, "cache_read_input_tokens": 500},
+		"usage":       map[string]any{"model": model, "input_tokens": 100, "output_tokens": 10, "cache_read_input_tokens": 500, "cache_creation_input_tokens": 400},
 		"compression": map[string]any{"saved_tokens": saved, "tokens_before": before, "tokens_after": before - saved},
 	}
 }
@@ -55,8 +55,8 @@ func TestAggregateUsageLog(t *testing.T) {
 	if rep.Records != 5 {
 		t.Fatalf("records = %d, want 5", rep.Records)
 	}
-	// Today = two sess_a rows: saved 19000, cache = 2×500 read = 1000.
-	if rep.Today.SavedTokens != 19000 || rep.Today.CacheTokens != 1000 {
+	// Today = two sess_a rows: saved 19000, cache-write = 2×400 = 800.
+	if rep.Today.SavedTokens != 19000 || rep.Today.CacheWriteTokens != 800 {
 		t.Errorf("today = %+v", rep.Today)
 	}
 	// Today dollars = cache-write rate = 19000 * ($5 × 1.25)/1M = $0.11875.

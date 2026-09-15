@@ -18,18 +18,19 @@ import (
 // WindowTotals is savings over a time window.
 type WindowTotals struct {
 	SavedTokens int64 `json:"saved_tokens"`
-	// CacheTokens is the billed cache read + write for these requests. Compression
-	// shrinks the conversation history that Claude Code caches, so the ratio
-	// SavedTokens/CacheTokens = "% of the cached token volume compression removed"
-	// — an honest denominator (real billed counts, present on every record, no
-	// old/new mixing).
-	CacheTokens int64   `json:"cache_tokens"`
-	Dollars     float64 `json:"cost_avoided_usd"`
+	// CacheWriteTokens is the billed cache-CREATION (write) volume for these
+	// requests — the freshly-cached bytes each turn adds. Compression shrinks the
+	// conversation history written to the cache, so the ratio
+	// SavedTokens/CacheWriteTokens = "% of the newly-cached token volume
+	// compression removed". Cache READS are deliberately excluded: they re-count
+	// the whole prefix every turn, which would dilute the ratio ~30×.
+	CacheWriteTokens int64   `json:"cache_write_tokens"`
+	Dollars          float64 `json:"cost_avoided_usd"`
 }
 
-func (w *WindowTotals) add(saved, cache int64, dollars float64) {
+func (w *WindowTotals) add(saved, cacheWrite int64, dollars float64) {
 	w.SavedTokens += saved
-	w.CacheTokens += cache
+	w.CacheWriteTokens += cacheWrite
 	w.Dollars += dollars
 }
 
@@ -122,20 +123,21 @@ func AggregateUsageLog(path string, pricing *Pricing, now time.Time, maxSessions
 		rep.Records++
 
 		saved := int64(rec.Compression.SavedTokens)
-		// Denominator = real billed cache traffic (read + write): the conversation
-		// history compression shrinks. $ credits the cache-WRITE the dropped
-		// content would have incurred (see CacheWriteCostAvoided).
-		cache := int64(rec.Usage.CacheReadInputTokens + rec.Usage.CacheCreationInputTokens)
+		// Denominator = billed cache-WRITE (creation) tokens: the freshly-cached
+		// bytes compression shrinks each turn. Cache reads are excluded — they
+		// re-count the whole prefix every turn and would dilute the ratio ~30×. $
+		// credits the cache-WRITE the dropped content would have incurred.
+		cacheWrite := int64(rec.Usage.CacheCreationInputTokens)
 		dollars := pricing.CacheWriteCostAvoided(rec.Usage.Model, saved)
 
 		// Windowed dollar summaries (30-day horizon).
 		if !rec.Time.Before(win30) {
-			rep.Last30Days.add(saved, cache, dollars)
+			rep.Last30Days.add(saved, cacheWrite, dollars)
 			if !rec.Time.Before(win7) {
-				rep.Last7Days.add(saved, cache, dollars)
+				rep.Last7Days.add(saved, cacheWrite, dollars)
 			}
 			if !rec.Time.Before(startToday) {
-				rep.Today.add(saved, cache, dollars)
+				rep.Today.add(saved, cacheWrite, dollars)
 			}
 
 			model := rec.Usage.Model

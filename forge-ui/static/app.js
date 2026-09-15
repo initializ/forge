@@ -2363,11 +2363,11 @@ function optimizerBar(ratio) {
 
 function OptimizerSavingsRow({ label, w }) {
   const saved = w ? w.saved_tokens : 0;
-  const cache = w ? w.cache_tokens : 0;
-  // Ratio = saved / cache tokens (billed cache read + write). Compression shrinks
-  // the conversation history Claude Code caches, so this is the share of cached
-  // token volume removed — an honest denominator from real billed counts. $
-  // credits the cache-WRITE the dropped content avoided.
+  const cache = w ? w.cache_write_tokens : 0;
+  // Ratio = saved / cache-write tokens (freshly-cached bytes each turn). Share of
+  // newly-cached token volume compression removed; cache reads are excluded so
+  // repeated prefix re-reads don't dilute it. $ credits the cache-WRITE the
+  // dropped content avoided.
   const ratio = cache > 0 ? Math.min(saved / cache, 1) : 0;
   return html`
     <div style="font-family:monospace;font-size:13px;line-height:1.9">
@@ -2375,7 +2375,7 @@ function OptimizerSavingsRow({ label, w }) {
       <span>${optimizerBar(ratio)}</span>
       <span style="display:inline-block;width:64px;text-align:right">${(ratio * 100).toFixed(1)}%</span>
       <span style="opacity:.8">  saved ${optimizerCommas(saved)} / ${optimizerCommas(cache)}</span>
-      <span style="opacity:.55"> cache read+write</span>
+      <span style="opacity:.55"> cache write</span>
       <span style="float:right">$${(w ? w.cost_avoided_usd : 0).toFixed(4)}</span>
     </div>`;
 }

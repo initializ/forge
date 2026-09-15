@@ -22,18 +22,28 @@ type WindowTotals struct {
 	Dollars        float64 `json:"cost_avoided_usd"`
 	// EligibleTokens is the compressible surface (all candidate blocks examined);
 	// TotalTokens is the whole outbound request. Ratios:
-	//   saved/EligibleTokens = "on compressible bytes" (what compression achieves
-	//     on what it can touch); saved/TotalTokens = "of everything sent".
+	//   SavedTokens/EligibleTokens = "on compressible bytes" (what compression
+	//     achieves on what it can touch);
+	//   TotalSaved/TotalTokens     = "of everything sent".
+	// TotalSaved is the saved-tokens from ONLY the records that carry TotalTokens,
+	// so the total ratio never mixes new numerators with missing denominators
+	// (which produced >100%). EligibleTokens uses a per-record legacy fallback
+	// (compressed-before) so it covers every record and SavedTokens is a valid
+	// numerator for it.
 	EligibleTokens int64 `json:"eligible_tokens"`
 	TotalTokens    int64 `json:"total_tokens"`
+	TotalSaved     int64 `json:"total_saved"`
 }
 
 func (w *WindowTotals) add(saved, before, eligible, total int64, dollars float64) {
 	w.SavedTokens += saved
 	w.OriginalTokens += before
 	w.EligibleTokens += eligible
-	w.TotalTokens += total
 	w.Dollars += dollars
+	if total > 0 {
+		w.TotalTokens += total
+		w.TotalSaved += saved
+	}
 }
 
 // ModelSavings is per-model rollup.
@@ -127,7 +137,10 @@ func AggregateUsageLog(path string, pricing *Pricing, now time.Time, maxSessions
 		saved := int64(rec.Compression.SavedTokens)
 		before := int64(rec.Compression.TokensBefore)
 		eligible := int64(rec.Compression.EligibleTokens)
-		total := int64(rec.Compression.TotalTokens)
+		if eligible == 0 {
+			eligible = before // legacy records: use compressed-before as the surface
+		}
+		total := int64(rec.Compression.TotalTokens) // 0 for legacy → excluded from total%
 		dollars := pricing.CostAvoided(rec.Usage.Model, saved)
 
 		// Windowed dollar summaries (30-day horizon).

@@ -2363,13 +2363,13 @@ function optimizerBar(ratio) {
 
 function OptimizerSavingsRow({ label, w }) {
   const saved = w ? w.saved_tokens : 0;
-  // "Eligible" = the compressible surface the optimizer could touch (candidate
-  // blocks). Legacy records only have original_tokens (compressed-blocks-before),
-  // so fall back. The bar tracks the eligible ratio (what compression achieves on
-  // what it can act on); "of sent" is the diluted whole-request ratio alongside.
-  const eligDen = w && w.eligible_tokens > 0 ? w.eligible_tokens : (w ? w.original_tokens : 0);
-  const eligRatio = eligDen > 0 ? saved / eligDen : 0;
-  const totalRatio = w && w.total_tokens > 0 ? saved / w.total_tokens : null;
+  // Eligible = compressible surface (aggregation applies a per-record legacy
+  // fallback, so saved is a valid numerator over eligible_tokens). Total uses its
+  // own numerator (total_saved) so the ratios never mix record sets. Clamp guards
+  // any residual skew from mixed old/new usage-log records.
+  const clamp = r => Math.min(r, 1);
+  const eligRatio = w && w.eligible_tokens > 0 ? clamp(saved / w.eligible_tokens) : 0;
+  const totalRatio = w && w.total_tokens > 0 ? clamp(w.total_saved / w.total_tokens) : null;
   return html`
     <div style="font-family:monospace;font-size:13px;line-height:1.9">
       <span style="display:inline-block;width:110px">${label}</span>

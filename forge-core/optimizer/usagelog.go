@@ -18,13 +18,21 @@ import (
 // WindowTotals is savings over a time window.
 type WindowTotals struct {
 	SavedTokens    int64   `json:"saved_tokens"`
-	OriginalTokens int64   `json:"original_tokens"`
+	OriginalTokens int64   `json:"original_tokens"` // compressed-blocks-only pre-tokens (legacy)
 	Dollars        float64 `json:"cost_avoided_usd"`
+	// EligibleTokens is the compressible surface (all candidate blocks examined);
+	// TotalTokens is the whole outbound request. Ratios:
+	//   saved/EligibleTokens = "on compressible bytes" (what compression achieves
+	//     on what it can touch); saved/TotalTokens = "of everything sent".
+	EligibleTokens int64 `json:"eligible_tokens"`
+	TotalTokens    int64 `json:"total_tokens"`
 }
 
-func (w *WindowTotals) add(saved, before int64, dollars float64) {
+func (w *WindowTotals) add(saved, before, eligible, total int64, dollars float64) {
 	w.SavedTokens += saved
 	w.OriginalTokens += before
+	w.EligibleTokens += eligible
+	w.TotalTokens += total
 	w.Dollars += dollars
 }
 
@@ -118,16 +126,18 @@ func AggregateUsageLog(path string, pricing *Pricing, now time.Time, maxSessions
 
 		saved := int64(rec.Compression.SavedTokens)
 		before := int64(rec.Compression.TokensBefore)
+		eligible := int64(rec.Compression.EligibleTokens)
+		total := int64(rec.Compression.TotalTokens)
 		dollars := pricing.CostAvoided(rec.Usage.Model, saved)
 
 		// Windowed dollar summaries (30-day horizon).
 		if !rec.Time.Before(win30) {
-			rep.Last30Days.add(saved, before, dollars)
+			rep.Last30Days.add(saved, before, eligible, total, dollars)
 			if !rec.Time.Before(win7) {
-				rep.Last7Days.add(saved, before, dollars)
+				rep.Last7Days.add(saved, before, eligible, total, dollars)
 			}
 			if !rec.Time.Before(startToday) {
-				rep.Today.add(saved, before, dollars)
+				rep.Today.add(saved, before, eligible, total, dollars)
 			}
 
 			model := rec.Usage.Model

@@ -2362,13 +2362,22 @@ function optimizerBar(ratio) {
 }
 
 function OptimizerSavingsRow({ label, w }) {
-  const ratio = w && w.original_tokens > 0 ? w.saved_tokens / w.original_tokens : 0;
+  const saved = w ? w.saved_tokens : 0;
+  // "Eligible" = the compressible surface the optimizer could touch (candidate
+  // blocks). Legacy records only have original_tokens (compressed-blocks-before),
+  // so fall back. The bar tracks the eligible ratio (what compression achieves on
+  // what it can act on); "of sent" is the diluted whole-request ratio alongside.
+  const eligDen = w && w.eligible_tokens > 0 ? w.eligible_tokens : (w ? w.original_tokens : 0);
+  const eligRatio = eligDen > 0 ? saved / eligDen : 0;
+  const totalRatio = w && w.total_tokens > 0 ? saved / w.total_tokens : null;
   return html`
     <div style="font-family:monospace;font-size:13px;line-height:1.9">
       <span style="display:inline-block;width:110px">${label}</span>
-      <span>${optimizerBar(ratio)}</span>
-      <span style="display:inline-block;width:56px;text-align:right">${(ratio * 100).toFixed(1)}%</span>
-      <span style="opacity:.8">  saved ${optimizerCommas(w ? w.saved_tokens : 0)} / ${optimizerCommas(w ? w.original_tokens : 0)}</span>
+      <span>${optimizerBar(eligRatio)}</span>
+      <span style="display:inline-block;width:64px;text-align:right">${(eligRatio * 100).toFixed(1)}%</span>
+      <span style="opacity:.7"> of compressible</span>
+      ${totalRatio !== null && html`<span style="opacity:.55"> · ${(totalRatio * 100).toFixed(1)}% of sent</span>`}
+      <span style="opacity:.8">  saved ${optimizerCommas(saved)}</span>
       <span style="float:right">$${(w ? w.cost_avoided_usd : 0).toFixed(4)}</span>
     </div>`;
 }

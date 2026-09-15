@@ -106,12 +106,26 @@ func renderSavings(r *optimizer.UsageReport) {
 }
 
 func printWindow(label string, w optimizer.WindowTotals) {
-	ratio := 0.0
-	if w.OriginalTokens > 0 {
-		ratio = float64(w.SavedTokens) / float64(w.OriginalTokens)
+	pct := func(den int64) float64 {
+		if den <= 0 {
+			return 0
+		}
+		return float64(w.SavedTokens) / float64(den) * 100
 	}
-	fmt.Printf("%s %s  %5.1f%%  saved %s / %s tokens  $%.4f\n",
-		label, bar(ratio, 15), ratio*100, commaInt(w.SavedTokens), commaInt(w.OriginalTokens), w.Dollars)
+	// "Eligible" = compressible surface the optimizer could touch (candidate
+	// blocks). Legacy records only carry compressed-blocks-before, so fall back to
+	// it. The bar tracks the eligible ratio — what compression achieves on what it
+	// can act on — with the diluted "% of everything sent" shown alongside.
+	elig := w.EligibleTokens
+	if elig == 0 {
+		elig = w.OriginalTokens
+	}
+	eligPct := pct(elig)
+	fmt.Printf("%s %s  %5.1f%% of compressible", label, bar(eligPct/100, 15), eligPct)
+	if w.TotalTokens > 0 {
+		fmt.Printf(" · %.1f%% of all sent", pct(w.TotalTokens))
+	}
+	fmt.Printf("   saved %s tokens   $%.4f\n", commaInt(w.SavedTokens), w.Dollars)
 }
 
 // bar renders a ratio in [0,1] as a filled/empty block bar of the given width.

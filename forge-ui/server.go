@@ -101,6 +101,14 @@ func (s *UIServer) Start(ctx context.Context) error {
 
 	// Update check
 	mux.HandleFunc("GET /api/update-check", s.handleUpdateCheck)
+	mux.HandleFunc("GET /api/optimizer/stats", s.handleOptimizerStats)
+	mux.HandleFunc("GET /api/optimizer/savings", s.handleOptimizerSavings)
+	mux.HandleFunc("GET /api/optimizer/memory", s.handleOptimizerMemory)
+	mux.HandleFunc("DELETE /api/optimizer/memory", s.handleOptimizerMemoryDelete)
+	mux.HandleFunc("POST /api/optimizer/memory/feedback", s.handleOptimizerMemoryFeedback)
+	mux.HandleFunc("GET /api/optimizer/daemon", s.handleOptimizerDaemon)
+	mux.HandleFunc("POST /api/optimizer/daemon/start", s.handleOptimizerDaemonControl("start"))
+	mux.HandleFunc("POST /api/optimizer/daemon/stop", s.handleOptimizerDaemonControl("stop"))
 
 	// Skill Builder routes
 	mux.HandleFunc("POST /api/agents/{id}/skill-builder/chat", s.handleSkillBuilderChat)

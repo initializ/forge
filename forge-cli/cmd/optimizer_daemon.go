@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -44,7 +46,36 @@ type optDaemonState struct {
 	PrevBaseURL    *string `json:"prev_base_url"` // nil = key was absent before start
 	PrevToolSearch *string `json:"prev_tool_search"`
 	MCPRegistered  bool    `json:"mcp_registered"`
+	UIPID          int     `json:"ui_pid,omitempty"` // dashboard we spawned via --ui (stop kills it)
 }
+
+// optimizerListenerPID returns the pid listening on addr IF it is a forge
+// optimizer (verified via /healthz), else 0 — so `stop` can kill the proxy by
+// port even when no pid was recorded, without ever killing an unrelated service.
+func optimizerListenerPID(addr string) int {
+	if addr == "" {
+		return 0
+	}
+	if _, ours := probeExistingOptimizer(addr); !ours {
+		return 0
+	}
+	port := addr
+	if i := strings.LastIndex(addr, ":"); i >= 0 {
+		port = addr[i+1:]
+	}
+	out, err := exec.Command("lsof", "-nP", "-iTCP:"+port, "-sTCP:LISTEN", "-t").Output() //nolint:gosec // fixed args
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Fields(string(out)) {
+		if pid, e := strconv.Atoi(line); e == nil {
+			return pid
+		}
+	}
+	return 0
+}
+
+func processAlive(pid int) bool { return pid > 0 && syscall.Kill(pid, 0) == nil }
 
 var optimizerStartCmd = &cobra.Command{
 	Use:   "start",
@@ -95,6 +126,8 @@ func runOptimizerStart(_ *cobra.Command, _ []string) error {
 
 	st := optDaemonState{Listen: listen}
 	if running && ours {
+		// Record the adopted proxy's pid so `stop` can kill it later.
+		st.PID = optimizerListenerPID(listen)
 		fmt.Printf("forge optimizer already running at http://%s — adopting it\n", listen)
 	} else {
 		self, err := os.Executable()
@@ -143,13 +176,10 @@ func runOptimizerStart(_ *cobra.Command, _ []string) error {
 		st.MCPRegistered = true
 	}
 
-	if err := writeOptDaemonState(st); err != nil {
-		logger.Warn("could not persist daemon state (stop may not fully revert)", "error", err.Error())
-	}
-
 	if optimizerStartUI {
 		if self, e := os.Executable(); e == nil {
-			if base := ensureForgeUI(self, logger); base != "" {
+			if base, uipid := ensureForgeUI(self, logger); base != "" {
+				st.UIPID = uipid // 0 if we adopted an existing dashboard
 				url := base + "/#/optimizer"
 				fmt.Printf("opening dashboard → %s\n", url)
 				openURL(url)
@@ -157,25 +187,30 @@ func runOptimizerStart(_ *cobra.Command, _ []string) error {
 		}
 	}
 
+	if err := writeOptDaemonState(st); err != nil {
+		logger.Warn("could not persist daemon state (stop may not fully revert)", "error", err.Error())
+	}
+
 	fmt.Println("Run `claude` in any terminal — it will use the optimizer. `forge optimizer stop` to undo.")
 	return nil
 }
 
-// ensureForgeUI returns the base URL of a running forge dashboard, launching a
-// detached one on :4200 if none is up. Returns "" on failure.
-func ensureForgeUI(self string, logger *slog.Logger) string {
+// ensureForgeUI returns (base URL, pid) of a running forge dashboard, launching
+// a detached one on :4200 if none is up. pid is 0 when it adopted an existing
+// dashboard (so `stop` won't kill a UI it didn't start).
+func ensureForgeUI(self string, logger *slog.Logger) (string, int) {
 	const base = "http://127.0.0.1:4200"
 	client := &http.Client{Timeout: 600 * time.Millisecond}
 	if resp, err := client.Get(base + "/api/health"); err == nil {
 		_ = resp.Body.Close()
-		return base // already running
+		return base, 0 // already running — adopt, don't own
 	}
 	logPath := forgeFile("optimizer-ui.log")
 	_ = os.MkdirAll(filepath.Dir(logPath), 0o700)
 	logf, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		logger.Warn("could not open UI log", "error", err.Error())
-		return ""
+		return "", 0
 	}
 	child := exec.Command(self, "ui", "--port", "4200", "--no-open") //nolint:gosec // self-exec, fixed args
 	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -185,20 +220,21 @@ func ensureForgeUI(self string, logger *slog.Logger) string {
 	if err := child.Start(); err != nil {
 		_ = logf.Close()
 		logger.Warn("could not start forge ui", "error", err.Error())
-		return ""
+		return "", 0
 	}
+	pid := child.Process.Pid
 	_ = child.Process.Release()
 	// Wait briefly for readiness.
 	deadline := time.Now().Add(6 * time.Second)
 	for time.Now().Before(deadline) {
 		if resp, err := client.Get(base + "/api/health"); err == nil {
 			_ = resp.Body.Close()
-			return base
+			return base, pid
 		}
 		time.Sleep(150 * time.Millisecond)
 	}
 	logger.Warn("forge ui did not become ready", "log", logPath)
-	return base // best-effort: still try to open it
+	return base, pid // best-effort: still try to open it
 }
 
 // openURL opens a URL in the default browser (best-effort, cross-platform).
@@ -219,11 +255,15 @@ func runOptimizerStop(_ *cobra.Command, _ []string) error {
 	logger := optDaemonLogger()
 	st, err := readOptDaemonState()
 	if err != nil {
-		// No state file — best-effort cleanup so we never leave claude pointed at
-		// a dead proxy: unwire settings unconditionally and deregister MCP.
-		fmt.Println("no daemon state found; reverting Claude Code settings best-effort")
-		_ = restoreClaudeSettings(nil, nil) // nil,nil → delete the keys we manage
+		// No state file — still do a best-effort full stop: revert settings,
+		// deregister MCP, and kill whatever forge-optimizer is on the default addr.
+		fmt.Println("no daemon state found; best-effort stop")
+		_ = restoreClaudeSettings(nil, nil)
 		deregisterOptimizerMCP(logger)
+		if pid := optimizerListenerPID(resolveListen()); pid > 0 {
+			_ = syscall.Kill(pid, syscall.SIGTERM)
+			fmt.Printf("stopped optimizer proxy on %s (pid %d)\n", resolveListen(), pid)
+		}
 		return nil
 	}
 
@@ -235,15 +275,34 @@ func runOptimizerStop(_ *cobra.Command, _ []string) error {
 	if st.MCPRegistered {
 		deregisterOptimizerMCP(logger)
 	}
-	if st.Spawned && st.PID > 0 {
-		if err := syscall.Kill(st.PID, syscall.SIGTERM); err != nil {
-			logger.Warn("could not signal daemon (already gone?)", "pid", st.PID, "error", err.Error())
-		} else {
+
+	// Stop the daemon proxy. "stop" means stop it — prefer the recorded pid, else
+	// find whatever forge-optimizer is listening on the address (handles adopted
+	// proxies where no pid was recorded, the old "left it up" case).
+	stopped := false
+	if processAlive(st.PID) {
+		if syscall.Kill(st.PID, syscall.SIGTERM) == nil {
 			fmt.Printf("stopped optimizer daemon (pid %d)\n", st.PID)
+			stopped = true
 		}
-	} else {
-		fmt.Println("did not start the running proxy myself — leaving it up (settings reverted)")
 	}
+	if !stopped {
+		if pid := optimizerListenerPID(st.Listen); pid > 0 {
+			_ = syscall.Kill(pid, syscall.SIGTERM)
+			fmt.Printf("stopped optimizer proxy on %s (pid %d)\n", st.Listen, pid)
+			stopped = true
+		}
+	}
+	if !stopped {
+		fmt.Println("no running optimizer proxy found on " + st.Listen)
+	}
+
+	// Stop the dashboard we started via --ui (UIPID is 0 if we adopted one).
+	if processAlive(st.UIPID) {
+		_ = syscall.Kill(st.UIPID, syscall.SIGTERM)
+		fmt.Printf("stopped dashboard (pid %d)\n", st.UIPID)
+	}
+
 	_ = os.Remove(optDaemonStatePath())
 	return nil
 }

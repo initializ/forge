@@ -2705,7 +2705,7 @@ function OptimizerSavingsTab({ data, loading, stats, savings }) {
 
           <div style="background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.18);border-radius:10px;padding:14px 16px;margin-bottom:20px;max-width:720px">
             <div style="font-size:15px">
-              <b>${(eff * 100).toFixed(0)}% effective savings</b>
+              <b>${(eff * 100).toFixed(0)}% effective savings</b>${' '}
               <span style="opacity:.75">— this traffic cost <b>$${sp.toFixed(2)}</b> instead of <b>$${wouldHave.toFixed(2)}</b> uncompressed ($${av.toFixed(2)} avoided, all-time)</span>
             </div>
             ${at && html`<${OptimizerCompositionBar} input=${at.avoided_input_usd} cacheWrite=${at.avoided_cache_write_usd} cacheRead=${at.avoided_cache_read_usd} />`}
@@ -2713,9 +2713,9 @@ function OptimizerSavingsTab({ data, loading, stats, savings }) {
               = $${at.avoided_input_usd.toFixed(2)} input · $${at.avoided_cache_write_usd.toFixed(2)} cache-write · $${at.avoided_cache_read_usd.toFixed(2)} cache-read
             </div>`}
             ${at && html`<div style="opacity:.6;font-size:11.5px;margin-top:8px;line-height:1.5">
-              Compression removes each chunk from the cached prefix for <i>every later turn</i> of a session, so the
-              <b>${optimizerCommas(T.saved_tokens)}</b> tokens compressed away avoided
-              <b>${optimizerCommas(at.avoided_cache_read_tokens)}</b> cache-reads (×0.1) across sessions — that compounding
+              Compression removes each chunk from the cached prefix for <i>every later turn</i> of a session, so the${' '}
+              <b>${optimizerCommas(T.saved_tokens)}</b>${' '}tokens compressed away avoided${' '}
+              <b>${optimizerCommas(at.avoided_cache_read_tokens)}</b>${' '}cache-reads (×0.1) across sessions — that compounding
               read term is most of the total, which is why the dollars far exceed a per-turn view of the saved tokens.
             </div>`}
           </div>

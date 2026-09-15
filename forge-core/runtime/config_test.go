@@ -3,6 +3,8 @@ package runtime
 import (
 	"testing"
 
+	"github.com/initializ/forge/forge-core/catalog"
+	"github.com/initializ/forge/forge-core/llm"
 	"github.com/initializ/forge/forge-core/types"
 )
 
@@ -435,11 +437,38 @@ func TestDefaultModelForProvider(t *testing.T) {
 		{"gemini", "gemini-2.5-flash"},
 		{"ollama", "llama3"},
 		{"unknown", ""},
+		// "custom" is in the catalog but carries no default by design — the
+		// user supplies the model name.
+		{"custom", ""},
 	}
 	for _, tt := range tests {
 		got := defaultModelForProvider(tt.provider)
 		if got != tt.expected {
 			t.Errorf("defaultModelForProvider(%q) = %q, want %q", tt.provider, got, tt.expected)
 		}
+	}
+}
+
+// defaultModelForProvider reads the catalog, so the literals above are really
+// asserting the catalog's contents. Pin the relationship itself as well: every
+// catalog provider must resolve to its own DefaultModel, and the
+// openai-responses transport variant must alias the openai entry rather than
+// falling through to "" (it has no catalog entry of its own).
+func TestDefaultModelForProviderTracksCatalog(t *testing.T) {
+	for _, p := range catalog.AllProviders() {
+		if got := defaultModelForProvider(p.ID); got != p.DefaultModel {
+			t.Errorf("defaultModelForProvider(%q) = %q, want catalog DefaultModel %q",
+				p.ID, got, p.DefaultModel)
+		}
+	}
+
+	openai, ok := catalog.ProviderByID("openai")
+	if !ok {
+		t.Fatal("openai provider missing from catalog")
+	}
+	if got := defaultModelForProvider(llm.ProviderOpenAIResponses); got != openai.DefaultModel {
+		t.Errorf("defaultModelForProvider(%q) = %q, want the openai default %q — the "+
+			"responses provider is a transport variant with no catalog entry of its own",
+			llm.ProviderOpenAIResponses, got, openai.DefaultModel)
 	}
 }

@@ -2652,6 +2652,13 @@ function OptimizerMemoryTab({ memory, onSelect, onDelete, onFeedback }) {
 
 // Savings sub-tab: the live proxy stats + durable usage-log rollups.
 function OptimizerSavingsTab({ data, loading, stats, totals, dollars, sessionRows, savings }) {
+  // Compounding cost-avoided per session comes from the durable usage log
+  // (needs per-turn ordering the live /stats counters don't keep). Index it by
+  // session id so the live table can show each session's $ growing as its turns
+  // accumulate — the log is appended every turn and this report is re-fetched.
+  const sessCost = {};
+  const sessRep = (savings && savings.report && savings.report.sessions) || [];
+  for (const s of sessRep) sessCost[s.session_id] = s.cost_avoided_usd || 0;
   return html`
     <div>
       ${loading && !data && html`<div style="padding:24px;opacity:.7">Loading…</div>`}
@@ -2677,7 +2684,7 @@ function OptimizerSavingsTab({ data, loading, stats, totals, dollars, sessionRow
           <div class="skills-subtitle" style="margin-bottom:8px">Live sessions (${sessionRows.length})</div>
           <table style="width:100%;border-collapse:collapse;font-size:13px">
             <thead><tr style="text-align:left;opacity:.7">
-              <th style="padding:6px 8px">Session</th><th>Reqs</th><th>Input</th><th>Output</th><th>Cache read</th><th>Saved</th><th>Expand</th><th>Last seen</th>
+              <th style="padding:6px 8px">Session</th><th>Reqs</th><th>Input</th><th>Output</th><th>Cache read</th><th>Saved</th><th>Cost avoided</th><th>Expand</th><th>Last seen</th>
             </tr></thead>
             <tbody>
               ${sessionRows.map(([id, sd]) => html`
@@ -2688,13 +2695,14 @@ function OptimizerSavingsTab({ data, loading, stats, totals, dollars, sessionRow
                   <td>${optimizerCommas(sd.output_tokens)}</td>
                   <td>${optimizerCommas(sd.cache_read_input_tokens)}</td>
                   <td>${optimizerCommas(sd.compression_saved_tokens)}</td>
+                  <td>${sessCost[id] != null ? '$' + sessCost[id].toFixed(4) : html`<span style="opacity:.4">—</span>`}</td>
                   <td>${optimizerCommas(sd.expansions)}</td>
                   <td style="opacity:.7">${optimizerFmtTime(sd.last_seen)}</td>
                 </tr>`)}
-              ${sessionRows.length === 0 && html`<tr><td colspan="8" style="padding:12px 8px;opacity:.6">No sessions yet — use a coding agent through the optimizer.</td></tr>`}
+              ${sessionRows.length === 0 && html`<tr><td colspan="9" style="padding:12px 8px;opacity:.6">No sessions yet — use a coding agent through the optimizer.</td></tr>`}
             </tbody>
           </table>
-          <div style="opacity:.55;font-size:12px;margin-top:14px">Live totals reset when the optimizer restarts. Durable history is below.</div>
+          <div style="opacity:.55;font-size:12px;margin-top:14px">Token counters are live and reset when the optimizer restarts. <b>Cost avoided</b> is the durable three-tier figure (input + cache-write + compounding cache-read) and climbs as each session's turns accumulate. Durable history is below.</div>
         </div>`}
 
       ${savings && savings.report && savings.report.records > 0 && html`

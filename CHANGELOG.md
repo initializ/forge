@@ -2,6 +2,75 @@
 
 ## Unreleased
 
+### Added
+
+- **Native AWS Bedrock Converse API** (`provider: bedrock`, #205). A new
+  LLM provider that speaks Bedrock's model-agnostic Converse wire format
+  directly (`POST <base_url>/model/<modelId>/converse` and
+  `/converse-stream`), so any Bedrock model — Claude, Nova, Llama,
+  Mistral, Titan — works with tool-calling through one translation,
+  without a compat proxy or per-model wire matching. This is the
+  follow-up to the #202 Phase 2 `auth_scheme: aws_sigv4` passthrough,
+  which only signs an OpenAI/Anthropic-shaped request.
+  - Config is minimal — SigV4 signing is intrinsic (no `auth_scheme`),
+    and `base_url` defaults to
+    `https://bedrock-runtime.<aws_region>.amazonaws.com`:
+
+    ```yaml
+    model:
+      provider: bedrock
+      name: anthropic.claude-sonnet-4-20250514-v1:0
+      aws_region: us-east-1
+    ```
+  - Reuses the hand-rolled `bedrock`-service SigV4 signer
+    (`sigv4_transport.go`). The model ID's `:` is percent-encoded to
+    `%3A` on the wire (a plain `url.PathEscape` would leave it literal).
+  - **SigV4 signer fix (surfaced by Bedrock Converse):** the canonical
+    URI now double-encodes the request path — it canonicalizes
+    `req.URL.EscapedPath()` (already `%3A`) rather than the decoded
+    `req.URL.Path`, so the colon becomes `%253A` in the canonical
+    request as SigV4 mandates for every service except S3. Without this,
+    a model id containing a colon 403s with `SignatureDoesNotMatch`. The
+    #202 openai/anthropic passthrough paths (`/v1/messages`,
+    `/chat/completions`) have no reserved characters, so their signatures
+    are byte-identical — no behavior change. Verified with a live call
+    to `us.amazon.nova-2-lite-v1:0` (Converse + converse-stream).
+  - Streaming decodes Bedrock's `application/vnd.amazon.eventstream`
+    binary framing with a hand-rolled decoder
+    (`bedrock_eventstream.go`) — stdlib only, no aws-sdk-go-v2,
+    matching the SigV4 signer's posture. Prelude + message CRC32 are
+    validated.
+  - `forge validate` requires `model.aws_region` for `provider: bedrock`
+    and warns that `auth_scheme` is redundant there. The region-derived
+    host auto-extends the egress allowlist via `LLMProviderDomains`, so
+    no separate `egress.allowed_domains` entry is needed for the common
+    region-only config.
+  - Scope: text + tool-calling, plus opt-in Converse `cachePoint` prompt
+    caching. Image/document content blocks wait until the provider-agnostic
+    `ChatMessage` body grows beyond a plain string. Credentials are
+    env-only (`AWS_ACCESS_KEY_ID` / `_SECRET_ACCESS_KEY` /
+    `_SESSION_TOKEN`); IRSA/STS resolution remains the same follow-up as
+    #202.
+  - `forge init` offers **AWS Bedrock** as a first-class provider: the TUI
+    wizard prompts for a region (no API key) then a model, and the
+    non-interactive path takes `--model-provider bedrock --aws-region
+    <region>` (region required, validated). The provider list is sourced
+    from the shared catalog (`forge-core/catalog`).
+  - **forge-ui** create-agent wizard offers Bedrock too: it renders an AWS
+    region field (in place of the API-key field) when Bedrock is selected,
+    requires it client-side before advancing, and the create endpoint
+    rejects a Bedrock request missing `aws_region`. Its Bedrock model list
+    is sourced from the shared catalog (not hardcoded), so it can't drift.
+  - Review hardening (#205): the event-stream decoder bounds a frame's
+    total length before allocating (rejects a hostile prelude claiming ~GB
+    → DoS guard); `forge init` egress derivation adds
+    `bedrock-runtime.<region>.amazonaws.com` so a scaffolded agent isn't
+    blocked at `forge run`; default model ids are US inference-profile ids
+    (`us.` prefix) since most models are no longer on-demand-invokable;
+    `model.aws_region` is format-validated and empty `model.name` is a
+    bedrock error (it is the URL path segment); the region requirement is
+    enforced at the shared `scaffold()` choke point.
+
 ## v0.17.1 — 2026-07-14
 
 Tools & platform-governance point release: a `web_fetch` builtin (read a

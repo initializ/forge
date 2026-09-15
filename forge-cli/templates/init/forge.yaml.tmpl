@@ -12,6 +12,9 @@ model:
 {{- if .OrganizationID}}
   organization_id: {{.OrganizationID}}
 {{- end}}
+{{- if .AWSRegion}}
+  aws_region: {{.AWSRegion}}
+{{- end}}
 {{- if .ModelBaseURL}}
   base_url: {{.ModelBaseURL}}
 {{- end}}

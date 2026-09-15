@@ -78,6 +78,7 @@ func runUI(cmd *cobra.Command, args []string) error {
 			APIKey:         opts.APIKey,
 			AuthMethod:     opts.AuthMethod,
 			OrganizationID: opts.OrganizationID,
+			AWSRegion:      opts.AWSRegion,
 			Fallbacks:      fallbacks,
 			Channels:       opts.Channels,
 			BuiltinTools:   opts.BuiltinTools,

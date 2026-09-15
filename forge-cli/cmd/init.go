@@ -35,6 +35,7 @@ type initOptions struct {
 	ModelProvider  string
 	APIKey         string // validated provider key
 	OrganizationID string // OpenAI enterprise organization ID
+	AWSRegion      string // AWS region for provider "bedrock" (model.aws_region)
 	Fallbacks      []tui.FallbackProvider
 	Channels       []string
 	SkillsFile     string
@@ -91,6 +92,7 @@ type templateData struct {
 	ModelProvider  string
 	ModelName      string
 	OrganizationID string
+	AWSRegion      string // rendered as model.aws_region for provider "bedrock"
 	// Model gateway endpoint + outbound auth, injected from settings
 	// (models.gateway, #454). Empty → provider default endpoint / native auth.
 	ModelBaseURL        string
@@ -151,7 +153,7 @@ func init() {
 	initCmd.Flags().StringP("name", "n", "", "agent name")
 	initCmd.Flags().StringP("framework", "f", "", "framework: forge (default), crewai, or langchain")
 	initCmd.Flags().StringP("language", "l", "", "language for crewai/langchain entrypoint (python only)")
-	initCmd.Flags().StringP("model-provider", "m", "", "model provider: openai, anthropic, gemini, ollama, or custom")
+	initCmd.Flags().StringP("model-provider", "m", "", "model provider: openai, anthropic, bedrock, gemini, ollama, or custom")
 	initCmd.Flags().StringSlice("channels", nil, "communication channels (e.g., slack,telegram)")
 	initCmd.Flags().String("from-skills", "", "path to SKILL.md file to parse for tools")
 	initCmd.Flags().String("from-skill-dir", "", "path to a skill folder (SKILL.md + scripts + reference files) to vendor into the new agent")
@@ -162,6 +164,7 @@ func init() {
 	initCmd.Flags().StringSlice("skills", nil, "registry skills to include (e.g., github,weather)")
 	initCmd.Flags().String("api-key", "", "LLM provider API key")
 	initCmd.Flags().String("org-id", "", "OpenAI organization ID (enterprise)")
+	initCmd.Flags().String("aws-region", "", "AWS region for model-provider=bedrock (e.g. us-east-1)")
 	initCmd.Flags().StringSlice("fallbacks", nil, "fallback LLM providers (e.g., openai,gemini)")
 	initCmd.Flags().Bool("force", false, "overwrite existing directory")
 
@@ -271,6 +274,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	opts.Skills, _ = cmd.Flags().GetStringSlice("skills")
 	opts.APIKey, _ = cmd.Flags().GetString("api-key")
 	opts.OrganizationID, _ = cmd.Flags().GetString("org-id")
+	opts.AWSRegion, _ = cmd.Flags().GetString("aws-region")
 	opts.Compression, _ = cmd.Flags().GetBool("compression")
 	fallbackProviders, _ := cmd.Flags().GetStringSlice("fallbacks")
 	for _, p := range fallbackProviders {
@@ -496,6 +500,7 @@ func collectInteractive(opts *initOptions, set coresettings.Settings) error {
 	opts.APIKey = ctx.APIKey
 	opts.AuthMethod = ctx.AuthMethod
 	opts.OrganizationID = ctx.OrganizationID
+	opts.AWSRegion = ctx.AWSRegion
 	opts.Fallbacks = ctx.Fallbacks
 	opts.CustomModel = ctx.CustomModel
 	// Use wizard-selected model name if available
@@ -599,9 +604,16 @@ func collectNonInteractive(opts *initOptions) error {
 
 	// Validate model provider
 	switch opts.ModelProvider {
-	case "openai", "anthropic", "gemini", "ollama", "custom":
+	case "openai", "anthropic", "bedrock", "gemini", "ollama", "custom":
 	default:
-		return fmt.Errorf("invalid model-provider %q: must be openai, anthropic, gemini, ollama, or custom", opts.ModelProvider)
+		return fmt.Errorf("invalid model-provider %q: must be openai, anthropic, bedrock, gemini, ollama, or custom", opts.ModelProvider)
+	}
+
+	// provider bedrock signs with SigV4 for a region-scoped endpoint, so the
+	// region is required (drives host + signature scope, #205). AWS_REGION env
+	// is a runtime safety-net, but the wizard/flag path writes it explicitly.
+	if opts.ModelProvider == "bedrock" && opts.AWSRegion == "" {
+		return fmt.Errorf("model-provider=bedrock requires --aws-region (e.g. us-east-1)")
 	}
 
 	// Validate API key if provided
@@ -835,6 +847,14 @@ func parseSkillsFile(path string) ([]toolEntry, error) {
 
 func scaffold(opts *initOptions) error {
 	normalizeCustomProvider(opts)
+
+	// Bedrock requires a region (drives host + SigV4 scope). Enforce it at
+	// the shared scaffold choke point, not just in collectNonInteractive —
+	// the forge-ui createFunc path reaches scaffold() without going through
+	// the CLI validation. #205 review.
+	if opts.ModelProvider == "bedrock" && strings.TrimSpace(opts.AWSRegion) == "" {
+		return fmt.Errorf("model-provider=bedrock requires an AWS region (--aws-region, e.g. us-east-1)")
+	}
 
 	dir := filepath.Join(".", opts.AgentID)
 	if opts.OutputDir != "" {
@@ -1281,6 +1301,7 @@ func buildTemplateData(opts *initOptions) templateData {
 		Language:       opts.Language,
 		ModelProvider:  opts.ModelProvider,
 		OrganizationID: opts.OrganizationID,
+		AWSRegion:      opts.AWSRegion,
 
 		ModelBaseURL:        opts.ModelBaseURL,
 		ModelAuthScheme:     opts.ModelAuthScheme,
@@ -1376,6 +1397,9 @@ func defaultModelNameForProvider(provider string) string {
 		return "gpt-5.4"
 	case "anthropic":
 		return "claude-sonnet-4-20250514"
+	case "bedrock":
+		// US cross-region inference-profile id — see catalog providers.go.
+		return "us.anthropic.claude-sonnet-4-20250514-v1:0"
 	case "gemini":
 		return "gemini-2.5-flash"
 	case "ollama":

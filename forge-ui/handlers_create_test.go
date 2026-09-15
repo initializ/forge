@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/initializ/forge/forge-core/catalog"
 	"testing"
 )
 
@@ -99,6 +101,118 @@ func TestHandleCreateAgentMissingName(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+// TestHandleCreateAgent_BedrockRequiresRegion covers #205: the native
+// Bedrock provider signs with SigV4 for a region-scoped endpoint, so the
+// server rejects a create request that omits aws_region and accepts one
+// that includes it.
+func TestHandleCreateAgent_BedrockRequiresRegion(t *testing.T) {
+	t.Run("missing region rejected", func(t *testing.T) {
+		srv, _ := setupTestServerWithCreate(t)
+		body, _ := json.Marshal(AgentCreateOptions{
+			Name:          "bedrock-agent",
+			ModelProvider: "bedrock",
+			ModelName:     "anthropic.claude-sonnet-4-20250514-v1:0",
+		})
+		req := httptest.NewRequest(http.MethodPost, "/api/agents", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.handleCreateAgent(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d; body: %s", w.Code, http.StatusBadRequest, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "aws_region") {
+			t.Errorf("expected an aws_region error, got %s", w.Body.String())
+		}
+	})
+
+	t.Run("region present accepted", func(t *testing.T) {
+		srv, _ := setupTestServerWithCreate(t)
+		body, _ := json.Marshal(AgentCreateOptions{
+			Name:          "bedrock-agent",
+			ModelProvider: "bedrock",
+			ModelName:     "anthropic.claude-sonnet-4-20250514-v1:0",
+			AWSRegion:     "us-east-1",
+		})
+		req := httptest.NewRequest(http.MethodPost, "/api/agents", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.handleCreateAgent(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want %d; body: %s", w.Code, http.StatusCreated, w.Body.String())
+		}
+	})
+}
+
+// TestWizardMeta_BedrockPresent pins the Bedrock wizard entry: it appears
+// in the provider list and its model metadata flags NeedsAWSRegion with no
+// API key. #205.
+func TestWizardMeta_BedrockPresent(t *testing.T) {
+	srv, _ := setupTestServerWithCreate(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/wizard/meta", nil)
+	w := httptest.NewRecorder()
+	srv.handleGetWizardMeta(w, req)
+
+	var meta WizardMetadata
+	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+
+	found := false
+	for _, p := range meta.Providers {
+		if p == "bedrock" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected bedrock in providers list")
+	}
+	pm, ok := meta.ProviderModels["bedrock"]
+	if !ok {
+		t.Fatal("expected bedrock in provider_models")
+	}
+	if !pm.NeedsAWSRegion {
+		t.Error("bedrock provider_models must set needs_aws_region")
+	}
+	if pm.NeedsKey {
+		t.Error("bedrock must not need an API key")
+	}
+	if len(pm.APIKey) == 0 || pm.Default == "" {
+		t.Error("bedrock must provide a model list and default")
+	}
+}
+
+// TestWizardMeta_BedrockMatchesCatalog guards against provider-metadata drift
+// (#205 review): the web wizard's Bedrock entry is sourced from the shared
+// forge-core/catalog, so its default + model list must equal the catalog's.
+func TestWizardMeta_BedrockMatchesCatalog(t *testing.T) {
+	srv, _ := setupTestServerWithCreate(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/wizard/meta", nil)
+	w := httptest.NewRecorder()
+	srv.handleGetWizardMeta(w, req)
+
+	var meta WizardMetadata
+	if err := json.NewDecoder(w.Body).Decode(&meta); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	pm := meta.ProviderModels["bedrock"]
+
+	cat, ok := catalog.ProviderByID("bedrock")
+	if !ok {
+		t.Fatal("bedrock missing from catalog")
+	}
+	if pm.Default != cat.DefaultModel {
+		t.Errorf("default drift: ui=%q catalog=%q", pm.Default, cat.DefaultModel)
+	}
+	if len(pm.APIKey) != len(cat.Models) {
+		t.Fatalf("model-count drift: ui=%d catalog=%d", len(pm.APIKey), len(cat.Models))
+	}
+	for i, m := range cat.Models {
+		if pm.APIKey[i].ModelID != m.ModelID || pm.APIKey[i].DisplayName != m.Label {
+			t.Errorf("model[%d] drift: ui=%+v catalog=%+v", i, pm.APIKey[i], m)
+		}
 	}
 }
 

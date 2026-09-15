@@ -58,6 +58,16 @@ func deriveEgressDomains(opts *initOptions, skills []contract.SkillDescriptor) [
 	if d, ok := providerDomains[opts.ModelProvider]; ok {
 		add(d)
 	}
+	// Bedrock's host is region-dependent, so it can't live in the static
+	// providerDomains map — derive it from the region. Without this, a
+	// scaffolded Bedrock agent that also uses a channel/tool/skill/auth
+	// (→ allowlist egress mode) ships a forge.yaml missing its own Converse
+	// host and is blocked at `forge run` (which reads only
+	// cfg.Egress.AllowedDomains). Mirrors security.LLMProviderDomains, which
+	// the build stage already applies. #205 review.
+	if opts.ModelProvider == "bedrock" && opts.AWSRegion != "" {
+		add("bedrock-runtime." + opts.AWSRegion + ".amazonaws.com")
+	}
 	for _, fb := range opts.Fallbacks {
 		if d, ok := providerDomains[fb.Provider]; ok {
 			add(d)

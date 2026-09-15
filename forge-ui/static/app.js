@@ -2673,7 +2673,7 @@ function OptimizerSavingsTab({ data, loading, stats, savings }) {
   const av = T ? T.cost_avoided_usd : 0;
   const sp = T ? T.spent_usd : 0;
   const eff = optimizerEffPct(av, sp);
-  const leverage = sp > 0 ? av / sp : 0;
+  const wouldHave = av + sp; // uncompressed cost = actually-spent + avoided
   const at = hasLog ? rep.all_time : null;
   // Sessions currently live in memory (seen since the optimizer last started) —
   // used only to flag active rows in the durable table with a green dot.
@@ -2705,8 +2705,8 @@ function OptimizerSavingsTab({ data, loading, stats, savings }) {
 
           <div style="background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.18);border-radius:10px;padding:14px 16px;margin-bottom:20px;max-width:720px">
             <div style="font-size:15px">
-              <b>$${av.toFixed(2)}</b> avoided on <b>$${sp.toFixed(2)}</b> spent
-              <span style="opacity:.7">— ${leverage.toFixed(1)}× leverage, ${(eff * 100).toFixed(0)}% effective savings (all-time)</span>
+              <b>${(eff * 100).toFixed(0)}% effective savings</b>
+              <span style="opacity:.75">— this traffic cost <b>$${sp.toFixed(2)}</b> instead of <b>$${wouldHave.toFixed(2)}</b> uncompressed ($${av.toFixed(2)} avoided, all-time)</span>
             </div>
             ${at && html`<${OptimizerCompositionBar} input=${at.avoided_input_usd} cacheWrite=${at.avoided_cache_write_usd} cacheRead=${at.avoided_cache_read_usd} />`}
             ${at && html`<div style="opacity:.6;font-size:11.5px;margin-top:6px">

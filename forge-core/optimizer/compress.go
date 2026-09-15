@@ -10,7 +10,6 @@ import (
 
 	"github.com/initializ/ctxzip"
 	"github.com/initializ/ctxzip/ccr"
-	cztok "github.com/initializ/ctxzip/tokenize"
 
 	"github.com/initializ/forge/forge-core/compress"
 )
@@ -121,18 +120,10 @@ func (c *Compressor) Store() ccr.Store { return c.store }
 // CompressStats summarizes what one Transform did.
 type CompressStats struct {
 	SavedTokens  int `json:"saved_tokens"`
-	TokensBefore int `json:"tokens_before"` // pre-compression tokens of blocks that DID compress
+	TokensBefore int `json:"tokens_before"`
 	TokensAfter  int `json:"tokens_after"`
 	Blocks       int `json:"blocks"`
 	Markers      int `json:"markers"`
-	// EligibleTokens is the pre-compression size of every block the compressor
-	// examined as a candidate (compressible role, past the size gate), whether or
-	// not it shrank — the honest denominator for "savings on compressible bytes".
-	EligibleTokens int `json:"eligible_tokens"`
-	// TotalTokens estimates the whole outbound request (system + tools + all
-	// messages) — the denominator for the diluted "% of everything sent", which
-	// includes the frozen prompt and incompressible content compression can't touch.
-	TotalTokens int `json:"total_tokens"`
 }
 
 // Transform rewrites an Anthropic /v1/messages request body. On any problem it
@@ -157,11 +148,6 @@ func (c *Compressor) Transform(body []byte) ([]byte, CompressStats, error) {
 
 	query := firstUserText(msgs)
 	skipIDs := collectExpandIDs(msgs)
-
-	// Total tokens of the whole outbound request (system + tools + all messages)
-	// — the denominator for the "% of everything sent" view. EligibleTokens
-	// (compressible surface) accumulates per candidate block during compression.
-	st.TotalTokens = cztok.Estimate(string(body))
 
 	// Compress every eligible block from the anchor prefix to the protected
 	// recent tail. We do NOT gate on cache_control position: compressing
@@ -360,13 +346,7 @@ func (c *Compressor) compressText(role, text, name, query string, st *CompressSt
 	opts.CompressRoles = map[string]bool{role: true}
 
 	res, err := ctxzip.Compress([]ctxzip.Message{{Role: role, Content: text, Name: name}}, opts)
-	if err != nil || res == nil {
-		return text, false
-	}
-	// Candidate examined (role + size gates passed) — counts toward the
-	// compressible surface whether or not it actually shrank.
-	st.EligibleTokens += res.TokensBefore
-	if res.SavedTokens() <= 0 {
+	if err != nil || res == nil || res.SavedTokens() <= 0 {
 		return text, false
 	}
 	st.SavedTokens += res.SavedTokens()

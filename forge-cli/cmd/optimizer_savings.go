@@ -116,15 +116,12 @@ func printWindow(label string, w optimizer.WindowTotals) {
 		}
 		return r
 	}
-	// Eligible = compressible surface (all candidate blocks; aggregation applies a
-	// per-record legacy fallback so SavedTokens is a valid numerator). Total uses
-	// its own numerator (TotalSaved) so the two ratios never mix record sets.
-	eligPct := pct(w.SavedTokens, w.EligibleTokens)
-	fmt.Printf("%s %s  %5.1f%% of compressible", label, bar(eligPct/100, 15), eligPct)
-	if w.TotalTokens > 0 {
-		fmt.Printf(" · %.1f%% of all sent", pct(w.TotalSaved, w.TotalTokens))
-	}
-	fmt.Printf("   saved %s tokens   $%.4f\n", commaInt(w.SavedTokens), w.Dollars)
+	// Ratio = saved / cache tokens (billed cache read + write). Compression shrinks
+	// the conversation history Claude Code caches, so this is the share of cached
+	// token volume removed. $ credits the cache-WRITE the dropped content avoided.
+	ratio := pct(w.SavedTokens, w.CacheTokens)
+	fmt.Printf("%s %s  %5.1f%% saved %s / %s (cache read+write)   $%.4f\n",
+		label, bar(ratio/100, 15), ratio, commaInt(w.SavedTokens), commaInt(w.CacheTokens), w.Dollars)
 }
 
 // bar renders a ratio in [0,1] as a filled/empty block bar of the given width.

@@ -17,33 +17,20 @@ import (
 
 // WindowTotals is savings over a time window.
 type WindowTotals struct {
-	SavedTokens    int64   `json:"saved_tokens"`
-	OriginalTokens int64   `json:"original_tokens"` // compressed-blocks-only pre-tokens (legacy)
-	Dollars        float64 `json:"cost_avoided_usd"`
-	// EligibleTokens is the compressible surface (all candidate blocks examined);
-	// TotalTokens is the whole outbound request. Ratios:
-	//   SavedTokens/EligibleTokens = "on compressible bytes" (what compression
-	//     achieves on what it can touch);
-	//   TotalSaved/TotalTokens     = "of everything sent".
-	// TotalSaved is the saved-tokens from ONLY the records that carry TotalTokens,
-	// so the total ratio never mixes new numerators with missing denominators
-	// (which produced >100%). EligibleTokens uses a per-record legacy fallback
-	// (compressed-before) so it covers every record and SavedTokens is a valid
-	// numerator for it.
-	EligibleTokens int64 `json:"eligible_tokens"`
-	TotalTokens    int64 `json:"total_tokens"`
-	TotalSaved     int64 `json:"total_saved"`
+	SavedTokens int64 `json:"saved_tokens"`
+	// CacheTokens is the billed cache read + write for these requests. Compression
+	// shrinks the conversation history that Claude Code caches, so the ratio
+	// SavedTokens/CacheTokens = "% of the cached token volume compression removed"
+	// — an honest denominator (real billed counts, present on every record, no
+	// old/new mixing).
+	CacheTokens int64   `json:"cache_tokens"`
+	Dollars     float64 `json:"cost_avoided_usd"`
 }
 
-func (w *WindowTotals) add(saved, before, eligible, total int64, dollars float64) {
+func (w *WindowTotals) add(saved, cache int64, dollars float64) {
 	w.SavedTokens += saved
-	w.OriginalTokens += before
-	w.EligibleTokens += eligible
+	w.CacheTokens += cache
 	w.Dollars += dollars
-	if total > 0 {
-		w.TotalTokens += total
-		w.TotalSaved += saved
-	}
 }
 
 // ModelSavings is per-model rollup.
@@ -135,22 +122,20 @@ func AggregateUsageLog(path string, pricing *Pricing, now time.Time, maxSessions
 		rep.Records++
 
 		saved := int64(rec.Compression.SavedTokens)
-		before := int64(rec.Compression.TokensBefore)
-		eligible := int64(rec.Compression.EligibleTokens)
-		if eligible == 0 {
-			eligible = before // legacy records: use compressed-before as the surface
-		}
-		total := int64(rec.Compression.TotalTokens) // 0 for legacy → excluded from total%
-		dollars := pricing.CostAvoided(rec.Usage.Model, saved)
+		// Denominator = real billed cache traffic (read + write): the conversation
+		// history compression shrinks. $ credits the cache-WRITE the dropped
+		// content would have incurred (see CacheWriteCostAvoided).
+		cache := int64(rec.Usage.CacheReadInputTokens + rec.Usage.CacheCreationInputTokens)
+		dollars := pricing.CacheWriteCostAvoided(rec.Usage.Model, saved)
 
 		// Windowed dollar summaries (30-day horizon).
 		if !rec.Time.Before(win30) {
-			rep.Last30Days.add(saved, before, eligible, total, dollars)
+			rep.Last30Days.add(saved, cache, dollars)
 			if !rec.Time.Before(win7) {
-				rep.Last7Days.add(saved, before, eligible, total, dollars)
+				rep.Last7Days.add(saved, cache, dollars)
 			}
 			if !rec.Time.Before(startToday) {
-				rep.Today.add(saved, before, eligible, total, dollars)
+				rep.Today.add(saved, cache, dollars)
 			}
 
 			model := rec.Usage.Model

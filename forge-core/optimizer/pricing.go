@@ -121,3 +121,12 @@ func (p *Pricing) For(model string) ModelPrice {
 func (p *Pricing) CostAvoided(model string, savedTokens int64) float64 {
 	return float64(savedTokens) * p.For(model).InputPerMTok / 1_000_000
 }
+
+// CacheWriteCostAvoided values saved tokens at the cache-WRITE rate (~1.25×
+// input): compression drops content that would otherwise be written to (and
+// re-read from) the prompt cache, so the cache-write rate credits the avoided
+// caching of that content. Used for the usage-log savings view, where the saved
+// content is the conversation history that Claude Code caches.
+func (p *Pricing) CacheWriteCostAvoided(model string, savedTokens int64) float64 {
+	return float64(savedTokens) * p.For(model).CacheWritePerMTok / 1_000_000
+}

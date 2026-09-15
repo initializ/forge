@@ -55,13 +55,13 @@ func TestAggregateUsageLog(t *testing.T) {
 	if rep.Records != 5 {
 		t.Fatalf("records = %d, want 5", rep.Records)
 	}
-	// Today = two sess_a rows: saved 19000 / before 28000.
-	if rep.Today.SavedTokens != 19000 || rep.Today.OriginalTokens != 28000 {
+	// Today = two sess_a rows: saved 19000, cache = 2×500 read = 1000.
+	if rep.Today.SavedTokens != 19000 || rep.Today.CacheTokens != 1000 {
 		t.Errorf("today = %+v", rep.Today)
 	}
-	// Today dollars = 19000 * $5/1M = $0.095.
-	if got := rep.Today.Dollars; got < 0.0949 || got > 0.0951 {
-		t.Errorf("today dollars = %f, want ~0.095", got)
+	// Today dollars = cache-write rate = 19000 * ($5 × 1.25)/1M = $0.11875.
+	if got := rep.Today.Dollars; got < 0.1187 || got > 0.1188 {
+		t.Errorf("today dollars = %f, want ~0.11875", got)
 	}
 	// 30d excludes the 40-day-old row: saved 9000+10000+18000+26000 = 63000.
 	if rep.Last30Days.SavedTokens != 63000 {

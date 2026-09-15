@@ -2363,21 +2363,19 @@ function optimizerBar(ratio) {
 
 function OptimizerSavingsRow({ label, w }) {
   const saved = w ? w.saved_tokens : 0;
-  // Eligible = compressible surface (aggregation applies a per-record legacy
-  // fallback, so saved is a valid numerator over eligible_tokens). Total uses its
-  // own numerator (total_saved) so the ratios never mix record sets. Clamp guards
-  // any residual skew from mixed old/new usage-log records.
-  const clamp = r => Math.min(r, 1);
-  const eligRatio = w && w.eligible_tokens > 0 ? clamp(saved / w.eligible_tokens) : 0;
-  const totalRatio = w && w.total_tokens > 0 ? clamp(w.total_saved / w.total_tokens) : null;
+  const cache = w ? w.cache_tokens : 0;
+  // Ratio = saved / cache tokens (billed cache read + write). Compression shrinks
+  // the conversation history Claude Code caches, so this is the share of cached
+  // token volume removed — an honest denominator from real billed counts. $
+  // credits the cache-WRITE the dropped content avoided.
+  const ratio = cache > 0 ? Math.min(saved / cache, 1) : 0;
   return html`
     <div style="font-family:monospace;font-size:13px;line-height:1.9">
       <span style="display:inline-block;width:110px">${label}</span>
-      <span>${optimizerBar(eligRatio)}</span>
-      <span style="display:inline-block;width:64px;text-align:right">${(eligRatio * 100).toFixed(1)}%</span>
-      <span style="opacity:.7"> of compressible</span>
-      ${totalRatio !== null && html`<span style="opacity:.55"> · ${(totalRatio * 100).toFixed(1)}% of sent</span>`}
-      <span style="opacity:.8">  saved ${optimizerCommas(saved)}</span>
+      <span>${optimizerBar(ratio)}</span>
+      <span style="display:inline-block;width:64px;text-align:right">${(ratio * 100).toFixed(1)}%</span>
+      <span style="opacity:.8">  saved ${optimizerCommas(saved)} / ${optimizerCommas(cache)}</span>
+      <span style="opacity:.55"> cache read+write</span>
       <span style="float:right">$${(w ? w.cost_avoided_usd : 0).toFixed(4)}</span>
     </div>`;
 }

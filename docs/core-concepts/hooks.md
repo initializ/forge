@@ -111,9 +111,14 @@ The runner registers `AfterLLMCall` hooks that emit structured audit events for 
 |-------|-------------|
 | `provider` | LLM provider name |
 | `model` | Model identifier |
-| `input_tokens` | Prompt token count |
+| `input_tokens` | Prompt token count. Under Anthropic prompt caching this is the **uncached delta only** — see `total_input_tokens` |
 | `output_tokens` | Completion token count |
+| `cache_read_input_tokens` | Anthropic prompt-cache hit — cached-prefix tokens read this call (omitted when zero / non-Anthropic) |
+| `cache_creation_input_tokens` | Anthropic prompt-cache write — tokens spent seeding the cache (omitted when zero / non-Anthropic) |
+| `total_input_tokens` | `input_tokens` + cache read + creation — the true input consumption; **always present** (bill from this) |
 | `organization_id` | OpenAI Organization ID (when set) |
+
+For the full prompt-caching rationale and the `tokens_unavailable` interaction, see [Token usage](../security/audit-logging.md#token-usage-and-execution-duration).
 
 These events are logged via `slog` at Info level and can be consumed by external log aggregators for cost tracking and compliance.
 

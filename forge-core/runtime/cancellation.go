@@ -38,6 +38,14 @@ const (
 	// cancel, debugging stop, anything else not covered by the more
 	// specific reasons.
 	CancelReasonExternalSignal CancellationReason = "external_signal"
+
+	// CancelReasonKillSwitch is set when an operator trips the agent
+	// kill switch: every in-flight invocation is cancelled via
+	// CancellationRegistry.CancelAll and the workload is then scaled to
+	// zero by the platform. Distinct from external_signal so the
+	// invocation_cancelled audit event attributes the stop to the kill
+	// switch specifically (not a per-task operator cancel).
+	CancelReasonKillSwitch CancellationReason = "kill_switch"
 )
 
 // IsValid reports whether r is one of the documented reason values.
@@ -49,7 +57,8 @@ func (r CancellationReason) IsValid() bool {
 	case CancelReasonWorkflowFailure,
 		CancelReasonCostLimitExceeded,
 		CancelReasonTimeout,
-		CancelReasonExternalSignal:
+		CancelReasonExternalSignal,
+		CancelReasonKillSwitch:
 		return true
 	}
 	return false
@@ -165,6 +174,29 @@ func (r *CancellationRegistry) Cancel(taskID string, reason CancellationReason) 
 	}
 	entry.cancel(&cancelledByOrchestrator{Reason: reason})
 	return true
+}
+
+// CancelAll signals every in-flight invocation with reason and returns the
+// number signalled. This is the kill-switch primitive: the admin/kill handler
+// calls it to abort all active work on the agent at once, before the platform
+// scales the workload to zero.
+//
+// The cancel funcs are snapshotted under the lock and invoked outside it —
+// matching Cancel's contention profile and avoiding any chance of a cancel
+// callback re-entering the registry under the held lock. Each cancelled
+// invocation's own deferred release() then pops its entry as executeTask
+// unwinds; CancelAll does not delete entries itself.
+func (r *CancellationRegistry) CancelAll(reason CancellationReason) int {
+	r.mu.Lock()
+	cancels := make([]context.CancelCauseFunc, 0, len(r.entries))
+	for _, e := range r.entries {
+		cancels = append(cancels, e.cancel)
+	}
+	r.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel(&cancelledByOrchestrator{Reason: reason})
+	}
+	return len(cancels)
 }
 
 // Len returns the number of in-flight registrations. Exposed for

@@ -257,6 +257,7 @@ func derivePromptCacheKey(model string, req *llm.ChatRequest) string {
 // openaiResponse is the OpenAI-specific response format.
 type openaiResponse struct {
 	ID      string `json:"id"`
+	Model   string `json:"model"`
 	Choices []struct {
 		Message struct {
 			Role      string         `json:"role"`
@@ -284,7 +285,8 @@ func (c *OpenAIClient) parseOpenAIResponse(body io.Reader) (*llm.ChatResponse, e
 
 	choice := resp.Choices[0]
 	return &llm.ChatResponse{
-		ID: resp.ID,
+		ID:    resp.ID,
+		Model: resp.Model,
 		Message: llm.ChatMessage{
 			Role:      choice.Message.Role,
 			Content:   choice.Message.Content,

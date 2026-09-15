@@ -19,12 +19,13 @@ var kebabCasePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 var awsRegionPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
 
 // knownModelAuthSchemes is the accepted set for model.auth_scheme (outbound
-// LLM auth). "" / x_api_key / bearer all resolve to the provider-native
-// header; aws_sigv4 (#202) and apikey_header (#302) are the active schemes.
+// LLM auth). "" / x_api_key resolve to the provider-native header; bearer (#455)
+// sends `Authorization: Bearer` (native for openai, replaces x-api-key for
+// anthropic); aws_sigv4 (#202) and apikey_header (#302) are the gateway schemes.
 var knownModelAuthSchemes = map[string]bool{
 	"":                             true,
 	"x_api_key":                    true,
-	"bearer":                       true,
+	llm.AuthSchemeBearer:           true,
 	llm.AuthSchemeAWSSigV4:         true,
 	llm.AuthSchemeAPIKeyHeader:     true,
 	llm.AuthSchemeAPIKeyHeaderOnly: true,
@@ -135,7 +136,7 @@ func ValidateForgeConfig(cfg *types.ForgeConfig) *ValidationResult {
 	}
 	// Only the openai, openai-responses, and anthropic clients honor
 	// auth_scheme; warn if it's set on a provider that will silently ignore it.
-	if s := cfg.Model.AuthScheme; (s == llm.AuthSchemeAWSSigV4 || s == llm.AuthSchemeAPIKeyHeader || s == llm.AuthSchemeAPIKeyHeaderOnly) &&
+	if s := cfg.Model.AuthScheme; (s == llm.AuthSchemeAWSSigV4 || s == llm.AuthSchemeAPIKeyHeader || s == llm.AuthSchemeAPIKeyHeaderOnly || s == llm.AuthSchemeBearer) &&
 		cfg.Model.Provider != "" && cfg.Model.Provider != "openai" &&
 		cfg.Model.Provider != llm.ProviderOpenAIResponses && cfg.Model.Provider != "anthropic" {
 		r.Warnings = append(r.Warnings, fmt.Sprintf("model.auth_scheme %q only affects the openai, openai-responses, and anthropic clients; provider %q ignores it", s, cfg.Model.Provider))

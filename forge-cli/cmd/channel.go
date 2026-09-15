@@ -15,6 +15,7 @@ import (
 	corechannels "github.com/initializ/forge/forge-core/channels"
 	coreruntime "github.com/initializ/forge/forge-core/runtime"
 	"github.com/initializ/forge/forge-core/security"
+	"github.com/initializ/forge/forge-core/settings"
 	"github.com/initializ/forge/forge-plugins/channels/msteams"
 	"github.com/initializ/forge/forge-plugins/channels/slack"
 	"github.com/initializ/forge/forge-plugins/channels/telegram"
@@ -105,6 +106,35 @@ func init() {
 	channelCmd.AddCommand(channelEnableCmd)
 }
 
+// enabledBySettings enforces a settings enablement allowlist (#454): the
+// POSITIVE developer/managed surface for "which <noun>s are offered". When
+// enabled is non-empty, every requested item must be in it or this returns an
+// error naming the enabled set. Empty enabled = unconstrained (nil). Distinct
+// from — and applied before — the policy deny filter: settings decide "is it
+// offered?", policy decides "is it forbidden?".
+func enabledBySettings(noun string, requested, enabled []string) error {
+	if len(enabled) == 0 {
+		return nil
+	}
+	allow := make(map[string]bool, len(enabled))
+	for _, e := range enabled {
+		allow[e] = true
+	}
+	for _, name := range requested {
+		if !allow[name] {
+			return fmt.Errorf("%s %q is not enabled in settings (enabled: %s); see `forge settings`",
+				noun, name, strings.Join(enabled, ", "))
+		}
+	}
+	return nil
+}
+
+// channelsEnabledBySettings gates channel adapters (run --with / channel
+// add|serve). Thin wrapper over enabledBySettings for the "channel" noun.
+func channelsEnabledBySettings(requested, enabled []string) error {
+	return enabledBySettings("channel", requested, enabled)
+}
+
 func runChannelAdd(cmd *cobra.Command, args []string) error {
 	adapter := args[0]
 	if adapter != "slack" && adapter != "telegram" && adapter != "msteams" {
@@ -114,6 +144,18 @@ func runChannelAdd(cmd *cobra.Command, args []string) error {
 	wd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getting working directory: %w", err)
+	}
+
+	// Settings channel enablement (#454): don't scaffold an adapter the
+	// settings don't offer. When channels.enabled is non-empty it is an
+	// allowlist; empty = unconstrained. Same positive-surface gate as
+	// `forge run --with`, applied at scaffold time.
+	set, settingsErr := settings.Load(settings.LoadOptions{WorkingDir: wd})
+	if settingsErr != nil {
+		return fmt.Errorf("loading settings for channel enablement: %w", settingsErr)
+	}
+	if err := channelsEnabledBySettings([]string{adapter}, set.Channels.Enabled); err != nil {
+		return err
 	}
 
 	// 1. Generate {adapter}-config.yaml
@@ -162,6 +204,21 @@ func runChannelServe(cmd *cobra.Command, args []string) error {
 	adapter := args[0]
 	if adapter != "slack" && adapter != "telegram" && adapter != "msteams" {
 		return fmt.Errorf("unsupported adapter: %s (supported: slack, telegram, msteams)", adapter)
+	}
+
+	// Settings channel enablement (#454). `channel serve` is the standalone
+	// runner (one adapter per container under docker-compose / k8s), so it must
+	// honor the same channels.enabled allowlist as `forge run --with` and
+	// `forge channel add` — otherwise a non-enabled adapter could still be
+	// STARTED here, defeating the "adapters that may run" guarantee. Enablement
+	// (is it offered?) precedes the policy deny (is it forbidden?) below.
+	// WorkingDir defaults to cwd, the same dir the channel config loads from.
+	set, settingsErr := settings.Load(settings.LoadOptions{})
+	if settingsErr != nil {
+		return fmt.Errorf("loading settings for channel enablement: %w", settingsErr)
+	}
+	if err := channelsEnabledBySettings([]string{adapter}, set.Channels.Enabled); err != nil {
+		return err
 	}
 
 	// Honor every layer's denied_channels list (issue #90 / FWS-6

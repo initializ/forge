@@ -205,6 +205,16 @@ const (
 	// calls completed before the cancel signal. See issue #88 / FWS-4.
 	AuditInvocationCancelled = "invocation_cancelled"
 
+	// AuditAdminKilled is emitted when the agent kill switch is tripped via
+	// the admin/kill A2A verb. Recorded UNCONDITIONALLY — even when no
+	// invocation was in flight (Fields["cancelled"] == 0) — so a
+	// destructive admin action always has a forensic record in the
+	// tamper-evident chain, with the actor. Fields: caller (verified
+	// email, "" if unauthenticated context), reason, cancelled (count of
+	// in-flight invocations signalled). Each of those invocations also
+	// emits its own invocation_cancelled with reason=kill_switch.
+	AuditAdminKilled = "admin_killed"
+
 	// AuditTaskAdmissionDenied is emitted when the admission middleware
 	// rejects an inbound A2A invocation based on a platform-side quota
 	// / cost-limit decision (issue #201). Carries the platform's
@@ -443,6 +453,32 @@ type AuditEvent struct {
 	EntityID   string `json:"entity_id,omitempty"`
 	EntityType string `json:"entity_type,omitempty"`
 
+	// Agentic-identity promoted columns (agent-identity L1–L4, #444 item 2;
+	// schema promoted in security-next#41). Populated as their source flows
+	// land — all use omitempty so events without a value keep the pre-#444
+	// JSON shape:
+	//   - ActorAgentID / AttestationLevel / DelegationMode are stamped now
+	//     (process-static; see AuditLogger.WithAgentIdentity). DelegationMode
+	//     is agent_own today — the agent acts as its own principal.
+	//   - PrincipalSub / PrincipalIss accompany a delegated DelegationMode and
+	//     are populated by items 3 (chain) / L2 (connected-account, mandate).
+	//     They MUST stay empty under agent_own (a principal there is a phantom).
+	//   - ActorWorkloadID needs the SA-ref source (not parsed from the token).
+	//   - MandateID / GrantRef come from the L2 delegation flows.
+	//   - ChainID / ChainHop come from item 3's ChainContext (X-Agent-Chain-Token).
+	PrincipalSub     string `json:"principal_sub,omitempty"`
+	PrincipalIss     string `json:"principal_iss,omitempty"`
+	DelegationMode   string `json:"delegation_mode,omitempty"`
+	ActorAgentID     string `json:"actor_agent_id,omitempty"`
+	ActorWorkloadID  string `json:"actor_workload_id,omitempty"`
+	AttestationLevel string `json:"attestation_level,omitempty"`
+	MandateID        string `json:"mandate_id,omitempty"`
+	GrantRef         string `json:"grant_ref,omitempty"`
+	ChainID          string `json:"chain_id,omitempty"`
+	// ChainHop is a pointer: hop 0 (chain origin) is meaningful, so it must be
+	// distinguishable from "no chain" (nil → omitted).
+	ChainHop *int `json:"chain_hop,omitempty"`
+
 	// LLM call attribution (llm_call, llm_call_cancelled, invocation_complete).
 	Model    string `json:"model,omitempty"`
 	Provider string `json:"provider,omitempty"`
@@ -454,6 +490,18 @@ type AuditEvent struct {
 	InputTokens       *int `json:"input_tokens,omitempty"`
 	OutputTokens      *int `json:"output_tokens,omitempty"`
 	TokensUnavailable bool `json:"tokens_unavailable,omitempty"`
+
+	// Prompt-cache token breakdown + summed true input (issue #431).
+	// When Anthropic prompt caching is active, input_tokens is only the
+	// uncached delta; cache_read_input_tokens / cache_creation_input_tokens
+	// carry the cached prefix. total_input_tokens = input + cache_read +
+	// cache_creation is emitted whenever input_tokens is, so a consumer
+	// reading it alone (security-next#36's `total_input_tokens ?? input_tokens`
+	// fallback) can't undercount. The two cache fields use omitempty so
+	// non-cached calls and non-Anthropic providers keep the pre-#431 shape.
+	CacheReadInputTokens     *int `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens *int `json:"cache_creation_input_tokens,omitempty"`
+	TotalInputTokens         *int `json:"total_input_tokens,omitempty"`
 
 	// DurationMs is the wall-clock duration in milliseconds. Populated on
 	// llm_call, tool_exec, and invocation_complete events.
@@ -544,6 +592,16 @@ type AuditLogger struct {
 	// See issue #164.
 	tenantEntityID   string
 	tenantEntityType string
+
+	// Static agentic-identity stamp, installed once at startup via
+	// WithAgentIdentity() (#444 item 2). These are process-static today:
+	// actor_agent_id is the agent's own id, attestation_level is derived
+	// from WORKLOAD_IDENTITY_MODE, and delegation_mode is agent_own (the
+	// agent acts as its own principal). Per-request identity (delegated
+	// principals, chain_id/chain_hop) is layered on later by items 3 / L2.
+	agentActorID          string
+	agentAttestationLevel string
+	agentDelegationMode   string
 }
 
 // WithTenancy installs the deployment-time tenancy stamp on the
@@ -611,6 +669,35 @@ func (a *AuditLogger) entityStamp() (entityID, entityType string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.tenantEntityID, a.tenantEntityType
+}
+
+// WithAgentIdentity installs the deployment-time agentic-identity stamp
+// (#444 item 2): the agent's own id (actor_agent_id), the attestation level
+// derived from WORKLOAD_IDENTITY_MODE (attested:placement in k8s_sa mode, else
+// ""), and the delegation mode (agent_own today — the agent acts as its own
+// principal). Empty arguments disable the corresponding field. Called once at
+// runner startup alongside WithEntity. Returns the receiver for fluent
+// construction.
+//
+// Precedence at emit time mirrors WithEntity: an explicit value on the event
+// wins; otherwise this static stamp fills in. Per-request identity fields
+// (principal_sub, chain_id/chain_hop, delegated modes) are NOT set here — they
+// arrive via later items and are set on the event directly.
+func (a *AuditLogger) WithAgentIdentity(actorAgentID, attestationLevel, delegationMode string) *AuditLogger {
+	a.mu.Lock()
+	a.agentActorID = actorAgentID
+	a.agentAttestationLevel = attestationLevel
+	a.agentDelegationMode = delegationMode
+	a.mu.Unlock()
+	return a
+}
+
+// agentIdentityStamp returns the static agentic-identity stamp under lock.
+// Internal — emit paths use this.
+func (a *AuditLogger) agentIdentityStamp() (actorAgentID, attestationLevel, delegationMode string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.agentActorID, a.agentAttestationLevel, a.agentDelegationMode
 }
 
 // NewAuditLogger creates a single-sink AuditLogger wrapping the given
@@ -741,6 +828,31 @@ func (a *AuditLogger) Emit(event AuditEvent) {
 		if event.EntityType == "" {
 			event.EntityType = staticEntityType
 		}
+	}
+	// Deployment-time agentic-identity stamp (#444 item 2). Process-static,
+	// so — like the entity stamp — it has no ctx layer. Explicit values on
+	// the event (e.g. a per-request delegated principal set by a later item)
+	// take precedence.
+	if event.ActorAgentID == "" || event.AttestationLevel == "" || event.DelegationMode == "" {
+		staticActorID, staticAttestation, staticDelegation := a.agentIdentityStamp()
+		if event.ActorAgentID == "" {
+			event.ActorAgentID = staticActorID
+		}
+		if event.AttestationLevel == "" {
+			event.AttestationLevel = staticAttestation
+		}
+		if event.DelegationMode == "" {
+			event.DelegationMode = staticDelegation
+		}
+	}
+	// Phantom-principal invariant: agent_own means the agent acts as its own
+	// principal, so a principal_sub/iss must NOT ride along. Clear defensively
+	// at this choke point so a future item (3 / L2) that starts setting
+	// principal_sub can never emit a phantom principal by pairing it with
+	// agent_own. Harmless today (principal_sub is unset).
+	if event.DelegationMode == DelegationAgentOwn {
+		event.PrincipalSub = ""
+		event.PrincipalIss = ""
 	}
 	// Governance R5 (#212, chain) + R6 (#213, signing) integration.
 	//
@@ -1010,6 +1122,21 @@ type LLMUsage struct {
 	InputTokens  int
 	OutputTokens int
 	TotalTokens  int
+	// Prompt-cache counts (Anthropic). InputTokens is only the uncached
+	// delta when caching is active; these carry the cached prefix so the
+	// emitted total_input_tokens reflects true input consumption instead
+	// of undercounting (issue #431). Zero for providers that fold cached
+	// input into InputTokens.
+	CacheReadInputTokens     int
+	CacheCreationInputTokens int
+}
+
+// TotalInputTokens returns the true input consumption for the call:
+// uncached delta + cache read + cache creation. Downstream cost/usage
+// consumers read this so a cache-heavy call is not undercounted by
+// reading InputTokens (the delta) alone.
+func (u LLMUsage) TotalInputTokens() int {
+	return u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
 }
 
 // EmitLLMCall builds and emits an llm_call (or llm_call_cancelled)
@@ -1041,7 +1168,25 @@ func (a *AuditLogger) EmitLLMCall(ctx context.Context, args LLMCallAuditArgs) {
 	in, out := args.Usage.InputTokens, args.Usage.OutputTokens
 	evt.InputTokens = &in
 	evt.OutputTokens = &out
-	if in == 0 && out == 0 {
+	// Emit total_input_tokens alongside input_tokens ALWAYS (even when it
+	// equals input_tokens, i.e. no caching): security-next#36 reads
+	// `total_input_tokens ?? input_tokens`, so a consistently-present field
+	// keeps that fallback on the fast path and prevents any reader from
+	// undercounting a cache-heavy call by reading the uncached delta alone
+	// (issue #431).
+	totalIn := args.Usage.TotalInputTokens()
+	evt.TotalInputTokens = &totalIn
+	// The cache breakdown is Anthropic-only detail — omitempty keeps the
+	// pre-#431 JSON shape for non-cached / non-Anthropic calls.
+	if cr := args.Usage.CacheReadInputTokens; cr != 0 {
+		evt.CacheReadInputTokens = &cr
+	}
+	if cc := args.Usage.CacheCreationInputTokens; cc != 0 {
+		evt.CacheCreationInputTokens = &cc
+	}
+	// Unavailable only when the provider reported NO usage at all — a
+	// cache-read-only turn (in==0 but cache_read>0) did consume input.
+	if totalIn == 0 && out == 0 {
 		evt.TokensUnavailable = true
 	}
 	d := args.Duration.Milliseconds()

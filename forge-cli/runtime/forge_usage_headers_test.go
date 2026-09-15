@@ -41,6 +41,42 @@ func TestApplyForgeUsageHeaders_StampsAllFields(t *testing.T) {
 	}
 }
 
+func TestApplyForgeUsageHeaders_TokensIn_BillsFromTrueTotalUnderCaching(t *testing.T) {
+	// Issue #431: under Anthropic prompt caching, InputTokens is only the
+	// uncached delta. X-Forge-Tokens-In must carry TotalInputTokens (delta
+	// + cache read + cache creation) so an orchestrator ceiling-checking
+	// against the header can't be fooled into letting a cache-heavy stage
+	// past a cost cap.
+	h := http.Header{}
+	applyForgeUsageHeaders(h, coreruntime.LLMUsageSnapshot{
+		InputTokens:      32,   // summed uncached delta
+		TotalInputTokens: 8032, // delta + 8000 cached prefix
+		OutputTokens:     180,
+		LLMCallCount:     2,
+	})
+	if h.Get(HeaderForgeTokensIn) != "8032" {
+		t.Errorf("X-Forge-Tokens-In = %q, want 8032 (true total incl. cache), not the uncached delta", h.Get(HeaderForgeTokensIn))
+	}
+	if h.Get(HeaderForgeTokensOut) != "180" {
+		t.Errorf("X-Forge-Tokens-Out = %q, want 180", h.Get(HeaderForgeTokensOut))
+	}
+}
+
+func TestApplyForgeUsageHeaders_TokensIn_NeverBelowUncachedDelta(t *testing.T) {
+	// Defensive: a snapshot with TotalInputTokens unpopulated (0) but a
+	// real InputTokens must still report the delta, never a smaller
+	// number — mirrors the `total_input_tokens ?? input_tokens` fallback.
+	h := http.Header{}
+	applyForgeUsageHeaders(h, coreruntime.LLMUsageSnapshot{
+		InputTokens:  450,
+		OutputTokens: 180,
+		LLMCallCount: 1,
+	})
+	if h.Get(HeaderForgeTokensIn) != "450" {
+		t.Errorf("X-Forge-Tokens-In = %q, want 450 (falls back to InputTokens when total is unset)", h.Get(HeaderForgeTokensIn))
+	}
+}
+
 func TestApplyForgeUsageHeaders_NoLLMCalls_StillStampsDuration(t *testing.T) {
 	// Short-circuited invocation (guardrail-failed before LLM dispatch):
 	// orchestrator still wants a wall-clock figure, but token fields

@@ -126,7 +126,7 @@ func (s *UIServer) handleStopAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.pm.Stop(id, agent.Directory); err != nil {
+	if err := s.pm.Stop(id, agent); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}

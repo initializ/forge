@@ -64,6 +64,13 @@ type ChatResponse struct {
 	Message      ChatMessage `json:"message"`
 	Usage        UsageInfo   `json:"usage"`
 	FinishReason string      `json:"finish_reason"`
+	// Model is the model the provider REPORTED generating the response,
+	// parsed from the provider response body when present (Anthropic /
+	// OpenAI both echo "model"). Often identical to the request model but
+	// enterprise routers can substitute a versioned suffix. Surfaced as
+	// the gen_ai.response.model span attribute; empty when the provider
+	// does not report it (the executor falls back to the request model).
+	Model string `json:"model,omitempty"`
 	// Endpoint is the URL the client POSTed to (base URL + provider path).
 	// Set by the provider client so the llm_call audit event can record the
 	// invoked path even when payload capture is off. Internal only (json:"-").
@@ -89,4 +96,23 @@ type UsageInfo struct {
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
 	TotalTokens  int `json:"total_tokens"`
+
+	// Prompt-cache token counts (Anthropic). When prompt caching is
+	// active, the provider's input_tokens is only the UNCACHED delta;
+	// the cached prefix is billed separately as cache_read_input_tokens
+	// (hit, ~10% rate) and cache_creation_input_tokens (write, one-time).
+	// Recording them here lets the audit/usage layer report true input
+	// consumption instead of the delta alone (issue #431). Zero for
+	// providers that fold cached input into InputTokens (OpenAI's
+	// prompt_tokens already includes it) or when caching is off.
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+}
+
+// TotalInputTokens returns the true input consumption: the uncached
+// delta plus cache-read plus cache-creation tokens. For providers whose
+// InputTokens already includes cached input (OpenAI), the cache fields
+// are zero and this equals InputTokens.
+func (u UsageInfo) TotalInputTokens() int {
+	return u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
 }

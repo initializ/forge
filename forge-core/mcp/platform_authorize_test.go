@@ -6,7 +6,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/initializ/forge/forge-core/runtime"
 )
 
 func TestFetchAuthorizeURL(t *testing.T) {
@@ -33,6 +37,33 @@ func TestFetchAuthorizeURL(t *testing.T) {
 		}
 		if gotAuth != "Bearer agent-cred" {
 			t.Errorf("auth header = %q, want Bearer agent-cred", gotAuth)
+		}
+	})
+
+	t.Run("presents workload token when active", func(t *testing.T) {
+		// Per-site wire pin (agent-identity L1, #444, PR #445 review): the
+		// authorize-URL callout also carries X-Workload-Token. The SA token
+		// goes to the PLATFORM (which returns the third-party consent URL),
+		// never to the MCP server.
+		tokPath := filepath.Join(t.TempDir(), "token")
+		if err := os.WriteFile(tokPath, []byte("wl-authz\n"), 0o600); err != nil {
+			t.Fatalf("write token file: %v", err)
+		}
+		t.Setenv(runtime.EnvWorkloadIdentityMode, runtime.WorkloadIdentityModeK8sSA)
+		t.Setenv(runtime.EnvWorkloadTokenPath, tokPath)
+
+		var got string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			got = r.Header.Get(runtime.HeaderWorkloadToken)
+			_ = json.NewEncoder(w).Encode(map[string]any{"authorize_url": "https://idp.example/authorize"})
+		}))
+		defer srv.Close()
+
+		if _, err := FetchAuthorizeURL(context.Background(), srv.Client(), srv.URL, "agent-cred", "mcp.atlassian", "alice@corp.com"); err != nil {
+			t.Fatalf("FetchAuthorizeURL: %v", err)
+		}
+		if got != "wl-authz" {
+			t.Errorf("authorize callout %s = %q, want wl-authz", runtime.HeaderWorkloadToken, got)
 		}
 	})
 

@@ -495,6 +495,63 @@ func TestScaffold_EgressInForgeYAML(t *testing.T) {
 	}
 }
 
+func TestScaffold_ModelGatewayInForgeYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	origDir, _ := os.Getwd()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(origDir) }()
+
+	// With a gateway (settings models.gateway, #454): base_url + auth_scheme +
+	// auth_header_name land in the model block.
+	opts := &initOptions{
+		Name:                "gw-test",
+		AgentID:             "gw-test",
+		Framework:           "forge",
+		ModelProvider:       "anthropic",
+		ModelBaseURL:        "https://gw.corp/v1",
+		ModelAuthScheme:     "apikey_header",
+		ModelAuthHeaderName: "apikey",
+		EnvVars:             map[string]string{},
+		NonInteractive:      true,
+	}
+	if err := scaffold(opts); err != nil {
+		t.Fatalf("scaffold error: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join("gw-test", "forge.yaml"))
+	if err != nil {
+		t.Fatalf("reading forge.yaml: %v", err)
+	}
+	for _, want := range []string{"base_url: https://gw.corp/v1", "auth_scheme: apikey_header", "auth_header_name: apikey"} {
+		if !strings.Contains(string(content), want) {
+			t.Errorf("forge.yaml missing %q:\n%s", want, content)
+		}
+	}
+
+	// Without a gateway: none of those keys appear (provider default endpoint).
+	opts2 := &initOptions{
+		Name:           "nogw-test",
+		AgentID:        "nogw-test",
+		Framework:      "forge",
+		ModelProvider:  "anthropic",
+		EnvVars:        map[string]string{},
+		NonInteractive: true,
+	}
+	if err := scaffold(opts2); err != nil {
+		t.Fatalf("scaffold error: %v", err)
+	}
+	content2, err := os.ReadFile(filepath.Join("nogw-test", "forge.yaml"))
+	if err != nil {
+		t.Fatalf("reading forge.yaml: %v", err)
+	}
+	for _, absent := range []string{"base_url:", "auth_scheme:", "auth_header_name:"} {
+		if strings.Contains(string(content2), absent) {
+			t.Errorf("forge.yaml should omit %q when no gateway is set:\n%s", absent, content2)
+		}
+	}
+}
+
 func TestScaffold_CompressionInForgeYAML(t *testing.T) {
 	tmpDir := t.TempDir()
 	origDir, _ := os.Getwd()

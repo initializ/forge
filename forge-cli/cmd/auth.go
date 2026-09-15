@@ -214,5 +214,7 @@ func init() {
 	authCmd.AddCommand(authShowTokenCmd)
 	authCmd.AddCommand(authMintTokenCmd)
 	authCmd.AddCommand(authSecretYAMLCmd)
+	authCmd.AddCommand(authLoginCmd)
 	authCmd.AddCommand(authLogoutCmd)
+	authCmd.AddCommand(authStatusCmd)
 }

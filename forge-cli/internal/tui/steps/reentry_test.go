@@ -28,7 +28,7 @@ func TestStepInitResetsComplete(t *testing.T) {
 		}
 	})
 	t.Run("provider", func(t *testing.T) {
-		s := NewProviderStep(styles, noKey)
+		s := NewProviderStep(styles, noKey, "", "")
 		s.complete = true
 		s.Init()
 		if s.complete {
@@ -36,7 +36,7 @@ func TestStepInitResetsComplete(t *testing.T) {
 		}
 	})
 	t.Run("channel", func(t *testing.T) {
-		s := NewChannelStep(styles)
+		s := NewChannelStep(styles, nil)
 		s.complete = true
 		s.Init()
 		if s.complete {

@@ -6,9 +6,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/initializ/forge/forge-core/runtime"
 	"github.com/initializ/forge/forge-core/types"
 )
 
@@ -74,6 +77,59 @@ func TestPlatformTokenSource_FetchCacheAndIgnoreRefresh(t *testing.T) {
 	}
 	if *hits != 1 {
 		t.Fatalf("resolver hit %d times for 5 calls — cache broken", *hits)
+	}
+}
+
+// Agent-identity L1 (#444 item 1): when workload identity is active the token
+// fetch carries X-Workload-Token = the projected SA token, so the platform's
+// §19.13 entitlement check can bind the fetch to the agent's workload identity.
+func TestPlatformTokenSource_PresentsWorkloadToken(t *testing.T) {
+	var gotWorkload string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotWorkload = r.Header.Get(runtime.HeaderWorkloadToken)
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "at-1", "expires_in": 3600})
+	}))
+	t.Cleanup(srv.Close)
+
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenPath, []byte("workload-jwt-1\n"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	t.Setenv(runtime.EnvWorkloadIdentityMode, runtime.WorkloadIdentityModeK8sSA)
+	t.Setenv(runtime.EnvWorkloadTokenPath, tokenPath)
+
+	src := newPlatformTokenSource(PlatformSourceConfig{
+		TokenEndpoint: srv.URL, AgentIdentity: "agent-cred-1",
+		Ref: "mcp.atlassian", HTTPClient: srv.Client(),
+	})
+	if _, err := src.Token(context.Background()); err != nil {
+		t.Fatalf("token: %v", err)
+	}
+	if gotWorkload != "workload-jwt-1" {
+		t.Errorf("%s = %q, want workload-jwt-1", runtime.HeaderWorkloadToken, gotWorkload)
+	}
+}
+
+// Without workload identity active, the token fetch must NOT carry the header
+// (self-hosted / non-k8s_sa deploys).
+func TestPlatformTokenSource_OmitsWorkloadTokenWhenInactive(t *testing.T) {
+	var present bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, present = r.Header[http.CanonicalHeaderKey(runtime.HeaderWorkloadToken)]
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "at-1", "expires_in": 3600})
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv(runtime.EnvWorkloadIdentityMode, "") // not a workload-identity deploy
+
+	src := newPlatformTokenSource(PlatformSourceConfig{
+		TokenEndpoint: srv.URL, AgentIdentity: "agent-cred-1",
+		Ref: "mcp.atlassian", HTTPClient: srv.Client(),
+	})
+	if _, err := src.Token(context.Background()); err != nil {
+		t.Fatalf("token: %v", err)
+	}
+	if present {
+		t.Errorf("%s must be omitted when workload identity is inactive", runtime.HeaderWorkloadToken)
 	}
 }
 

@@ -67,6 +67,23 @@ func (s *SingleSelect) Init() tea.Cmd {
 	return nil
 }
 
+// SelectByValue moves the cursor to the item whose Value equals value, so it is
+// the highlighted default when the list first renders. No-op when value is
+// empty or not found. It does NOT confirm the choice (done stays false) — the
+// user still presses enter — so this is a preselect/default, not an auto-submit.
+func (s *SingleSelect) SelectByValue(value string) {
+	if value == "" {
+		return
+	}
+	for i, it := range s.Items {
+		if it.Value == value {
+			s.cursor = i
+			s.adjustOffset()
+			return
+		}
+	}
+}
+
 // maxVisibleItems returns how many items fit in the viewport.
 func (s SingleSelect) maxVisibleItems() int {
 	if s.height <= 0 || len(s.Items) == 0 {

@@ -32,7 +32,19 @@ func applyForgeUsageHeaders(h http.Header, snap coreruntime.LLMUsageSnapshot) {
 		h.Set(HeaderForgeDurationMs, strconv.FormatInt(snap.InvocationDuration.Milliseconds(), 10))
 		return
 	}
-	h.Set(HeaderForgeTokensIn, strconv.Itoa(snap.InputTokens))
+	// Bill-from the TRUE input: uncached delta + Anthropic cache read +
+	// cache creation (issue #431). Under prompt caching snap.InputTokens
+	// is only the uncached delta, so an orchestrator ceiling-checking
+	// against X-Forge-Tokens-In would wildly under-count and let a
+	// cache-heavy stage sail past a cost cap. The max() guard keeps the
+	// header from ever reporting BELOW the uncached delta if a caller
+	// hands us a snapshot with TotalInputTokens unpopulated (mirrors
+	// security-next#36's `total_input_tokens ?? input_tokens` fallback).
+	tokensIn := snap.TotalInputTokens
+	if snap.InputTokens > tokensIn {
+		tokensIn = snap.InputTokens
+	}
+	h.Set(HeaderForgeTokensIn, strconv.Itoa(tokensIn))
 	h.Set(HeaderForgeTokensOut, strconv.Itoa(snap.OutputTokens))
 	h.Set(HeaderForgeDurationMs, strconv.FormatInt(snap.InvocationDuration.Milliseconds(), 10))
 	if snap.PrimaryModel != "" {

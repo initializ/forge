@@ -1,11 +1,21 @@
 package cmd
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/initializ/forge/forge-core/llm/oauth"
+	"github.com/initializ/forge/forge-core/settings"
 )
+
+// isolateUserSettings points the user settings layer at a nonexistent temp file
+// so a test never reads the developer's real ~/.forge/settings.json (which may
+// configure a gateway that would change logout's behavior).
+func isolateUserSettings(t *testing.T) {
+	t.Helper()
+	t.Setenv(settings.EnvUserSettings, filepath.Join(t.TempDir(), "no-settings.json"))
+}
 
 // TestAuthLogout_RemovesCredential writes a fake OAuth credential to an isolated
 // dir and confirms `auth logout` deletes it.
@@ -14,6 +24,7 @@ func TestAuthLogout_RemovesCredential(t *testing.T) {
 	oauth.SetCredentialsDir(dir)
 	t.Cleanup(func() { oauth.SetCredentialsDir("") })
 	t.Setenv("FORGE_PLATFORM_TOKEN", "") // ensure the guard doesn't trip
+	isolateUserSettings(t)
 
 	if err := oauth.SaveCredentials("openai", &oauth.Token{AccessToken: "tok", RefreshToken: "r"}); err != nil {
 		t.Fatalf("SaveCredentials: %v", err)
@@ -40,6 +51,7 @@ func TestAuthLogout_NothingToDo(t *testing.T) {
 	oauth.SetCredentialsDir(t.TempDir())
 	t.Cleanup(func() { oauth.SetCredentialsDir("") })
 	t.Setenv("FORGE_PLATFORM_TOKEN", "")
+	isolateUserSettings(t)
 
 	var out strings.Builder
 	authLogoutCmd.SetOut(&out)

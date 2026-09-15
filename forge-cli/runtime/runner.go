@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/initializ/forge/forge-cli/server"
@@ -48,6 +49,7 @@ import (
 	deferengine "github.com/initializ/forge/forge-core/security/deferpolicy"
 	"github.com/initializ/forge/forge-core/security/intent"
 	"github.com/initializ/forge/forge-core/security/stepup"
+	"github.com/initializ/forge/forge-core/settings"
 	"github.com/initializ/forge/forge-core/tools"
 	"github.com/initializ/forge/forge-core/tools/adapters"
 	"github.com/initializ/forge/forge-core/tools/builtins"
@@ -185,6 +187,7 @@ type Runner struct {
 	standaloneSubjectStore mcp.SubjectTokenStore             // #332 shared per-subject token cache: standalone resolver reads, callback writes; nil unless a standalone type:user server exists
 	taskStore              *a2a.TaskStore                    // shared task store, populated once srv is built; read by defer hook when it fires
 	platformCommandGuard   *coreruntime.PlatformCommandGuard // #238 (ASI02) operator-authored command deny, applied to every tool call; empty when no layer declares denied_command_patterns
+	killed                 atomic.Bool                       // kill switch: set by the admin/kill handler; when true, tasks/send + tasks/sendSubscribe refuse new work (in-flight work is cancelled via cancelRegistry.CancelAll, then the platform scales the workload to zero)
 }
 
 // NewRunner creates a Runner from the given config.
@@ -405,6 +408,11 @@ func (r *Runner) Run(ctx context.Context) error {
 		agentID = r.cfg.Config.AgentID
 	}
 	auditLogger.WithEntity("agent", agentID)
+	// Agentic-identity stamp (#444 item 2): actor_agent_id + attestation_level
+	// (attested:placement in k8s_sa mode) + delegation_mode. agent_own reflects
+	// the current PDP posture — the agent acts as its own principal; delegated
+	// principals + chain fields are layered on by items 3 / L2.
+	auditLogger.WithAgentIdentity(coreruntime.AgentURN(agentID), coreruntime.AttestationLevelForMode(), coreruntime.DelegationAgentOwn)
 
 	// Ed25519 event signing (#213). Signing is opt-in via env:
 	// FORGE_AUDIT_SIGNING_KEY_B64 (PKCS#8 DER base64, or PEM inline)
@@ -628,6 +636,11 @@ func (r *Runner) Run(ctx context.Context) error {
 	var egressProxy *security.EgressProxy
 	var proxyURL string
 	var socksURL string
+	// Separate transport for the OTLP trace exporter — egress-enforced but
+	// NOT audited and NOT otel-wrapped (see the tracing enforcer built in the
+	// egress block below). Stays nil when egress resolution fails, matching
+	// the exporter's default-client fallback.
+	var tracingTransport http.RoundTripper
 	egressToolNames := make([]string, len(r.cfg.Config.Tools))
 	for i, t := range r.cfg.Config.Tools {
 		egressToolNames[i] = t.Name
@@ -736,6 +749,19 @@ func (r *Runner) Run(ctx context.Context) error {
 				Fields:        map[string]any{"domain": domain, "mode": string(egressCfg.Mode)},
 			})
 		}
+		// The OTLP trace exporter gets its OWN enforcer, distinct from the
+		// audited egressClient above. Routing the exporter through the audited
+		// client floods the audit stream: its OnAttempt emits an egress_allowed
+		// event on every request, and the batch exporter exports on a ~5s timer,
+		// so tracing alone produces one egress_allowed per 5s — indefinitely,
+		// because the otelhttp wrap below also traces the exporter's own POST,
+		// which enqueues a span that forces the next export (a self-sustaining
+		// loop that never quiesces even on an idle agent). This enforcer keeps
+		// the allowlist + post-DNS IP guard (so a misconfigured collector host
+		// still can't exfiltrate span content) but has NO OnAttempt hook and is
+		// deliberately NOT otel-wrapped, so exporter traffic is neither audited
+		// nor self-traced.
+		tracingTransport = newTracingExporterTransport(egressCfg.Mode, egressCfg.AllDomains, allowPrivateIPs, allowedPrivateCIDRs)
 		// Phase 3 (#104) — wrap the egress-enforced transport with
 		// otelhttp instrumentation so every outbound HTTP request the
 		// in-process clients (LLM providers, MCP, channels, OAuth)
@@ -853,10 +879,11 @@ func (r *Runner) Run(ctx context.Context) error {
 	// initiative ruling — a misconfigured exporter must never crash
 	// the agent.
 	tracingCfg := tracingCfgEarly
-	var tracingTransport http.RoundTripper
-	if egressClient != nil {
-		tracingTransport = egressClient.Transport
-	}
+	// tracingTransport was built alongside the egress enforcer above — an
+	// egress-enforced but unaudited, non-otel-wrapped RoundTripper (nil when
+	// egress resolution failed, which the exporter treats as "use default
+	// client"). Deliberately NOT egressClient.Transport: that path audits and
+	// self-traces every export, flooding the audit stream every ~5s.
 	tp, tpErr := observability.NewTracerProvider(ctx, tracingCfg, tracingTransport)
 	switch {
 	case errors.Is(tpErr, observability.ErrDisabled):
@@ -1234,6 +1261,10 @@ func (r *Runner) Run(ctx context.Context) error {
 			// Try LLM executor, fall back to stub
 			mc := coreruntime.ResolveModelConfig(r.cfg.Config, envVars, r.cfg.ProviderOverride)
 			if mc != nil {
+				// Overlay the local-dev model gateway from settings (#455) before
+				// building the client: may redirect base_url/auth and inject a
+				// cached gateway token. No-op without a matching settings gateway.
+				r.applyGatewaySettings(ctx, mc)
 				r.modelConfig = mc
 				// Export org ID for skill scripts
 				if mc.Client.OrgID != "" {
@@ -1337,6 +1368,8 @@ func (r *Runner) Run(ctx context.Context) error {
 						Logger:        r.logger,
 						ModelName:     mc.Client.Model,
 						Provider:      mc.Provider,
+						AgentID:       r.cfg.Config.AgentID,
+						AgentVersion:  r.cfg.Config.Version,
 						MaxIterations: 100,
 						CharBudget:    charBudget,
 						FilesDir:      filepath.Join(r.cfg.WorkDir, ".forge", "files"),
@@ -1614,6 +1647,9 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 	// JSON-RPC path goes through the same audit + accumulator wiring as
 	// REST POST /tasks/send. See issue #87 / FWS-3.
 	srv.RegisterHandler("tasks/send", func(ctx context.Context, id any, rawParams json.RawMessage) *a2a.JSONRPCResponse {
+		if r.killed.Load() {
+			return a2a.NewErrorResponse(id, a2a.ErrCodeUnavailable, "agent disabled by kill switch: not accepting new tasks")
+		}
 		var params a2a.SendTaskParams
 		if err := json.Unmarshal(rawParams, &params); err != nil {
 			return a2a.NewErrorResponse(id, a2a.ErrCodeInvalidParams, "invalid params: "+err.Error())
@@ -1659,6 +1695,10 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 
 	// tasks/sendSubscribe — SSE streaming
 	srv.RegisterSSEHandler("tasks/sendSubscribe", func(ctx context.Context, id any, rawParams json.RawMessage, w http.ResponseWriter, flusher http.Flusher) {
+		if r.killed.Load() {
+			server.WriteSSEEvent(w, flusher, "error", a2a.NewErrorResponse(id, a2a.ErrCodeUnavailable, "agent disabled by kill switch: not accepting new tasks")) //nolint:errcheck
+			return
+		}
 		var params a2a.SendTaskParams
 		if err := json.Unmarshal(rawParams, &params); err != nil {
 			server.WriteSSEEvent(w, flusher, "error", a2a.NewErrorResponse(id, a2a.ErrCodeInvalidParams, err.Error())) //nolint:errcheck
@@ -1712,6 +1752,15 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 			if snap.LLMCallCount > 0 {
 				fields["input_tokens_total"] = snap.InputTokens
 				fields["output_tokens_total"] = snap.OutputTokens
+				// True input incl. Anthropic cache read/creation (issue #431);
+				// the cache breakdown is added only when caching was active.
+				fields["total_input_tokens_total"] = snap.TotalInputTokens
+				if snap.CacheReadInputTokens > 0 {
+					fields["cache_read_input_tokens_total"] = snap.CacheReadInputTokens
+				}
+				if snap.CacheCreationInputTokens > 0 {
+					fields["cache_creation_input_tokens_total"] = snap.CacheCreationInputTokens
+				}
 				fields["llm_call_count"] = snap.LLMCallCount
 				if snap.PrimaryModel != "" {
 					fields["model"] = snap.PrimaryModel
@@ -1913,6 +1962,55 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 		// store has so the orchestrator reads the actual outcome.
 		return a2a.NewResponse(id, task)
 	})
+
+	// admin/kill — the agent kill switch. Flips the accepting gate so
+	// tasks/send + tasks/sendSubscribe refuse new work, then cancels
+	// EVERY in-flight invocation via cancelRegistry.CancelAll. Each
+	// cancelled invocation emits its own invocation_cancelled audit
+	// event with reason=kill_switch. The platform (agent-builder) calls
+	// this over the in-cluster A2A channel, then scales the workload to
+	// zero regardless of the outcome here.
+	//
+	// Auth: the server-wide AuthMiddleware already gates every JSON-RPC
+	// method, so only an authenticated caller reaches this handler; the
+	// primary access control is agent-builder's admin-RBAC on the
+	// /kill endpoint. TODO(kill-switch hardening): additionally restrict
+	// to the platform/agent-runtime identity via the verified role claim.
+	// Idempotent: a second kill just re-signals an empty registry (0).
+	srv.RegisterHandler("admin/kill", func(ctx context.Context, id any, rawParams json.RawMessage) *a2a.JSONRPCResponse {
+		var params struct {
+			Reason string `json:"reason"`
+		}
+		_ = json.Unmarshal(rawParams, &params) // reason optional; body may be empty
+		reason := coreruntime.CancellationReason(params.Reason)
+		if reason == "" {
+			reason = coreruntime.CancelReasonKillSwitch
+		}
+		r.killed.Store(true)
+		cancelled := r.cancelRegistry.CancelAll(reason)
+		caller := ""
+		if idn := auth.IdentityFromContext(ctx); idn != nil {
+			caller = idn.Email
+		}
+		// Record the kill in the tamper-evident audit chain UNCONDITIONALLY —
+		// even when nothing was in flight (cancelled==0), so a destructive
+		// admin action never lacks a forensic record + actor. The cancelled
+		// invocations additionally each emit invocation_cancelled(kill_switch).
+		auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
+			Event: coreruntime.AuditAdminKilled,
+			Fields: map[string]any{
+				"caller":    caller,
+				"reason":    string(reason),
+				"cancelled": cancelled,
+			},
+		})
+		r.logger.Info("admin/kill", map[string]any{
+			"cancelled": cancelled,
+			"reason":    string(reason),
+			"caller":    caller,
+		})
+		return a2a.NewResponse(id, map[string]any{"killed": true, "cancelled": cancelled})
+	})
 }
 
 // registerInvocationSeq exposes this invocation's sequence counter by
@@ -1997,6 +2095,15 @@ func (r *Runner) executeTask(
 		if snap.LLMCallCount > 0 {
 			fields["input_tokens_total"] = snap.InputTokens
 			fields["output_tokens_total"] = snap.OutputTokens
+			// True input incl. Anthropic cache read/creation (issue #431);
+			// the cache breakdown is added only when caching was active.
+			fields["total_input_tokens_total"] = snap.TotalInputTokens
+			if snap.CacheReadInputTokens > 0 {
+				fields["cache_read_input_tokens_total"] = snap.CacheReadInputTokens
+			}
+			if snap.CacheCreationInputTokens > 0 {
+				fields["cache_creation_input_tokens_total"] = snap.CacheCreationInputTokens
+			}
 			fields["llm_call_count"] = snap.LLMCallCount
 			if snap.PrimaryModel != "" {
 				fields["model"] = snap.PrimaryModel
@@ -2164,6 +2271,10 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 
 	// POST /tasks/send — synchronous REST endpoint
 	srv.RegisterHTTPHandler("POST /tasks/send", func(w http.ResponseWriter, req *http.Request) {
+		if r.killed.Load() {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "agent disabled by kill switch: not accepting new tasks"})
+			return
+		}
 		var body restTaskRequest
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body: " + err.Error()})
@@ -2217,6 +2328,10 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 
 	// POST /tasks/sendSubscribe — SSE streaming REST endpoint
 	srv.RegisterHTTPHandler("POST /tasks/sendSubscribe", func(w http.ResponseWriter, req *http.Request) {
+		if r.killed.Load() {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "agent disabled by kill switch: not accepting new tasks"})
+			return
+		}
 		flusher, ok := w.(http.Flusher)
 		if !ok {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming not supported"})
@@ -2286,6 +2401,15 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 			if snap.LLMCallCount > 0 {
 				fields["input_tokens_total"] = snap.InputTokens
 				fields["output_tokens_total"] = snap.OutputTokens
+				// True input incl. Anthropic cache read/creation (issue #431);
+				// the cache breakdown is added only when caching was active.
+				fields["total_input_tokens_total"] = snap.TotalInputTokens
+				if snap.CacheReadInputTokens > 0 {
+					fields["cache_read_input_tokens_total"] = snap.CacheReadInputTokens
+				}
+				if snap.CacheCreationInputTokens > 0 {
+					fields["cache_creation_input_tokens_total"] = snap.CacheCreationInputTokens
+				}
 				fields["llm_call_count"] = snap.LLMCallCount
 				if snap.PrimaryModel != "" {
 					fields["model"] = snap.PrimaryModel
@@ -2686,6 +2810,11 @@ func (r *Runner) registerAuditHooks(hooks *coreruntime.HookRegistry, auditLogger
 			usage.InputTokens = hctx.Response.Usage.InputTokens
 			usage.OutputTokens = hctx.Response.Usage.OutputTokens
 			usage.TotalTokens = hctx.Response.Usage.TotalTokens
+			// Carry Anthropic prompt-cache counts through so the llm_call
+			// event emits cache_read/creation + a summed total_input_tokens
+			// instead of undercounting to the uncached delta (issue #431).
+			usage.CacheReadInputTokens = hctx.Response.Usage.CacheReadInputTokens
+			usage.CacheCreationInputTokens = hctx.Response.Usage.CacheCreationInputTokens
 			requestID = hctx.Response.ID
 		}
 		// FWS-8 payload-capture surfaces. Fields stays nil in the
@@ -2934,6 +3063,110 @@ func (r *Runner) registerPlatformCommandGuardHook(hooks *coreruntime.HookRegistr
 		}
 		return fmt.Errorf("platform policy: %s", msg)
 	})
+}
+
+// applyGatewaySettings overlays the local-dev model gateway from settings (#455)
+// onto the resolved model config and, when the matching gateway declares an
+// api_key_helper, injects the cached gateway token as the model credential.
+//
+// It is deliberately provider-scoped and non-fatal:
+//   - No gateway matches the resolved provider → no-op (native auth untouched).
+//     A checked-in forge.yaml therefore runs unchanged on the server (no local
+//     settings) and a provider with no matching gateway runs natively locally.
+//   - api_key_helper set but no cached token → warn and proceed (the managed
+//     login gate, or a manual `forge auth login`, acquires the token; build-time
+//     injection only READS the cache).
+//   - resolved model outside a managed available_models lock → warn only;
+//     runtime model-deny remains a server-side platform-policy concern (#454).
+func (r *Runner) applyGatewaySettings(ctx context.Context, mc *coreruntime.ModelConfig) {
+	if mc == nil {
+		return
+	}
+	layers, err := settings.LoadAllLayers(settings.LoadOptions{WorkingDir: r.cfg.WorkDir})
+	if err != nil {
+		r.logger.Warn("loading settings for gateway overlay", map[string]any{"error": err.Error()})
+		return
+	}
+	set := settings.Resolve(layers)
+
+	r.warnIfModelNotInManagedLock(layers, set, mc)
+
+	// Resolve the gateway from TRUSTED layers only. The checked-in project
+	// .forge/settings.json is excluded so a hostile cloned repo cannot redirect
+	// base_url (exfiltrating the native key) or configure an api_key_helper
+	// (host command execution). See PR #464 review (HIGH #1/#2).
+	trusted := settings.Resolve(settings.TrustedGatewayLayers(layers))
+	gw := trusted.Models.GatewayForProvider(mc.Provider)
+	if gw == nil {
+		return // no matching gateway → leave native auth in place
+	}
+
+	// Overlay endpoint fields (override-when-set): a local gateway redirects the
+	// dev's native forge.yaml endpoint through the corporate gateway.
+	if gw.BaseURL != "" {
+		mc.Client.BaseURL = gw.BaseURL
+	}
+	if gw.AuthScheme != "" {
+		mc.Client.AuthScheme = gw.AuthScheme
+	}
+	if gw.AuthHeaderName != "" {
+		mc.Client.AuthHeaderName = gw.AuthHeaderName
+	}
+
+	// Credential routing. Helper configured → ensure a FRESH token; otherwise the
+	// native APIKey resolved by ResolveModelConfig stays. (A future OAuth branch
+	// belongs here and must be openai-only — never the anthropic public URL; not
+	// implemented in this slice.)
+	if gw.APIKeyHelper == "" {
+		return
+	}
+	// EnsureGatewayToken returns the cached token when it is still valid, else
+	// re-runs the helper (auto-login on expiry) — so an EXPIRED token is never
+	// injected into the request (which the gateway would 401). This is the
+	// universal refresh path for both managed and user layers; the managed login
+	// gate (root PersistentPreRunE) is the eager, fail-early variant for managed.
+	//
+	// NOTE: unlike the cache-only overlay before it, this site now EXECS the
+	// helper (on expiry). That is trust-safe: `gw` is resolved from
+	// TrustedGatewayLayers above, so the checked-in project .forge/settings.json
+	// can never supply the command — same trust scope as `forge auth login`.
+	// Deliberately NOT guarded by deniedInAgentRuntime (which blocks the operator
+	// `auth login`/`logout` commands inside a sandbox): a DEPLOYED runtime
+	// legitimately re-acquires its OWN model credential here via a non-interactive
+	// (e.g. client_credentials) managed helper. An interactive helper in a
+	// headless runtime simply fails → the warn-and-proceed path below.
+	tok, err := EnsureGatewayToken(ctx, gw.APIKeyHelper, gw.Env)
+	if err != nil {
+		r.logger.Warn("gateway login failed; run 'forge auth login' (proceeding without a gateway token)",
+			map[string]any{"provider": mc.Provider, "error": err.Error()})
+		return
+	}
+	if tok != nil && tok.AccessToken != "" {
+		mc.Client.APIKey = tok.AccessToken
+	}
+}
+
+// warnIfModelNotInManagedLock emits a one-line, non-fatal heads-up when a
+// MANAGED available_models lock is in effect and the resolved provider/model is
+// not on it. It never rejects — enforcement stays server-side (#454).
+func (r *Runner) warnIfModelNotInManagedLock(layers []settings.Layer, set settings.Settings, mc *coreruntime.ModelConfig) {
+	managed := settings.ManagedLayer(layers)
+	if managed == nil || !managed.ManagedLock {
+		return
+	}
+	allow := set.Models.AvailableModels
+	model := mc.Client.Model
+	if len(allow) == 0 || model == "" {
+		return
+	}
+	full := mc.Provider + "/" + model
+	for _, a := range allow {
+		if a == full || a == model {
+			return
+		}
+	}
+	r.logger.Warn("resolved model is not in your org's managed available_models; running with native auth",
+		map[string]any{"provider": mc.Provider, "model": model, "available_models": allow})
 }
 
 // buildLLMClient creates the LLM client from the resolved model config.

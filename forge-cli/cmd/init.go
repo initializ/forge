@@ -19,6 +19,7 @@ import (
 	"github.com/initializ/forge/forge-cli/templates"
 	"github.com/initializ/forge/forge-core/llm/oauth"
 	"github.com/initializ/forge/forge-core/secrets"
+	coresettings "github.com/initializ/forge/forge-core/settings"
 	"github.com/initializ/forge/forge-core/tools/builtins"
 	"github.com/initializ/forge/forge-core/util"
 	"github.com/initializ/forge/forge-skills/contract"
@@ -52,8 +53,13 @@ type initOptions struct {
 	NonInteractive bool   // skip auto-run in non-interactive mode
 	Force          bool   // overwrite existing directory
 	CustomModel    string // custom provider model name
-	AuthMethod     string // "apikey" or "oauth"
-	Compression    bool   // reversible context compression (ctxzip) — compression.enabled in forge.yaml
+	// Model gateway (settings models.gateway, #454): base_url + outbound
+	// auth scheme injected into the scaffolded forge.yaml model block.
+	ModelBaseURL        string
+	ModelAuthScheme     string
+	ModelAuthHeaderName string
+	AuthMethod          string // "apikey" or "oauth"
+	Compression         bool   // reversible context compression (ctxzip) — compression.enabled in forge.yaml
 
 	// OutputDir overrides the scaffold target directory. Empty falls back
 	// to ./<AgentID> (the classic `forge init` layout). `forge try` sets
@@ -87,15 +93,20 @@ type templateData struct {
 	ModelName      string
 	OrganizationID string
 	AWSRegion      string // rendered as model.aws_region for provider "bedrock"
-	Fallbacks      []fallbackTmplData
-	Channels       []string
-	Tools          []toolEntry
-	BuiltinTools   []string
-	SkillEntries   []skillTmplData
-	EgressDomains  []string
-	EnvVars        []envVarEntry
-	HasSecrets     bool
-	Compression    bool
+	// Model gateway endpoint + outbound auth, injected from settings
+	// (models.gateway, #454). Empty → provider default endpoint / native auth.
+	ModelBaseURL        string
+	ModelAuthScheme     string
+	ModelAuthHeaderName string
+	Fallbacks           []fallbackTmplData
+	Channels            []string
+	Tools               []toolEntry
+	BuiltinTools        []string
+	SkillEntries        []skillTmplData
+	EgressDomains       []string
+	EnvVars             []envVarEntry
+	HasSecrets          bool
+	Compression         bool
 
 	// Auth chain rendering (see forge.yaml.tmpl). Pre-rendered as a YAML
 	// fragment because nested maps in the settings block (e.g. claim_map)
@@ -182,6 +193,62 @@ func init() {
 	initCmd.Flags().String("auth-azure-groups-mode", "", "azure_ad groups mode: claim (default) or graph")
 }
 
+// applyInitSettings folds forge settings (#454) into the scaffold options: the
+// model gateway is injected ALWAYS (no wizard step collides with it); in
+// NON-INTERACTIVE mode the default provider/model and builtin tools fill in
+// when the corresponding flag was omitted (so a settings default satisfies the
+// required-flag checks). Interactive-wizard defaulting is a follow-up.
+func applyInitSettings(opts *initOptions, set coresettings.Settings, nonInteractive bool) {
+	// Gateway injects per-field, only when unset — so "flag wins" stays uniform
+	// with the provider/model/builtins guards below. (There is no init gateway
+	// flag today, so these are always empty here; the guard future-proofs
+	// against one being added.)
+	if gw := set.Models.Gateway; gw != nil {
+		if opts.ModelBaseURL == "" {
+			opts.ModelBaseURL = gw.BaseURL
+		}
+		if opts.ModelAuthScheme == "" {
+			opts.ModelAuthScheme = gw.AuthScheme
+		}
+		if opts.ModelAuthHeaderName == "" {
+			opts.ModelAuthHeaderName = gw.AuthHeaderName
+		}
+	}
+	if !nonInteractive {
+		return
+	}
+	if d := set.Models.Default; d != nil {
+		if opts.ModelProvider == "" {
+			opts.ModelProvider = d.Provider
+		}
+		if opts.CustomModel == "" {
+			opts.CustomModel = d.Model
+		}
+	}
+	if len(opts.BuiltinTools) == 0 {
+		opts.BuiltinTools = set.Tools.Builtins.Enabled
+	}
+	if len(opts.Skills) == 0 {
+		opts.Skills = set.Skills.Enabled
+	}
+}
+
+// filterSkillInfos keeps only the skills whose Name is in enabled, preserving
+// order — the wizard then offers just the org's allowed registry skills (#454).
+func filterSkillInfos(all []steps.SkillInfo, enabled []string) []steps.SkillInfo {
+	allow := make(map[string]bool, len(enabled))
+	for _, e := range enabled {
+		allow[e] = true
+	}
+	out := make([]steps.SkillInfo, 0, len(all))
+	for _, s := range all {
+		if allow[s.Name] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func runInit(cmd *cobra.Command, args []string) error {
 	opts := &initOptions{
 		EnvVars: make(map[string]string),
@@ -218,6 +285,22 @@ func runInit(cmd *cobra.Command, args []string) error {
 	opts.NonInteractive = nonInteractive
 	opts.Force, _ = cmd.Flags().GetBool("force")
 
+	// Forge settings (developer surface, #454). Applied here so a configured
+	// default/gateway/builtins flow into the scaffold:
+	//   - models.gateway is injected into the forge.yaml model block ALWAYS
+	//     (no wizard step collides with it).
+	//   - In NON-INTERACTIVE mode, models.default seeds the provider/model and
+	//     tools.builtins.enabled seeds builtins when the corresponding flag was
+	//     omitted — so a settings default satisfies the required-flag checks in
+	//     collectNonInteractive. (Interactive defaulting into the wizard steps
+	//     is a follow-up.)
+	//   - channels.enabled gates opts.Channels after collection (both modes).
+	set, settingsErr := coresettings.Load(coresettings.LoadOptions{})
+	if settingsErr != nil {
+		return fmt.Errorf("loading settings: %w", settingsErr)
+	}
+	applyInitSettings(opts, set, nonInteractive)
+
 	// Auth chain flags.
 	authMode, _ := cmd.Flags().GetString("auth")
 	if authMode != "" {
@@ -239,9 +322,35 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if nonInteractive {
 		err = collectNonInteractive(opts)
 	} else {
-		err = collectInteractive(opts)
+		err = collectInteractive(opts, set)
 	}
 	if err != nil {
+		return err
+	}
+
+	// Enforce channels.enabled on the collected channel set (#454), same gate
+	// as `forge run --with` / `forge channel add/serve` — settings decide
+	// "is it offered?" before policy's "is it forbidden?".
+	//
+	// NOTE: in INTERACTIVE mode this is a deliberate LATE failure — the wizard
+	// does not yet filter its channel options by channels.enabled (that's part
+	// of the deferred interactive-wizard-defaulting follow-up), so a user can
+	// pick a disabled channel and only hit this error at the end. Non-interactive
+	// --channels fails immediately. Filtering the wizard options will move this
+	// earlier for interactive mode.
+	if err := channelsEnabledBySettings(opts.Channels, set.Channels.Enabled); err != nil {
+		return err
+	}
+	// skills.enabled gates the selected REGISTRY skills (#454). Non-interactive
+	// --skills fails immediately; interactive picks are validated here too (the
+	// wizard also filters its skill options by the allowlist below).
+	//
+	// Scope: opts.Skills holds registry-skill names only. Custom skill imports
+	// (--from-skills / --from-skill-dir) populate opts.SkillsFile / opts.SkillDir
+	// (→ opts.Tools), NOT opts.Skills, and are DELIBERATELY not gated here —
+	// skills.enabled is a developer-surface registry-selection default, not a
+	// hard skill boundary. Forbidding skills fleet-wide is platform policy's job.
+	if err := enabledBySettings("skill", opts.Skills, set.Skills.Enabled); err != nil {
 		return err
 	}
 
@@ -260,7 +369,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	return scaffold(opts)
 }
 
-func collectInteractive(opts *initOptions) error {
+func collectInteractive(opts *initOptions, set coresettings.Settings) error {
 	// Detect theme
 	theme := tui.DetectTheme(themeOverride)
 	styles := tui.NewStyleSet(theme)
@@ -285,6 +394,12 @@ func collectInteractive(opts *initOptions) error {
 				})
 			}
 		}
+	}
+	// Settings skills.enabled (#454): filter the wizard's skill options to the
+	// org's allowlist so a disabled skill can't be picked (the interactive
+	// counterpart to the skills gate + models/channels wizard defaulting).
+	if len(set.Skills.Enabled) > 0 {
+		skillInfos = filterSkillInfos(skillInfos, set.Skills.Enabled)
 	}
 
 	// Build the egress derivation callback (avoids circular import).
@@ -334,11 +449,18 @@ func collectInteractive(opts *initOptions) error {
 	// ordering, the egress list would miss auth hosts and a Forge instance
 	// could fail at runtime because its OIDC discovery or STS call gets
 	// blocked by the very allowlist the wizard just rendered.
+	// Settings models.default (#454): pre-highlight the provider (and, where a
+	// model-selector phase applies, the model) in the wizard.
+	var defProvider, defModel string
+	if d := set.Models.Default; d != nil {
+		defProvider, defModel = d.Provider, d.Model
+	}
+
 	wizardSteps := []tui.Step{
 		steps.NewNameStep(styles, opts.Name),
-		steps.NewProviderStep(styles, validateKeyFn, oauthFlowFn),
+		steps.NewProviderStep(styles, validateKeyFn, defProvider, defModel, oauthFlowFn),
 		steps.NewFallbackStep(styles, validateKeyFn),
-		steps.NewChannelStep(styles),
+		steps.NewChannelStep(styles, set.Channels.Enabled),
 		steps.NewWebSearchStep(styles, validateWebSearchKeyFn),
 		steps.NewSkillsStep(styles, skillInfos),
 		steps.NewCompressionStep(styles),
@@ -1180,10 +1302,15 @@ func buildTemplateData(opts *initOptions) templateData {
 		ModelProvider:  opts.ModelProvider,
 		OrganizationID: opts.OrganizationID,
 		AWSRegion:      opts.AWSRegion,
-		Channels:       opts.Channels,
-		Tools:          opts.Tools,
-		BuiltinTools:   opts.BuiltinTools,
-		Compression:    opts.Compression,
+
+		ModelBaseURL:        opts.ModelBaseURL,
+		ModelAuthScheme:     opts.ModelAuthScheme,
+		ModelAuthHeaderName: opts.ModelAuthHeaderName,
+
+		Channels:     opts.Channels,
+		Tools:        opts.Tools,
+		BuiltinTools: opts.BuiltinTools,
+		Compression:  opts.Compression,
 	}
 
 	// Set entrypoint based on framework (only for subprocess-based frameworks)

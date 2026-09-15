@@ -159,8 +159,16 @@ func (c *AnthropicClient) ChatStream(ctx context.Context, req *llm.ChatRequest) 
 
 func (c *AnthropicClient) setHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("anthropic-version", "2023-06-01")
-	// The native x-api-key header is suppressed for two schemes:
+	// The `anthropic-version` header is the DIRECT Anthropic API convention. A
+	// gateway that takes a Bearer token (auth_scheme=bearer) is not the direct
+	// API — e.g. a Kong/OIDC route in front of Bedrock, which carries the
+	// version in the request BODY (`anthropic_version`) and rejects the header
+	// (observed: a 401 at the customer gateway). Omit it in that gateway mode
+	// (#455); every other scheme keeps the direct-API header.
+	if c.authScheme != llm.AuthSchemeBearer {
+		req.Header.Set("anthropic-version", "2023-06-01")
+	}
+	// The native x-api-key header is suppressed for three schemes:
 	//   - aws_sigv4 (#202): the SigV4 transport writes Authorization
 	//     instead; a stray x-api-key would join the signed-headers set
 	//     and confuse the upstream verifier.
@@ -168,8 +176,18 @@ func (c *AnthropicClient) setHeaders(req *http.Request) {
 	//     the real upstream credential; sending Forge's gateway key as
 	//     x-api-key would reach the provider and 401 (or block a Kong
 	//     `add`-header injection).
+	//   - bearer (#455): an IdP gateway (e.g. Kong OIDC in front of
+	//     Bedrock/Claude) validates `Authorization: Bearer <jwt>`; send the
+	//     token there and suppress x-api-key.
 	// Every other scheme (including apikey_header) keeps the native header.
-	if c.authScheme != llm.AuthSchemeAWSSigV4 && c.authScheme != llm.AuthSchemeAPIKeyHeaderOnly {
+	switch c.authScheme {
+	case llm.AuthSchemeBearer:
+		if c.apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		}
+	case llm.AuthSchemeAWSSigV4, llm.AuthSchemeAPIKeyHeaderOnly:
+		// native header suppressed (transport signs / gateway injects)
+	default:
 		req.Header.Set("x-api-key", c.apiKey)
 	}
 	setGatewayAPIKeyHeader(req, c.authScheme, c.authHeaderName, c.apiKey)
@@ -333,11 +351,20 @@ func (c *AnthropicClient) convertMessage(m llm.ChatMessage) anthropicMessage {
 // Anthropic-specific response types.
 type anthropicResponse struct {
 	ID         string                  `json:"id"`
+	Model      string                  `json:"model"`
 	Content    []anthropicContentBlock `json:"content"`
 	StopReason string                  `json:"stop_reason"`
 	Usage      struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
+		// Prompt-cache counts. Under the cache_control breakpoints set in
+		// buildAnthropicRequest, input_tokens is only the uncached delta;
+		// the cached prefix is billed here — cache_read on a hit, and
+		// cache_creation on the write that seeds it. Dropping these
+		// undercounts real input by orders of magnitude on cache-heavy
+		// runs (issue #431).
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 	} `json:"usage"`
 }
 
@@ -375,11 +402,19 @@ func (c *AnthropicClient) parseAnthropicResponse(body io.Reader) (*llm.ChatRespo
 
 	return &llm.ChatResponse{
 		ID:      resp.ID,
+		Model:   resp.Model,
 		Message: msg,
 		Usage: llm.UsageInfo{
-			InputTokens:  resp.Usage.InputTokens,
-			OutputTokens: resp.Usage.OutputTokens,
-			TotalTokens:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			InputTokens:              resp.Usage.InputTokens,
+			OutputTokens:             resp.Usage.OutputTokens,
+			CacheReadInputTokens:     resp.Usage.CacheReadInputTokens,
+			CacheCreationInputTokens: resp.Usage.CacheCreationInputTokens,
+			// True total: uncached delta + cache read + cache creation +
+			// output. Under caching the old input+output sum undercounted
+			// (issue #431); this mirrors OpenAI, whose prompt_tokens
+			// already folds cached input into the total.
+			TotalTokens: resp.Usage.InputTokens + resp.Usage.CacheReadInputTokens +
+				resp.Usage.CacheCreationInputTokens + resp.Usage.OutputTokens,
 		},
 		FinishReason: finishReason,
 	}, nil
@@ -400,6 +435,20 @@ type anthropicContentBlockDelta struct {
 	} `json:"delta"`
 }
 
+// anthropicMessageStart carries the initial usage on a streaming response:
+// Anthropic reports input_tokens (+ prompt-cache read/creation) on the
+// message_start event, while output_tokens accumulates onto message_delta.
+// Without parsing this, the streaming path drops ALL input tokens (#433).
+type anthropicMessageStart struct {
+	Message struct {
+		Usage struct {
+			InputTokens              int `json:"input_tokens"`
+			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		} `json:"usage"`
+	} `json:"message"`
+}
+
 type anthropicMessageDelta struct {
 	Delta struct {
 		StopReason string `json:"stop_reason"`
@@ -413,6 +462,18 @@ func (c *AnthropicClient) readAnthropicStream(r io.Reader, ch chan<- llm.StreamD
 	scanner := bufio.NewScanner(r)
 	var currentToolCall *llm.ToolCall
 	var eventType string
+	// Input + prompt-cache tokens arrive on message_start; output rides
+	// message_delta. Capture the input side here and emit the COMPLETE usage
+	// EXACTLY ONCE, on the terminal message_delta (the one bearing a
+	// stop_reason, which carries the final — cumulative — output_tokens). A
+	// single authoritative UsageInfo is correct whether a consumer overwrites
+	// (result.Usage = *delta.Usage) or SUMS per-delta; the usageEmitted guard
+	// makes that an enforced invariant rather than an assumption about Anthropic
+	// sending exactly one message_delta — were it ever to send incremental
+	// message_delta updates (output_tokens is cumulative there), a summing
+	// consumer would otherwise multi-count input + cache (#433 review).
+	var inputTokens, cacheReadTokens, cacheCreationTokens int
+	var usageEmitted bool
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -428,6 +489,15 @@ func (c *AnthropicClient) readAnthropicStream(r io.Reader, ch chan<- llm.StreamD
 		}
 
 		switch eventType {
+		case "message_start":
+			var ev anthropicMessageStart
+			if json.Unmarshal([]byte(after), &ev) != nil {
+				continue
+			}
+			inputTokens = ev.Message.Usage.InputTokens
+			cacheReadTokens = ev.Message.Usage.CacheReadInputTokens
+			cacheCreationTokens = ev.Message.Usage.CacheCreationInputTokens
+
 		case "content_block_start":
 			var ev anthropicContentBlockStart
 			if json.Unmarshal([]byte(after), &ev) != nil {
@@ -470,16 +540,34 @@ func (c *AnthropicClient) readAnthropicStream(r io.Reader, ch chan<- llm.StreamD
 			if json.Unmarshal([]byte(after), &ev) != nil {
 				continue
 			}
+			// Only the terminal message_delta carries a stop_reason (with the
+			// final cumulative output_tokens). Non-terminal deltas — which
+			// Anthropic does not send today, but might as incremental usage
+			// updates — carry no finish reason and no authoritative usage, so
+			// skip them rather than emit a premature/duplicate Usage.
+			if ev.Delta.StopReason == "" {
+				continue
+			}
 			finishReason := "stop"
 			if ev.Delta.StopReason == "tool_use" {
 				finishReason = "tool_calls"
 			}
-			ch <- llm.StreamDelta{
-				FinishReason: finishReason,
-				Usage: &llm.UsageInfo{
-					OutputTokens: ev.Usage.OutputTokens,
-				},
+			delta := llm.StreamDelta{FinishReason: finishReason}
+			// Attach the one complete Usage here, guarded so it is emitted at
+			// most once across the whole stream.
+			if !usageEmitted {
+				usageEmitted = true
+				delta.Usage = &llm.UsageInfo{
+					InputTokens:              inputTokens,
+					OutputTokens:             ev.Usage.OutputTokens,
+					CacheReadInputTokens:     cacheReadTokens,
+					CacheCreationInputTokens: cacheCreationTokens,
+					// True total incl. cached prefix, matching the
+					// non-streaming path (#431/#432).
+					TotalTokens: inputTokens + cacheReadTokens + cacheCreationTokens + ev.Usage.OutputTokens,
+				}
 			}
+			ch <- delta
 
 		case "message_stop":
 			ch <- llm.StreamDelta{Done: true}

@@ -15,6 +15,15 @@ model:
 {{- if .AWSRegion}}
   aws_region: {{.AWSRegion}}
 {{- end}}
+{{- if .ModelBaseURL}}
+  base_url: {{.ModelBaseURL}}
+{{- end}}
+{{- if .ModelAuthScheme}}
+  auth_scheme: {{.ModelAuthScheme}}
+{{- end}}
+{{- if .ModelAuthHeaderName}}
+  auth_header_name: {{.ModelAuthHeaderName}}
+{{- end}}
 {{- if .Fallbacks}}
   fallbacks:
 {{- range .Fallbacks}}

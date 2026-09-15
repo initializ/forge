@@ -30,6 +30,9 @@ func (m *mockLLMClient) ModelID() string { return "test-model" }
 type mockToolExecutor struct {
 	executeFunc func(ctx context.Context, name string, arguments json.RawMessage) (string, error)
 	toolDefs    []llm.ToolDefinition
+	// mcpNames marks which tool names the executor should treat as
+	// MCP-backed (mirrors the registry's MCPSource marker). nil => none.
+	mcpNames map[string]bool
 }
 
 func (m *mockToolExecutor) Execute(ctx context.Context, name string, arguments json.RawMessage) (string, error) {
@@ -38,6 +41,10 @@ func (m *mockToolExecutor) Execute(ctx context.Context, name string, arguments j
 
 func (m *mockToolExecutor) ToolDefinitions() []llm.ToolDefinition {
 	return m.toolDefs
+}
+
+func (m *mockToolExecutor) IsMCPTool(name string) bool {
+	return m.mcpNames[name]
 }
 
 func TestToolResultTruncation(t *testing.T) {

@@ -42,6 +42,26 @@ returns `ErrTokenRejected`, the chain does NOT try provider B. Otherwise
 an attacker could downgrade by presenting a malformed token of type A and
 hoping to be authenticated as type B.
 
+### Token `typ` discipline (RFC 8725)
+
+Before the chain runs, the middleware enforces explicit token typing on the
+inbound bearer (agent-identity, #444). The platform mints JWTs with a `typ`
+header naming an initializ media type; a token minted for a **non-access**
+purpose must never be usable as a caller's access token. So a bearer whose JWT
+`typ` header is one of:
+
+- `application/vnd.initializ.chain-token+jwt` (agent-to-agent chain token)
+- `application/vnd.initializ.workload-credential+jwt` (projected workload credential)
+- `application/vnd.initializ.mandate+jwt` (delegation mandate)
+
+is **rejected with 401 before any provider is consulted** (audit
+`fail_reason: wrong_token_type`), closing the token-confusion / cross-use gap
+where a token issued for one leg is replayed as an access token. This is a
+**denylist**: `application/vnd.initializ.platform-bearer+jwt`, an absent/unknown
+`typ`, and non-JWT bearers (opaque `static_token`, `aws_sigv4`) all pass through
+to normal verification untouched. The reject is a header-only check and needs no
+signature — a token declaring a non-access purpose is refused regardless.
+
 ### Loopback `static_token` is auto-prepended
 
 Forge writes a random token to `.forge/runtime.token` (mode `0600`) on
@@ -421,7 +441,7 @@ When tracing is enabled (`observability.tracing.enabled: true`), the auth middle
 | `forge.auth.token_kind` | `jwt` / `opaque` / `sigv4` / `iap_jwt` / `empty` — mirrors the audit field |
 | `forge.auth.decision` | `verify` (success) or `fail` (any rejection) |
 | `forge.auth.user_id` / `forge.auth.org_id` | from `Identity` on success |
-| `forge.auth.fail_reason` | `missing_token` / `rejected` / `invalid` / `not_for_me` / `provider_unavailable` / `infrastructure` — only on failure |
+| `forge.auth.fail_reason` | `missing_token` / `rejected` / `invalid` / `not_for_me` / `provider_unavailable` / `wrong_token_type` / `infrastructure` — only on failure |
 
 Span Status is set to `Error` on the failure path so the error-rate dashboards count auth rejections consistently across the rest of the Forge span families. See [Observability — Tracing](../core-concepts/observability-tracing.md#authverify) for the full hierarchy.
 

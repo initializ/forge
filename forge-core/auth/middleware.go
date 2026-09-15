@@ -176,6 +176,28 @@ func Middleware(opts MiddlewareOptions) func(http.Handler) http.Handler {
 				return
 			}
 
+			// RFC 8725 explicit typing (#444 item 5): reject a bearer that
+			// declares a non-access initializ media type (chain token /
+			// workload credential / mandate) BEFORE the provider chain runs —
+			// no provider should ever verify a cross-use token. Gated on
+			// kind == "jwt" so opaque (static/loopback) and sigv4 bearers skip
+			// the check for free; a JWT with no/unknown/platform-bearer typ
+			// passes through to normal verification (denylist, never breaks
+			// existing tokens). The reject needs no signature check.
+			if kind == "jwt" && IsRejectedInboundTokenType(token) {
+				_, span := coreruntime.Tracer().Start(r.Context(), "auth.verify")
+				span.SetAttributes(
+					attribute.String(observability.AttrForgeAuthTokenKind, kind),
+					attribute.String(observability.AttrForgeAuthDecision, "fail"),
+					attribute.String(observability.AttrForgeAuthFailReason, FailReason(ErrWrongTokenType)),
+				)
+				span.SetStatus(codes.Error, classifyAuthFailure(ErrWrongTokenType))
+				span.End()
+				notifyAuth(opts.OnAuth, r, nil, ErrWrongTokenType, kind)
+				writeAuthError(w, classifyAuthFailure(ErrWrongTokenType))
+				return
+			}
+
 			// Open auth.verify around the Provider.Verify call so any
 			// outbound http.client spans the provider opens (JWKS
 			// fetch, AWS STS verify, IAP token introspect, AAD Graph)
@@ -349,6 +371,8 @@ func FailReason(err error) string {
 		return "provider_unavailable"
 	case errors.Is(err, ErrTokenNotForMe):
 		return "not_for_me"
+	case errors.Is(err, ErrWrongTokenType):
+		return "wrong_token_type"
 	default:
 		return "infrastructure"
 	}
@@ -375,6 +399,8 @@ func classifyAuthFailure(err error) string {
 		// the client can be different from "invalid token". This is also
 		// the operator-facing signal in /healthz-style probes.
 		return "auth provider unavailable"
+	case errors.Is(err, ErrWrongTokenType):
+		return "wrong token type"
 	default:
 		return "auth provider error"
 	}

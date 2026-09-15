@@ -212,7 +212,10 @@ threaded into context, stamped on every audit event:
 - `X-Invocation-Caller` — upstream caller identifier
 
 **Response headers** (FWS-3): `X-Forge-Tokens-In`, `X-Forge-Tokens-Out`,
-`X-Forge-Duration-Ms`, `X-Forge-Model`, `X-Forge-Provider`.
+`X-Forge-Duration-Ms`, `X-Forge-Model`, `X-Forge-Provider`. `X-Forge-Tokens-In`
+bills from the TRUE input — summed `total_input_tokens` incl. Anthropic cache
+read/creation (#431), guarded to never fall below the uncached delta — so a
+cache-heavy stage can't slip past an orchestrator cost ceiling-check.
 
 **Agent Card** carries `name`, `description`, `url`, `version`,
 `protocolVersion: "0.3.0"`, `defaultInputModes` /
@@ -276,10 +279,23 @@ Credentials read from `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSI
 
 `model.auth_scheme: apikey_header_only` is the same gateway header but **suppresses** the provider-native header (mirrors `aws_sigv4`), so Forge's gateway key never reaches the provider's `x-api-key` / `Authorization`. Use it when the gateway *injects* the real upstream credential itself — Kong `request-transformer` `add` (which won't overwrite an existing header) is blocked by an additive native header, so the provider 401s on the gateway key. `apikey_header` = gateway *replaces*/passes through; `apikey_header_only` = gateway *adds*. Same validation + `auth_header_name` rules apply.
 
+### `auth_scheme: bearer` (Authorization: Bearer for anthropic)
+
+`model.auth_scheme: bearer` sends the credential as `Authorization: Bearer <key>` and **suppresses** the provider-native header. For `openai` / `openai-responses` that's already the native presentation (no-op); for `anthropic` it REPLACES the native `x-api-key` with a Bearer token — the shape an **IdP gateway** (e.g. a Kong OIDC route in front of Bedrock/Claude) expects when the `api_key_helper` token is an OIDC JWT (#455). For anthropic, bearer ALSO **omits the `anthropic-version` header** — a Bearer gateway isn't the direct Anthropic API (which is x-api-key + `anthropic-version`); a Bedrock-backed gateway carries the version in the request body and 401s the header. Distinct from `apikey_header[_only]`, which put the key in a NON-native custom header (the collision guard forbids `Authorization`/`x-api-key` there). Set in the `anthropic` `setHeaders` (`forge-core/llm/providers/anthropic.go`); `forge validate` accepts it and warns when set on a provider outside openai/openai-responses/anthropic.
+
+### `api_key_helper` — local-dev gateway credential (settings overlay, #455)
+
+For **local development** against a gateway behind an IdP (Okta/Entra), the token is short-lived, so instead of a static key forge runs an **`api_key_helper`** (the Claude Code contract: an external command prints a token to stdout). It is configured in **settings**, not `forge.yaml` — the checked-in `forge.yaml` stays native (`provider`+`auth_scheme`+key) for the server, and `models.gateway`/`models.gateways` in managed/user settings auto-wire the gateway locally. At runtime, before building the client, forge overlays the settings gateway whose `provider` matches the resolved provider (`models.gateways[]` per-provider, or the provider-less `models.gateway` catch-all) onto the primary model config: it swaps `base_url`/`auth_scheme`/`auth_header_name` and, when `api_key_helper` is set, injects a helper-minted token (cached by JWT `exp`; encrypted-or-`0600` under `~/.forge/credentials`, keyed by a hash of the helper) per `auth_scheme`. The gateway's `env` map (e.g. `OKTA_CLIENT_ID`/`OKTA_ISSUER`) is injected into the helper subprocess (last-wins over forge's own env) and is part of the credential cache key (`GatewayCredKey(helper, env)`), so one shared helper parameterized per-provider mints distinct tokens. **No matching gateway → no overlay → native auth** (so `forge.yaml: openai` + an anthropic-only gateway just runs openai natively). **Trust boundary:** because a gateway names a command forge execs (`api_key_helper`) and can redirect `base_url`, gateway resolution excludes the **checked-in project `.forge/settings.json`** (`settings.TrustedGatewayLayers` drops `LayerProject`) — only user, project-local (gitignored), CLI, and managed layers configure a gateway, so a cloned repo can't run a command on your laptop or redirect the native key. The overlay uses `EnsureGatewayToken` — it returns the cached token when valid, else re-runs the helper (**auto-login on expiry**, both managed and user layers), so an expired token is never injected. The **managed** login gate (root pre-run on `run`/`try`/`serve`) is the eager fail-early variant; `forge auth login|logout|status` is the manual path. A model outside a managed `available_models` lock only **warns** (runtime model-deny stays server-side policy). Overlay applies to the **primary model only** (fallbacks deferred). Code: `applyGatewaySettings` (`forge-cli/runtime/runner.go`), `EnsureGatewayToken`/`CachedGatewayToken` (`forge-cli/runtime/gateway_credential.go`), `settings.ModelSettings.GatewayForProvider`, gate in `forge-cli/cmd/gateway_gate.go`. A future OAuth-login mode is **openai-only — never the anthropic public URL**.
+
 Token usage and request IDs are captured per provider at the call site
 and folded into the `llm_call` audit event (FWS-3) and into the
 per-invocation `LLMUsageAccumulator` so the response headers + the
-final `invocation_complete` event carry totals.
+final `invocation_complete` event carry totals. Under Anthropic prompt
+caching the provider's `input_tokens` is only the uncached delta, so the
+parser also captures `cache_read_input_tokens` / `cache_creation_input_tokens`
+and every layer carries a summed `total_input_tokens` (= delta + cache
+read + creation) as the bill-from figure (#431). OpenAI is unaffected —
+its `prompt_tokens` already folds in cached input.
 
 **Read**: `docs/core-concepts/runtime-engine.md`, `forge-core/llm/`.
 
@@ -1163,7 +1179,7 @@ when OTel tracing is enabled (OTel v1 / Phase 4 / #105). Both use
 | `AuditToolExec` | `tool_exec` | Tool execution `phase: start` / `phase: end`; carries `tool`, `args_size`, `result_size`, `duration_ms` |
 | `AuditEgressAllowed` | `egress_allowed` | Outbound request allowed (with domain, mode, source) |
 | `AuditEgressBlocked` | `egress_blocked` | Outbound request blocked |
-| `AuditLLMCall` | `llm_call` | LLM provider call complete; `model`, `provider`, `input_tokens`, `output_tokens`, `duration_ms`, `request_id` |
+| `AuditLLMCall` | `llm_call` | LLM provider call complete; `model`, `provider`, `input_tokens`, `output_tokens`, `total_input_tokens` (always; = input + cache read + creation — bill from this), `cache_read_input_tokens` / `cache_creation_input_tokens` (Anthropic caching only, omitempty), `duration_ms`, `request_id`. Under caching `input_tokens` is only the uncached delta (#431); `tokens_unavailable` keys off total input so a cache-read-only turn isn't misflagged as free |
 | `AuditLLMCallCancelled` | `llm_call_cancelled` | Streaming call aborted mid-flight; partial usage counts |
 | `AuditGuardrail` | `guardrail_check` | Mask / block / warn decision. Fields: `gate` (`input` / `context` / `tool_call` / `output` / `stream` — from library `Result.Gate`), `decision` (`masked` / `warned` / `blocked`), `guardrail`, `category`, `violation_count`, optional `tool`. Opt-in `evidence` (redacted + truncated triggering text) via `FORGE_GUARDRAIL_CAPTURE_EVIDENCE=true`. |
 | `AuditScheduleFire` | `schedule_fire` | Cron task triggered |
@@ -1183,7 +1199,7 @@ when OTel tracing is enabled (OTel v1 / Phase 4 / #105). Both use
 | `context_compressed` | `context_compressed` | Context compression shrank content; `seam` (`tool_output` / `request`), `tool`, `tokens_before` / `tokens_after` / `saved_tokens` + running totals (tokenizer estimates) |
 | `context_expanded` | `context_expanded` | Model retrieved offloaded content via `context_expand`; `hash`, `hit`, `bytes`, producing `tool`, mined `candidates` (≤5, for fleet-wide learning aggregation) + running totals |
 | `context_pattern_suggested` | `context_pattern_suggested` | Learning loop surfaced a keep_patterns candidate (3+ expansions); `pattern`, `expansions`, `tools` |
-| `AuditInvocationComplete` | `invocation_complete` | A2A invocation closed; `duration_ms`, `input_tokens_total`, `output_tokens_total`, `llm_call_count`, `model`, `provider` (FWS-3); with compression enabled also `compression_saved_tokens_total` (realized wire savings, compounds per history resend), `compression_event_saved_tokens`, `compression_count`, `expansion_count` |
+| `AuditInvocationComplete` | `invocation_complete` | A2A invocation closed; `duration_ms`, `input_tokens_total`, `output_tokens_total`, `total_input_tokens_total` (bill-from sum incl. Anthropic cache read/creation, #431), `llm_call_count`, `model`, `provider` (FWS-3); with caching also `cache_read_input_tokens_total` / `cache_creation_input_tokens_total`; with compression enabled also `compression_saved_tokens_total` (realized wire savings, compounds per history resend), `compression_event_saved_tokens`, `compression_count`, `expansion_count` |
 | `AuditInvocationCancelled` | `invocation_cancelled` | A2A invocation cancelled via `tasks/cancel`; classified `reason` + partial token totals (FWS-4) |
 | `AuditTaskAdmissionDenied` | `task_admission_denied` | Inbound `tasks/send` denied by the platform admission middleware (#201; opt-in via `FORGE_ADMISSION_URL` + `FORGE_PLATFORM_TOKEN`); `reason`, `scope`, `window`, `reset_at`, `cached`. Caller sees HTTP 402 Payment Required. |
 | `AuditPolicyLoaded` | `policy_loaded` | One per non-empty policy layer at startup; `layer`, `source`, per-list size counters (FWS-5/6) |

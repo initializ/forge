@@ -6,18 +6,29 @@ var providers = []Provider{
 	{
 		ID:            "openai",
 		Label:         "OpenAI",
-		Description:   "GPT 5.4, GPT 5 Mini, GPT 5 Nano",
+		Description:   "GPT 6 Astra, GPT 5.6 Sol, Terra, Luna",
 		Icon:          "🔷",
 		NeedsAPIKey:   true,
 		SupportsOAuth: true,
 		SupportsOrgID: true,
 		APIKeyEnvVar:  "OPENAI_API_KEY",
-		DefaultModel:  "gpt-5.4",
+		DefaultModel:  "gpt-5.6-terra",
+		// Order is display order. APIKeyOnly marks models the Codex backend
+		// behind ChatGPT sign-in does not serve; see Model.APIKeyOnly.
 		Models: []Model{
-			{Label: "GPT 5.4", ModelID: "gpt-5.4"},
-			{Label: "GPT 5 Mini", ModelID: "gpt-5-mini"},
-			{Label: "GPT 5 Nano", ModelID: "gpt-5-nano"},
-			{Label: "GPT 4.1", ModelID: "gpt-4.1"},
+			{Label: "GPT 6 Astra", ModelID: "gpt-6-astra"},
+			{Label: "GPT 5.6 Sol", ModelID: "gpt-5.6-sol"},
+			{Label: "GPT 5.6 Terra", ModelID: "gpt-5.6-terra"},
+			{Label: "GPT 5.6 Luna", ModelID: "gpt-5.6-luna"},
+			// Retired from Codex ChatGPT sign-in on 2026-08-31 (gpt-5.6-terra
+			// and gpt-5.6-luna are the documented replacements). OpenAI states
+			// the API and API-key Codex are unaffected, so these stay
+			// selectable with a key.
+			{Label: "GPT 5.4", ModelID: "gpt-5.4", APIKeyOnly: true},
+			{Label: "GPT 5 Mini", ModelID: "gpt-5-mini", APIKeyOnly: true},
+			// Nano tiers ship API-only and were never offered in Codex.
+			{Label: "GPT 5 Nano", ModelID: "gpt-5-nano", APIKeyOnly: true},
+			{Label: "GPT 4.1", ModelID: "gpt-4.1", APIKeyOnly: true},
 		},
 	},
 	{

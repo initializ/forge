@@ -850,7 +850,10 @@ func TestBuildTemplateData_DefaultModels(t *testing.T) {
 		provider      string
 		expectedModel string
 	}{
-		{"openai", "gpt-5.4"},
+		// These mirror catalog.Provider.DefaultModel, which
+		// defaultModelNameForProvider now reads from. gpt-5.4 retired from
+		// Codex ChatGPT sign-in on 2026-08-31.
+		{"openai", "gpt-5.6-terra"},
 		{"anthropic", "claude-sonnet-4-20250514"},
 		{"gemini", "gemini-2.5-flash"},
 		{"ollama", "llama3"},

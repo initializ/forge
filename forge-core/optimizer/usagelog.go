@@ -28,19 +28,37 @@ type WindowTotals struct {
 	// on the turn it first appears, plus a compounding CACHE-READ (0.1×) for every
 	// later turn in the session that no longer re-reads it. AvoidedCacheReadTokens
 	// therefore far exceeds SavedTokens (each saved chunk is re-read many turns).
-	AvoidedInputTokens      int64   `json:"avoided_input_tokens"`
-	AvoidedCacheWriteTokens int64   `json:"avoided_cache_write_tokens"`
-	AvoidedCacheReadTokens  int64   `json:"avoided_cache_read_tokens"`
-	Dollars                 float64 `json:"cost_avoided_usd"`
+	AvoidedInputTokens      int64 `json:"avoided_input_tokens"`
+	AvoidedCacheWriteTokens int64 `json:"avoided_cache_write_tokens"`
+	AvoidedCacheReadTokens  int64 `json:"avoided_cache_read_tokens"`
+	// Per-tier avoided dollars (so the UI can show the $ composition), their sum
+	// Dollars, and SpentUSD — what these requests actually cost — so cost-avoided
+	// can be anchored against real spend (the "avoided vs spent" ratio).
+	AvoidedInputUSD      float64 `json:"avoided_input_usd"`
+	AvoidedCacheWriteUSD float64 `json:"avoided_cache_write_usd"`
+	AvoidedCacheReadUSD  float64 `json:"avoided_cache_read_usd"`
+	Dollars              float64 `json:"cost_avoided_usd"`
+	SpentUSD             float64 `json:"spent_usd"`
 }
 
-func (w *WindowTotals) add(saved, billedCacheWrite, avInput, avWrite, avRead int64, dollars float64) {
-	w.SavedTokens += saved
-	w.CacheWriteTokens += billedCacheWrite
-	w.AvoidedInputTokens += avInput
-	w.AvoidedCacheWriteTokens += avWrite
-	w.AvoidedCacheReadTokens += avRead
-	w.Dollars += dollars
+// recordCredit is one request's contribution to a window.
+type recordCredit struct {
+	saved, billedCacheWrite                     int64
+	avInput, avWrite, avRead                    int64
+	avInputUSD, avWriteUSD, avReadUSD, spentUSD float64
+}
+
+func (w *WindowTotals) add(c recordCredit) {
+	w.SavedTokens += c.saved
+	w.CacheWriteTokens += c.billedCacheWrite
+	w.AvoidedInputTokens += c.avInput
+	w.AvoidedCacheWriteTokens += c.avWrite
+	w.AvoidedCacheReadTokens += c.avRead
+	w.AvoidedInputUSD += c.avInputUSD
+	w.AvoidedCacheWriteUSD += c.avWriteUSD
+	w.AvoidedCacheReadUSD += c.avReadUSD
+	w.Dollars += c.avInputUSD + c.avWriteUSD + c.avReadUSD
+	w.SpentUSD += c.spentUSD
 }
 
 // ModelSavings is per-model rollup.
@@ -67,12 +85,28 @@ type SessionSavings struct {
 	CacheReadTokens int64   `json:"cache_read_input_tokens"`
 	SavedTokens     int64   `json:"saved_tokens"`
 	Dollars         float64 `json:"cost_avoided_usd"`
+	SpentUSD        float64 `json:"spent_usd"`
 	FirstSeen       string  `json:"first_seen"`
 	LastSeen        string  `json:"last_seen"`
 }
 
+// ReportTotals is the all-time, durable header tally over every record in the
+// log. It is the single source for the dashboard's header tiles, so the token
+// counts and the dollar figures share one scope (no live-vs-durable mismatch).
+type ReportTotals struct {
+	Requests         int64   `json:"requests"`
+	InputTokens      int64   `json:"input_tokens"`
+	OutputTokens     int64   `json:"output_tokens"`
+	CacheReadTokens  int64   `json:"cache_read_input_tokens"`
+	CacheWriteTokens int64   `json:"cache_write_input_tokens"`
+	SavedTokens      int64   `json:"saved_tokens"`
+	AvoidedUSD       float64 `json:"cost_avoided_usd"`
+	SpentUSD         float64 `json:"spent_usd"`
+}
+
 // UsageReport is the full durable rollup returned by AggregateUsageLog.
 type UsageReport struct {
+	Totals     ReportTotals             `json:"totals"`
 	AllTime    WindowTotals             `json:"all_time"`
 	Today      WindowTotals             `json:"today"`
 	Last7Days  WindowTotals             `json:"last_7_days"`
@@ -158,6 +192,8 @@ func AggregateUsageLog(path string, pricing *Pricing, now time.Time, maxSessions
 		avRead := cumSaved[sid]
 		it := int64(rec.Usage.InputTokens)
 		cw := billedCacheWrite
+		cr := int64(rec.Usage.CacheReadInputTokens)
+		out := int64(rec.Usage.OutputTokens)
 		var avInput, avWrite int64
 		if base := it + cw; base > 0 {
 			avInput = saved * it / base
@@ -165,19 +201,36 @@ func AggregateUsageLog(path string, pricing *Pricing, now time.Time, maxSessions
 		} else {
 			avWrite = saved
 		}
-		dollars := pricing.CostAvoidedBreakdown(rec.Usage.Model, avInput, avWrite, avRead)
+		dIn, dWr, dRd := pricing.AvoidedTiers(rec.Usage.Model, avInput, avWrite, avRead)
+		spent := pricing.SpendUSD(rec.Usage.Model, it, cw, cr, out)
 		cumSaved[sid] += saved
 
-		rep.AllTime.add(saved, billedCacheWrite, avInput, avWrite, avRead, dollars)
+		credit := recordCredit{
+			saved: saved, billedCacheWrite: billedCacheWrite,
+			avInput: avInput, avWrite: avWrite, avRead: avRead,
+			avInputUSD: dIn, avWriteUSD: dWr, avReadUSD: dRd, spentUSD: spent,
+		}
+		dollars := dIn + dWr + dRd
+
+		// All-time header totals (every record, one shared scope for the header).
+		rep.Totals.Requests++
+		rep.Totals.InputTokens += it
+		rep.Totals.OutputTokens += out
+		rep.Totals.CacheReadTokens += cr
+		rep.Totals.CacheWriteTokens += cw
+		rep.Totals.SavedTokens += saved
+		rep.Totals.AvoidedUSD += dollars
+		rep.Totals.SpentUSD += spent
+		rep.AllTime.add(credit)
 
 		// Windowed dollar summaries (30-day horizon).
 		if !rec.Time.Before(win30) {
-			rep.Last30Days.add(saved, billedCacheWrite, avInput, avWrite, avRead, dollars)
+			rep.Last30Days.add(credit)
 			if !rec.Time.Before(win7) {
-				rep.Last7Days.add(saved, billedCacheWrite, avInput, avWrite, avRead, dollars)
+				rep.Last7Days.add(credit)
 			}
 			if !rec.Time.Before(startToday) {
-				rep.Today.add(saved, billedCacheWrite, avInput, avWrite, avRead, dollars)
+				rep.Today.add(credit)
 			}
 
 			model := rec.Usage.Model
@@ -211,6 +264,7 @@ func AggregateUsageLog(path string, pricing *Pricing, now time.Time, maxSessions
 		s.CacheReadTokens += int64(rec.Usage.CacheReadInputTokens)
 		s.SavedTokens += saved
 		s.Dollars += dollars
+		s.SpentUSD += spent
 		if rec.Client != "" {
 			s.Client = rec.Client
 		}

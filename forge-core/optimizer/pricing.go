@@ -122,14 +122,24 @@ func (p *Pricing) CostAvoided(model string, savedTokens int64) float64 {
 	return float64(savedTokens) * p.For(model).InputPerMTok / 1_000_000
 }
 
-// CostAvoidedBreakdown values avoided tokens across the three billing tiers a
-// saved token would otherwise have incurred: uncached INPUT (1×), CACHE-WRITE
-// (~1.25×) the turn it first appears, and CACHE-READ (~0.1×) on every later turn
-// that no longer re-reads it. Callers attribute the token counts (see
-// usagelog.go); this just prices them.
-func (p *Pricing) CostAvoidedBreakdown(model string, inputTokens, cacheWriteTokens, cacheReadTokens int64) float64 {
+// AvoidedTiers prices avoided tokens across the three billing tiers a saved
+// token would otherwise have incurred — uncached INPUT (1×), CACHE-WRITE (~1.25×)
+// the turn it first appears, and CACHE-READ (~0.1×) on every later turn that no
+// longer re-reads it — returning each component separately so callers can show
+// the composition. Callers attribute the token counts (see usagelog.go).
+func (p *Pricing) AvoidedTiers(model string, inputTokens, cacheWriteTokens, cacheReadTokens int64) (input, cacheWrite, cacheRead float64) {
+	mp := p.For(model)
+	return float64(inputTokens) * mp.InputPerMTok / 1_000_000,
+		float64(cacheWriteTokens) * mp.CacheWritePerMTok / 1_000_000,
+		float64(cacheReadTokens) * mp.CacheReadPerMTok / 1_000_000
+}
+
+// SpendUSD prices what a request actually cost across all billed tiers, so the
+// cost-avoided figure can be anchored against real spend (avoided vs spent).
+func (p *Pricing) SpendUSD(model string, inputTokens, cacheWriteTokens, cacheReadTokens, outputTokens int64) float64 {
 	mp := p.For(model)
 	return (float64(inputTokens)*mp.InputPerMTok +
 		float64(cacheWriteTokens)*mp.CacheWritePerMTok +
-		float64(cacheReadTokens)*mp.CacheReadPerMTok) / 1_000_000
+		float64(cacheReadTokens)*mp.CacheReadPerMTok +
+		float64(outputTokens)*mp.OutputPerMTok) / 1_000_000
 }

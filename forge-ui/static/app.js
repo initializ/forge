@@ -2367,29 +2367,29 @@ function optimizerBar(ratio) {
   return '█'.repeat(filled) + '░'.repeat(width - filled);
 }
 
+// effectiveSavings = avoided / (avoided + spent): the share of what this window
+// WOULD have cost that compression removed. Bar and dollar now tell one story.
+function optimizerEffPct(av, sp) {
+  const d = (av || 0) + (sp || 0);
+  return d > 0 ? (av || 0) / d : 0;
+}
+
 function OptimizerSavingsRow({ label, w }) {
-  const saved = w ? w.saved_tokens : 0;
-  const cache = w ? w.cache_write_tokens : 0;
-  // Ratio = saved / cache-write tokens (freshly-cached bytes each turn) — the
-  // share of newly-cached token volume compression removed. The $ is the full
-  // three-tier cost avoided (input 1× + cache-write 1.25× + compounding
-  // cache-read 0.1×), computed server-side in usagelog.go.
-  const ratio = cache > 0 ? Math.min(saved / cache, 1) : 0;
-  const avIn = w ? w.avoided_input_tokens : 0;
-  const avWr = w ? w.avoided_cache_write_tokens : 0;
-  const avRd = w ? w.avoided_cache_read_tokens : 0;
+  const av = w ? w.cost_avoided_usd : 0;
+  const sp = w ? w.spent_usd : 0;
+  const eff = optimizerEffPct(av, sp);
+  const avIn = w ? w.avoided_input_usd : 0;
+  const avWr = w ? w.avoided_cache_write_usd : 0;
+  const avRd = w ? w.avoided_cache_read_usd : 0;
+  const readTok = w ? w.avoided_cache_read_tokens : 0;
   return html`
     <div style="font-family:monospace;font-size:13px;line-height:1.7">
-      <span style="display:inline-block;width:110px">${label}</span>
-      <span>${optimizerBar(ratio)}</span>
-      <span style="display:inline-block;width:56px;text-align:right">${(ratio * 100).toFixed(1)}%</span>
-      <span style="opacity:.8">  saved ${optimizerCommas(saved)} / ${optimizerCommas(cache)}</span>
-      <span style="opacity:.55"> cache write</span>
-      <span style="float:right">$${(w ? w.cost_avoided_usd : 0).toFixed(2)}</span>
-      <div style="opacity:.5;font-size:11px;padding-left:110px">avoided
-        input ${optimizerCommas(avIn)} ·
-        cache-write ${optimizerCommas(avWr)} ·
-        cache-read ${optimizerCommas(avRd)} <span style="opacity:.7">(×0.1, compounding)</span></div>
+      <span style="display:inline-block;width:96px">${label}</span>
+      <span>${optimizerBar(eff)}</span>
+      <span style="display:inline-block;width:52px;text-align:right">${(eff * 100).toFixed(1)}%</span>
+      <span style="opacity:.85">  $${av.toFixed(2)} avoided on $${sp.toFixed(2)} spent</span>
+      <span style="float:right;opacity:.75">$${avIn.toFixed(2)} input · $${avWr.toFixed(2)} cache-write · $${avRd.toFixed(2)} cache-read</span>
+      <div style="opacity:.45;font-size:11px;padding-left:96px">cache-read term = ${optimizerCommas(readTok)} tokens the shrunk prefix wasn't re-charged for (×0.1, compounds every turn)</div>
     </div>`;
 }
 
@@ -2650,15 +2650,34 @@ function OptimizerMemoryTab({ memory, onSelect, onDelete, onFeedback }) {
     </div>`;
 }
 
-// Savings sub-tab: the live proxy stats + durable usage-log rollups.
-function OptimizerSavingsTab({ data, loading, stats, totals, dollars, sessionRows, savings }) {
-  // Compounding cost-avoided per session comes from the durable usage log
-  // (needs per-turn ordering the live /stats counters don't keep). Index it by
-  // session id so the live table can show each session's $ growing as its turns
-  // accumulate — the log is appended every turn and this report is re-fetched.
-  const sessCost = {};
-  const sessRep = (savings && savings.report && savings.report.sessions) || [];
-  for (const s of sessRep) sessCost[s.session_id] = s.cost_avoided_usd || 0;
+// Three-segment stacked bar showing the $ composition of cost avoided.
+function OptimizerCompositionBar({ input, cacheWrite, cacheRead }) {
+  const total = (input || 0) + (cacheWrite || 0) + (cacheRead || 0);
+  if (total <= 0) return null;
+  const seg = (v, color, title) => html`<div title=${title}
+    style="width:${(v / total) * 100}%;background:${color};height:100%"></div>`;
+  return html`<div style="display:flex;height:8px;border-radius:4px;overflow:hidden;width:260px;margin-top:6px">
+    ${seg(input, '#3b82f6', 'input (1×)')}
+    ${seg(cacheWrite, '#8b5cf6', 'cache-write (1.25×)')}
+    ${seg(cacheRead, '#22c55e', 'cache-read (0.1×, compounding)')}
+  </div>`;
+}
+
+// Savings sub-tab. Header tiles + session table are sourced from the DURABLE
+// usage-log report so token counts and dollars share ONE scope (no live-vs-
+// durable mismatch). Live /stats only marks which sessions are currently active.
+function OptimizerSavingsTab({ data, loading, stats, savings }) {
+  const rep = savings && savings.report;
+  const hasLog = rep && rep.records > 0;
+  const T = hasLog ? rep.totals : null;
+  const av = T ? T.cost_avoided_usd : 0;
+  const sp = T ? T.spent_usd : 0;
+  const eff = optimizerEffPct(av, sp);
+  const leverage = sp > 0 ? av / sp : 0;
+  const at = hasLog ? rep.all_time : null;
+  // Sessions currently live in memory (seen since the optimizer last started) —
+  // used only to flag active rows in the durable table with a green dot.
+  const liveIds = new Set(Object.keys((stats && stats.sessions) || {}));
   return html`
     <div>
       ${loading && !data && html`<div style="padding:24px;opacity:.7">Loading…</div>`}
@@ -2670,73 +2689,74 @@ function OptimizerSavingsTab({ data, loading, stats, totals, dollars, sessionRow
 # or: forge optimizer --compress   # standalone proxy</pre>
           <p style="opacity:.7">If it listens on another address, set <code>FORGE_OPTIMIZER_URL</code>.</p>
         </div>`}
-      ${stats && html`
+
+      ${hasLog && html`
         <div style="padding-bottom:24px">
-          <div style="display:flex;gap:28px;flex-wrap:wrap;margin:8px 0 22px">
-            <${OptimizerStatTile} label="Requests" value=${optimizerCommas(totals.requests)} />
-            <${OptimizerStatTile} label="Input tokens" value=${optimizerCommas(totals.input_tokens)} />
-            <${OptimizerStatTile} label="Cache read" value=${optimizerCommas(totals.cache_read_input_tokens)} sub="billed ~0.1×" />
-            <${OptimizerStatTile} label="Output tokens" value=${optimizerCommas(totals.output_tokens)} />
-            <${OptimizerStatTile} label="Tokens saved" value=${optimizerCommas(totals.compression_saved_tokens)} sub="vs. uncompressed" />
-            <${OptimizerStatTile} label="Cost avoided" value=${'$' + dollars.toFixed(2)} sub="all-time · input+write+read" />
-            <${OptimizerStatTile} label="Expansions" value=${optimizerCommas(totals.expansions)} />
+          <div style="display:flex;gap:28px;flex-wrap:wrap;margin:8px 0 18px">
+            <${OptimizerStatTile} label="Requests" value=${optimizerCommas(T.requests)} />
+            <${OptimizerStatTile} label="Input tokens" value=${optimizerCommas(T.input_tokens)} />
+            <${OptimizerStatTile} label="Cache read" value=${optimizerCommas(T.cache_read_input_tokens)} sub="billed ~0.1×" />
+            <${OptimizerStatTile} label="Output tokens" value=${optimizerCommas(T.output_tokens)} />
+            <${OptimizerStatTile} label="Tokens saved" value=${optimizerCommas(T.saved_tokens)} sub="vs. uncompressed" />
+            <${OptimizerStatTile} label="Spend" value=${'$' + sp.toFixed(2)} sub="actual, all tiers" />
+            <${OptimizerStatTile} label="Cost avoided" value=${'$' + av.toFixed(2)} sub="input+write+read" />
+            <${OptimizerStatTile} label="Effective savings" value=${(eff * 100).toFixed(0) + '%'} sub="avoided vs spent" />
           </div>
-          <div class="skills-subtitle" style="margin-bottom:8px">Live sessions (${sessionRows.length})</div>
-          <table style="width:100%;border-collapse:collapse;font-size:13px">
+
+          <div style="background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.18);border-radius:10px;padding:14px 16px;margin-bottom:20px;max-width:720px">
+            <div style="font-size:15px">
+              <b>$${av.toFixed(2)}</b> avoided on <b>$${sp.toFixed(2)}</b> spent
+              <span style="opacity:.7">— ${leverage.toFixed(1)}× leverage, ${(eff * 100).toFixed(0)}% effective savings (all-time)</span>
+            </div>
+            ${at && html`<${OptimizerCompositionBar} input=${at.avoided_input_usd} cacheWrite=${at.avoided_cache_write_usd} cacheRead=${at.avoided_cache_read_usd} />`}
+            ${at && html`<div style="opacity:.6;font-size:11.5px;margin-top:6px">
+              = $${at.avoided_input_usd.toFixed(2)} input · $${at.avoided_cache_write_usd.toFixed(2)} cache-write · $${at.avoided_cache_read_usd.toFixed(2)} cache-read
+            </div>`}
+            ${at && html`<div style="opacity:.6;font-size:11.5px;margin-top:8px;line-height:1.5">
+              Compression removes each chunk from the cached prefix for <i>every later turn</i> of a session, so the
+              <b>${optimizerCommas(T.saved_tokens)}</b> tokens compressed away avoided
+              <b>${optimizerCommas(at.avoided_cache_read_tokens)}</b> cache-reads (×0.1) across sessions — that compounding
+              read term is most of the total, which is why the dollars far exceed a per-turn view of the saved tokens.
+            </div>`}
+          </div>
+
+          <div class="skills-subtitle" style="margin:6px 0 10px">Effective savings over time · avoided vs spent</div>
+          <${OptimizerSavingsRow} label="Today" w=${rep.today} />
+          <${OptimizerSavingsRow} label="Last 7 days" w=${rep.last_7_days} />
+          <${OptimizerSavingsRow} label="Last 30 days" w=${rep.last_30_days} />
+
+          <div class="skills-subtitle" style="margin:22px 0 8px">Sessions (${rep.sessions.length}) <span style="opacity:.5;font-weight:normal;font-size:12px">· <span style="color:#22c55e">●</span> live</span></div>
+          <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:13px;min-width:820px">
             <thead><tr style="text-align:left;opacity:.7">
-              <th style="padding:6px 8px">Session</th><th>Reqs</th><th>Input</th><th>Output</th><th>Cache read</th><th>Saved</th><th>Cost avoided</th><th>Expand</th><th>Last seen</th>
+              <th style="padding:6px 8px">Session</th><th>Model</th><th>Reqs</th><th>Input</th><th>Output</th><th>Saved</th><th>Spent</th><th>Avoided</th><th>Eff.</th><th>Last seen</th>
             </tr></thead>
             <tbody>
-              ${sessionRows.map(([id, sd]) => html`
+              ${rep.sessions.map(s => {
+                const se = optimizerEffPct(s.cost_avoided_usd, s.spent_usd);
+                const live = liveIds.has(s.session_id);
+                return html`
                 <tr style="border-top:1px solid rgba(128,128,128,.2)">
-                  <td style="padding:6px 8px;font-family:monospace">${id}</td>
-                  <td>${optimizerCommas(sd.requests)}</td>
-                  <td>${optimizerCommas(sd.input_tokens)}</td>
-                  <td>${optimizerCommas(sd.output_tokens)}</td>
-                  <td>${optimizerCommas(sd.cache_read_input_tokens)}</td>
-                  <td>${optimizerCommas(sd.compression_saved_tokens)}</td>
-                  <td>${sessCost[id] != null ? '$' + sessCost[id].toFixed(2) : html`<span style="opacity:.4">—</span>`}</td>
-                  <td>${optimizerCommas(sd.expansions)}</td>
-                  <td style="opacity:.7">${optimizerFmtTime(sd.last_seen)}</td>
-                </tr>`)}
-              ${sessionRows.length === 0 && html`<tr><td colspan="9" style="padding:12px 8px;opacity:.6">No sessions yet — use a coding agent through the optimizer.</td></tr>`}
-            </tbody>
-          </table>
-          <div style="opacity:.55;font-size:12px;margin-top:14px">Token counters are live and reset when the optimizer restarts. <b>Cost avoided</b> is the durable three-tier figure (input + cache-write + compounding cache-read) and climbs as each session's turns accumulate. Durable history is below.</div>
-        </div>`}
-
-      ${savings && savings.report && savings.report.records > 0 && html`
-        <div style="padding-bottom:28px">
-          <div class="skills-subtitle" style="margin:6px 0 10px">Savings over time · from usage log</div>
-          <${OptimizerSavingsRow} label="Today" w=${savings.report.today} />
-          <${OptimizerSavingsRow} label="Last 7 days" w=${savings.report.last_7_days} />
-          <${OptimizerSavingsRow} label="Last 30 days" w=${savings.report.last_30_days} />
-
-          <div class="skills-subtitle" style="margin:20px 0 8px">Previous sessions (${savings.report.sessions.length})</div>
-          <table style="width:100%;border-collapse:collapse;font-size:13px">
-            <thead><tr style="text-align:left;opacity:.7">
-              <th style="padding:6px 8px">Session</th><th>Client</th><th>Model</th><th>Reqs</th><th>Input</th><th>Output</th><th>Saved</th><th>$ avoided</th><th>Last seen</th>
-            </tr></thead>
-            <tbody>
-              ${savings.report.sessions.map(s => html`
-                <tr style="border-top:1px solid rgba(128,128,128,.2)">
-                  <td style="padding:6px 8px;font-family:monospace">${s.session_id}</td>
-                  <td>${s.client || '—'}</td>
+                  <td style="padding:6px 8px;font-family:monospace">${live ? html`<span style="color:#22c55e" title="live">● </span>` : ''}${s.session_id}</td>
                   <td style="opacity:.8">${(s.model || '—').replace('claude-', '')}</td>
                   <td>${optimizerCommas(s.requests)}</td>
                   <td>${optimizerCommas(s.input_tokens)}</td>
                   <td>${optimizerCommas(s.output_tokens)}</td>
                   <td>${optimizerCommas(s.saved_tokens)}</td>
-                  <td>$${(s.cost_avoided_usd || 0).toFixed(2)}</td>
+                  <td style="opacity:.8">$${(s.spent_usd || 0).toFixed(2)}</td>
+                  <td><b>$${(s.cost_avoided_usd || 0).toFixed(2)}</b></td>
+                  <td style="opacity:.8">${(se * 100).toFixed(0)}%</td>
                   <td style="opacity:.7">${optimizerFmtTime(s.last_seen)}</td>
-                </tr>`)}
+                </tr>`; })}
+              ${rep.sessions.length === 0 && html`<tr><td colspan="10" style="padding:12px 8px;opacity:.6">No sessions in the usage log yet.</td></tr>`}
             </tbody>
           </table>
-          <div style="opacity:.55;font-size:12px;margin-top:12px">Reading <code>${savings.log_path || '.forge/optimizer-usage.jsonl'}</code>. Dollars use ${' '}
-            <code>.forge/optimizer-pricing.json</code> if present, else list prices.</div>
+          </div>
+          <div style="opacity:.5;font-size:12px;margin-top:12px">All figures are durable (from <code>${savings.log_path || '.forge/optimizer-usage.jsonl'}</code>) and survive optimizer restarts. Dollars use <code>.forge/optimizer-pricing.json</code> if present, else list prices. Cache-read savings compound over a session and assume the prefix stays cache-warm (5-min TTL).</div>
         </div>`}
-      ${data && data.available && savings && savings.report && savings.report.records === 0 && html`
-        <div style="padding:0 0 24px;opacity:.6">No previous sessions in the usage log yet.</div>`}
+
+      ${data && data.available && !hasLog && html`
+        <div style="padding:24px 0;opacity:.6">No usage recorded yet — route a coding agent through the optimizer and savings will appear here.</div>`}
     </div>`;
 }
 
@@ -2832,27 +2852,9 @@ function OptimizerPage() {
     }
   }, []);
 
+  // The Savings tab now sources all numbers from the durable usage-log report
+  // (savings.report); live /stats is used only to flag which sessions are active.
   const stats = data && data.stats ? data.stats : null;
-  const totals = stats ? stats.totals : null;
-  const sessions = stats && stats.sessions ? stats.sessions : {};
-  const perModel = stats && stats.per_model ? stats.per_model : {};
-
-  // Prefer the durable, server-computed all-time cost avoided: it's the full
-  // three-tier figure (input 1× + cache-write 1.25× + compounding cache-read
-  // 0.1×), which needs per-session turn ordering the live /stats aggregates
-  // don't carry. Fall back to a client-side cache-write-only estimate over live
-  // stats when the usage log isn't available yet.
-  let dollars = 0;
-  const allTime = savings && savings.report && savings.report.all_time;
-  if (allTime) {
-    dollars = allTime.cost_avoided_usd || 0;
-  } else {
-    for (const [m, t] of Object.entries(perModel)) {
-      dollars += (t.compression_saved_tokens || 0) * optimizerCacheWritePrice(m) / 1e6;
-    }
-  }
-  const sessionRows = Object.entries(sessions)
-    .sort((a, b) => (b[1].last_seen || '').localeCompare(a[1].last_seen || ''));
   const memCount = (memory && memory.count) || 0;
 
   return html`
@@ -2874,8 +2876,7 @@ function OptimizerPage() {
 
       <div style="padding:0 24px">
         ${tab === 'savings' && html`<${OptimizerSavingsTab}
-          data=${data} loading=${loading} stats=${stats} totals=${totals}
-          dollars=${dollars} sessionRows=${sessionRows} savings=${savings} />`}
+          data=${data} loading=${loading} stats=${stats} savings=${savings} />`}
         ${tab === 'memory' && html`<${OptimizerMemoryTab}
           memory=${memory} onSelect=${setSelected} onDelete=${handleDelete} onFeedback=${handleFeedback} />`}
       </div>

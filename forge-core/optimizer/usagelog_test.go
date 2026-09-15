@@ -55,13 +55,23 @@ func TestAggregateUsageLog(t *testing.T) {
 	if rep.Records != 5 {
 		t.Fatalf("records = %d, want 5", rep.Records)
 	}
-	// Today = two sess_a rows: saved 19000, cache-write = 2×400 = 800.
+	// Today = two sess_a rows (file order: 9000 then 10000), saved 19000, billed
+	// cache-write = 2×400 = 800. Each row splits its saved between input:write by
+	// input(100):cw(400) = 1:4 → 20% input, 80% write. The 2nd row also credits
+	// the 1st row's 9000 saved as an avoided compounding cache-read.
+	//   avoided input  = .2×19000 = 3800
+	//   avoided write  = .8×19000 = 15200
+	//   avoided read   = 9000 (only the 2nd row sees a prior cumulative)
 	if rep.Today.SavedTokens != 19000 || rep.Today.CacheWriteTokens != 800 {
 		t.Errorf("today = %+v", rep.Today)
 	}
-	// Today dollars = cache-write rate = 19000 * ($5 × 1.25)/1M = $0.11875.
-	if got := rep.Today.Dollars; got < 0.1187 || got > 0.1188 {
-		t.Errorf("today dollars = %f, want ~0.11875", got)
+	if rep.Today.AvoidedInputTokens != 3800 || rep.Today.AvoidedCacheWriteTokens != 15200 || rep.Today.AvoidedCacheReadTokens != 9000 {
+		t.Errorf("today breakdown = %+v", rep.Today)
+	}
+	// Today dollars (opus $5/M: input 1×, write 1.25×=6.25, read 0.1×=0.5):
+	//   3800×5 + 15200×6.25 + 9000×0.5 = 19000 + 95000 + 4500 = 118500 /1e6 = $0.1185
+	if got := rep.Today.Dollars; got < 0.11845 || got > 0.11855 {
+		t.Errorf("today dollars = %f, want ~0.1185", got)
 	}
 	// 30d excludes the 40-day-old row: saved 9000+10000+18000+26000 = 63000.
 	if rep.Last30Days.SavedTokens != 63000 {

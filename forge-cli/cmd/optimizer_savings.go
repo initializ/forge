@@ -116,13 +116,16 @@ func printWindow(label string, w optimizer.WindowTotals) {
 		}
 		return r
 	}
-	// Ratio = saved / cache-write tokens (freshly-cached bytes each turn). This is
-	// the share of newly-cached token volume compression removed; cache reads are
-	// excluded so repeated prefix re-reads don't dilute it. $ credits the
-	// cache-WRITE the dropped content avoided.
+	// Ratio = saved / cache-write tokens (freshly-cached bytes each turn) — the
+	// share of newly-cached token volume compression removed. The $ figure is the
+	// full three-tier cost avoided: uncached input (1×) + cache-write (1.25×) the
+	// content would have been cached at, + the compounding cache-read (0.1×) it
+	// avoids on every later turn of the session.
 	ratio := pct(w.SavedTokens, w.CacheWriteTokens)
 	fmt.Printf("%s %s  %5.1f%% saved %s / %s (cache write)   $%.4f\n",
 		label, bar(ratio/100, 15), ratio, commaInt(w.SavedTokens), commaInt(w.CacheWriteTokens), w.Dollars)
+	fmt.Printf("               ↳ avoided  input %s ·  cache-write %s ·  cache-read %s (×0.1, compounding)\n",
+		commaInt(w.AvoidedInputTokens), commaInt(w.AvoidedCacheWriteTokens), commaInt(w.AvoidedCacheReadTokens))
 }
 
 // bar renders a ratio in [0,1] as a filled/empty block bar of the given width.

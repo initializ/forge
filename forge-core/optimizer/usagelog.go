@@ -19,18 +19,27 @@ import (
 type WindowTotals struct {
 	SavedTokens int64 `json:"saved_tokens"`
 	// CacheWriteTokens is the billed cache-CREATION (write) volume for these
-	// requests — the freshly-cached bytes each turn adds. Compression shrinks the
-	// conversation history written to the cache, so the ratio
+	// requests — the freshly-cached bytes each turn adds. The ratio
 	// SavedTokens/CacheWriteTokens = "% of the newly-cached token volume
-	// compression removed". Cache READS are deliberately excluded: they re-count
-	// the whole prefix every turn, which would dilute the ratio ~30×.
-	CacheWriteTokens int64   `json:"cache_write_tokens"`
-	Dollars          float64 `json:"cost_avoided_usd"`
+	// compression removed"; it drives the progress bar.
+	CacheWriteTokens int64 `json:"cache_write_tokens"`
+	// Cost-avoided breakdown: without compression the saved content would have
+	// been billed across three tiers — uncached INPUT (1×) and CACHE-WRITE (1.25×)
+	// on the turn it first appears, plus a compounding CACHE-READ (0.1×) for every
+	// later turn in the session that no longer re-reads it. AvoidedCacheReadTokens
+	// therefore far exceeds SavedTokens (each saved chunk is re-read many turns).
+	AvoidedInputTokens      int64   `json:"avoided_input_tokens"`
+	AvoidedCacheWriteTokens int64   `json:"avoided_cache_write_tokens"`
+	AvoidedCacheReadTokens  int64   `json:"avoided_cache_read_tokens"`
+	Dollars                 float64 `json:"cost_avoided_usd"`
 }
 
-func (w *WindowTotals) add(saved, cacheWrite int64, dollars float64) {
+func (w *WindowTotals) add(saved, billedCacheWrite, avInput, avWrite, avRead int64, dollars float64) {
 	w.SavedTokens += saved
-	w.CacheWriteTokens += cacheWrite
+	w.CacheWriteTokens += billedCacheWrite
+	w.AvoidedInputTokens += avInput
+	w.AvoidedCacheWriteTokens += avWrite
+	w.AvoidedCacheReadTokens += avRead
 	w.Dollars += dollars
 }
 
@@ -64,6 +73,7 @@ type SessionSavings struct {
 
 // UsageReport is the full durable rollup returned by AggregateUsageLog.
 type UsageReport struct {
+	AllTime    WindowTotals             `json:"all_time"`
 	Today      WindowTotals             `json:"today"`
 	Last7Days  WindowTotals             `json:"last_7_days"`
 	Last30Days WindowTotals             `json:"last_30_days"`
@@ -108,6 +118,12 @@ func AggregateUsageLog(path string, pricing *Pricing, now time.Time, maxSessions
 	// Per-session accumulator keyed by session id (all-time, so history survives
 	// beyond the 30-day window used for the dollar summaries).
 	sessAcc := map[string]*SessionSavings{}
+	// Per-session running total of tokens compressed away so far. A chunk removed
+	// on an earlier turn stays absent from every later turn's cached prefix, so it
+	// avoids a cache-READ on each of those turns — this cumulative drives the
+	// compounding read credit. Records stream in append (chronological) order, so
+	// this is correct even with sessions interleaved.
+	cumSaved := map[string]int64{}
 
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 1<<20), 16<<20)
@@ -123,21 +139,45 @@ func AggregateUsageLog(path string, pricing *Pricing, now time.Time, maxSessions
 		rep.Records++
 
 		saved := int64(rec.Compression.SavedTokens)
-		// Denominator = billed cache-WRITE (creation) tokens: the freshly-cached
-		// bytes compression shrinks each turn. Cache reads are excluded — they
-		// re-count the whole prefix every turn and would dilute the ratio ~30×. $
-		// credits the cache-WRITE the dropped content would have incurred.
-		cacheWrite := int64(rec.Usage.CacheCreationInputTokens)
-		dollars := pricing.CacheWriteCostAvoided(rec.Usage.Model, saved)
+		billedCacheWrite := int64(rec.Usage.CacheCreationInputTokens)
+
+		sid := rec.SessionID
+		if sid == "" {
+			sid = "unknown"
+		}
+
+		// Three-tier cost-avoided attribution:
+		//  - CACHE-READ (compounding): every token compressed away on an EARLIER
+		//    turn is absent from this turn's cached prefix, so it avoids a cache
+		//    read now. cumSaved[sid] (prior turns) is that count.
+		//  - This turn's own saved tokens are "born" here: split them between
+		//    uncached INPUT and CACHE-WRITE by this request's input:cache_creation
+		//    ratio (the tier mix new content actually lands in). No new-content
+		//    signal (both zero) → treat as cache-write, since content must be
+		//    cached to persist into later turns.
+		avRead := cumSaved[sid]
+		it := int64(rec.Usage.InputTokens)
+		cw := billedCacheWrite
+		var avInput, avWrite int64
+		if base := it + cw; base > 0 {
+			avInput = saved * it / base
+			avWrite = saved - avInput
+		} else {
+			avWrite = saved
+		}
+		dollars := pricing.CostAvoidedBreakdown(rec.Usage.Model, avInput, avWrite, avRead)
+		cumSaved[sid] += saved
+
+		rep.AllTime.add(saved, billedCacheWrite, avInput, avWrite, avRead, dollars)
 
 		// Windowed dollar summaries (30-day horizon).
 		if !rec.Time.Before(win30) {
-			rep.Last30Days.add(saved, cacheWrite, dollars)
+			rep.Last30Days.add(saved, billedCacheWrite, avInput, avWrite, avRead, dollars)
 			if !rec.Time.Before(win7) {
-				rep.Last7Days.add(saved, cacheWrite, dollars)
+				rep.Last7Days.add(saved, billedCacheWrite, avInput, avWrite, avRead, dollars)
 			}
 			if !rec.Time.Before(startToday) {
-				rep.Today.add(saved, cacheWrite, dollars)
+				rep.Today.add(saved, billedCacheWrite, avInput, avWrite, avRead, dollars)
 			}
 
 			model := rec.Usage.Model
@@ -160,10 +200,6 @@ func AggregateUsageLog(path string, pricing *Pricing, now time.Time, maxSessions
 		}
 
 		// Per-session rollup — all-time (this is the durable session history).
-		sid := rec.SessionID
-		if sid == "" {
-			sid = "unknown"
-		}
 		s := sessAcc[sid]
 		if s == nil {
 			s = &SessionSavings{SessionID: sid}

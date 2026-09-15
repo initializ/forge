@@ -2370,19 +2370,26 @@ function optimizerBar(ratio) {
 function OptimizerSavingsRow({ label, w }) {
   const saved = w ? w.saved_tokens : 0;
   const cache = w ? w.cache_write_tokens : 0;
-  // Ratio = saved / cache-write tokens (freshly-cached bytes each turn). Share of
-  // newly-cached token volume compression removed; cache reads are excluded so
-  // repeated prefix re-reads don't dilute it. $ credits the cache-WRITE the
-  // dropped content avoided.
+  // Ratio = saved / cache-write tokens (freshly-cached bytes each turn) — the
+  // share of newly-cached token volume compression removed. The $ is the full
+  // three-tier cost avoided (input 1× + cache-write 1.25× + compounding
+  // cache-read 0.1×), computed server-side in usagelog.go.
   const ratio = cache > 0 ? Math.min(saved / cache, 1) : 0;
+  const avIn = w ? w.avoided_input_tokens : 0;
+  const avWr = w ? w.avoided_cache_write_tokens : 0;
+  const avRd = w ? w.avoided_cache_read_tokens : 0;
   return html`
-    <div style="font-family:monospace;font-size:13px;line-height:1.9">
+    <div style="font-family:monospace;font-size:13px;line-height:1.7">
       <span style="display:inline-block;width:110px">${label}</span>
       <span>${optimizerBar(ratio)}</span>
-      <span style="display:inline-block;width:64px;text-align:right">${(ratio * 100).toFixed(1)}%</span>
+      <span style="display:inline-block;width:56px;text-align:right">${(ratio * 100).toFixed(1)}%</span>
       <span style="opacity:.8">  saved ${optimizerCommas(saved)} / ${optimizerCommas(cache)}</span>
       <span style="opacity:.55"> cache write</span>
       <span style="float:right">$${(w ? w.cost_avoided_usd : 0).toFixed(4)}</span>
+      <div style="opacity:.5;font-size:11px;padding-left:110px">avoided
+        input ${optimizerCommas(avIn)} ·
+        cache-write ${optimizerCommas(avWr)} ·
+        cache-read ${optimizerCommas(avRd)} <span style="opacity:.7">(×0.1, compounding)</span></div>
     </div>`;
 }
 
@@ -2664,7 +2671,7 @@ function OptimizerSavingsTab({ data, loading, stats, totals, dollars, sessionRow
             <${OptimizerStatTile} label="Cache read" value=${optimizerCommas(totals.cache_read_input_tokens)} sub="billed ~0.1×" />
             <${OptimizerStatTile} label="Output tokens" value=${optimizerCommas(totals.output_tokens)} />
             <${OptimizerStatTile} label="Tokens saved" value=${optimizerCommas(totals.compression_saved_tokens)} sub="vs. uncompressed" />
-            <${OptimizerStatTile} label="Cost avoided" value=${'$' + dollars.toFixed(4)} sub="cache-write rate" />
+            <${OptimizerStatTile} label="Cost avoided" value=${'$' + dollars.toFixed(4)} sub="all-time · input+write+read" />
             <${OptimizerStatTile} label="Expansions" value=${optimizerCommas(totals.expansions)} />
           </div>
           <div class="skills-subtitle" style="margin-bottom:8px">Live sessions (${sessionRows.length})</div>
@@ -2822,9 +2829,19 @@ function OptimizerPage() {
   const sessions = stats && stats.sessions ? stats.sessions : {};
   const perModel = stats && stats.per_model ? stats.per_model : {};
 
+  // Prefer the durable, server-computed all-time cost avoided: it's the full
+  // three-tier figure (input 1× + cache-write 1.25× + compounding cache-read
+  // 0.1×), which needs per-session turn ordering the live /stats aggregates
+  // don't carry. Fall back to a client-side cache-write-only estimate over live
+  // stats when the usage log isn't available yet.
   let dollars = 0;
-  for (const [m, t] of Object.entries(perModel)) {
-    dollars += (t.compression_saved_tokens || 0) * optimizerCacheWritePrice(m) / 1e6;
+  const allTime = savings && savings.report && savings.report.all_time;
+  if (allTime) {
+    dollars = allTime.cost_avoided_usd || 0;
+  } else {
+    for (const [m, t] of Object.entries(perModel)) {
+      dollars += (t.compression_saved_tokens || 0) * optimizerCacheWritePrice(m) / 1e6;
+    }
   }
   const sessionRows = Object.entries(sessions)
     .sort((a, b) => (b[1].last_seen || '').localeCompare(a[1].last_seen || ''));

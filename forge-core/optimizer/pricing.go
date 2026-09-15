@@ -122,11 +122,14 @@ func (p *Pricing) CostAvoided(model string, savedTokens int64) float64 {
 	return float64(savedTokens) * p.For(model).InputPerMTok / 1_000_000
 }
 
-// CacheWriteCostAvoided values saved tokens at the cache-WRITE rate (~1.25×
-// input): compression drops content that would otherwise be written to (and
-// re-read from) the prompt cache, so the cache-write rate credits the avoided
-// caching of that content. Used for the usage-log savings view, where the saved
-// content is the conversation history that Claude Code caches.
-func (p *Pricing) CacheWriteCostAvoided(model string, savedTokens int64) float64 {
-	return float64(savedTokens) * p.For(model).CacheWritePerMTok / 1_000_000
+// CostAvoidedBreakdown values avoided tokens across the three billing tiers a
+// saved token would otherwise have incurred: uncached INPUT (1×), CACHE-WRITE
+// (~1.25×) the turn it first appears, and CACHE-READ (~0.1×) on every later turn
+// that no longer re-reads it. Callers attribute the token counts (see
+// usagelog.go); this just prices them.
+func (p *Pricing) CostAvoidedBreakdown(model string, inputTokens, cacheWriteTokens, cacheReadTokens int64) float64 {
+	mp := p.For(model)
+	return (float64(inputTokens)*mp.InputPerMTok +
+		float64(cacheWriteTokens)*mp.CacheWritePerMTok +
+		float64(cacheReadTokens)*mp.CacheReadPerMTok) / 1_000_000
 }

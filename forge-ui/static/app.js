@@ -2385,7 +2385,7 @@ function OptimizerSavingsRow({ label, w }) {
       <span style="display:inline-block;width:56px;text-align:right">${(ratio * 100).toFixed(1)}%</span>
       <span style="opacity:.8">  saved ${optimizerCommas(saved)} / ${optimizerCommas(cache)}</span>
       <span style="opacity:.55"> cache write</span>
-      <span style="float:right">$${(w ? w.cost_avoided_usd : 0).toFixed(4)}</span>
+      <span style="float:right">$${(w ? w.cost_avoided_usd : 0).toFixed(2)}</span>
       <div style="opacity:.5;font-size:11px;padding-left:110px">avoided
         input ${optimizerCommas(avIn)} ·
         cache-write ${optimizerCommas(avWr)} ·
@@ -2678,7 +2678,7 @@ function OptimizerSavingsTab({ data, loading, stats, totals, dollars, sessionRow
             <${OptimizerStatTile} label="Cache read" value=${optimizerCommas(totals.cache_read_input_tokens)} sub="billed ~0.1×" />
             <${OptimizerStatTile} label="Output tokens" value=${optimizerCommas(totals.output_tokens)} />
             <${OptimizerStatTile} label="Tokens saved" value=${optimizerCommas(totals.compression_saved_tokens)} sub="vs. uncompressed" />
-            <${OptimizerStatTile} label="Cost avoided" value=${'$' + dollars.toFixed(4)} sub="all-time · input+write+read" />
+            <${OptimizerStatTile} label="Cost avoided" value=${'$' + dollars.toFixed(2)} sub="all-time · input+write+read" />
             <${OptimizerStatTile} label="Expansions" value=${optimizerCommas(totals.expansions)} />
           </div>
           <div class="skills-subtitle" style="margin-bottom:8px">Live sessions (${sessionRows.length})</div>
@@ -2695,7 +2695,7 @@ function OptimizerSavingsTab({ data, loading, stats, totals, dollars, sessionRow
                   <td>${optimizerCommas(sd.output_tokens)}</td>
                   <td>${optimizerCommas(sd.cache_read_input_tokens)}</td>
                   <td>${optimizerCommas(sd.compression_saved_tokens)}</td>
-                  <td>${sessCost[id] != null ? '$' + sessCost[id].toFixed(4) : html`<span style="opacity:.4">—</span>`}</td>
+                  <td>${sessCost[id] != null ? '$' + sessCost[id].toFixed(2) : html`<span style="opacity:.4">—</span>`}</td>
                   <td>${optimizerCommas(sd.expansions)}</td>
                   <td style="opacity:.7">${optimizerFmtTime(sd.last_seen)}</td>
                 </tr>`)}
@@ -2727,7 +2727,7 @@ function OptimizerSavingsTab({ data, loading, stats, totals, dollars, sessionRow
                   <td>${optimizerCommas(s.input_tokens)}</td>
                   <td>${optimizerCommas(s.output_tokens)}</td>
                   <td>${optimizerCommas(s.saved_tokens)}</td>
-                  <td>$${(s.cost_avoided_usd || 0).toFixed(4)}</td>
+                  <td>$${(s.cost_avoided_usd || 0).toFixed(2)}</td>
                   <td style="opacity:.7">${optimizerFmtTime(s.last_seen)}</td>
                 </tr>`)}
             </tbody>

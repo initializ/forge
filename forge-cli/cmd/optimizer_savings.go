@@ -87,7 +87,7 @@ func renderSavings(r *optimizer.UsageReport) {
 		}
 		sort.Slice(models, func(i, j int) bool { return r.PerModel[models[i]].Dollars > r.PerModel[models[j]].Dollars })
 		for _, m := range models {
-			fmt.Printf("  %-24s $%.4f\n", m, r.PerModel[m].Dollars)
+			fmt.Printf("  %-24s $%.2f\n", m, r.PerModel[m].Dollars)
 		}
 	}
 
@@ -122,7 +122,7 @@ func printWindow(label string, w optimizer.WindowTotals) {
 	// content would have been cached at, + the compounding cache-read (0.1×) it
 	// avoids on every later turn of the session.
 	ratio := pct(w.SavedTokens, w.CacheWriteTokens)
-	fmt.Printf("%s %s  %5.1f%% saved %s / %s (cache write)   $%.4f\n",
+	fmt.Printf("%s %s  %5.1f%% saved %s / %s (cache write)   $%.2f\n",
 		label, bar(ratio/100, 15), ratio, commaInt(w.SavedTokens), commaInt(w.CacheWriteTokens), w.Dollars)
 	fmt.Printf("               ↳ avoided  input %s ·  cache-write %s ·  cache-read %s (×0.1, compounding)\n",
 		commaInt(w.AvoidedInputTokens), commaInt(w.AvoidedCacheWriteTokens), commaInt(w.AvoidedCacheReadTokens))

@@ -110,12 +110,19 @@ func (s *UIServer) Start(ctx context.Context) error {
 	mux.HandleFunc("POST /api/optimizer/daemon/start", s.handleOptimizerDaemonControl("start"))
 	mux.HandleFunc("POST /api/optimizer/daemon/stop", s.handleOptimizerDaemonControl("stop"))
 
+	// AI Agent Builder route (workspace-level — no agent id yet). The
+	// conversational alternative to the New Agent wizard; reuses the
+	// workspace/global skill-builder LLM and the path-less
+	// /api/skill-builder/provider endpoint for its config banner.
+	mux.HandleFunc("POST /api/agent-builder/chat", s.handleAgentBuilderChat)
+
 	// Skill Builder routes
 	mux.HandleFunc("POST /api/agents/{id}/skill-builder/chat", s.handleSkillBuilderChat)
 	mux.HandleFunc("POST /api/agents/{id}/skill-builder/validate", s.handleSkillBuilderValidate)
 	mux.HandleFunc("POST /api/agents/{id}/skill-builder/save", s.handleSkillBuilderSave)
 	mux.HandleFunc("GET /api/agents/{id}/skill-builder/context", s.handleSkillBuilderContext)
 	mux.HandleFunc("GET /api/agents/{id}/skill-builder/provider", s.handleSkillBuilderProvider)
+	mux.HandleFunc("GET /api/agents/{id}/skill-builder/providers", s.handleSkillBuilderProviders)
 	// Custom-skill listing + loading for the Skill Builder edit flow
 	// (issue #193). Distinct from /api/skills which returns registry /
 	// embedded skills — these endpoints surface only project-local
@@ -127,6 +134,7 @@ func (s *UIServer) Start(ctx context.Context) error {
 	// resolved config before any agent is picked — needed for first-run
 	// in an empty workspace.
 	mux.HandleFunc("GET /api/skill-builder/provider", s.handleSkillBuilderProvider)
+	mux.HandleFunc("GET /api/skill-builder/providers", s.handleSkillBuilderProviders)
 	mux.HandleFunc("GET /api/settings/skill-builder", s.handleGetSkillBuilderSettings)
 	mux.HandleFunc("PUT /api/settings/skill-builder", s.handlePutSkillBuilderSettings)
 

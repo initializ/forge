@@ -195,12 +195,13 @@ async function fetchSkillBuilderProvider(agentId) {
   return res.json();
 }
 
-async function streamSkillBuilderChat(agentId, messages, { onProgress, onMessage, onSkillDraft, onError, onDone, signal, mode, editingName }) {
+async function streamSkillBuilderChat(agentId, messages, { onProgress, onMessage, onSkillDraft, onError, onDone, signal, mode, editingName, provider }) {
   const body = { messages };
   if (mode === 'edit' && editingName) {
     body.mode = 'edit';
     body.editing_name = editingName;
   }
+  if (provider) body.provider = provider;
   const res = await fetch(`/api/agents/${agentId}/skill-builder/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -300,6 +301,77 @@ async function loadCustomSkill(agentId, name) {
     throw new Error(body.error || `Failed to load skill: ${res.status}`);
   }
   return res.json();
+}
+
+// ── AI Agent Builder API Helpers ──────────────────────────────
+
+// Resolves the workspace-level (agent-less) skill/agent builder LLM
+// config — provider, model, whether credentials (API key or machine-
+// global OAuth) are available, and the source. Backs the AI Builder's
+// config banner and the New Agent mode gate.
+async function fetchWorkspaceProvider() {
+  const res = await fetch('/api/skill-builder/provider');
+  if (!res.ok) throw new Error(`Failed to fetch provider: ${res.status}`);
+  return res.json();
+}
+
+// Lists every builder LLM available right now — the resolved default plus any
+// other provider with machine-global credentials (gateway / OAuth / global
+// env). Backs the build-time provider switch. Pass an agentId for the skill
+// builder's per-agent view, or omit it for the workspace-level agent builder.
+async function fetchBuilderProviders(agentId) {
+  const url = agentId ? `/api/agents/${agentId}/skill-builder/providers` : '/api/skill-builder/providers';
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch providers: ${res.status}`);
+  return res.json();
+}
+
+// Streams the AI agent-builder conversation. Mirrors streamSkillBuilderChat
+// but workspace-level (no agent id) and surfaces an `agent_draft` event
+// carrying the full AgentDraft object instead of a skill draft. `provider`,
+// when set, is the build-time provider switch selection.
+async function streamAgentBuilderChat(messages, { onProgress, onMessage, onAgentDraft, onError, onDone, signal, provider }) {
+  const res = await fetch('/api/agent-builder/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(provider ? { messages, provider } : { messages }),
+    signal,
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Chat failed: ${res.status}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    let eventType = '';
+    for (const line of lines) {
+      if (line.startsWith('event: ')) {
+        eventType = line.slice(7).trim();
+      } else if (line.startsWith('data: ')) {
+        const data = line.slice(6);
+        try {
+          const parsed = JSON.parse(data);
+          if (eventType === 'progress' && onProgress) onProgress();
+          else if (eventType === 'message' && onMessage) onMessage(parsed.content || '');
+          else if (eventType === 'agent_draft' && onAgentDraft) onAgentDraft(parsed);
+          else if (eventType === 'error' && onError) onError(parsed.error || 'Unknown error');
+          else if (eventType === 'done' && onDone) onDone();
+        } catch { /* ignore parse errors */ }
+        eventType = '';
+      }
+    }
+  }
 }
 
 // ── SSE Hook ─────────────────────────────────────────────────
@@ -1427,6 +1499,10 @@ function CreatePage() {
   const [oauthDone, setOauthDone] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
+  // New Agent offers two paths: the step-by-step wizard, or the
+  // conversational AI Builder that designs the agent with an LLM and
+  // hands the spec to the same create endpoint.
+  const [buildMode, setBuildMode] = useState('wizard');
 
   useEffect(() => {
     fetchWizardMeta().then(setMeta).catch(err => setError(err.message));
@@ -2210,12 +2286,25 @@ function CreatePage() {
     }
   };
 
+  // AI Builder path — conversational agent design. On success it sets
+  // the same `success` state so the shared success screen above renders.
+  if (buildMode === 'ai') {
+    return html`<${AgentBuilderPage}
+      onCreated=${(r) => setSuccess(r)}
+      onSwitchToWizard=${() => setBuildMode('wizard')}
+    />`;
+  }
+
   return html`
     <main class="main">
       <div class="wizard-layout">
         <div class="wizard-header">
           <div class="wizard-title">Create New Agent</div>
           <div class="wizard-subtitle">Step ${step + 1} of ${WIZARD_STEPS.length}: ${WIZARD_STEPS[step]}</div>
+          <div class="build-mode-toggle">
+            <button class="build-mode-btn active">Wizard</button>
+            <button class="build-mode-btn" onClick=${() => { setError(null); setBuildMode('ai'); }}>✨ AI Builder</button>
+          </div>
         </div>
         <div class="wizard-progress">
           ${WIZARD_STEPS.map((_, i) => html`
@@ -2235,6 +2324,307 @@ function CreatePage() {
               </button>`
           }
         </div>
+      </div>
+    </main>
+  `;
+}
+
+// ── AI Agent Builder ─────────────────────────────────────────
+
+// AgentBuilderPage is the conversational alternative to the New Agent
+// wizard. It streams an LLM conversation (streamAgentBuilderChat) that
+// designs the whole agent — model, tools, skills, persona — then shows
+// an editable draft. Credentials for the NEW agent's runtime are
+// collected here (never through the chat) and, together with the draft,
+// handed to the same createAgent endpoint the wizard uses.
+function AgentBuilderPage({ onCreated, onSwitchToWizard }) {
+  const [provider, setProvider] = useState(null); // workspace/global builder LLM config (banner + gate)
+  const [meta, setMeta] = useState(null);          // wizard meta — provider key requirements + model lists
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState('');
+  const [streaming, setStreaming] = useState(false);
+  const [draft, setDraft] = useState(null);        // AgentDraft from the LLM
+  const [error, setError] = useState(null);
+  const [showSettings, setShowSettings] = useState(false);
+  // Auth the operator supplies for the agent being built — kept out of
+  // the LLM conversation so secrets never pass through the model.
+  const [apiKey, setApiKey] = useState('');
+  const [oauthDone, setOauthDone] = useState(false);
+  const [oauthLoading, setOauthLoading] = useState(false);
+  const [creating, setCreating] = useState(false);
+  // Build-time provider switch: the LLM the builder itself runs on. Distinct
+  // from the NEW agent's runtime provider (draft.model_provider). `builderLLMs`
+  // is every available option; `builderProvider` is the selection ('' = default).
+  const [builderLLMs, setBuilderLLMs] = useState([]);
+  const [builderProvider, setBuilderProvider] = useState('');
+  const abortRef = useRef(null);
+  const chatEndRef = useRef(null);
+
+  useEffect(() => {
+    fetchWorkspaceProvider().then(setProvider).catch(e => setError('Failed to load builder LLM: ' + e.message));
+    fetchBuilderProviders().then(r => setBuilderLLMs(r.providers || [])).catch(() => { /* switch just stays hidden */ });
+  }, []);
+  useEffect(() => { fetchWizardMeta().then(setMeta).catch(() => { /* non-fatal */ }); }, []);
+  useEffect(() => { if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  // Reset supplied auth whenever the draft's runtime provider changes.
+  useEffect(() => { setApiKey(''); setOauthDone(false); }, [draft?.model_provider]);
+
+  const providerMeta = meta?.provider_models?.[draft?.model_provider] || null;
+  const needsKey = providerMeta ? providerMeta.needs_key : false;
+  const needsAWSRegion = providerMeta ? providerMeta.needs_aws_region : false;
+  const hasOAuth = providerMeta ? providerMeta.has_oauth : false;
+  const providers = meta ? Object.keys(meta.provider_models || {}) : [];
+  const modelOptions = providerMeta ? (providerMeta.api_key || providerMeta.oauth || []) : [];
+
+  const updateDraft = (key, val) => setDraft(d => ({ ...(d || {}), [key]: val }));
+  const toggleDraftList = (key, item) => setDraft(d => {
+    const list = (d && d[key]) || [];
+    const next = list.includes(item) ? list.filter(x => x !== item) : [...list, item];
+    return { ...(d || {}), [key]: next };
+  });
+
+  const handleSend = useCallback(async () => {
+    const text = input.trim();
+    if (!text || streaming) return;
+    const userMsg = { role: 'user', content: text };
+    const newMessages = [...messages, userMsg];
+    setMessages(newMessages);
+    setInput('');
+    setStreaming(true);
+    setError(null);
+    const assistantMsg = { role: 'assistant', content: '', pending: true };
+    setMessages([...newMessages, assistantMsg]);
+    const abort = new AbortController();
+    abortRef.current = abort;
+    try {
+      await streamAgentBuilderChat(newMessages, {
+        signal: abort.signal,
+        provider: builderProvider,
+        onProgress() { /* keepalive; pending placeholder stays */ },
+        onMessage(content) {
+          assistantMsg.content = content;
+          assistantMsg.pending = false;
+          setMessages([...newMessages, { ...assistantMsg }]);
+        },
+        onAgentDraft(d) { setDraft(d); },
+        onError(errMsg) { setError(errMsg); },
+        onDone() {
+          if (assistantMsg.pending) {
+            assistantMsg.pending = false;
+            if (!assistantMsg.content) assistantMsg.content = '_(no response)_';
+            setMessages([...newMessages, { ...assistantMsg }]);
+          }
+        },
+      });
+    } catch (err) {
+      if (err.name !== 'AbortError') setError(err.message);
+    } finally {
+      setStreaming(false);
+      abortRef.current = null;
+    }
+  }, [messages, input, streaming, builderProvider]);
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
+  };
+
+  const handleOAuth = useCallback(async () => {
+    if (!draft?.model_provider) return;
+    setOauthLoading(true); setError(null);
+    try { await startOAuth(draft.model_provider); setOauthDone(true); }
+    catch (err) { setError('OAuth failed: ' + err.message); }
+    finally { setOauthLoading(false); }
+  }, [draft?.model_provider]);
+
+  const canCreate = useMemo(() => {
+    if (!draft || !draft.name || !draft.model_provider) return false;
+    if (needsAWSRegion) return !!(draft.aws_region && draft.aws_region.trim());
+    if (needsKey) return oauthDone || !!apiKey.trim();
+    return true;
+  }, [draft, needsKey, needsAWSRegion, oauthDone, apiKey]);
+
+  const handleCreate = useCallback(async () => {
+    if (!draft) return;
+    setCreating(true); setError(null);
+    try {
+      const payload = {
+        name: draft.name,
+        framework: 'forge',
+        model_provider: draft.model_provider,
+        model_name: draft.model_name || '',
+        builtin_tools: draft.builtin_tools || [],
+        skills: draft.skills || [],
+        channels: draft.channels || [],
+        description: draft.description || '',
+        system_prompt: draft.system_prompt || '',
+        env_vars: {},
+        auth: { mode: 'none', settings: {} },
+      };
+      if (needsAWSRegion) payload.aws_region = draft.aws_region || '';
+      if (oauthDone) { payload.auth_method = 'oauth'; payload.api_key = '__oauth__'; }
+      else if (apiKey.trim()) { payload.auth_method = 'apikey'; payload.api_key = apiKey.trim(); }
+      const result = await createAgent(payload);
+      setTimeout(() => rescanAgents().catch(() => {}), 500);
+      onCreated(result);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setCreating(false);
+    }
+  }, [draft, needsKey, needsAWSRegion, oauthDone, apiKey, onCreated]);
+
+  const unconfigured = provider && provider.source === 'unset';
+  // The builder LLM actually in effect — the switch selection, else the
+  // default (element 0), else the single resolved provider.
+  const activeBuilder = builderLLMs.find(p => p.provider === builderProvider) || builderLLMs[0] || provider;
+
+  return html`
+    <main class="main skill-builder">
+      <div class="skill-builder-left">
+        <div class="sb-header">
+          <h2>AI Agent Builder</h2>
+          <div class="build-mode-toggle">
+            <button class="build-mode-btn" onClick=${onSwitchToWizard}>Wizard</button>
+            <button class="build-mode-btn active">✨ AI Builder</button>
+          </div>
+          ${provider && html`
+            <div class="provider-banner ${(!(activeBuilder && activeBuilder.has_key) || unconfigured) ? 'provider-banner-error' : ''}">
+              ${unconfigured ? html`
+                <span>Builder LLM not configured — OAuth or set a global API key, or configure one here.</span>
+                <button class="btn btn-link btn-sm" onClick=${() => setShowSettings(true)}>Configure</button>
+              ` : html`
+                ${builderLLMs.length > 1
+                  ? html`<span class="sb-provider-switch-wrap" title="Which LLM the builder runs on (switch anytime)">
+                      Builder LLM:
+                      <select class="sb-provider-switch" value=${builderProvider || (builderLLMs[0] && builderLLMs[0].provider) || ''}
+                        onChange=${(e) => setBuilderProvider(e.target.value)} disabled=${streaming}>
+                        ${builderLLMs.map(p => html`<option value=${p.provider}>${p.provider} · ${p.model}${p.use_gateway ? ' (gateway)' : p.use_oauth ? ' (OAuth)' : ''}</option>`)}
+                      </select>
+                    </span>`
+                  : html`<span>${(activeBuilder && activeBuilder.provider) || provider.provider}/${(activeBuilder && activeBuilder.model) || provider.model}</span>`}
+                ${activeBuilder && activeBuilder.use_oauth && html`<span class="provider-ok" title="Using your machine-global OAuth login">global OAuth</span>`}
+                ${activeBuilder && activeBuilder.use_gateway && html`<span class="provider-ok" title="Authenticating through the settings model gateway (login in ~/.forge/credentials)">gateway login</span>`}
+                ${activeBuilder && activeBuilder.source === 'global_env' && html`<span class="provider-ok">global key</span>`}
+                <button class="btn btn-link btn-sm" onClick=${() => setShowSettings(true)}>Settings</button>
+              `}
+            </div>
+          `}
+          ${showSettings && html`<${SkillBuilderSettingsModal} initial=${provider} onClose=${() => setShowSettings(false)} onSaved=${(u) => { setProvider(u); setShowSettings(false); fetchBuilderProviders().then(r => setBuilderLLMs(r.providers || [])).catch(() => {}); }} />`}
+        </div>
+
+        <div class="sb-messages">
+          ${messages.length === 0 && html`
+            <div class="sb-empty">
+              <div class="sb-empty-title">Describe the agent you want</div>
+              <div class="sb-empty-text">Tell the AI what the agent should do and who it's for. It designs the whole agent — model, tools, skills, and persona — then you review and create.</div>
+              <div class="sb-suggestions">
+                <button class="btn btn-ghost btn-sm" onClick=${() => setInput('An agent that reviews GitHub pull requests and leaves review comments, authenticating with a GitHub token')}>PR reviewer</button>
+                <button class="btn btn-ghost btn-sm" onClick=${() => setInput('A support agent that answers product questions from our docs and escalates to Slack when it cannot')}>Support agent</button>
+                <button class="btn btn-ghost btn-sm" onClick=${() => setInput('A daily digest agent that summarizes activity every morning and posts it')}>Daily digest</button>
+              </div>
+            </div>
+          `}
+          ${messages.map((msg, i) => html`
+            <div key=${i} class="sb-message sb-message-${msg.role}">
+              ${msg.pending && !msg.content
+                ? html`<div class="sb-message-content sb-message-pending"><em>Designing your agent…</em></div>`
+                : html`<div class="sb-message-content" dangerouslySetInnerHTML=${{ __html: renderMarkdown(msg.content) }} />`}
+            </div>
+          `)}
+          ${streaming && html`<div class="sb-typing"><span class="spinner" /> Designing...</div>`}
+          <div ref=${chatEndRef} />
+        </div>
+
+        ${error && html`<div class="wizard-error" style="margin: 0 16px 12px;">${error}</div>`}
+
+        <div class="sb-input-area">
+          <textarea class="sb-textarea" placeholder="Describe the agent you want to build..."
+            value=${input} onInput=${(e) => setInput(e.target.value)} onKeyDown=${handleKeyDown}
+            disabled=${streaming || unconfigured} rows="3" />
+          <button class="btn btn-primary" onClick=${handleSend} disabled=${streaming || !input.trim() || unconfigured}>
+            ${streaming ? 'Designing...' : 'Send'}
+          </button>
+        </div>
+      </div>
+
+      <div class="skill-builder-right">
+        ${!draft ? html`
+          <div class="sb-empty" style="margin: auto;">
+            <div class="sb-empty-title">Agent preview</div>
+            <div class="sb-empty-text">Your agent's spec appears here once the AI has enough to draft it. Every field is editable before you create.</div>
+          </div>
+        ` : html`
+          <div class="agent-draft">
+            <div class="agent-draft-field">
+              <label>Name</label>
+              <input class="wizard-input" value=${draft.name || ''} onInput=${(e) => updateDraft('name', e.target.value)} />
+              ${draft.name && html`<div class="wizard-slug-preview">ID: ${slugify(draft.name)}</div>`}
+            </div>
+            <div class="agent-draft-field">
+              <label>Description</label>
+              <input class="wizard-input" value=${draft.description || ''} onInput=${(e) => updateDraft('description', e.target.value)} />
+            </div>
+            <div class="agent-draft-row">
+              <div class="agent-draft-field">
+                <label>Provider</label>
+                <select class="wizard-input" value=${draft.model_provider || ''}
+                  onChange=${(e) => { updateDraft('model_provider', e.target.value); const pm = meta?.provider_models?.[e.target.value]; if (pm) updateDraft('model_name', pm.default || ''); }}>
+                  ${providers.map(p => html`<option value=${p}>${p}</option>`)}
+                </select>
+              </div>
+              <div class="agent-draft-field">
+                <label>Model</label>
+                ${modelOptions.length > 0
+                  ? html`<select class="wizard-input" value=${draft.model_name || ''} onChange=${(e) => updateDraft('model_name', e.target.value)}>
+                      ${modelOptions.map(m => html`<option value=${m.model_id}>${m.display_name}</option>`)}
+                    </select>`
+                  : html`<input class="wizard-input" value=${draft.model_name || ''} onInput=${(e) => updateDraft('model_name', e.target.value)} />`}
+              </div>
+            </div>
+
+            ${needsAWSRegion && html`
+              <div class="agent-draft-field">
+                <label>AWS Region *</label>
+                <input class="wizard-input" placeholder="us-east-1" value=${draft.aws_region || ''} onInput=${(e) => updateDraft('aws_region', e.target.value)} />
+              </div>
+            `}
+            ${needsKey && html`
+              <div class="agent-draft-field">
+                <label>${(PROVIDER_KEY_INFO[draft.model_provider]?.label) || 'API Key'}${oauthDone ? '' : ' *'}</label>
+                ${oauthDone
+                  ? html`<div class="provider-ok">✓ OAuth connected</div>`
+                  : html`<input class="wizard-input" type="password"
+                      placeholder=${PROVIDER_KEY_INFO[draft.model_provider]?.placeholder || 'your-api-key'}
+                      value=${apiKey} onInput=${(e) => setApiKey(e.target.value)} autocomplete="off" />`}
+                ${hasOAuth && !oauthDone && html`<button class="btn btn-ghost btn-sm" style="margin-top:6px" onClick=${handleOAuth} disabled=${oauthLoading}>${oauthLoading ? 'Waiting for browser…' : 'Or sign in with OAuth'}</button>`}
+              </div>
+            `}
+
+            ${(draft.builtin_tools && draft.builtin_tools.length > 0) && html`
+              <div class="agent-draft-field">
+                <label>Built-in tools</label>
+                <div class="wizard-review-list">${draft.builtin_tools.map(t => html`<span class="wizard-review-tag agent-draft-chip" onClick=${() => toggleDraftList('builtin_tools', t)} title="click to remove">${t} ×</span>`)}</div>
+              </div>
+            `}
+            ${(draft.skills && draft.skills.length > 0) && html`
+              <div class="agent-draft-field">
+                <label>Skills</label>
+                <div class="wizard-review-list">${draft.skills.map(s => html`<span class="wizard-review-tag agent-draft-chip" onClick=${() => toggleDraftList('skills', s)} title="click to remove">${s} ×</span>`)}</div>
+              </div>
+            `}
+
+            <div class="agent-draft-field">
+              <label>Persona / system prompt</label>
+              <textarea class="wizard-input agent-draft-persona" rows="8" value=${draft.system_prompt || ''} onInput=${(e) => updateDraft('system_prompt', e.target.value)} />
+            </div>
+
+            <div class="agent-draft-actions">
+              <button class="btn btn-primary" onClick=${handleCreate} disabled=${!canCreate || creating}>
+                ${creating ? html`<span class="spinner" /> Creating...` : 'Create Agent'}
+              </button>
+            </div>
+          </div>
+        `}
       </div>
     </main>
   `;
@@ -3039,6 +3429,7 @@ function SkillBuilderSettingsModal({ initial, onClose, onSaved }) {
     model: (initial && initial.model) || '',
     base_url: (initial && initial.base_url) || '',
     api_key_env: (initial && initial.api_key_env) || '',
+    use_global_auth: (initial && initial.use_global_auth) || false,
   });
   // API key is intentionally a separate piece of state — never persisted
   // to ui.yaml, never echoed back from the server. Left blank on every
@@ -3062,6 +3453,7 @@ function SkillBuilderSettingsModal({ initial, onClose, onSaved }) {
           model: s.model || '',
           base_url: s.base_url || '',
           api_key_env: s.api_key_env || '',
+          use_global_auth: !!s.use_global_auth,
         });
         setHasKey(!!s.has_key);
       })
@@ -3122,6 +3514,17 @@ function SkillBuilderSettingsModal({ initial, onClose, onSaved }) {
             </div>
           `}
 
+          <label class="sb-checkbox" style="margin-top: 14px; display: flex; gap: 8px; align-items: flex-start;">
+            <input type="checkbox" checked=${form.use_global_auth} onChange=${(e) => update('use_global_auth', e.target.checked)} style="margin-top: 2px;" />
+            <span>
+              <span style="font-size: 13px;">Always use my machine-global forge auth</span>
+              <span style="display:block; font-size: 11px; color: var(--text-muted); margin-top: 2px;">
+                Prefer a global OAuth login (<code>~/.forge/credentials</code>) or global API key over the key below, even when one is set.
+                When off, global auth is still used automatically if no key is configured here.
+              </span>
+            </span>
+          </label>
+
           <label class="modal-label" style="margin-top: 12px;">API key env var</label>
           <input class="wizard-input" placeholder=${`${form.provider.toUpperCase()}_API_KEY (default)`}
             value=${form.api_key_env} onInput=${(e) => update('api_key_env', e.target.value)} />
@@ -3165,6 +3568,9 @@ function SkillBuilderSettingsModal({ initial, onClose, onSaved }) {
 
 function SkillBuilderPage({ agentId }) {
   const [provider, setProvider] = useState(null);
+  // Build-time provider switch (the LLM the skill builder runs on).
+  const [builderLLMs, setBuilderLLMs] = useState([]);
+  const [builderProvider, setBuilderProvider] = useState('');
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
@@ -3203,11 +3609,12 @@ function SkillBuilderPage({ agentId }) {
   const chatEndRef = useRef(null);
   const editorRef = useRef(null);
 
-  // Fetch provider on mount
+  // Fetch provider + available builder LLMs on mount
   useEffect(() => {
     fetchSkillBuilderProvider(agentId)
       .then(setProvider)
       .catch(err => setError('Failed to load provider: ' + err.message));
+    fetchBuilderProviders(agentId).then(r => setBuilderLLMs(r.providers || [])).catch(() => { /* switch stays hidden */ });
   }, [agentId]);
 
   // Fetch custom skills attached to the agent for the edit picker
@@ -3302,6 +3709,7 @@ function SkillBuilderPage({ agentId }) {
         signal: abort.signal,
         mode,
         editingName: editingSkillName,
+        provider: builderProvider,
         onProgress() {
           // Content-free keepalive; the pending placeholder stays until the
           // message arrives. No per-token rendering (the stream is JSON).
@@ -3342,7 +3750,7 @@ function SkillBuilderPage({ agentId }) {
       setStreaming(false);
       abortRef.current = null;
     }
-  }, [agentId, messages, input, streaming, mode, editingSkillName]);
+  }, [agentId, messages, input, streaming, mode, editingSkillName, builderProvider]);
 
   const handleValidate = useCallback(async () => {
     try {
@@ -3488,9 +3896,17 @@ function SkillBuilderPage({ agentId }) {
                 <span>Workspace skill-builder LLM is not configured.</span>
                 <button class="btn btn-link btn-sm" onClick=${() => setShowSettings(true)}>Configure</button>
               ` : html`
-                <span>${provider.provider}/${provider.model}</span>
+                ${builderLLMs.length > 1
+                  ? html`<span class="sb-provider-switch-wrap" title="Which LLM the skill builder runs on (switch anytime)">
+                      Builder LLM:
+                      <select class="sb-provider-switch" value=${builderProvider || (builderLLMs[0] && builderLLMs[0].provider) || ''}
+                        onChange=${(e) => setBuilderProvider(e.target.value)} disabled=${streaming}>
+                        ${builderLLMs.map(p => html`<option value=${p.provider}>${p.provider} · ${p.model}${p.use_gateway ? ' (gateway)' : p.use_oauth ? ' (OAuth)' : ''}</option>`)}
+                      </select>
+                    </span>`
+                  : html`<span>${provider.provider}/${provider.model}</span>`}
                 ${provider.source === 'agent_fallback' && html`<span class="provider-warning" title=${provider.warning || ''}>using agent fallback (deprecated)</span>`}
-                ${!provider.has_key && html`<span class="provider-warning">API key not configured (env: ${provider.api_key_env || 'unset'})</span>`}
+                ${!provider.has_key && builderLLMs.length <= 1 && html`<span class="provider-warning">API key not configured (env: ${provider.api_key_env || 'unset'})</span>`}
                 <button class="btn btn-link btn-sm" onClick=${() => setShowSettings(true)}>Settings</button>
               `}
             </div>

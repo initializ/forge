@@ -75,6 +75,13 @@ type initOptions struct {
 	AuthMode        string         // "", "none", "oidc", "http_verifier", "custom"
 	AuthSettings    map[string]any // provider-specific settings block
 	AuthEgressHosts []string       // hosts to merge into egress allowlist
+
+	// Description + SystemPrompt come from the AI agent builder (forge
+	// ui's conversational create flow). When SystemPrompt is non-empty,
+	// scaffold() writes a root SKILL.md carrying the persona so the
+	// runtime uses it as the system-prompt lead (Runner.rootSkillPersona).
+	Description  string
+	SystemPrompt string
 }
 
 // toolEntry represents a tool parsed from a skills file.
@@ -954,6 +961,15 @@ func scaffold(opts *initOptions) error {
 		}
 	}
 
+	// Write the agent's root SKILL.md persona when the AI agent builder
+	// supplied one. The runtime uses its body as the system-prompt lead
+	// (Runner.rootSkillPersona). Skipped for the wizard (empty prompt).
+	if strings.TrimSpace(opts.SystemPrompt) != "" {
+		if err := writeRootSkill(dir, opts); err != nil {
+			return fmt.Errorf("writing root SKILL.md: %w", err)
+		}
+	}
+
 	// Vendor selected registry skills
 	scfReg, scfErr := local.NewEmbeddedRegistry()
 	if scfErr != nil {
@@ -1679,6 +1695,42 @@ func runOAuthFlow(provider string) (string, error) {
 	}
 
 	return token.AccessToken, nil
+}
+
+// titleCase capitalizes the first letter of a string.
+// writeRootSkill writes the agent's root SKILL.md from the AI agent
+// builder's persona. The frontmatter carries the agent id + a one-line
+// description (so the skill catalog lists the agent cleanly); the body is
+// the persona the runtime injects as the system-prompt lead. The file is
+// only written when it doesn't already exist OR --force is set, so a
+// re-scaffold never silently clobbers a hand-edited persona.
+func writeRootSkill(dir string, opts *initOptions) error {
+	path := filepath.Join(dir, "SKILL.md")
+	if !opts.Force {
+		if _, err := os.Stat(path); err == nil {
+			return nil // keep an existing persona
+		}
+	}
+	desc := strings.TrimSpace(opts.Description)
+	if desc == "" {
+		desc = opts.Name + " agent"
+	}
+	content := fmt.Sprintf("---\nname: %s\ndescription: %s\n---\n\n%s\n",
+		opts.AgentID, yamlQuote(desc), strings.TrimSpace(opts.SystemPrompt))
+	return os.WriteFile(path, []byte(content), 0o644)
+}
+
+// yamlQuote renders s as a double-quoted YAML scalar, escaping the two
+// characters that matter inside a double-quoted scalar (backslash and
+// quote) and collapsing newlines to spaces. The description is a one-
+// liner, so this keeps the frontmatter valid without pulling in a YAML
+// marshaller.
+func yamlQuote(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "\"", "\\\"")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	return "\"" + s + "\""
 }
 
 // titleCase capitalizes the first letter of a string.

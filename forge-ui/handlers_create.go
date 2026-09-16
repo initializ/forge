@@ -51,52 +51,7 @@ func (s *UIServer) handleGetWizardMeta(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	// Per-provider model lists
-	meta.ProviderModels = map[string]ProviderModels{
-		// OpenAI is projected from forge-core/catalog rather than duplicated
-		// here. The two lists had drifted — this one still offered models the
-		// Codex backend retired — which is exactly what the catalog exists to
-		// prevent. APIKeyOnly in the catalog decides the OAuth/APIKey split.
-		"openai": openAIProviderModels(),
-		"anthropic": {
-			Default:  "claude-sonnet-4-20250514",
-			NeedsKey: true,
-			APIKey: []ModelOption{
-				{DisplayName: "Claude Sonnet 4", ModelID: "claude-sonnet-4-20250514"},
-				{DisplayName: "Claude Haiku 3.5", ModelID: "claude-3-5-haiku-20241022"},
-				{DisplayName: "Claude Opus 4", ModelID: "claude-opus-4-20250514"},
-			},
-		},
-		"gemini": {
-			Default:  "gemini-2.5-flash",
-			NeedsKey: true,
-			APIKey: []ModelOption{
-				{DisplayName: "Gemini 2.5 Flash", ModelID: "gemini-2.5-flash"},
-				{DisplayName: "Gemini 2.5 Pro", ModelID: "gemini-2.5-pro"},
-			},
-		},
-		"ollama": {
-			Default:  "llama3",
-			NeedsKey: false,
-			APIKey: []ModelOption{
-				{DisplayName: "Llama 3", ModelID: "llama3"},
-				{DisplayName: "Mistral", ModelID: "mistral"},
-				{DisplayName: "CodeLlama", ModelID: "codellama"},
-				{DisplayName: "Phi-3", ModelID: "phi3"},
-			},
-		},
-		"custom": {
-			Default:  "default",
-			NeedsKey: true,
-			IsCustom: true,
-			// Custom-provider normalization (issue #83): the wizard's
-			// Custom path is wired through provider=openai +
-			// OPENAI_BASE_URL/OPENAI_API_KEY at scaffold time. The
-			// frontend therefore writes OPENAI_BASE_URL directly
-			// rather than the legacy MODEL_BASE_URL alias, which the
-			// runtime resolver never read.
-			BaseURLEnv: "OPENAI_BASE_URL",
-		},
-	}
+	meta.ProviderModels = defaultProviderModels()
 
 	// Bedrock is sourced from the shared catalog (not hardcoded like the
 	// other providers) so the web wizard's model list + region flag cannot
@@ -164,6 +119,56 @@ func (s *UIServer) handleGetWizardMeta(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, meta)
+}
+
+// defaultProviderModels returns the per-provider model lists the wizard
+// and the AI agent builder both consume. Extracted from the wizard-meta
+// handler so the agent-builder system prompt can enumerate the same
+// valid provider/model IDs (single source of truth — the LLM must only
+// pick models the scaffold accepts).
+// defaultProviderModels returns the per-provider model lists the wizard and
+// the AI agent builder both consume. OpenAI is projected from the shared
+// forge-core/catalog (openAIProviderModels) so its model list — the OAuth /
+// APIKey split and the current default — never drifts or re-offers a
+// Codex-retired model (#450). Bedrock is added from the catalog by
+// handleGetWizardMeta; the remaining providers are static.
+func defaultProviderModels() map[string]ProviderModels {
+	return map[string]ProviderModels{
+		"openai": openAIProviderModels(),
+		"anthropic": {
+			Default:  "claude-sonnet-4-20250514",
+			NeedsKey: true,
+			APIKey: []ModelOption{
+				{DisplayName: "Claude Sonnet 4", ModelID: "claude-sonnet-4-20250514"},
+				{DisplayName: "Claude Haiku 3.5", ModelID: "claude-3-5-haiku-20241022"},
+				{DisplayName: "Claude Opus 4", ModelID: "claude-opus-4-20250514"},
+			},
+		},
+		"gemini": {
+			Default:  "gemini-2.5-flash",
+			NeedsKey: true,
+			APIKey: []ModelOption{
+				{DisplayName: "Gemini 2.5 Flash", ModelID: "gemini-2.5-flash"},
+				{DisplayName: "Gemini 2.5 Pro", ModelID: "gemini-2.5-pro"},
+			},
+		},
+		"ollama": {
+			Default:  "llama3",
+			NeedsKey: false,
+			APIKey: []ModelOption{
+				{DisplayName: "Llama 3", ModelID: "llama3"},
+				{DisplayName: "Mistral", ModelID: "mistral"},
+				{DisplayName: "CodeLlama", ModelID: "codellama"},
+				{DisplayName: "Phi-3", ModelID: "phi3"},
+			},
+		},
+		"custom": {
+			Default:    "default",
+			NeedsKey:   true,
+			IsCustom:   true,
+			BaseURLEnv: "OPENAI_BASE_URL",
+		},
+	}
 }
 
 // handleCreateAgent creates a new agent via the injected CreateFunc.

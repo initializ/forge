@@ -30,6 +30,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/initializ/forge/forge-core/llm/oauth"
+	"github.com/initializ/forge/forge-core/settings"
 	"gopkg.in/yaml.v3"
 )
 
@@ -50,6 +52,20 @@ const (
 	SourceWorkspace     = "workspace"
 	SourceUser          = "user"
 	SourceAgentFallback = "agent_fallback"
+	// SourceGlobalOAuth / SourceGlobalEnv are used when the resolved
+	// credentials come from the operator's machine-global forge auth —
+	// a stored OAuth token (~/.forge/credentials) or a global API-key
+	// env var — rather than from a workspace/user ui.yaml credential.
+	// These fire either as a gap-fill under an existing ui.yaml config
+	// or as the sole source when no ui.yaml exists at all. See issue #92
+	// follow-up: "skill builder should reuse my machine's global auth".
+	SourceGlobalOAuth = "global_oauth"
+	SourceGlobalEnv   = "global_env"
+	// SourceGlobalGateway fires when no ui.yaml exists but the settings
+	// model default names a provider that has a configured gateway
+	// (enterprise Anthropic / OpenAI). The builder authenticates through
+	// that gateway at request time.
+	SourceGlobalGateway = "global_gateway"
 	SourceUnset         = "unset"
 )
 
@@ -82,6 +98,16 @@ type SkillBuilderConfig struct {
 	// keeps credentials under a different name (e.g.
 	// WORKSPACE_LLM_API_KEY).
 	APIKeyEnv string `yaml:"api_key_env,omitempty" json:"api_key_env,omitempty"`
+	// UseGlobalAuth is the managed "always use my machine-global forge
+	// auth" toggle. When false (default), global auth — a stored OAuth
+	// token or a global API-key env var — is only used to FILL A GAP:
+	// i.e. when the ui.yaml config resolves no usable API key. When
+	// true, global auth takes precedence even if api_key_env resolves,
+	// so an operator who has OAuthed (or keeps a single global key) can
+	// force the skill/agent builder onto it without clearing per-
+	// workspace settings. OAuth is only available for provider=openai
+	// today (mirrors the agent runtime's createProviderClient).
+	UseGlobalAuth bool `yaml:"use_global_auth,omitempty" json:"use_global_auth,omitempty"`
 }
 
 // SkillBuilderLLM is the resolved-at-request-time view of a
@@ -104,12 +130,39 @@ type SkillBuilderLLM struct {
 	// display alongside the resolved config (e.g. the agent-fallback
 	// deprecation message).
 	Warning string
+	// UseOAuth signals that credentials come from a stored machine-
+	// global OAuth token rather than an API key. When set, the caller
+	// (forge-cli's LLMStreamFunc) MUST build an OAuth-aware client that
+	// loads + refreshes the token from the credential store at request
+	// time — APIKey is intentionally left empty here so a stale token
+	// is never baked into the resolved config. Mirrors the agent
+	// runtime's createProviderClient OAuth path.
+	UseOAuth bool
+	// UseGateway signals that a model gateway is configured (in the
+	// system/user settings layers) for this provider. The caller (forge-
+	// cli's LLMStreamFunc) then authenticates through that gateway —
+	// overlaying base_url + auth_scheme (bearer / x-api-key / apikey_header)
+	// and minting/injecting the token from ~/.forge/credentials via the
+	// gateway's api_key_helper — exactly like `forge run`. This is the
+	// enterprise-Anthropic (and OpenAI) login path. When set, credentials
+	// are considered available even without an explicit API key or OAuth
+	// token, since the gateway supplies them at request time.
+	UseGateway bool
+	// UseGlobalAuth echoes the persisted managed toggle (SkillBuilderConfig.
+	// UseGlobalAuth) so the Settings UI can round-trip it. It does not
+	// affect resolution here — LoadSkillBuilderLLM reads the toggle from
+	// the config directly — it's purely informational for the UI.
+	UseGlobalAuth bool
 }
 
 // HasCredentials reports whether the resolved configuration carries
-// a usable API key (or is provider=ollama, which doesn't need one).
+// a usable credential: an API key, an ollama endpoint (no key needed),
+// or a machine-global OAuth token the caller will load at request time.
 func (s SkillBuilderLLM) HasCredentials() bool {
 	if s.Provider == "ollama" {
+		return true
+	}
+	if s.UseOAuth || s.UseGateway {
 		return true
 	}
 	return s.APIKey != "" && s.APIKey != "__oauth__"
@@ -133,7 +186,10 @@ func LoadSkillBuilderLLM(workspaceDir, agentDir string, envLookup func(string) s
 	if cfg, ok, err := readSkillBuilderConfig(filepath.Join(workspaceDir, WorkspaceConfigDir, UIConfigFileName)); err != nil {
 		return SkillBuilderLLM{}, fmt.Errorf("workspace ui.yaml: %w", err)
 	} else if ok {
-		return resolve(cfg, SourceWorkspace, "", envLookup), nil
+		out := resolve(cfg, SourceWorkspace, "", envLookup)
+		applyGlobalAuth(&out, cfg.UseGlobalAuth, envLookup)
+		markGateway(&out, workspaceDir)
+		return out, nil
 	}
 
 	// Tier 2: user config.
@@ -142,22 +198,304 @@ func LoadSkillBuilderLLM(workspaceDir, agentDir string, envLookup func(string) s
 		if cfg, ok, err := readSkillBuilderConfig(userPath); err != nil {
 			return SkillBuilderLLM{}, fmt.Errorf("user ui.yaml: %w", err)
 		} else if ok {
-			return resolve(cfg, SourceUser, "", envLookup), nil
+			out := resolve(cfg, SourceUser, "", envLookup)
+			applyGlobalAuth(&out, cfg.UseGlobalAuth, envLookup)
+			markGateway(&out, workspaceDir)
+			return out, nil
 		}
 	}
 
 	// Tier 3: agent fallback. Deprecated; warn loudly so operators
-	// migrate. Only fires when an agent context exists.
+	// migrate. Only fires when an agent context exists. Kept ABOVE the
+	// machine-global default because the selected agent's own LLM config
+	// (provider/model/base_url) is more specific than a generic global
+	// key — global auth still fills a credential gap here via
+	// applyGlobalAuth.
 	if agentDir != "" {
 		if cfg, ok := readAgentFallback(agentDir, envLookup); ok {
 			warning := "Skill builder is using the selected agent's LLM credentials. " +
 				"This fallback is deprecated and will be removed in a future release. " +
 				"Configure workspace-level skill-builder LLM under Settings → Skill Builder."
-			return resolve(cfg, SourceAgentFallback, warning, envLookup), nil
+			out := resolve(cfg, SourceAgentFallback, warning, envLookup)
+			applyGlobalAuth(&out, false, envLookup)
+			markGateway(&out, workspaceDir)
+			return out, nil
 		}
 	}
 
+	// Tier 4: machine-global forge auth. Nothing else is configured, but
+	// the operator may have a settings model gateway (enterprise Anthropic /
+	// OpenAI), OAuthed (`forge init`/`forge try` OAuth flow ->
+	// ~/.forge/credentials), or exported a global provider API key. Make
+	// the skill/agent builder "just work" off that, same as `forge run`.
+	// This is the primary path for the AI agent builder, which resolves
+	// with no agent context (agentDir empty).
+	if g, ok := resolveGlobalDefault(workspaceDir, envLookup); ok {
+		return g, nil
+	}
+
 	return SkillBuilderLLM{Source: SourceUnset}, nil
+}
+
+// oauthCredChecker reports whether a usable machine-global OAuth token
+// is stored for the given provider. It's a package var so tests can
+// stub the credential store without touching the real ~/.forge files.
+var oauthCredChecker = defaultOAuthCredChecker
+
+// defaultOAuthCredChecker consults the real forge credential store.
+// OAuth is only wired for provider=openai today — mirrors the agent
+// runtime's createProviderClient, which gates the OAuth path on
+// provider=="openai" and a stored token carrying a refresh token.
+func defaultOAuthCredChecker(provider string) bool {
+	if provider != "openai" {
+		return false
+	}
+	tok, err := oauth.LoadCredentials(provider)
+	return err == nil && tok != nil && tok.RefreshToken != ""
+}
+
+// applyGlobalAuth layers machine-global forge auth onto an already-
+// resolved ui.yaml config. In the default (forceGlobal=false) mode it
+// only fills a GAP — when the config resolved no usable API key. When
+// forceGlobal is true (the config's use_global_auth toggle), global
+// auth wins even over an api_key_env that did resolve.
+//
+// Resolution order for the credential, in both modes:
+//  1. A stored OAuth token for the provider -> UseOAuth (token loaded
+//     + refreshed by the caller at request time).
+//  2. The provider's conventional global env var (OPENAI_API_KEY, …),
+//     which covers the case where ui.yaml named a custom api_key_env
+//     that happens to be empty while the standard global key is set.
+func applyGlobalAuth(llm *SkillBuilderLLM, forceGlobal bool, envLookup func(string) string) {
+	if llm.Provider == "" || llm.Provider == "ollama" {
+		return
+	}
+	hasExplicit := llm.APIKey != "" && llm.APIKey != "__oauth__"
+	if hasExplicit && !forceGlobal {
+		return
+	}
+
+	if oauthCredChecker(llm.Provider) {
+		llm.UseOAuth = true
+		llm.APIKey = "" // token is loaded at request time, never cached here
+		if llm.Source == SourceUnset || llm.Source == "" {
+			llm.Source = SourceGlobalOAuth
+		}
+		return
+	}
+
+	if def := defaultAPIKeyEnv(llm.Provider); def != "" {
+		if v := envLookup(def); v != "" {
+			llm.APIKey = v
+			llm.APIKeyEnv = def
+			if llm.Source == SourceUnset || llm.Source == "" {
+				llm.Source = SourceGlobalEnv
+			}
+		}
+	}
+}
+
+// resolveGlobalDefault builds a SkillBuilderLLM purely from machine-
+// global forge auth, used when no workspace/user ui.yaml exists. It
+// prefers a stored OAuth token (openai) and otherwise picks the first
+// provider whose conventional global API-key env var is set. The model
+// defaults to a sensible per-provider choice the operator can override
+// by writing a ui.yaml via Settings → Skill Builder.
+func resolveGlobalDefault(workspaceDir string, envLookup func(string) string) (SkillBuilderLLM, bool) {
+	// A settings model default (managed or user layer) whose provider has a
+	// configured gateway is the managed operator's explicit intent — the
+	// enterprise-Anthropic path. It wins over an incidental global key.
+	if def := settingsModelDefault(workspaceDir); def != nil && def.Provider != "" {
+		if gatewayChecker(workspaceDir, def.Provider) {
+			model := def.Model
+			if model == "" {
+				model = defaultModelForProvider(def.Provider)
+			}
+			return SkillBuilderLLM{
+				Provider:   def.Provider,
+				Model:      model,
+				Source:     SourceGlobalGateway,
+				UseGateway: true,
+			}, true
+		}
+	}
+	if oauthCredChecker("openai") {
+		return SkillBuilderLLM{
+			Provider: "openai",
+			Model:    defaultModelForProvider("openai"),
+			Source:   SourceGlobalOAuth,
+			UseOAuth: true,
+		}, true
+	}
+	for _, provider := range []string{"openai", "anthropic", "gemini"} {
+		env := defaultAPIKeyEnv(provider)
+		if env == "" {
+			continue
+		}
+		if v := envLookup(env); v != "" {
+			return SkillBuilderLLM{
+				Provider:  provider,
+				Model:     defaultModelForProvider(provider),
+				APIKeyEnv: env,
+				APIKey:    v,
+				Source:    SourceGlobalEnv,
+			}, true
+		}
+	}
+	return SkillBuilderLLM{}, false
+}
+
+// markGateway flags the resolved config when a model gateway is configured
+// for its provider in the TRUSTED settings layers (system + user, never a
+// cloned repo's project settings — same trust boundary the runtime and the
+// builder's client construction enforce). When set, the builder
+// authenticates through the gateway at request time even if no explicit key
+// or OAuth token is present.
+func markGateway(out *SkillBuilderLLM, workspaceDir string) {
+	if out.Provider != "" && gatewayChecker(workspaceDir, out.Provider) {
+		out.UseGateway = true
+	}
+}
+
+// gatewayChecker reports whether a model gateway is configured for provider
+// in the trusted settings layers under workspaceDir. Package var so tests can
+// stub it without writing settings files.
+var gatewayChecker = defaultGatewayChecker
+
+func defaultGatewayChecker(workspaceDir, provider string) bool {
+	if provider == "" {
+		return false
+	}
+	layers, err := settings.LoadAllLayers(settings.LoadOptions{WorkingDir: workspaceDir})
+	if err != nil {
+		return false
+	}
+	return settings.Resolve(settings.TrustedGatewayLayers(layers)).Models.GatewayForProvider(provider) != nil
+}
+
+// settingsModelDefault returns the settings-resolved default provider/model
+// (models.default), or nil when unset/unreadable. Package var for tests.
+var settingsModelDefault = defaultSettingsModelDefault
+
+func defaultSettingsModelDefault(workspaceDir string) *settings.ModelDefault {
+	layers, err := settings.LoadAllLayers(settings.LoadOptions{WorkingDir: workspaceDir})
+	if err != nil {
+		return nil
+	}
+	return settings.Resolve(layers).Models.Default
+}
+
+// builderProviders is the ordered set of providers the build-time switch can
+// offer. ollama is intentionally excluded — it's only usable when the operator
+// has explicitly configured it as their provider (which surfaces as the
+// resolved default), not as a machine-global credential the switch discovers.
+var builderProviders = []string{"openai", "anthropic", "gemini"}
+
+// candidateFor resolves the builder LLM for a specific provider using only the
+// machine-global credential sources — a model gateway, a stored OAuth token,
+// or a global API-key env var. Returns ok=false when the provider has no
+// usable credential. The model comes from settings.models.default when it
+// names this provider, else the per-provider default. Used to enumerate the
+// providers the operator can switch between at build time.
+func candidateFor(workspaceDir, provider string, envLookup func(string) string) (SkillBuilderLLM, bool) {
+	if envLookup == nil {
+		envLookup = os.Getenv
+	}
+	out := SkillBuilderLLM{Provider: provider, Model: defaultModelForProvider(provider)}
+	if def := settingsModelDefault(workspaceDir); def != nil && def.Provider == provider && def.Model != "" {
+		out.Model = def.Model
+	}
+	switch {
+	case gatewayChecker(workspaceDir, provider):
+		out.UseGateway = true
+		out.Source = SourceGlobalGateway
+		return out, true
+	case provider == "openai" && oauthCredChecker("openai"):
+		out.UseOAuth = true
+		out.Source = SourceGlobalOAuth
+		return out, true
+	}
+	if env := defaultAPIKeyEnv(provider); env != "" {
+		if v := envLookup(env); v != "" {
+			out.APIKey = v
+			out.APIKeyEnv = env
+			out.Source = SourceGlobalEnv
+			return out, true
+		}
+	}
+	return out, false
+}
+
+// AvailableSkillBuilderLLMs enumerates every builder LLM the operator can use
+// right now — the resolved default first (LoadSkillBuilderLLM), then any other
+// provider that has machine-global credentials (gateway / OAuth / global env).
+// It backs the build-time provider switch: element 0 is the default the UI
+// pre-selects; the rest are the alternatives the operator can flip to without
+// opening Settings. Returns an empty slice when nothing is available.
+func AvailableSkillBuilderLLMs(workspaceDir, agentDir string, envLookup func(string) string) ([]SkillBuilderLLM, error) {
+	if envLookup == nil {
+		envLookup = os.Getenv
+	}
+	def, err := LoadSkillBuilderLLM(workspaceDir, agentDir, envLookup)
+	if err != nil {
+		return nil, err
+	}
+	var out []SkillBuilderLLM
+	seen := map[string]bool{}
+	if def.Source != SourceUnset && def.HasCredentials() {
+		out = append(out, def)
+		seen[def.Provider] = true
+	}
+	for _, p := range builderProviders {
+		if seen[p] {
+			continue
+		}
+		if c, ok := candidateFor(workspaceDir, p, envLookup); ok {
+			out = append(out, c)
+			seen[p] = true
+		}
+	}
+	return out, nil
+}
+
+// ResolveSkillBuilderLLMForProvider returns the available builder LLM for the
+// named provider — the entry the build-time switch selected. An empty provider
+// returns the default (element 0). ok=false when the requested provider isn't
+// currently available (no credentials) or nothing is available at all, so the
+// caller can 400 rather than stream an auth failure.
+func ResolveSkillBuilderLLMForProvider(workspaceDir, agentDir, provider string, envLookup func(string) string) (SkillBuilderLLM, bool, error) {
+	avail, err := AvailableSkillBuilderLLMs(workspaceDir, agentDir, envLookup)
+	if err != nil {
+		return SkillBuilderLLM{}, false, err
+	}
+	if len(avail) == 0 {
+		return SkillBuilderLLM{Source: SourceUnset}, false, nil
+	}
+	if provider == "" {
+		return avail[0], true, nil
+	}
+	for _, l := range avail {
+		if l.Provider == provider {
+			return l, true, nil
+		}
+	}
+	return SkillBuilderLLM{}, false, nil
+}
+
+// defaultModelForProvider returns a reasonable default model for the
+// global-auth convenience path (no ui.yaml). These mirror the wizard's
+// per-provider defaults in handlers_create.go; duplicated here because
+// uiconfig must not import the parent forge-ui package (import cycle).
+func defaultModelForProvider(provider string) string {
+	switch provider {
+	case "openai":
+		return "gpt-5.4"
+	case "anthropic":
+		return "claude-sonnet-4-20250514"
+	case "gemini":
+		return "gemini-2.5-flash"
+	}
+	return ""
 }
 
 // SaveSkillBuilderLLM persists the skill-builder configuration to
@@ -288,12 +626,13 @@ func readDotEnv(path string) (map[string]string, error) {
 // injected envLookup.
 func resolve(cfg SkillBuilderConfig, source, warning string, envLookup func(string) string) SkillBuilderLLM {
 	out := SkillBuilderLLM{
-		Provider:  cfg.Provider,
-		Model:     cfg.Model,
-		BaseURL:   cfg.BaseURL,
-		APIKeyEnv: cfg.APIKeyEnv,
-		Source:    source,
-		Warning:   warning,
+		Provider:      cfg.Provider,
+		Model:         cfg.Model,
+		BaseURL:       cfg.BaseURL,
+		APIKeyEnv:     cfg.APIKeyEnv,
+		Source:        source,
+		Warning:       warning,
+		UseGlobalAuth: cfg.UseGlobalAuth,
 	}
 	if out.APIKeyEnv == "" {
 		out.APIKeyEnv = defaultAPIKeyEnv(cfg.Provider)

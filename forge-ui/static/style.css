@@ -2326,3 +2326,90 @@ body {
   flex: 1;
   min-height: 0;
 }
+
+/* ── New Agent: build-mode toggle (Wizard | AI Builder) ─────── */
+.build-mode-toggle {
+  display: inline-flex;
+  gap: 4px;
+  margin-top: 10px;
+  padding: 3px;
+  background: var(--bg-subtle, rgba(139, 148, 158, 0.08));
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+}
+.build-mode-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.build-mode-btn.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* ── AI Agent Builder: draft preview pane ───────────────────── */
+.provider-ok {
+  margin-left: 8px;
+  font-size: 11px;
+  color: var(--success-color, #2ea043);
+}
+.agent-draft {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 20px;
+  overflow-y: auto;
+}
+.agent-draft-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.agent-draft-field > label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.agent-draft-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.agent-draft-persona {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  resize: vertical;
+}
+.agent-draft-chip {
+  cursor: pointer;
+}
+.agent-draft-actions {
+  margin-top: 4px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* ── Builder-time provider switch ────────────────────────────── */
+.sb-provider-switch-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.sb-provider-switch {
+  background: var(--bg-subtle, rgba(139, 148, 158, 0.08));
+  color: var(--text);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.sb-provider-switch:disabled { opacity: 0.5; cursor: default; }

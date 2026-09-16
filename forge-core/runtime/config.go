@@ -3,6 +3,7 @@ package runtime
 import (
 	"strings"
 
+	"github.com/initializ/forge/forge-core/catalog"
 	"github.com/initializ/forge/forge-core/llm"
 	"github.com/initializ/forge/forge-core/types"
 )
@@ -145,20 +146,21 @@ func ResolveModelConfig(cfg *types.ForgeConfig, envVars map[string]string, provi
 	return mc
 }
 
-// defaultModelForProvider returns the default model name for a given provider.
+// defaultModelForProvider returns the default model name for a given provider,
+// read from the catalog so the runtime cannot drift from the models the
+// wizards offer. Returns "" for providers the catalog does not carry (and for
+// "custom", which deliberately has no default — the user supplies the name).
 func defaultModelForProvider(provider string) string {
-	switch provider {
-	case "openai", llm.ProviderOpenAIResponses:
-		return "gpt-5.4"
-	case "anthropic":
-		return "claude-sonnet-4-20250514"
-	case "gemini":
-		return "gemini-2.5-flash"
-	case "ollama":
-		return "llama3"
-	default:
-		return ""
+	// openai-responses is a transport variant of the same vendor, not a
+	// separate catalog entry.
+	id := provider
+	if id == llm.ProviderOpenAIResponses {
+		id = "openai"
 	}
+	if p, ok := catalog.ProviderByID(id); ok {
+		return p.DefaultModel
+	}
+	return ""
 }
 
 // resolveFallbacks resolves fallback provider configurations from multiple sources:

@@ -12,13 +12,20 @@ import (
 
 var kebabCasePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
+// awsRegionPattern is the shape of an AWS region (e.g. us-east-1,
+// eu-west-2, ap-southeast-1). Lowercase letters, digits, and hyphens —
+// the same rule the catalog's aws_region field advertises. Used to reject
+// a typo'd model.aws_region for provider "bedrock" (#205).
+var awsRegionPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
+
 // knownModelAuthSchemes is the accepted set for model.auth_scheme (outbound
-// LLM auth). "" / x_api_key / bearer all resolve to the provider-native
-// header; aws_sigv4 (#202) and apikey_header (#302) are the active schemes.
+// LLM auth). "" / x_api_key resolve to the provider-native header; bearer (#455)
+// sends `Authorization: Bearer` (native for openai, replaces x-api-key for
+// anthropic); aws_sigv4 (#202) and apikey_header (#302) are the gateway schemes.
 var knownModelAuthSchemes = map[string]bool{
 	"":                             true,
 	"x_api_key":                    true,
-	"bearer":                       true,
+	llm.AuthSchemeBearer:           true,
 	llm.AuthSchemeAWSSigV4:         true,
 	llm.AuthSchemeAPIKeyHeader:     true,
 	llm.AuthSchemeAPIKeyHeaderOnly: true,
@@ -98,6 +105,29 @@ func ValidateForgeConfig(cfg *types.ForgeConfig) *ValidationResult {
 		r.Warnings = append(r.Warnings, fmt.Sprintf("model.organization_id is set but provider is %q (only used by openai / openai-responses)", cfg.Model.Provider))
 	}
 
+	// Native Bedrock (provider: bedrock, #205) signs every request with
+	// SigV4 for a region-scoped endpoint, so the region is required — it
+	// drives both the default host (bedrock-runtime.<region>.amazonaws.com)
+	// and the signature scope. auth_scheme is not needed (signing is
+	// intrinsic); warn if it's set since the bedrock client ignores it.
+	if cfg.Model.Provider == llm.ProviderBedrock {
+		if cfg.Model.AWSRegion == "" {
+			r.Errors = append(r.Errors, "model.aws_region is required for provider \"bedrock\" (drives the endpoint host and SigV4 signature scope)")
+		} else if !awsRegionPattern.MatchString(cfg.Model.AWSRegion) {
+			// A malformed region silently produces a bad host AND poisons the
+			// region-derived egress allowlist entry, so reject it up front.
+			r.Errors = append(r.Errors, fmt.Sprintf("model.aws_region %q is not a valid region (expected e.g. us-east-1)", cfg.Model.AWSRegion))
+		}
+		// model.name is only a warning in general, but for bedrock it is the
+		// URL path segment (/model/<name>/converse) — empty yields "/model//converse".
+		if cfg.Model.Name == "" {
+			r.Errors = append(r.Errors, "model.name is required for provider \"bedrock\" (it is the /model/<id>/converse path segment)")
+		}
+		if cfg.Model.AuthScheme != "" {
+			r.Warnings = append(r.Warnings, "model.auth_scheme is ignored for provider \"bedrock\"; SigV4 signing is intrinsic")
+		}
+	}
+
 	// model.auth_scheme validation (#202 / #302). An unrecognized value
 	// silently degrades to native-headers-only — reproducing the exact 401
 	// the apikey_header scheme exists to fix — so reject it here.
@@ -106,7 +136,7 @@ func ValidateForgeConfig(cfg *types.ForgeConfig) *ValidationResult {
 	}
 	// Only the openai, openai-responses, and anthropic clients honor
 	// auth_scheme; warn if it's set on a provider that will silently ignore it.
-	if s := cfg.Model.AuthScheme; (s == llm.AuthSchemeAWSSigV4 || s == llm.AuthSchemeAPIKeyHeader || s == llm.AuthSchemeAPIKeyHeaderOnly) &&
+	if s := cfg.Model.AuthScheme; (s == llm.AuthSchemeAWSSigV4 || s == llm.AuthSchemeAPIKeyHeader || s == llm.AuthSchemeAPIKeyHeaderOnly || s == llm.AuthSchemeBearer) &&
 		cfg.Model.Provider != "" && cfg.Model.Provider != "openai" &&
 		cfg.Model.Provider != llm.ProviderOpenAIResponses && cfg.Model.Provider != "anthropic" {
 		r.Warnings = append(r.Warnings, fmt.Sprintf("model.auth_scheme %q only affects the openai, openai-responses, and anthropic clients; provider %q ignores it", s, cfg.Model.Provider))

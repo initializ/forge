@@ -495,6 +495,63 @@ func TestScaffold_EgressInForgeYAML(t *testing.T) {
 	}
 }
 
+func TestScaffold_ModelGatewayInForgeYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	origDir, _ := os.Getwd()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(origDir) }()
+
+	// With a gateway (settings models.gateway, #454): base_url + auth_scheme +
+	// auth_header_name land in the model block.
+	opts := &initOptions{
+		Name:                "gw-test",
+		AgentID:             "gw-test",
+		Framework:           "forge",
+		ModelProvider:       "anthropic",
+		ModelBaseURL:        "https://gw.corp/v1",
+		ModelAuthScheme:     "apikey_header",
+		ModelAuthHeaderName: "apikey",
+		EnvVars:             map[string]string{},
+		NonInteractive:      true,
+	}
+	if err := scaffold(opts); err != nil {
+		t.Fatalf("scaffold error: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join("gw-test", "forge.yaml"))
+	if err != nil {
+		t.Fatalf("reading forge.yaml: %v", err)
+	}
+	for _, want := range []string{"base_url: https://gw.corp/v1", "auth_scheme: apikey_header", "auth_header_name: apikey"} {
+		if !strings.Contains(string(content), want) {
+			t.Errorf("forge.yaml missing %q:\n%s", want, content)
+		}
+	}
+
+	// Without a gateway: none of those keys appear (provider default endpoint).
+	opts2 := &initOptions{
+		Name:           "nogw-test",
+		AgentID:        "nogw-test",
+		Framework:      "forge",
+		ModelProvider:  "anthropic",
+		EnvVars:        map[string]string{},
+		NonInteractive: true,
+	}
+	if err := scaffold(opts2); err != nil {
+		t.Fatalf("scaffold error: %v", err)
+	}
+	content2, err := os.ReadFile(filepath.Join("nogw-test", "forge.yaml"))
+	if err != nil {
+		t.Fatalf("reading forge.yaml: %v", err)
+	}
+	for _, absent := range []string{"base_url:", "auth_scheme:", "auth_header_name:"} {
+		if strings.Contains(string(content2), absent) {
+			t.Errorf("forge.yaml should omit %q when no gateway is set:\n%s", absent, content2)
+		}
+	}
+}
+
 func TestScaffold_CompressionInForgeYAML(t *testing.T) {
 	tmpDir := t.TempDir()
 	origDir, _ := os.Getwd()
@@ -625,6 +682,29 @@ func TestDeriveEgressDomains_Empty(t *testing.T) {
 // hosts (STS for aws_sigv4, AAD authority for azure_ad, etc.) to the
 // same egress list a user reviews in the Egress step. Pins the contract
 // that the operator never has to add auth hosts manually after the wizard.
+// TestDeriveEgressDomains_BedrockHost pins the #205 review fix: a scaffolded
+// Bedrock agent must get bedrock-runtime.<region>.amazonaws.com in its egress
+// allowlist (the host is region-derived, so it can't be in the static
+// providerDomains map). Without it, `forge run` blocks the agent's own
+// Converse calls when any channel/tool pushes egress into allowlist mode.
+func TestDeriveEgressDomains_BedrockHost(t *testing.T) {
+	opts := &initOptions{
+		ModelProvider: "bedrock",
+		AWSRegion:     "ap-south-1",
+		EnvVars:       map[string]string{},
+	}
+	got := deriveEgressDomains(opts, nil)
+	found := false
+	for _, d := range got {
+		if d == "bedrock-runtime.ap-south-1.amazonaws.com" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected bedrock-runtime.ap-south-1.amazonaws.com in egress domains, got %v", got)
+	}
+}
+
 func TestDeriveEgressDomains_AuthProviderHostsMerged(t *testing.T) {
 	cases := []struct {
 		name string
@@ -793,8 +873,12 @@ func TestBuildTemplateData_DefaultModels(t *testing.T) {
 		provider      string
 		expectedModel string
 	}{
-		{"openai", "gpt-5.4"},
+		// These mirror catalog.Provider.DefaultModel, which
+		// defaultModelNameForProvider now reads from. gpt-5.4 retired from
+		// Codex ChatGPT sign-in on 2026-08-31.
+		{"openai", "gpt-5.6-terra"},
 		{"anthropic", "claude-sonnet-4-20250514"},
+		{"bedrock", "us.anthropic.claude-sonnet-4-20250514-v1:0"},
 		{"gemini", "gemini-2.5-flash"},
 		{"ollama", "llama3"},
 	}
@@ -829,6 +913,72 @@ func TestCollectNonInteractive_GeminiProvider(t *testing.T) {
 	}
 	if opts.EnvVars["GEMINI_API_KEY"] != "gem-key" {
 		t.Errorf("expected GEMINI_API_KEY=gem-key, got %q", opts.EnvVars["GEMINI_API_KEY"])
+	}
+}
+
+func TestCollectNonInteractive_BedrockRequiresRegion(t *testing.T) {
+	t.Run("missing region errors", func(t *testing.T) {
+		opts := &initOptions{
+			Name:          "test",
+			AgentID:       "test",
+			Framework:     "forge",
+			ModelProvider: "bedrock",
+			EnvVars:       map[string]string{},
+		}
+		err := collectNonInteractive(opts)
+		if err == nil || !strings.Contains(err.Error(), "aws-region") {
+			t.Fatalf("expected an aws-region error, got %v", err)
+		}
+	})
+
+	t.Run("region present is accepted", func(t *testing.T) {
+		opts := &initOptions{
+			Name:          "test",
+			AgentID:       "test",
+			Framework:     "forge",
+			ModelProvider: "bedrock",
+			AWSRegion:     "us-east-1",
+			EnvVars:       map[string]string{},
+		}
+		if err := collectNonInteractive(opts); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
+func TestScaffold_Bedrock(t *testing.T) {
+	tmpDir := t.TempDir()
+	origDir, _ := os.Getwd()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(origDir) }()
+
+	opts := &initOptions{
+		Name:           "Bedrock Agent",
+		AgentID:        "bedrock-agent",
+		Framework:      "forge",
+		ModelProvider:  "bedrock",
+		AWSRegion:      "us-east-1",
+		EnvVars:        map[string]string{},
+		NonInteractive: true,
+	}
+	if err := scaffold(opts); err != nil {
+		t.Fatalf("scaffold error: %v", err)
+	}
+
+	cfg, err := config.LoadForgeConfig(filepath.Join("bedrock-agent", "forge.yaml"))
+	if err != nil {
+		t.Fatalf("LoadForgeConfig error: %v", err)
+	}
+	if cfg.Model.Provider != "bedrock" {
+		t.Errorf("provider = %q; want bedrock", cfg.Model.Provider)
+	}
+	if cfg.Model.AWSRegion != "us-east-1" {
+		t.Errorf("aws_region = %q; want us-east-1", cfg.Model.AWSRegion)
+	}
+	if cfg.Model.Name != "us.anthropic.claude-sonnet-4-20250514-v1:0" {
+		t.Errorf("name = %q; want the bedrock default model", cfg.Model.Name)
 	}
 }
 

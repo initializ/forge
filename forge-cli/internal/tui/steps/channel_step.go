@@ -109,9 +109,32 @@ func channelSelectItems() []components.SingleSelectItem {
 	return items
 }
 
-// NewChannelStep creates a new channel step.
-func NewChannelStep(styles *tui.StyleSet) *ChannelStep {
-	items := channelSelectItems()
+// filterChannelItems keeps only channels in the enabled allowlist (settings
+// channels.enabled, #454), so the wizard can't offer a disabled adapter. The
+// "none" opt-out is always retained. Empty enabled = no filtering.
+func filterChannelItems(items []components.SingleSelectItem, enabled []string) []components.SingleSelectItem {
+	if len(enabled) == 0 {
+		return items
+	}
+	allow := make(map[string]bool, len(enabled)+1)
+	for _, e := range enabled {
+		allow[e] = true
+	}
+	allow["none"] = true // never remove the "no channel" choice
+	out := make([]components.SingleSelectItem, 0, len(items))
+	for _, it := range items {
+		if allow[it.Value] {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// NewChannelStep creates a new channel step. enabled is the settings
+// channels.enabled allowlist (#454): when non-empty, only those adapters (plus
+// "none") are offered. Empty = every catalog channel offered.
+func NewChannelStep(styles *tui.StyleSet, enabled []string) *ChannelStep {
+	items := filterChannelItems(channelSelectItems(), enabled)
 
 	selector := components.NewSingleSelect(
 		items,

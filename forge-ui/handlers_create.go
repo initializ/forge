@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/initializ/forge/forge-core/catalog"
 	"github.com/initializ/forge/forge-core/tools/builtins"
 	"github.com/initializ/forge/forge-core/types"
 	"github.com/initializ/forge/forge-core/util"
@@ -17,43 +18,45 @@ import (
 	"github.com/initializ/forge/forge-skills/local"
 )
 
+// openAIProviderModels projects the OpenAI catalog entry into the wizard's
+// ProviderModels shape. The catalog is the single source of truth for which
+// models exist and which of them browser-based OAuth can actually reach.
+func openAIProviderModels() ProviderModels {
+	p, _ := catalog.ProviderByID("openai")
+	toOptions := func(models []catalog.Model) []ModelOption {
+		out := make([]ModelOption, 0, len(models))
+		for _, m := range models {
+			out = append(out, ModelOption{DisplayName: m.Label, ModelID: m.ModelID})
+		}
+		return out
+	}
+	return ProviderModels{
+		Default:       p.DefaultModel,
+		NeedsKey:      p.NeedsAPIKey,
+		HasOAuth:      p.SupportsOAuth,
+		SupportsOrgID: p.SupportsOrgID,
+		APIKey:        toOptions(p.APIKeyModels()),
+		OAuth:         toOptions(p.OAuthModels()),
+	}
+}
+
 // handleGetWizardMeta returns all reference data the frontend wizard needs in a
 // single call: providers, frameworks, channels, builtin tools, skills,
 // per-provider model lists, and web search provider options.
 func (s *UIServer) handleGetWizardMeta(w http.ResponseWriter, _ *http.Request) {
 	meta := WizardMetadata{
-		Providers:  []string{"openai", "anthropic", "gemini", "ollama", "custom"},
+		Providers:  []string{"openai", "anthropic", "bedrock", "gemini", "ollama", "custom"},
 		Frameworks: []string{"forge", "crewai", "langchain"},
 		Channels:   []string{"slack", "telegram", "msteams", "whatsapp"},
 	}
 
 	// Per-provider model lists
 	meta.ProviderModels = map[string]ProviderModels{
-		"openai": {
-			Default:       "gpt-5.4",
-			NeedsKey:      true,
-			HasOAuth:      true,
-			SupportsOrgID: true,
-			APIKey: []ModelOption{
-				{DisplayName: "GPT 5.6 Sol", ModelID: "gpt-5.6-sol"},
-				{DisplayName: "GPT 5.6 Terra", ModelID: "gpt-5.6-terra"},
-				{DisplayName: "GPT 5.6 Luna", ModelID: "gpt-5.6-luna"},
-				{DisplayName: "GPT 5.4", ModelID: "gpt-5.4"},
-				{DisplayName: "GPT 5 Mini", ModelID: "gpt-5-mini"},
-				{DisplayName: "GPT 5 Nano", ModelID: "gpt-5-nano"},
-				{DisplayName: "GPT 4.1", ModelID: "gpt-4.1"},
-			},
-			// OAuth (Codex browser login) supports a narrower set than the plain
-			// API — notably gpt-4.1 is not available, so it is APIKey-only.
-			OAuth: []ModelOption{
-				{DisplayName: "GPT 5.6 Sol", ModelID: "gpt-5.6-sol"},
-				{DisplayName: "GPT 5.6 Terra", ModelID: "gpt-5.6-terra"},
-				{DisplayName: "GPT 5.6 Luna", ModelID: "gpt-5.6-luna"},
-				{DisplayName: "GPT 5.4", ModelID: "gpt-5.4"},
-				{DisplayName: "GPT 5 Mini", ModelID: "gpt-5-mini"},
-				{DisplayName: "GPT 5 Nano", ModelID: "gpt-5-nano"},
-			},
-		},
+		// OpenAI is projected from forge-core/catalog rather than duplicated
+		// here. The two lists had drifted — this one still offered models the
+		// Codex backend retired — which is exactly what the catalog exists to
+		// prevent. APIKeyOnly in the catalog decides the OAuth/APIKey split.
+		"openai": openAIProviderModels(),
 		"anthropic": {
 			Default:  "claude-sonnet-4-20250514",
 			NeedsKey: true,
@@ -93,6 +96,21 @@ func (s *UIServer) handleGetWizardMeta(w http.ResponseWriter, _ *http.Request) {
 			// runtime resolver never read.
 			BaseURLEnv: "OPENAI_BASE_URL",
 		},
+	}
+
+	// Bedrock is sourced from the shared catalog (not hardcoded like the
+	// other providers) so the web wizard's model list + region flag cannot
+	// drift from the CLI/TUI. #205 review (provider-metadata-drift finding).
+	if p, ok := catalog.ProviderByID("bedrock"); ok {
+		bm := ProviderModels{
+			Default:        p.DefaultModel,
+			NeedsKey:       p.NeedsAPIKey,
+			NeedsAWSRegion: p.NeedsAWSRegion,
+		}
+		for _, m := range p.Models {
+			bm.APIKey = append(bm.APIKey, ModelOption{DisplayName: m.Label, ModelID: m.ModelID})
+		}
+		meta.ProviderModels["bedrock"] = bm
 	}
 
 	// Web search providers
@@ -167,6 +185,14 @@ func (s *UIServer) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if opts.ModelProvider == "" {
 		writeError(w, http.StatusBadRequest, "model_provider is required")
+		return
+	}
+
+	// Bedrock signs with SigV4 for a region-scoped endpoint, so the region
+	// is required (drives host + signature scope). Reject early rather than
+	// scaffold a forge.yaml that only fails at `forge validate`/run. #205.
+	if opts.ModelProvider == "bedrock" && strings.TrimSpace(opts.AWSRegion) == "" {
+		writeError(w, http.StatusBadRequest, "aws_region is required for model_provider \"bedrock\"")
 		return
 	}
 

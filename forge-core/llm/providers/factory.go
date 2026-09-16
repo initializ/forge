@@ -7,8 +7,8 @@ import (
 )
 
 // NewClient creates an LLM client for the specified provider.
-// Supported providers: "openai", "openai-responses", "anthropic", "gemini",
-// "ollama".
+// Supported providers: "openai", "openai-responses", "anthropic", "bedrock",
+// "gemini", "ollama".
 func NewClient(provider string, cfg llm.ClientConfig) (llm.Client, error) {
 	switch provider {
 	case "openai":
@@ -20,6 +20,10 @@ func NewClient(provider string, cfg llm.ClientConfig) (llm.Client, error) {
 		return NewResponsesClient(cfg), nil
 	case "anthropic":
 		return NewAnthropicClient(cfg), nil
+	case llm.ProviderBedrock:
+		// Native AWS Bedrock Converse API. SigV4 signing is intrinsic —
+		// no auth_scheme required. Issue #205.
+		return NewBedrockClient(cfg), nil
 	case "gemini":
 		if cfg.BaseURL == "" {
 			cfg.BaseURL = "https://generativelanguage.googleapis.com/v1beta/openai"

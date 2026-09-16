@@ -49,6 +49,7 @@ import (
 	deferengine "github.com/initializ/forge/forge-core/security/deferpolicy"
 	"github.com/initializ/forge/forge-core/security/intent"
 	"github.com/initializ/forge/forge-core/security/stepup"
+	"github.com/initializ/forge/forge-core/settings"
 	"github.com/initializ/forge/forge-core/tools"
 	"github.com/initializ/forge/forge-core/tools/adapters"
 	"github.com/initializ/forge/forge-core/tools/builtins"
@@ -129,12 +130,26 @@ type ScheduleNotifier func(ctx context.Context, channel, target string, response
 type DeferralNotifier func(ctx context.Context, to, taskID, tool, approverContext string, timeout time.Duration) error
 
 // codeAgentDirective is appended to the system prompt when code-agent skill
-// is active. Forces the LLM to always call tools — never respond with text only.
+// is active. It pushes the LLM to act with tools on CODING work rather than
+// narrating intent ("Let me patch that") without calling anything.
+//
+// The CONVERSATION carve-out is load-bearing. This opened with an
+// unconditional "Every response MUST include tool calls. NEVER respond with
+// only text." — and since the prompt is built once at startup and never sees
+// the incoming message, that also governed a plain "Hi", leaving no legal
+// move: the model discharged the obligation through the nearest write tool and
+// saved its greeting to a file. Keep the acting-over-narrating pressure scoped
+// to coding requests; a greeting must have a legal text-only answer.
 const codeAgentDirective = `## Code Agent — MANDATORY RULES
 
-You are a coding agent. Every response MUST include tool calls. NEVER respond with only text.
+You are a coding agent. When the user asks you to build, fix, or change code, ACT with tools in the same response instead of describing what you would do.
 
-FORBIDDEN:
+CONVERSATION (not coding work):
+- Greetings, small talk, questions about who you are or what you can do, and requests for an explanation or opinion get a normal text reply in chat.
+- Do NOT call tools for these, and NEVER write your reply to a file. Saving a conversational answer to a file instead of saying it is always wrong.
+- When a request is ambiguous, answer in chat and ask what to build. Do not scaffold a project to find out.
+
+FORBIDDEN (on coding requests):
 - Respond with "I'll do X now" or "Let me X" without calling tools in the same response
 - Output code in markdown blocks for the user to copy-paste
 - Ask the user for permission or confirmation before acting
@@ -142,10 +157,10 @@ FORBIDDEN:
 - Read files unrelated to the error path or code you plan to change
 - Edit test files before fixing the source code — always fix source first, then update tests
 
-REQUIRED:
+REQUIRED (on coding requests):
 - New project → code_agent_scaffold → code_agent_write (all files) → code_agent_run
 - Modify existing code → search + trace error origin + read functions to change → code_agent_edit or code_agent_write
-- Any request → ACT IMMEDIATELY with tools. Write ALL files and run in ONE turn.
+- Any CODING request → ACT IMMEDIATELY with tools. Write ALL files and run in ONE turn.
 
 EXPLORATION RULES:
 Bug fixes: search for the error message → trace to its origin (not just where it surfaces) → read functions you plan to call or replace → edit.
@@ -1260,6 +1275,10 @@ func (r *Runner) Run(ctx context.Context) error {
 			// Try LLM executor, fall back to stub
 			mc := coreruntime.ResolveModelConfig(r.cfg.Config, envVars, r.cfg.ProviderOverride)
 			if mc != nil {
+				// Overlay the local-dev model gateway from settings (#455) before
+				// building the client: may redirect base_url/auth and inject a
+				// cached gateway token. No-op without a matching settings gateway.
+				r.applyGatewaySettings(ctx, mc)
 				r.modelConfig = mc
 				// Export org ID for skill scripts
 				if mc.Client.OrgID != "" {
@@ -3058,6 +3077,110 @@ func (r *Runner) registerPlatformCommandGuardHook(hooks *coreruntime.HookRegistr
 		}
 		return fmt.Errorf("platform policy: %s", msg)
 	})
+}
+
+// applyGatewaySettings overlays the local-dev model gateway from settings (#455)
+// onto the resolved model config and, when the matching gateway declares an
+// api_key_helper, injects the cached gateway token as the model credential.
+//
+// It is deliberately provider-scoped and non-fatal:
+//   - No gateway matches the resolved provider → no-op (native auth untouched).
+//     A checked-in forge.yaml therefore runs unchanged on the server (no local
+//     settings) and a provider with no matching gateway runs natively locally.
+//   - api_key_helper set but no cached token → warn and proceed (the managed
+//     login gate, or a manual `forge auth login`, acquires the token; build-time
+//     injection only READS the cache).
+//   - resolved model outside a managed available_models lock → warn only;
+//     runtime model-deny remains a server-side platform-policy concern (#454).
+func (r *Runner) applyGatewaySettings(ctx context.Context, mc *coreruntime.ModelConfig) {
+	if mc == nil {
+		return
+	}
+	layers, err := settings.LoadAllLayers(settings.LoadOptions{WorkingDir: r.cfg.WorkDir})
+	if err != nil {
+		r.logger.Warn("loading settings for gateway overlay", map[string]any{"error": err.Error()})
+		return
+	}
+	set := settings.Resolve(layers)
+
+	r.warnIfModelNotInManagedLock(layers, set, mc)
+
+	// Resolve the gateway from TRUSTED layers only. The checked-in project
+	// .forge/settings.json is excluded so a hostile cloned repo cannot redirect
+	// base_url (exfiltrating the native key) or configure an api_key_helper
+	// (host command execution). See PR #464 review (HIGH #1/#2).
+	trusted := settings.Resolve(settings.TrustedGatewayLayers(layers))
+	gw := trusted.Models.GatewayForProvider(mc.Provider)
+	if gw == nil {
+		return // no matching gateway → leave native auth in place
+	}
+
+	// Overlay endpoint fields (override-when-set): a local gateway redirects the
+	// dev's native forge.yaml endpoint through the corporate gateway.
+	if gw.BaseURL != "" {
+		mc.Client.BaseURL = gw.BaseURL
+	}
+	if gw.AuthScheme != "" {
+		mc.Client.AuthScheme = gw.AuthScheme
+	}
+	if gw.AuthHeaderName != "" {
+		mc.Client.AuthHeaderName = gw.AuthHeaderName
+	}
+
+	// Credential routing. Helper configured → ensure a FRESH token; otherwise the
+	// native APIKey resolved by ResolveModelConfig stays. (A future OAuth branch
+	// belongs here and must be openai-only — never the anthropic public URL; not
+	// implemented in this slice.)
+	if gw.APIKeyHelper == "" {
+		return
+	}
+	// EnsureGatewayToken returns the cached token when it is still valid, else
+	// re-runs the helper (auto-login on expiry) — so an EXPIRED token is never
+	// injected into the request (which the gateway would 401). This is the
+	// universal refresh path for both managed and user layers; the managed login
+	// gate (root PersistentPreRunE) is the eager, fail-early variant for managed.
+	//
+	// NOTE: unlike the cache-only overlay before it, this site now EXECS the
+	// helper (on expiry). That is trust-safe: `gw` is resolved from
+	// TrustedGatewayLayers above, so the checked-in project .forge/settings.json
+	// can never supply the command — same trust scope as `forge auth login`.
+	// Deliberately NOT guarded by deniedInAgentRuntime (which blocks the operator
+	// `auth login`/`logout` commands inside a sandbox): a DEPLOYED runtime
+	// legitimately re-acquires its OWN model credential here via a non-interactive
+	// (e.g. client_credentials) managed helper. An interactive helper in a
+	// headless runtime simply fails → the warn-and-proceed path below.
+	tok, err := EnsureGatewayToken(ctx, gw.APIKeyHelper, gw.Env)
+	if err != nil {
+		r.logger.Warn("gateway login failed; run 'forge auth login' (proceeding without a gateway token)",
+			map[string]any{"provider": mc.Provider, "error": err.Error()})
+		return
+	}
+	if tok != nil && tok.AccessToken != "" {
+		mc.Client.APIKey = tok.AccessToken
+	}
+}
+
+// warnIfModelNotInManagedLock emits a one-line, non-fatal heads-up when a
+// MANAGED available_models lock is in effect and the resolved provider/model is
+// not on it. It never rejects — enforcement stays server-side (#454).
+func (r *Runner) warnIfModelNotInManagedLock(layers []settings.Layer, set settings.Settings, mc *coreruntime.ModelConfig) {
+	managed := settings.ManagedLayer(layers)
+	if managed == nil || !managed.ManagedLock {
+		return
+	}
+	allow := set.Models.AvailableModels
+	model := mc.Client.Model
+	if len(allow) == 0 || model == "" {
+		return
+	}
+	full := mc.Provider + "/" + model
+	for _, a := range allow {
+		if a == full || a == model {
+			return
+		}
+	}
+	r.logger.Warn("resolved model is not in your org's managed available_models; running with native auth",
+		map[string]any{"provider": mc.Provider, "model": model, "available_models": allow})
 }
 
 // buildLLMClient creates the LLM client from the resolved model config.

@@ -11,7 +11,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -75,7 +74,9 @@ func optimizerListenerPID(addr string) int {
 	return 0
 }
 
-func processAlive(pid int) bool { return pid > 0 && syscall.Kill(pid, 0) == nil }
+// processAlive, terminatePID, and detachSysProcAttr are platform-specific
+// (POSIX signals vs Windows process handles) — see optimizer_daemon_unix.go /
+// optimizer_daemon_windows.go.
 
 var optimizerStartCmd = &cobra.Command{
 	Use:   "start",
@@ -144,7 +145,7 @@ func runOptimizerStart(_ *cobra.Command, _ []string) error {
 
 		// Detached child running the standalone proxy with compression + memory.
 		child := exec.Command(self, "optimizer", "--compress", "--memory", "--listen", listen, "--quiet") //nolint:gosec // self-exec, fixed args
-		child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}                                            // survive this shell
+		child.SysProcAttr = detachSysProcAttr()                                                           // survive this shell
 		child.Stdin = nil
 		child.Stdout = logf
 		child.Stderr = logf
@@ -213,7 +214,7 @@ func ensureForgeUI(self string, logger *slog.Logger) (string, int) {
 		return "", 0
 	}
 	child := exec.Command(self, "ui", "--port", "4200", "--no-open") //nolint:gosec // self-exec, fixed args
-	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	child.SysProcAttr = detachSysProcAttr()
 	child.Stdin = nil
 	child.Stdout = logf
 	child.Stderr = logf
@@ -261,7 +262,7 @@ func runOptimizerStop(_ *cobra.Command, _ []string) error {
 		_ = restoreClaudeSettings(nil, nil)
 		deregisterOptimizerMCP(logger)
 		if pid := optimizerListenerPID(resolveListen()); pid > 0 {
-			_ = syscall.Kill(pid, syscall.SIGTERM)
+			_ = terminatePID(pid)
 			fmt.Printf("stopped optimizer proxy on %s (pid %d)\n", resolveListen(), pid)
 		}
 		return nil
@@ -281,14 +282,14 @@ func runOptimizerStop(_ *cobra.Command, _ []string) error {
 	// proxies where no pid was recorded, the old "left it up" case).
 	stopped := false
 	if processAlive(st.PID) {
-		if syscall.Kill(st.PID, syscall.SIGTERM) == nil {
+		if terminatePID(st.PID) == nil {
 			fmt.Printf("stopped optimizer daemon (pid %d)\n", st.PID)
 			stopped = true
 		}
 	}
 	if !stopped {
 		if pid := optimizerListenerPID(st.Listen); pid > 0 {
-			_ = syscall.Kill(pid, syscall.SIGTERM)
+			_ = terminatePID(pid)
 			fmt.Printf("stopped optimizer proxy on %s (pid %d)\n", st.Listen, pid)
 			stopped = true
 		}
@@ -299,7 +300,7 @@ func runOptimizerStop(_ *cobra.Command, _ []string) error {
 
 	// Stop the dashboard we started via --ui (UIPID is 0 if we adopted one).
 	if processAlive(st.UIPID) {
-		_ = syscall.Kill(st.UIPID, syscall.SIGTERM)
+		_ = terminatePID(st.UIPID)
 		fmt.Printf("stopped dashboard (pid %d)\n", st.UIPID)
 	}
 
@@ -325,7 +326,7 @@ func runOptimizerStatus(_ *cobra.Command, _ []string) error {
 		fmt.Printf("  proxy       : not running (expected http://%s)\n", listen)
 	}
 	if st.PID > 0 {
-		alive := syscall.Kill(st.PID, 0) == nil
+		alive := processAlive(st.PID)
 		fmt.Printf("  daemon pid  : %d (%s)\n", st.PID, map[bool]string{true: "alive", false: "not found"}[alive])
 	}
 	wired := settingsBaseURL()

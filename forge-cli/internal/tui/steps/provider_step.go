@@ -52,16 +52,22 @@ type modelOption struct {
 
 // openAIOAuthModels (OAuth login) and openAIAPIKeyModels (API key) are sourced
 // from the central catalog so the wizard, forge-ui, and console stay in sync.
+//
+// These were previously both built from the same unfiltered list, so the OAuth
+// picker offered models the Codex backend doesn't serve — an agent scaffolded
+// with one failed on its first call.
 var (
-	openAIOAuthModels  = openAIModelOptions()
-	openAIAPIKeyModels = openAIModelOptions()
+	openAIOAuthModels  = openAIModelOptions(catalog.Provider.OAuthModels)
+	openAIAPIKeyModels = openAIModelOptions(catalog.Provider.APIKeyModels)
 )
 
-// openAIModelOptions projects the catalog's OpenAI models into modelOption.
-func openAIModelOptions() []modelOption {
+// openAIModelOptions projects the catalog's OpenAI models into modelOption,
+// selecting the per-auth-method subset with the given accessor.
+func openAIModelOptions(pick func(catalog.Provider) []catalog.Model) []modelOption {
 	p, _ := catalog.ProviderByID("openai")
-	out := make([]modelOption, 0, len(p.Models))
-	for _, m := range p.Models {
+	models := pick(p)
+	out := make([]modelOption, 0, len(models))
+	for _, m := range models {
 		out = append(out, modelOption{DisplayName: m.Label, ModelID: m.ModelID})
 	}
 	return out

@@ -34,9 +34,31 @@ type Provider struct {
 
 // Model is a selectable model for a Provider.
 type Model struct {
-	Label   string `json:"label"`   // e.g. "GPT 5.4"
-	ModelID string `json:"modelId"` // e.g. "gpt-5.4"
+	Label   string `json:"label"`   // e.g. "GPT 5.6 Terra"
+	ModelID string `json:"modelId"` // e.g. "gpt-5.6-terra"
+	// APIKeyOnly marks a model that cannot be reached through browser-based
+	// OAuth login. OpenAI's ChatGPT sign-in tokens are scoped to the Codex
+	// backend, which serves a narrower set than the plain API — so a model
+	// retired from Codex is still perfectly usable with an API key. Offering
+	// one on the OAuth path produces an agent that fails on first call.
+	APIKeyOnly bool `json:"apiKeyOnly,omitempty"`
 }
+
+// OAuthModels returns the models selectable when the user authenticates via
+// browser-based OAuth login, i.e. everything not marked APIKeyOnly.
+func (p Provider) OAuthModels() []Model {
+	out := make([]Model, 0, len(p.Models))
+	for _, m := range p.Models {
+		if !m.APIKeyOnly {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// APIKeyModels returns the models selectable when the user supplies an API
+// key — every model the provider offers.
+func (p Provider) APIKeyModels() []Model { return p.Models }
 
 // Channel is a selectable messaging channel connector.
 type Channel struct {

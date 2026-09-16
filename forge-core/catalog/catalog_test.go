@@ -15,6 +15,57 @@ import (
 	_ "github.com/initializ/forge/forge-core/auth/providers/oidc"
 )
 
+// Models retired from, or never served by, OpenAI's Codex backend must not be
+// offered on the ChatGPT sign-in (OAuth) path — an agent scaffolded with one
+// fails on its first call. gpt-5.4 and gpt-5.4-mini retired 2026-08-31; nano
+// tiers ship API-only; gpt-4.1 predates Codex model support.
+func TestOpenAIOAuthModelsExcludeRetired(t *testing.T) {
+	p, ok := catalog.ProviderByID("openai")
+	if !ok {
+		t.Fatal("openai provider missing from catalog")
+	}
+
+	notOnCodex := map[string]bool{
+		"gpt-5.4":       true,
+		"gpt-5.4-mini":  true,
+		"gpt-5-mini":    true,
+		"gpt-5-nano":    true,
+		"gpt-5.4-nano":  true,
+		"gpt-4.1":       true,
+		"gpt-5.2":       true,
+		"gpt-5.3-codex": true,
+	}
+
+	oauth := p.OAuthModels()
+	if len(oauth) == 0 {
+		t.Fatal("openai has no OAuth-selectable models")
+	}
+	for _, m := range oauth {
+		if notOnCodex[m.ModelID] {
+			t.Errorf("model %q is offered for OAuth login but Codex does not serve it", m.ModelID)
+		}
+	}
+
+	// The default must itself be OAuth-reachable, or the wizard hands OAuth
+	// users a broken agent whenever they accept the default.
+	var defaultIsOAuthReachable bool
+	for _, m := range oauth {
+		if m.ModelID == p.DefaultModel {
+			defaultIsOAuthReachable = true
+			break
+		}
+	}
+	if !defaultIsOAuthReachable {
+		t.Errorf("DefaultModel %q is not in the OAuth-selectable set", p.DefaultModel)
+	}
+
+	// APIKeyModels is the superset; OAuth filtering must not drop everything
+	// or add anything.
+	if len(p.APIKeyModels()) < len(oauth) {
+		t.Errorf("APIKeyModels (%d) is smaller than OAuthModels (%d)", len(p.APIKeyModels()), len(oauth))
+	}
+}
+
 func TestProvidersWellFormed(t *testing.T) {
 	seen := map[string]bool{}
 	for _, p := range catalog.AllProviders() {

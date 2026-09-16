@@ -1351,6 +1351,7 @@ function CreatePage() {
     name: '', framework: 'forge', model_provider: '', model_name: '', api_key: '',
     auth_method: 'apikey', // "apikey" or "oauth"
     organization_id: '', // OpenAI enterprise org ID
+    aws_region: '', // AWS region for provider "bedrock" (#205)
     web_search_provider: '', // "tavily" or "perplexity"
     channels: [], builtin_tools: [], skills: [],
     fallbacks: [], // [{provider, api_key}]
@@ -1439,6 +1440,10 @@ function CreatePage() {
     if (step === 2) {
       if (form.model_provider === 'openai' && form.auth_method === 'oauth') {
         return oauthDone;
+      }
+      // Bedrock signs with SigV4 — a region is required (no API key). #205
+      if (form.model_provider === 'bedrock' && form.aws_region.trim().length === 0) {
+        return false;
       }
       return form.model_name.trim().length > 0;
     }
@@ -1658,6 +1663,19 @@ function CreatePage() {
                   value=${form.model_name} onInput=${(e) => updateForm('model_name', e.target.value)} />
               `}
             </div>
+
+            ${providerMeta?.needs_aws_region && html`
+              <div style="margin-top: 16px;">
+                <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">
+                  AWS Region <span style="color: var(--accent);">*</span>
+                </label>
+                <input class="wizard-input" placeholder="us-east-1" value=${form.aws_region}
+                  onInput=${(e) => updateForm('aws_region', e.target.value)} autocomplete="off" />
+                <div style="font-size: 11px; color: var(--text-muted); margin-top: 3px;">
+                  Written to model.aws_region. Bedrock signs with SigV4 from your AWS environment credentials (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY) — no API key needed.
+                </div>
+              </div>
+            `}
 
             ${needsKey && form.auth_method === 'apikey' && keyInfo && html`
               <div>
@@ -2053,7 +2071,9 @@ function CreatePage() {
       }
       case 9: { // Review
         const configuredEnvCount = Object.values(form.env_vars).filter(v => v).length;
-        const authLabel = form.auth_method === 'oauth' ? 'OAuth' : (form.api_key ? '\u2713 API Key provided' : 'Not set');
+        const authLabel = form.model_provider === 'bedrock'
+          ? `AWS SigV4 \u00b7 region ${form.aws_region || '(unset)'}`
+          : (form.auth_method === 'oauth' ? 'OAuth' : (form.api_key ? '\u2713 API Key provided' : 'Not set'));
         return html`
           <div class="wizard-step">
             <div class="wizard-step-title">Review</div>

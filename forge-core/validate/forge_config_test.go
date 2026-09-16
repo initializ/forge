@@ -255,3 +255,63 @@ func TestValidateForgeConfig_OrgIDOnOpenAI(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateForgeConfig_Bedrock covers #205: provider "bedrock"
+// requires aws_region (drives host + SigV4 scope) and treats
+// auth_scheme as redundant (warning).
+func TestValidateForgeConfig_Bedrock(t *testing.T) {
+	t.Run("region present is valid", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Model.Provider = "bedrock"
+		cfg.Model.Name = "anthropic.claude-sonnet-4-20250514-v1:0"
+		cfg.Model.AWSRegion = "us-east-1"
+		r := ValidateForgeConfig(cfg)
+		if !r.IsValid() {
+			t.Fatalf("expected valid, got errors: %v", r.Errors)
+		}
+	})
+
+	t.Run("missing region is an error", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Model.Provider = "bedrock"
+		cfg.Model.Name = "anthropic.claude-sonnet-4-20250514-v1:0"
+		r := ValidateForgeConfig(cfg)
+		if r.IsValid() || !hasSubstr(r.Errors, "aws_region is required") {
+			t.Fatalf("expected an aws_region error, got errors=%v", r.Errors)
+		}
+	})
+
+	t.Run("malformed region is an error", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Model.Provider = "bedrock"
+		cfg.Model.Name = "us.anthropic.claude-sonnet-4-20250514-v1:0"
+		cfg.Model.AWSRegion = "us-east-1x!"
+		r := ValidateForgeConfig(cfg)
+		if r.IsValid() || !hasSubstr(r.Errors, "is not a valid region") {
+			t.Fatalf("expected a region-format error, got errors=%v", r.Errors)
+		}
+	})
+
+	t.Run("empty name is a bedrock error", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Model.Provider = "bedrock"
+		cfg.Model.Name = ""
+		cfg.Model.AWSRegion = "us-east-1"
+		r := ValidateForgeConfig(cfg)
+		if r.IsValid() || !hasSubstr(r.Errors, `model.name is required for provider "bedrock"`) {
+			t.Fatalf("expected a bedrock model.name error, got errors=%v", r.Errors)
+		}
+	})
+
+	t.Run("auth_scheme warns as redundant", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Model.Provider = "bedrock"
+		cfg.Model.Name = "anthropic.claude-sonnet-4-20250514-v1:0"
+		cfg.Model.AWSRegion = "us-east-1"
+		cfg.Model.AuthScheme = "aws_sigv4"
+		r := ValidateForgeConfig(cfg)
+		if !hasSubstr(r.Warnings, "auth_scheme is ignored for provider") {
+			t.Fatalf("expected a redundant-auth_scheme warning, got warnings=%v", r.Warnings)
+		}
+	})
+}

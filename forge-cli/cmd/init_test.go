@@ -682,6 +682,29 @@ func TestDeriveEgressDomains_Empty(t *testing.T) {
 // hosts (STS for aws_sigv4, AAD authority for azure_ad, etc.) to the
 // same egress list a user reviews in the Egress step. Pins the contract
 // that the operator never has to add auth hosts manually after the wizard.
+// TestDeriveEgressDomains_BedrockHost pins the #205 review fix: a scaffolded
+// Bedrock agent must get bedrock-runtime.<region>.amazonaws.com in its egress
+// allowlist (the host is region-derived, so it can't be in the static
+// providerDomains map). Without it, `forge run` blocks the agent's own
+// Converse calls when any channel/tool pushes egress into allowlist mode.
+func TestDeriveEgressDomains_BedrockHost(t *testing.T) {
+	opts := &initOptions{
+		ModelProvider: "bedrock",
+		AWSRegion:     "ap-south-1",
+		EnvVars:       map[string]string{},
+	}
+	got := deriveEgressDomains(opts, nil)
+	found := false
+	for _, d := range got {
+		if d == "bedrock-runtime.ap-south-1.amazonaws.com" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected bedrock-runtime.ap-south-1.amazonaws.com in egress domains, got %v", got)
+	}
+}
+
 func TestDeriveEgressDomains_AuthProviderHostsMerged(t *testing.T) {
 	cases := []struct {
 		name string
@@ -852,6 +875,7 @@ func TestBuildTemplateData_DefaultModels(t *testing.T) {
 	}{
 		{"openai", "gpt-5.4"},
 		{"anthropic", "claude-sonnet-4-20250514"},
+		{"bedrock", "us.anthropic.claude-sonnet-4-20250514-v1:0"},
 		{"gemini", "gemini-2.5-flash"},
 		{"ollama", "llama3"},
 	}
@@ -886,6 +910,72 @@ func TestCollectNonInteractive_GeminiProvider(t *testing.T) {
 	}
 	if opts.EnvVars["GEMINI_API_KEY"] != "gem-key" {
 		t.Errorf("expected GEMINI_API_KEY=gem-key, got %q", opts.EnvVars["GEMINI_API_KEY"])
+	}
+}
+
+func TestCollectNonInteractive_BedrockRequiresRegion(t *testing.T) {
+	t.Run("missing region errors", func(t *testing.T) {
+		opts := &initOptions{
+			Name:          "test",
+			AgentID:       "test",
+			Framework:     "forge",
+			ModelProvider: "bedrock",
+			EnvVars:       map[string]string{},
+		}
+		err := collectNonInteractive(opts)
+		if err == nil || !strings.Contains(err.Error(), "aws-region") {
+			t.Fatalf("expected an aws-region error, got %v", err)
+		}
+	})
+
+	t.Run("region present is accepted", func(t *testing.T) {
+		opts := &initOptions{
+			Name:          "test",
+			AgentID:       "test",
+			Framework:     "forge",
+			ModelProvider: "bedrock",
+			AWSRegion:     "us-east-1",
+			EnvVars:       map[string]string{},
+		}
+		if err := collectNonInteractive(opts); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
+func TestScaffold_Bedrock(t *testing.T) {
+	tmpDir := t.TempDir()
+	origDir, _ := os.Getwd()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(origDir) }()
+
+	opts := &initOptions{
+		Name:           "Bedrock Agent",
+		AgentID:        "bedrock-agent",
+		Framework:      "forge",
+		ModelProvider:  "bedrock",
+		AWSRegion:      "us-east-1",
+		EnvVars:        map[string]string{},
+		NonInteractive: true,
+	}
+	if err := scaffold(opts); err != nil {
+		t.Fatalf("scaffold error: %v", err)
+	}
+
+	cfg, err := config.LoadForgeConfig(filepath.Join("bedrock-agent", "forge.yaml"))
+	if err != nil {
+		t.Fatalf("LoadForgeConfig error: %v", err)
+	}
+	if cfg.Model.Provider != "bedrock" {
+		t.Errorf("provider = %q; want bedrock", cfg.Model.Provider)
+	}
+	if cfg.Model.AWSRegion != "us-east-1" {
+		t.Errorf("aws_region = %q; want us-east-1", cfg.Model.AWSRegion)
+	}
+	if cfg.Model.Name != "us.anthropic.claude-sonnet-4-20250514-v1:0" {
+		t.Errorf("name = %q; want the bedrock default model", cfg.Model.Name)
 	}
 }
 

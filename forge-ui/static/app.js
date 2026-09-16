@@ -14,6 +14,61 @@ async function fetchAgents() {
   return res.json();
 }
 
+async function fetchOptimizerStats() {
+  const res = await fetch('/api/optimizer/stats');
+  if (!res.ok) throw new Error(`Failed to fetch optimizer stats: ${res.status}`);
+  return res.json();
+}
+
+async function fetchOptimizerSavings() {
+  const res = await fetch('/api/optimizer/savings');
+  if (!res.ok) throw new Error(`Failed to fetch optimizer savings: ${res.status}`);
+  return res.json();
+}
+
+async function fetchOptimizerMemory() {
+  const res = await fetch('/api/optimizer/memory');
+  if (!res.ok) throw new Error(`Failed to fetch optimizer memory: ${res.status}`);
+  return res.json();
+}
+
+async function fetchOptimizerDaemon() {
+  const res = await fetch('/api/optimizer/daemon');
+  if (!res.ok) throw new Error(`Failed to fetch optimizer daemon: ${res.status}`);
+  return res.json();
+}
+
+async function controlOptimizerDaemon(action) {
+  const res = await fetch('/api/optimizer/daemon/' + action, { method: 'POST' });
+  if (!res.ok) throw new Error(`optimizer ${action} failed: ${res.status}`);
+  return res.json();
+}
+
+// List input prices (USD per 1M tokens); the cache-write rate is derived as
+// 1.25× (see optimizerCacheWritePrice). The `forge optimizer savings` CLI
+// supports negotiated-rate overrides; this dashboard estimate uses list prices.
+const OPTIMIZER_LIST_INPUT_PRICE = {
+  'claude-fable-5': 10, 'claude-opus-4-8': 5, 'claude-opus-4-7': 5, 'claude-opus-4-6': 5,
+  'claude-opus-4-5': 5, 'claude-sonnet-5': 3, 'claude-sonnet-4-6': 3, 'claude-haiku-4-5': 1,
+};
+function optimizerInputPrice(model) {
+  if (!model) return 3;
+  for (const k of Object.keys(OPTIMIZER_LIST_INPUT_PRICE)) {
+    if (model.startsWith(k)) return OPTIMIZER_LIST_INPUT_PRICE[k];
+  }
+  return 3; // unknown-model fallback
+}
+// Cache-WRITE rate ≈ 1.25× input (standard Anthropic ratio, matches the Go
+// pricing's withDerivedCache). Saved tokens are conversation history that would
+// otherwise be written to the prompt cache, so cost-avoided is valued here.
+function optimizerCacheWritePrice(model) {
+  return optimizerInputPrice(model) * 1.25;
+}
+function optimizerCommas(n) {
+  return (n || 0).toLocaleString('en-US');
+}
+
+
 async function startAgent(id, passphrase) {
   const opts = { method: 'POST' };
   if (passphrase) {
@@ -306,6 +361,7 @@ function parseHash(hash) {
   if (configMatch) return { page: 'config', params: { id: configMatch[1] } };
   // #/skills
   if (path === 'skills') return { page: 'skills', params: {} };
+  if (path === 'optimizer') return { page: 'optimizer', params: {} };
   // #/skill-builder/{id}
   const sbMatch = path.match(/^skill-builder\/(.+)$/);
   if (sbMatch) return { page: 'skill-builder', params: { id: sbMatch[1] } };
@@ -918,6 +974,10 @@ function Sidebar({ agents, activeAgentId, activePage, version }) {
         <div class="sidebar-nav-item ${activePage === 'skills' ? 'active' : ''}" onClick=${() => navigate('skills')}>
           <span class="sidebar-nav-icon">\u2606</span>
           Skills Browser
+        </div>
+        <div class="sidebar-nav-item ${activePage === 'optimizer' ? 'active' : ''}" onClick=${() => navigate('optimizer')}>
+          <span class="sidebar-nav-icon">\u26a1</span>
+          Optimizer
         </div>
       </div>
       <div class="sidebar-label">Agents</div>
@@ -2292,6 +2352,540 @@ function ConfigPage({ agentId }) {
 
 // ── Skills Browser Page ──────────────────────────────────────
 
+function OptimizerStatTile({ label, value, sub }) {
+  return html`
+    <div style="min-width:130px">
+      <div style="font-size:22px;font-weight:600">${value}</div>
+      <div style="opacity:.7;font-size:12px">${label}${sub ? ' · ' + sub : ''}</div>
+    </div>`;
+}
+
+function optimizerBar(ratio) {
+  let r = ratio || 0;
+  if (r < 0) r = 0; if (r > 1) r = 1;
+  const width = 15, filled = Math.round(r * width);
+  return '█'.repeat(filled) + '░'.repeat(width - filled);
+}
+
+// effectiveSavings = avoided / (avoided + spent): the share of what this window
+// WOULD have cost that compression removed. Bar and dollar now tell one story.
+function optimizerEffPct(av, sp) {
+  const d = (av || 0) + (sp || 0);
+  return d > 0 ? (av || 0) / d : 0;
+}
+
+function OptimizerSavingsRow({ label, w }) {
+  const av = w ? w.cost_avoided_usd : 0;
+  const sp = w ? w.spent_usd : 0;
+  const eff = optimizerEffPct(av, sp);
+  const avIn = w ? w.avoided_input_usd : 0;
+  const avWr = w ? w.avoided_cache_write_usd : 0;
+  const avRd = w ? w.avoided_cache_read_usd : 0;
+  const readTok = w ? w.avoided_cache_read_tokens : 0;
+  return html`
+    <div style="font-family:monospace;font-size:13px;line-height:1.7">
+      <span style="display:inline-block;width:96px">${label}</span>
+      <span>${optimizerBar(eff)}</span>
+      <span style="display:inline-block;width:52px;text-align:right">${(eff * 100).toFixed(1)}%</span>
+      <span style="opacity:.85">  $${av.toFixed(2)} avoided on $${sp.toFixed(2)} spent</span>
+      <span style="float:right;opacity:.75">$${avIn.toFixed(2)} input · $${avWr.toFixed(2)} cache-write · $${avRd.toFixed(2)} cache-read</span>
+      <div style="opacity:.45;font-size:11px;padding-left:96px">cache-read term = ${optimizerCommas(readTok)} tokens the shrunk prefix wasn't re-charged for (×0.1, compounds every turn)</div>
+    </div>`;
+}
+
+const OPTIMIZER_OUTCOME_MARK = { success: '✓', failure: '✗', abandoned: '∅' };
+const OPTIMIZER_OUTCOME_COLOR = { success: '#3fb950', failure: '#f85149', abandoned: '#d29922' };
+
+async function deleteOptimizerMemory(id) {
+  const res = await fetch('/api/optimizer/memory?id=' + encodeURIComponent(id), { method: 'DELETE' });
+  if (!res.ok) throw new Error(`delete failed: ${res.status}`);
+  return res.json();
+}
+
+async function feedbackOptimizerMemory(id, signal) {
+  const res = await fetch(`/api/optimizer/memory/feedback?id=${encodeURIComponent(id)}&signal=${signal}`, { method: 'POST' });
+  if (!res.ok) throw new Error(`feedback failed: ${res.status}`);
+  return res.json();
+}
+
+// Confidence bar: red below the 0.5 inject gate, amber mid, green high.
+function OptimizerConfidenceBar({ value }) {
+  const v = Math.max(0, Math.min(1, value || 0));
+  const color = v < 0.5 ? '#f85149' : v < 0.7 ? '#d29922' : '#3fb950';
+  const gated = v < 0.5;
+  return html`<span title=${gated ? 'below 0.5 — not injected into new sessions' : 'injected into new sessions'}
+    style="display:inline-flex;align-items:center;gap:6px">
+    <span style="display:inline-block;width:46px;height:6px;border-radius:3px;background:rgba(128,128,128,.25);overflow:hidden">
+      <span style="display:block;height:100%;width:${(v * 100).toFixed(0)}%;background:${color}"></span></span>
+    <span style="font-size:12px;color:${color};font-weight:600">${(v * 100).toFixed(0)}%</span>
+    ${gated ? html`<span style="font-size:11px;opacity:.6">gated</span>` : ''}
+  </span>`;
+}
+
+function optimizerFmtTime(t) {
+  return (t || '').replace('T', ' ').replace('Z', '');
+}
+
+function OptimizerOutcomeBadge({ outcome }) {
+  const mark = OPTIMIZER_OUTCOME_MARK[outcome] || '·';
+  const color = OPTIMIZER_OUTCOME_COLOR[outcome] || 'rgba(128,128,128,.8)';
+  return html`<span style="display:inline-flex;align-items:center;gap:5px;font-size:12px;color:${color}">
+    <span style="font-weight:700">${mark}</span>${outcome || 'unknown'}</span>`;
+}
+
+// Recall badge: how many later sessions this memory was injected into.
+function OptimizerRecallBadge({ count }) {
+  const n = count || 0;
+  if (n === 0) return html`<span style="opacity:.4">—</span>`;
+  return html`<span title="Injected into ${n} later session${n === 1 ? '' : 's'}"
+    style="display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--accent,#4a9eff);font-weight:600">
+    ↩ ${n}</span>`;
+}
+
+// Entity chips: show a few, collapse the rest into a +N pill.
+function OptimizerEntityChips({ items, max = 3 }) {
+  const list = items || [];
+  const shown = list.slice(0, max);
+  const extra = list.length - shown.length;
+  if (list.length === 0) return html`<span style="opacity:.4">—</span>`;
+  return html`<span style="display:inline-flex;gap:4px;flex-wrap:wrap">
+    ${shown.map(f => html`<code style="background:rgba(128,128,128,.15);padding:1px 6px;border-radius:4px;font-size:11px">${f}</code>`)}
+    ${extra > 0 && html`<span style="opacity:.6;font-size:11px">+${extra}</span>`}
+  </span>`;
+}
+
+function OptimizerDrawerRow({ label, children }) {
+  return html`<div style="margin-bottom:14px">
+    <div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;opacity:.55;margin-bottom:3px">${label}</div>
+    <div style="line-height:1.5">${children}</div>
+  </div>`;
+}
+
+// Right-side detail drawer for one episode.
+function OptimizerMemoryDrawer({ e, onClose, onDelete, onFeedback }) {
+  const [flash, setFlash] = useState(null);
+  const [confirmDel, setConfirmDel] = useState(false);
+  if (!e) return null;
+  const isProc = e.kind === 'procedural';
+  const conf = e.effective_confidence != null ? e.effective_confidence : e.confidence;
+  const rate = (signal) => { setFlash(signal); onFeedback(e.id, signal); setTimeout(() => setFlash(null), 1200); };
+  return html`
+    <div onClick=${onClose} style="position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:40"></div>
+    <div style="position:fixed;top:0;right:0;bottom:0;width:min(560px,92vw);z-index:41;overflow-y:auto;
+                background:var(--bg,#1b1b1d);border-left:1px solid rgba(128,128,128,.3);box-shadow:-8px 0 24px rgba(0,0,0,.3);padding:22px 24px">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:16px">
+        <div>
+          <div style="font-size:17px;font-weight:600;line-height:1.3">${e.task_signature || '(untitled)'}</div>
+          <div style="margin-top:5px">${isProc
+            ? html`<span style="font-size:12px;color:#a371f7;font-weight:600">⚙ procedure${e.episode_ids ? ' · from ' + e.episode_ids.length + ' episodes' : ''}</span>`
+            : html`<${OptimizerOutcomeBadge} outcome=${e.outcome} />`}</div>
+        </div>
+        <button onClick=${onClose} title="Close"
+          style="background:none;border:none;font-size:22px;cursor:pointer;opacity:.6;line-height:1">×</button>
+      </div>
+
+      <${OptimizerDrawerRow} label="Confidence">
+        <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+          <${OptimizerConfidenceBar} value=${conf} />
+          <span style="display:inline-flex;gap:6px;align-items:center">
+            <button onClick=${() => rate('up')}
+              style="background:${flash === 'up' ? 'rgba(63,185,80,.35)' : 'rgba(63,185,80,.12)'};color:#3fb950;border:1px solid rgba(63,185,80,.4);border-radius:6px;padding:4px 10px;cursor:pointer;font-size:12px;transition:background .15s">👍 boost</button>
+            <button onClick=${() => rate('down')}
+              style="background:${flash === 'down' ? 'rgba(248,81,73,.3)' : 'rgba(248,81,73,.1)'};color:#f85149;border:1px solid rgba(248,81,73,.35);border-radius:6px;padding:4px 10px;cursor:pointer;font-size:12px;transition:background .15s">👎 lower</button>
+            ${flash && html`<span style="font-size:12px;color:${flash === 'up' ? '#3fb950' : '#f85149'}">${flash === 'up' ? 'boosted ↑' : 'lowered ↓'}</span>`}
+          </span>
+        </div>
+        <div style="opacity:.55;font-size:11px;margin-top:5px">base ${((e.confidence || 0) * 100).toFixed(0)}% · adjusted by corroboration, post-recall outcomes & your feedback</div>
+      <//>
+      ${e.summary && html`<${OptimizerDrawerRow} label=${isProc ? 'When to use' : 'Summary'}>${e.summary}<//>`}
+      ${e.lesson && html`<${OptimizerDrawerRow} label="Lesson">
+        <span style="font-style:italic">💡 ${e.lesson}</span><//>`}
+      ${e.actions && e.actions.length > 0 && html`<${OptimizerDrawerRow} label=${isProc ? 'Steps' : 'Actions'}>
+        <ul style="margin:0;padding-left:18px">${e.actions.map(a => html`<li>${a}</li>`)}</ul><//>`}
+      ${e.errors && e.errors.length > 0 && html`<${OptimizerDrawerRow} label=${isProc ? 'Pitfalls' : 'Errors'}>
+        ${e.errors.map(x => html`<div style="color:${isProc ? '#d29922' : '#f85149'};font-size:12px">${x}</div>`)}<//>`}
+      <${OptimizerDrawerRow} label="Entities (files)">
+        <${OptimizerEntityChips} items=${e.entities && e.entities.length ? e.entities : e.files} max=${20} /><//>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 20px;margin-top:6px;font-size:13px">
+        <${OptimizerDrawerRow} label="Kind">${e.kind || 'episodic'}<//>
+        <${OptimizerDrawerRow} label="Scope">${e.about || ('resource:repo:' + (e.repo || ''))}<//>
+        <${OptimizerDrawerRow} label="Repo @ commit">
+          <code>${e.repo || '—'}${e.code_state && e.code_state.commit ? '@' + e.code_state.commit : ''}</code><//>
+        <${OptimizerDrawerRow} label="Model">${(e.model || '—').replace('claude-', '')}<//>
+        <${OptimizerDrawerRow} label="Confidence">${e.confidence != null ? e.confidence.toFixed(2) : '—'}<//>
+        <${OptimizerDrawerRow} label="Source">${e.source_kind || '—'}${e.binding ? ' · ' + e.binding : ''}<//>
+        <${OptimizerDrawerRow} label="Session">${e.session_id || '—'}<//>
+        <${OptimizerDrawerRow} label="Created">${optimizerFmtTime(e.created_at)}<//>
+        <${OptimizerDrawerRow} label="Recalled">
+          ${(e.recall_count || 0) === 0
+            ? html`<span style="opacity:.6">not yet injected into a later session</span>`
+            : html`injected into <b>${e.recall_count}</b> later session${e.recall_count === 1 ? '' : 's'}${e.last_recalled ? ' · last ' + optimizerFmtTime(e.last_recalled) : ''}`}<//>
+      </div>
+
+      <div style="margin-top:18px;border-top:1px solid rgba(128,128,128,.2);padding-top:16px">
+        ${confirmDel
+          ? html`<span style="display:inline-flex;align-items:center;gap:10px">
+              <span style="font-size:13px;opacity:.8">Delete this memory permanently?</span>
+              <button onClick=${() => onDelete(e.id)}
+                style="background:#f85149;color:#fff;border:none;border-radius:6px;padding:7px 14px;cursor:pointer;font-size:13px">Delete</button>
+              <button onClick=${() => setConfirmDel(false)}
+                style="background:none;border:1px solid rgba(128,128,128,.4);border-radius:6px;padding:7px 14px;cursor:pointer;font-size:13px">Cancel</button>
+            </span>`
+          : html`<button onClick=${() => setConfirmDel(true)}
+              style="background:rgba(248,81,73,.12);color:#f85149;border:1px solid rgba(248,81,73,.4);
+                     border-radius:6px;padding:7px 14px;cursor:pointer;font-size:13px">🗑 Delete this memory</button>`}
+      </div>
+    </div>`;
+}
+
+// Per-row actions: spaced 👍/👎 with click acknowledgment (a brief colored
+// flash) and a two-step inline delete confirm (no blocking browser dialog).
+function OptimizerRowActions({ id, onFeedback, onDelete }) {
+  const [flash, setFlash] = useState(null);     // 'up' | 'down' | null
+  const [confirming, setConfirming] = useState(false);
+
+  const act = (ev, signal) => {
+    ev.stopPropagation();
+    setFlash(signal);
+    onFeedback(id, signal);
+    setTimeout(() => setFlash(null), 1000);
+  };
+  const askDelete = (ev) => { ev.stopPropagation(); setConfirming(true); setTimeout(() => setConfirming(false), 4000); };
+
+  const iconBtn = (label, title, onClick, bg) => html`<button title=${title} onClick=${onClick}
+    style="background:${bg || 'transparent'};border:none;cursor:pointer;font-size:14px;line-height:1;
+           padding:4px 6px;border-radius:6px;transition:background .15s">${label}</button>`;
+
+  if (confirming) {
+    return html`<span onClick=${ev => ev.stopPropagation()}
+      style="display:inline-flex;align-items:center;gap:6px;white-space:nowrap">
+      <span style="font-size:11px;opacity:.75">Delete?</span>
+      ${iconBtn('✓', 'Confirm delete', ev => { ev.stopPropagation(); onDelete(id); }, 'rgba(248,81,73,.18)')}
+      ${iconBtn('✕', 'Cancel', ev => { ev.stopPropagation(); setConfirming(false); }, 'rgba(128,128,128,.15)')}
+    </span>`;
+  }
+  return html`<span style="display:inline-flex;align-items:center;gap:8px;white-space:nowrap">
+    ${iconBtn('👍', 'Boost confidence', ev => act(ev, 'up'), flash === 'up' ? 'rgba(63,185,80,.3)' : 'transparent')}
+    ${iconBtn('👎', 'Lower confidence', ev => act(ev, 'down'), flash === 'down' ? 'rgba(248,81,73,.3)' : 'transparent')}
+    <span style="width:1px;height:16px;background:rgba(128,128,128,.3)"></span>
+    ${iconBtn('🗑', 'Delete', askDelete, 'transparent')}
+  </span>`;
+}
+
+// Memory sub-tab: a scannable table; click a row for the drawer.
+function OptimizerMemoryTab({ memory, onSelect, onDelete, onFeedback }) {
+  const all = (memory && memory.episodes) || [];
+  const [kindFilter, setKindFilter] = useState('all');
+  const procCount = all.filter(e => e.kind === 'procedural').length;
+  const epiCount = all.length - procCount;
+  const eps = all.filter(e =>
+    kindFilter === 'all' ? true :
+    kindFilter === 'procedures' ? e.kind === 'procedural' :
+    e.kind !== 'procedural');
+
+  const filterBtn = (id, label, n) => {
+    const on = kindFilter === id;
+    return html`<button onClick=${() => setKindFilter(id)}
+      style="background:${on ? 'var(--accent,#4a9eff)' : 'transparent'};
+             color:${on ? '#fff' : 'inherit'};
+             border:1px solid ${on ? 'var(--accent,#4a9eff)' : 'rgba(128,128,128,.5)'};
+             border-radius:6px;padding:5px 12px;margin-right:8px;cursor:pointer;font-size:12px;
+             font-weight:${on ? 600 : 500}">
+      ${label} <span style="opacity:${on ? 0.85 : 0.55}">${n}</span></button>`;
+  };
+
+  return html`
+    <div style="padding:0 24px 32px">
+      ${all.length === 0 && html`
+        <div style="padding:24px 0;opacity:.65;line-height:1.7">
+          No memory yet — run <code>forge optimizer claude</code> (memory is on by default) and complete a few tasks.
+          Episodes are distilled at task boundaries; procedures are consolidated once a repo has enough related episodes.
+        </div>`}
+      ${all.length > 0 && html`
+        <div style="display:flex;align-items:center;justify-content:space-between;margin:6px 0 12px;flex-wrap:wrap;gap:8px">
+          <div>
+            ${filterBtn('all', 'All', all.length)}
+            ${filterBtn('episodes', 'Episodes', epiCount)}
+            ${filterBtn('procedures', '⚙ Procedures', procCount)}
+          </div>
+          <div class="skills-subtitle" style="margin:0">${memory.recalled_count || 0} recalled into later sessions</div>
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+          <thead><tr style="text-align:left;opacity:.7">
+            <th style="padding:8px 8px">Title</th><th style="width:110px">Outcome</th>
+            <th style="width:130px">Confidence</th><th>Entities</th><th style="width:90px">Recalled</th>
+            <th style="width:120px">When</th><th style="width:130px;text-align:right">Actions</th>
+          </tr></thead>
+          <tbody>
+            ${eps.map(e => html`
+              <tr style="border-top:1px solid rgba(128,128,128,.2);cursor:pointer"
+                  onClick=${() => onSelect(e)}
+                  onMouseOver=${ev => ev.currentTarget.style.background = 'rgba(128,128,128,.08)'}
+                  onMouseOut=${ev => ev.currentTarget.style.background = 'transparent'}>
+                <td style="padding:9px 8px">
+                  <div style="font-weight:500">
+                    ${e.kind === 'procedural' ? html`<span style="color:#a371f7">⚙ </span>` : ''}${e.task_signature || '(untitled)'}
+                  </div>
+                  ${e.lesson && html`<div style="opacity:.6;font-size:12px;margin-top:2px">💡 ${e.lesson}</div>`}
+                </td>
+                <td>${e.kind === 'procedural'
+                  ? html`<span style="font-size:12px;color:#a371f7;font-weight:600">procedure</span>`
+                  : html`<${OptimizerOutcomeBadge} outcome=${e.outcome} />`}</td>
+                <td><${OptimizerConfidenceBar} value=${e.effective_confidence != null ? e.effective_confidence : e.confidence} /></td>
+                <td><${OptimizerEntityChips} items=${e.entities && e.entities.length ? e.entities : e.files} /></td>
+                <td><${OptimizerRecallBadge} count=${e.recall_count} /></td>
+                <td style="opacity:.7">${optimizerFmtTime(e.created_at)}</td>
+                <td style="text-align:right">
+                  <${OptimizerRowActions} id=${e.id} onFeedback=${onFeedback} onDelete=${onDelete} />
+                </td>
+              </tr>`)}
+          </tbody>
+        </table>
+        <div style="opacity:.55;font-size:12px;margin-top:14px">
+          Stored locally at <code>${memory.store_path || '.forge/optimizer-memory.jsonl'}</code> ·
+          record shape aligns with the platform memory schema (kind / about / entities).
+          When a control-plane URL is configured, memory also flows there for cross-session and org learning.
+        </div>`}
+    </div>`;
+}
+
+// Three-segment stacked bar showing the $ composition of cost avoided.
+function OptimizerCompositionBar({ input, cacheWrite, cacheRead }) {
+  const total = (input || 0) + (cacheWrite || 0) + (cacheRead || 0);
+  if (total <= 0) return null;
+  const seg = (v, color, title) => html`<div title=${title}
+    style="width:${(v / total) * 100}%;background:${color};height:100%"></div>`;
+  return html`<div style="display:flex;height:8px;border-radius:4px;overflow:hidden;width:260px;margin-top:6px">
+    ${seg(input, '#3b82f6', 'input (1×)')}
+    ${seg(cacheWrite, '#8b5cf6', 'cache-write (1.25×)')}
+    ${seg(cacheRead, '#22c55e', 'cache-read (0.1×, compounding)')}
+  </div>`;
+}
+
+// Savings sub-tab. Header tiles + session table are sourced from the DURABLE
+// usage-log report so token counts and dollars share ONE scope (no live-vs-
+// durable mismatch). Live /stats only marks which sessions are currently active.
+function OptimizerSavingsTab({ data, loading, stats, savings }) {
+  const rep = savings && savings.report;
+  const hasLog = rep && rep.records > 0;
+  const T = hasLog ? rep.totals : null;
+  const av = T ? T.cost_avoided_usd : 0;
+  const sp = T ? T.spent_usd : 0;
+  const eff = optimizerEffPct(av, sp);
+  const wouldHave = av + sp; // uncompressed cost = actually-spent + avoided
+  const at = hasLog ? rep.all_time : null;
+  // Sessions currently live in memory (seen since the optimizer last started) —
+  // used only to flag active rows in the durable table with a green dot.
+  const liveIds = new Set(Object.keys((stats && stats.sessions) || {}));
+  return html`
+    <div>
+      ${loading && !data && html`<div style="padding:24px;opacity:.7">Loading…</div>`}
+      ${data && !data.available && html`
+        <div style="padding:24px 0;line-height:1.7">
+          <p>No optimizer running at <code>${data.base_url || 'http://127.0.0.1:8787'}</code>.</p>
+          <p>Start it and route a coding agent through it:</p>
+          <pre style="background:rgba(0,0,0,.25);padding:12px;border-radius:8px;overflow:auto">forge optimizer claude      # launches Claude Code through it
+# or: forge optimizer --compress   # standalone proxy</pre>
+          <p style="opacity:.7">If it listens on another address, set <code>FORGE_OPTIMIZER_URL</code>.</p>
+        </div>`}
+
+      ${hasLog && html`
+        <div style="padding-bottom:24px">
+          <div style="display:flex;gap:28px;flex-wrap:wrap;margin:8px 0 18px">
+            <${OptimizerStatTile} label="Requests" value=${optimizerCommas(T.requests)} />
+            <${OptimizerStatTile} label="Input tokens" value=${optimizerCommas(T.input_tokens)} />
+            <${OptimizerStatTile} label="Cache read" value=${optimizerCommas(T.cache_read_input_tokens)} sub="billed ~0.1×" />
+            <${OptimizerStatTile} label="Output tokens" value=${optimizerCommas(T.output_tokens)} />
+            <${OptimizerStatTile} label="Tokens saved" value=${optimizerCommas(T.saved_tokens)} sub="vs. uncompressed" />
+            <${OptimizerStatTile} label="Spend" value=${'$' + sp.toFixed(2)} sub="actual, all tiers" />
+            <${OptimizerStatTile} label="Cost avoided" value=${'$' + av.toFixed(2)} sub="input+write+read" />
+            <${OptimizerStatTile} label="Effective savings" value=${(eff * 100).toFixed(0) + '%'} sub="avoided vs spent" />
+          </div>
+
+          <div style="background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.18);border-radius:10px;padding:14px 16px;margin-bottom:20px;max-width:720px">
+            <div style="font-size:15px">
+              <b>${(eff * 100).toFixed(0)}% effective savings</b>${' '}
+              <span style="opacity:.75">— this traffic cost <b>$${sp.toFixed(2)}</b> instead of <b>$${wouldHave.toFixed(2)}</b> uncompressed ($${av.toFixed(2)} avoided, all-time)</span>
+            </div>
+            ${at && html`<${OptimizerCompositionBar} input=${at.avoided_input_usd} cacheWrite=${at.avoided_cache_write_usd} cacheRead=${at.avoided_cache_read_usd} />`}
+            ${at && html`<div style="opacity:.6;font-size:11.5px;margin-top:6px">
+              = $${at.avoided_input_usd.toFixed(2)} input · $${at.avoided_cache_write_usd.toFixed(2)} cache-write · $${at.avoided_cache_read_usd.toFixed(2)} cache-read
+            </div>`}
+            ${at && html`<div style="opacity:.6;font-size:11.5px;margin-top:8px;line-height:1.5">
+              Compression removes each chunk from the cached prefix for <i>every later turn</i> of a session, so the${' '}
+              <b>${optimizerCommas(T.saved_tokens)}</b>${' '}tokens compressed away avoided${' '}
+              <b>${optimizerCommas(at.avoided_cache_read_tokens)}</b>${' '}cache-reads (×0.1) across sessions — that compounding
+              read term is most of the total, which is why the dollars far exceed a per-turn view of the saved tokens.
+            </div>`}
+          </div>
+
+          <div class="skills-subtitle" style="margin:6px 0 10px">Effective savings over time · avoided vs spent</div>
+          <${OptimizerSavingsRow} label="Today" w=${rep.today} />
+          <${OptimizerSavingsRow} label="Last 7 days" w=${rep.last_7_days} />
+          <${OptimizerSavingsRow} label="Last 30 days" w=${rep.last_30_days} />
+
+          <div class="skills-subtitle" style="margin:22px 0 8px">Sessions (${rep.sessions.length}) <span style="opacity:.5;font-weight:normal;font-size:12px">· <span style="color:#22c55e">●</span> live</span></div>
+          <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:13px;min-width:820px">
+            <thead><tr style="text-align:left;opacity:.7">
+              <th style="padding:6px 8px">Session</th><th>Model</th><th>Reqs</th><th>Input</th><th>Output</th><th>Saved</th><th>Spent</th><th>Avoided</th><th>Eff.</th><th>Last seen</th>
+            </tr></thead>
+            <tbody>
+              ${rep.sessions.map(s => {
+                const se = optimizerEffPct(s.cost_avoided_usd, s.spent_usd);
+                const live = liveIds.has(s.session_id);
+                return html`
+                <tr style="border-top:1px solid rgba(128,128,128,.2)">
+                  <td style="padding:6px 8px;font-family:monospace">${live ? html`<span style="color:#22c55e" title="live">● </span>` : ''}${s.session_id}</td>
+                  <td style="opacity:.8">${(s.model || '—').replace('claude-', '')}</td>
+                  <td>${optimizerCommas(s.requests)}</td>
+                  <td>${optimizerCommas(s.input_tokens)}</td>
+                  <td>${optimizerCommas(s.output_tokens)}</td>
+                  <td>${optimizerCommas(s.saved_tokens)}</td>
+                  <td style="opacity:.8">$${(s.spent_usd || 0).toFixed(2)}</td>
+                  <td><b>$${(s.cost_avoided_usd || 0).toFixed(2)}</b></td>
+                  <td style="opacity:.8">${(se * 100).toFixed(0)}%</td>
+                  <td style="opacity:.7">${optimizerFmtTime(s.last_seen)}</td>
+                </tr>`; })}
+              ${rep.sessions.length === 0 && html`<tr><td colspan="10" style="padding:12px 8px;opacity:.6">No sessions in the usage log yet.</td></tr>`}
+            </tbody>
+          </table>
+          </div>
+          <div style="opacity:.5;font-size:12px;margin-top:12px">All figures are durable (from <code>${savings.log_path || '.forge/optimizer-usage.jsonl'}</code>) and survive optimizer restarts. Dollars use <code>.forge/optimizer-pricing.json</code> if present, else list prices. Cache-read savings compound over a session and assume the prefix stays cache-warm (5-min TTL).</div>
+        </div>`}
+
+      ${data && data.available && !hasLog && html`
+        <div style="padding:24px 0;opacity:.6">No usage recorded yet — route a coding agent through the optimizer and savings will appear here.</div>`}
+    </div>`;
+}
+
+function OptimizerTab({ id, active, label, count, onClick }) {
+  return html`<button onClick=${() => onClick(id)}
+    style="background:none;border:none;cursor:pointer;padding:10px 4px;margin-right:22px;font-size:14px;
+           color:${active ? 'inherit' : 'rgba(128,128,128,.85)'};font-weight:${active ? 600 : 400};
+           border-bottom:2px solid ${active ? 'var(--accent,#4a9eff)' : 'transparent'}">
+    ${label}${count != null ? html` <span style="opacity:.6">(${count})</span>` : ''}</button>`;
+}
+
+// Daemon status + Start/Stop control for the background optimizer.
+function OptimizerDaemonBanner({ daemon, busy, onStart, onStop }) {
+  const running = !!(daemon && daemon.running);
+  const notWired = running && daemon.wired_base_url === '';
+  const btn = (label, onClick, bg, border) => html`<button disabled=${busy} onClick=${onClick}
+    style="background:${bg};color:#fff;border:1px solid ${border};border-radius:6px;padding:6px 14px;
+           cursor:${busy ? 'default' : 'pointer'};font-size:13px;opacity:${busy ? 0.6 : 1}">
+    ${busy ? '…' : label}</button>`;
+  return html`
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 24px 12px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span style="width:9px;height:9px;border-radius:50%;background:${running ? '#3fb950' : '#8b949e'}"></span>
+        <span style="font-weight:500">${running ? 'Optimizer running' : 'Optimizer not running'}</span>
+        ${running && daemon.base_url && html`<code style="opacity:.6;font-size:12px">${daemon.base_url}</code>`}
+        ${notWired && html`<span style="font-size:12px;color:#d29922">· Claude Code not wired (start to route it through)</span>`}
+        ${daemon && daemon.managed && running && html`<span style="font-size:12px;opacity:.5">· managed</span>`}
+      </div>
+      ${running
+        ? btn('Stop optimizer', onStop, 'rgba(248,81,73,.85)', 'rgba(248,81,73,.6)')
+        : btn('Start optimizer', onStart, 'rgba(63,185,80,.85)', 'rgba(63,185,80,.6)')}
+    </div>`;
+}
+
+function OptimizerPage() {
+  const [data, setData] = useState(null);
+  const [savings, setSavings] = useState(null);
+  const [memory, setMemory] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState('savings');
+  const [selected, setSelected] = useState(null);
+  const [daemon, setDaemon] = useState(null);
+  const [daemonBusy, setDaemonBusy] = useState(false);
+
+  const loadMemory = useCallback(() => {
+    return fetchOptimizerMemory().then(m => setMemory(m)).catch(() => setMemory({ available: false }));
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    const load = () => {
+      fetchOptimizerStats()
+        .then(d => { if (alive) setData(d); })
+        .catch(() => { if (alive) setData({ available: false }); })
+        .finally(() => { if (alive) setLoading(false); });
+      fetchOptimizerSavings()
+        .then(s => { if (alive) setSavings(s); })
+        .catch(() => { if (alive) setSavings({ available: false }); });
+      fetchOptimizerMemory()
+        .then(m => { if (alive) setMemory(m); })
+        .catch(() => { if (alive) setMemory({ available: false }); });
+      fetchOptimizerDaemon()
+        .then(d => { if (alive) setDaemon(d); })
+        .catch(() => { if (alive) setDaemon(null); });
+    };
+    load();
+    const t = setInterval(load, 5000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+
+  const handleDaemon = useCallback(async (action) => {
+    setDaemonBusy(true);
+    try { await controlOptimizerDaemon(action); } catch (e) { /* best-effort */ }
+    // start/stop take a moment (settings merge/revert, process up/down).
+    await new Promise(r => setTimeout(r, 700));
+    fetchOptimizerDaemon().then(setDaemon).catch(() => {});
+    fetchOptimizerStats().then(setData).catch(() => {});
+    setDaemonBusy(false);
+  }, []);
+
+  const handleDelete = useCallback(async (id) => {
+    try { await deleteOptimizerMemory(id); } catch (e) { /* best-effort */ }
+    await loadMemory();
+    setSelected(s => (s && s.id === id ? null : s));
+  }, [loadMemory]);
+
+  const handleFeedback = useCallback(async (id, signal) => {
+    try { await feedbackOptimizerMemory(id, signal); } catch (e) { /* best-effort */ }
+    const m = await fetchOptimizerMemory().catch(() => null);
+    if (m) {
+      setMemory(m);
+      setSelected(s => (s ? (m.episodes || []).find(e => e.id === s.id) || s : s));
+    }
+  }, []);
+
+  // The Savings tab now sources all numbers from the durable usage-log report
+  // (savings.report); live /stats is used only to flag which sessions are active.
+  const stats = data && data.stats ? data.stats : null;
+  const memCount = (memory && memory.count) || 0;
+
+  return html`
+    <main class="main skills-layout">
+      <div class="skills-header">
+        <div>
+          <div class="skills-title">Coding Agent Sessions</div>
+          <div class="skills-subtitle">Token usage, compression savings & learned memory via the forge optimizer</div>
+        </div>
+      </div>
+
+      <${OptimizerDaemonBanner} daemon=${daemon} busy=${daemonBusy}
+        onStart=${() => handleDaemon('start')} onStop=${() => handleDaemon('stop')} />
+
+      <div style="padding:0 24px;border-bottom:1px solid rgba(128,128,128,.2);margin-bottom:18px">
+        <${OptimizerTab} id="savings" label="Savings" active=${tab === 'savings'} onClick=${setTab} />
+        <${OptimizerTab} id="memory" label="Memory" count=${memCount} active=${tab === 'memory'} onClick=${setTab} />
+      </div>
+
+      <div style="padding:0 24px">
+        ${tab === 'savings' && html`<${OptimizerSavingsTab}
+          data=${data} loading=${loading} stats=${stats} savings=${savings} />`}
+        ${tab === 'memory' && html`<${OptimizerMemoryTab}
+          memory=${memory} onSelect=${setSelected} onDelete=${handleDelete} onFeedback=${handleFeedback} />`}
+      </div>
+
+      ${selected && html`<${OptimizerMemoryDrawer} e=${selected} onClose=${() => setSelected(null)} onDelete=${handleDelete} onFeedback=${handleFeedback} />`}
+    </main>`;
+}
+
+
 function SkillsPage() {
   const [skills, setSkills] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -3363,6 +3957,8 @@ function App() {
         return html`<${ConfigPage} agentId=${route.params.id} />`;
       case 'skills':
         return html`<${SkillsPage} />`;
+      case 'optimizer':
+        return html`<${OptimizerPage} />`;
       case 'skill-builder':
         return html`<${SkillBuilderPage} agentId=${route.params.id} />`;
       default:

@@ -166,6 +166,8 @@ func inferSource(domain string, ctx *tui.WizardContext) string {
 		"wss-primary.slack.com": "channel",
 		"api.slack.com":         "channel",
 		"files.slack.com":       "channel",
+		"web.whatsapp.com":      "channel",
+		"*.whatsapp.net":        "channel",
 	}
 	if src, ok := channelDomains[domain]; ok {
 		return src

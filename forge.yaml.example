@@ -35,6 +35,8 @@ skills:
 channels:
   - slack
   - telegram
+# - msteams
+# - whatsapp   # pair first: forge channel whatsapp-login
 
 # Secret management (optional — defaults to env vars only)
 # secrets:

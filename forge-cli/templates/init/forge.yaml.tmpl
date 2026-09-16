@@ -43,14 +43,14 @@ tools:
 
 channels:
 {{- range .Channels}}
-  - {{.}}
+  - {{yamlScalar .}}
 {{- end}}
 {{- end}}
 {{- if .BuiltinTools}}
 
 builtin_tools:
 {{- range .BuiltinTools}}
-  - {{.}}
+  - {{yamlScalar .}}
 {{- end}}
 {{- end}}
 {{- if .Compression}}
@@ -67,7 +67,7 @@ egress:
   mode: allowlist
   allowed_domains:
 {{- range .EgressDomains}}
-    - {{.}}
+    - {{yamlScalar .}}
 {{- end}}
 {{- end}}
 

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -19,29 +20,38 @@ import (
 	"github.com/initializ/forge/forge-plugins/channels/msteams"
 	"github.com/initializ/forge/forge-plugins/channels/slack"
 	"github.com/initializ/forge/forge-plugins/channels/telegram"
+	"github.com/initializ/forge/forge-plugins/channels/whatsapp"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
 
+// supportedAdapters is the canonical list of channel adapters `forge channel`
+// accepts. Keep in sync with createPlugin and defaultRegistry below.
+var supportedAdapters = []string{"slack", "telegram", "msteams", "whatsapp"}
+
+func isSupportedAdapter(name string) bool {
+	return slices.Contains(supportedAdapters, name)
+}
+
 var channelCmd = &cobra.Command{
 	Use:   "channel",
 	Short: "Manage agent communication channels",
-	Long:  "Add and serve channel adapters (Slack, Telegram, MS Teams) for your agent.",
+	Long:  "Add and serve channel adapters (Slack, Telegram, MS Teams, WhatsApp) for your agent.",
 }
 
 var channelAddCmd = &cobra.Command{
-	Use:       "add <slack|telegram|msteams>",
+	Use:       "add <slack|telegram|msteams|whatsapp>",
 	Short:     "Add a channel adapter to the project",
 	Args:      cobra.ExactArgs(1),
-	ValidArgs: []string{"slack", "telegram", "msteams"},
+	ValidArgs: []string{"slack", "telegram", "msteams", "whatsapp"},
 	RunE:      runChannelAdd,
 }
 
 var channelServeCmd = &cobra.Command{
-	Use:       "serve <slack|telegram|msteams>",
+	Use:       "serve <slack|telegram|msteams|whatsapp>",
 	Short:     "Run a standalone channel adapter (for container use)",
 	Args:      cobra.ExactArgs(1),
-	ValidArgs: []string{"slack", "telegram", "msteams"},
+	ValidArgs: []string{"slack", "telegram", "msteams", "whatsapp"},
 	RunE:      runChannelServe,
 }
 
@@ -137,8 +147,8 @@ func channelsEnabledBySettings(requested, enabled []string) error {
 
 func runChannelAdd(cmd *cobra.Command, args []string) error {
 	adapter := args[0]
-	if adapter != "slack" && adapter != "telegram" && adapter != "msteams" {
-		return fmt.Errorf("unsupported adapter: %s (supported: slack, telegram, msteams)", adapter)
+	if !isSupportedAdapter(adapter) {
+		return fmt.Errorf("unsupported adapter: %s (supported: %s)", adapter, strings.Join(supportedAdapters, ", "))
 	}
 
 	wd, err := os.Getwd()
@@ -202,8 +212,8 @@ func runChannelAdd(cmd *cobra.Command, args []string) error {
 
 func runChannelServe(cmd *cobra.Command, args []string) error {
 	adapter := args[0]
-	if adapter != "slack" && adapter != "telegram" && adapter != "msteams" {
-		return fmt.Errorf("unsupported adapter: %s (supported: slack, telegram, msteams)", adapter)
+	if !isSupportedAdapter(adapter) {
+		return fmt.Errorf("unsupported adapter: %s (supported: %s)", adapter, strings.Join(supportedAdapters, ", "))
 	}
 
 	// Settings channel enablement (#454). `channel serve` is the standalone
@@ -298,6 +308,8 @@ func createPlugin(name string) corechannels.ChannelPlugin {
 		return telegram.New()
 	case "msteams":
 		return msteams.New()
+	case "whatsapp":
+		return whatsapp.New()
 	default:
 		return nil
 	}
@@ -309,6 +321,7 @@ func defaultRegistry() *corechannels.Registry {
 	r.Register(slack.New())
 	r.Register(telegram.New())
 	r.Register(msteams.New())
+	r.Register(whatsapp.New())
 	return r
 }
 
@@ -448,6 +461,32 @@ func addChannelEgressToForgeYAML(path, adapter string) error {
 		}
 		egressMap["allowed_domains"] = domainsAny
 
+	case "whatsapp":
+		// Add "whatsapp" to egress.capabilities (same pattern as slack).
+		// The capability resolves to web.whatsapp.com + *.whatsapp.net via
+		// DefaultCapabilityBundles in forge-core/security/capabilities.go.
+		var caps []string
+		if existing, ok := egressMap["capabilities"]; ok {
+			if arr, ok := existing.([]any); ok {
+				for _, v := range arr {
+					if s, ok := v.(string); ok {
+						caps = append(caps, s)
+					}
+				}
+			}
+		}
+		for _, c := range caps {
+			if c == "whatsapp" {
+				return nil // already present
+			}
+		}
+		caps = append(caps, "whatsapp")
+		capsAny := make([]any, len(caps))
+		for i, s := range caps {
+			capsAny[i] = s
+		}
+		egressMap["capabilities"] = capsAny
+
 	case "msteams":
 		// Add "msteams" to egress.capabilities (same pattern as slack).
 		// The capability resolves to graph.microsoft.com + login.microsoftonline.com
@@ -523,6 +562,23 @@ func printSetupInstructions(adapter string) {
 		fmt.Println()
 		fmt.Println("  This adapter is outbound-only — no public endpoint required.")
 		fmt.Println("  Default poll cadence is 5s (configurable in msteams-config.yaml).")
+	case "whatsapp":
+		fmt.Println("WhatsApp setup instructions:")
+		fmt.Println("  1. Use a DEDICATED phone number, not a personal one (see the warning below)")
+		fmt.Println("  2. Run: forge channel whatsapp-login")
+		fmt.Println("  3. On the phone, open WhatsApp → Settings → Linked Devices →")
+		fmt.Println("     Link a Device, and scan the QR code shown in your terminal")
+		fmt.Println("  4. Run: forge run --with whatsapp")
+		fmt.Println()
+		fmt.Println("  There is no bot token. The pairing is stored at")
+		fmt.Println("  .forge/channels/whatsapp-session.db — that file IS the credential;")
+		fmt.Println("  keep it out of version control.")
+		fmt.Println()
+		fmt.Println("  WARNING: this uses WhatsApp Web (the same protocol as a linked")
+		fmt.Println("  desktop client), not the official WhatsApp Cloud API. Automating it")
+		fmt.Println("  is against WhatsApp's Terms of Service and can get the linked number")
+		fmt.Println("  banned. The ban applies to the number, not this machine, and is not")
+		fmt.Println("  reliably reversible.")
 	}
 	fmt.Println()
 	fmt.Println(strings.Repeat("─", 40))

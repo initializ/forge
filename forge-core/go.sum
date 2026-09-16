@@ -26,6 +26,8 @@ github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 h1:5VipnvEpbqr2gA2VbM+nYVbkIF2
 github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0/go.mod h1:Hyl3n6Twe1hvtd9XUXDec4pTvgMSEixRuQKPTMH2bNs=
 github.com/initializ/ctxzip v0.3.0 h1:qG+Li/qRCL/Bsx3eD3E6q2y2QDWUlIGXhQmt8ViPSsQ=
 github.com/initializ/ctxzip v0.3.0/go.mod h1:Qs4CpXTEeEOlZwIMPm/qaFPmil+AUIqH7Jg/K81FTmU=
+github.com/initializ/ctxzip v0.4.1 h1:9uRS43THKHyYv4U2RiVtBxpjViOdPPVus0sSGpLRGwM=
+github.com/initializ/ctxzip v0.4.1/go.mod h1:Qs4CpXTEeEOlZwIMPm/qaFPmil+AUIqH7Jg/K81FTmU=
 github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=
 github.com/kr/pretty v0.3.1/go.mod h1:hoEshYVHaxMs3cyo3Yncou5ZscifuDolrwPKZanG3xk=
 github.com/kr/text v0.2.0 h1:5Nx0Ya0ZqY2ygV366QzturHI13Jq95ApcVaJBhpS+AY=

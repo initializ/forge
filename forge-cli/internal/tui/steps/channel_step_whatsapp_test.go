@@ -17,7 +17,7 @@ import (
 // temp-store bookkeeping the network path would normally have set up.
 func newPairStep(t *testing.T) *ChannelStep {
 	t.Helper()
-	s := NewChannelStep(tui.NewStyleSet(tui.DarkTheme))
+	s := NewChannelStep(tui.NewStyleSet(tui.DarkTheme), nil)
 	s.channel = "whatsapp"
 	s.phase = channelWhatsappPairPhase
 	s.pairStatus = whatsappPairConnecting
@@ -27,7 +27,7 @@ func newPairStep(t *testing.T) *ChannelStep {
 }
 
 func TestChannelStep_SelectingWhatsappEntersPairPhase(t *testing.T) {
-	s := NewChannelStep(tui.NewStyleSet(tui.DarkTheme))
+	s := NewChannelStep(tui.NewStyleSet(tui.DarkTheme), nil)
 	s.channel = "whatsapp"
 	s.phase = channelWhatsappPairPhase
 	s.pairStatus = whatsappPairConnecting
@@ -230,7 +230,7 @@ func TestWhatsappPair_RetryReusesTempDir(t *testing.T) {
 }
 
 func TestChannelStep_WhatsappSummary(t *testing.T) {
-	s := NewChannelStep(tui.NewStyleSet(tui.DarkTheme))
+	s := NewChannelStep(tui.NewStyleSet(tui.DarkTheme), nil)
 	s.channel = "whatsapp"
 	if got := s.Summary(); got != "WhatsApp" {
 		t.Errorf("Summary() = %q, want %q", got, "WhatsApp")

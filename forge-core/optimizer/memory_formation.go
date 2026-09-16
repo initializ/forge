@@ -64,6 +64,11 @@ type DistillInput struct {
 // head and tail of a task span.
 const maxTranscriptChars = 12000
 
+// maxDistillAttempts bounds how many times one span is retried after a failed
+// distillation before it's abandoned (guards against a permanent-failure retry
+// storm while still recovering from transient errors).
+const maxDistillAttempts = 3
+
 // distillSystemPrompt asks for a compact, code-grounded episode as JSON.
 const distillSystemPrompt = `You are a memory distiller for a coding agent. You are given the transcript of ONE completed unit of work (a "task span"). Extract a compact, reusable episodic memory.
 
@@ -274,6 +279,10 @@ type MemoryFormer struct {
 	distilled map[string]int
 	// de-dupe by content hash of the span, guarding against session-id churn.
 	seenSpans map[string]struct{}
+	// distillFails counts failed distillation attempts per span key, so a
+	// transient failure retries (bounded by maxDistillAttempts) instead of being
+	// lost or retried forever.
+	distillFails map[string]int
 	// per-session frozen recall block, so injection is byte-stable across turns
 	// (cache safety — see memory_recall.go).
 	recallCache map[string]recallEntry
@@ -366,6 +375,7 @@ func NewMemoryFormer(cfg MemoryFormerConfig) *MemoryFormer {
 		sem:                make(chan struct{}, max),
 		distilled:          map[string]int{},
 		seenSpans:          map[string]struct{}{},
+		distillFails:       map[string]int{},
 		recallCache:        map[string]recallEntry{},
 		tailRecorded:       map[string]struct{}{},
 		repoCache:          map[string][2]string{},
@@ -454,12 +464,26 @@ func (f *MemoryFormer) dispatch(in DistillInput, spanKey string) {
 			// auth-scope rejection) is exactly what silently prevents memory from
 			// forming, so it must not hide at Debug.
 			f.logger.Warn("memory: distill failed", "err", err, "session", in.SessionID)
-			// allow a later request to retry this span
+			// Retry a TRANSIENT failure, bounded, so a flaky 401/timeout doesn't
+			// permanently lose the span. Deleting seenSpans alone was insufficient:
+			// Observe's distilled[session] high-water mark blocked re-scan, so we
+			// must also roll that mark back so a later turn revisits the span. Other
+			// (already-distilled) spans stay deduped by their seenSpans keys. At the
+			// cap we give up: leave seenSpans set so it isn't retried forever.
 			f.mu.Lock()
-			delete(f.seenSpans, spanKey)
+			f.distillFails[spanKey]++
+			if f.distillFails[spanKey] < maxDistillAttempts {
+				delete(f.seenSpans, spanKey)
+				f.distilled[in.SessionID] = 0
+			} else {
+				f.logger.Warn("memory: giving up on span after repeated distill failures", "session", in.SessionID)
+			}
 			f.mu.Unlock()
 			return
 		}
+		f.mu.Lock()
+		delete(f.distillFails, spanKey) // succeeded — clear the retry counter
+		f.mu.Unlock()
 		ep.ID = "ep_" + spanKey
 		ep.Kind = KindEpisodic
 		ep.Repo = in.Repo

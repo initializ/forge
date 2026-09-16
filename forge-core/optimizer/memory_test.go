@@ -2,6 +2,7 @@ package optimizer
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"sync"
@@ -43,6 +44,80 @@ func (f *fakeDistiller) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.calls)
+}
+
+// flakyDistiller fails its first failFirst calls, then succeeds — for testing
+// transient-failure retry (MEDIUM #6).
+type flakyDistiller struct {
+	mu        sync.Mutex
+	calls     int
+	failFirst int
+	result    *Episode
+}
+
+func (d *flakyDistiller) Distill(_ context.Context, _ DistillInput) (*Episode, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.calls++
+	if d.calls <= d.failFirst {
+		return nil, fmt.Errorf("transient distill failure %d", d.calls)
+	}
+	e := *d.result
+	return &e, nil
+}
+
+func (d *flakyDistiller) DistillProcedure(_ context.Context, _ ProcedureInput) (*Episode, error) {
+	return &Episode{Kind: KindProcedural}, nil
+}
+
+func (d *flakyDistiller) callCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.calls
+}
+
+// TestObserve_RetriesTransientDistillFailure guards MEDIUM #6: a span whose first
+// distillation fails must be retried on a later turn, not silently lost. The old
+// code advanced the distilled[session] high-water mark before dispatch and only
+// deleted seenSpans on failure, so Observe's early-return kept the span from ever
+// being revisited.
+func TestObserve_RetriesTransientDistillFailure(t *testing.T) {
+	store, err := NewFileMemoryStore(filepath.Join(t.TempDir(), "mem.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fd := &flakyDistiller{failFirst: 1, result: &Episode{TaskSignature: "t", Summary: "s", Outcome: OutcomeSuccess}}
+	former := newFormer(t, MemoryFormerConfig{Store: store, Distiller: fd, Repo: "forge", Commit: "c"})
+
+	// A body with one COMPLETED span (two user instructions, activity between).
+	body := []byte(`{
+		"model": "claude-opus-4-8",
+		"messages": [
+			{"role": "user", "content": "do the task"},
+			{"role": "assistant", "content": [{"type": "tool_use", "name": "Edit", "input": {"file": "a.go"}}]},
+			{"role": "user", "content": [{"type": "tool_result", "content": "ok"}]},
+			{"role": "assistant", "content": [{"type": "text", "text": "Done."}]},
+			{"role": "user", "content": "now the next thing"}
+		]
+	}`)
+
+	// Turn 1: distillation fails → no episode, but the span must remain retryable.
+	former.Observe("s1", body, http.Header{}, "https://api.anthropic.com")
+	former.waitAsync()
+	if eps, _ := store.ListEpisodes("", 0); len(eps) != 0 {
+		t.Fatalf("expected no episode after the failed attempt, got %d", len(eps))
+	}
+
+	// Turn 2: the same completed span is re-observed and retried → now succeeds.
+	former.Observe("s1", body, http.Header{}, "https://api.anthropic.com")
+	former.waitAsync()
+	eps := waitForEpisodes(t, store, 1)
+	if len(eps) != 1 {
+		t.Fatalf("expected 1 episode after retry, got %d", len(eps))
+	}
+	if fd.callCount() < 2 {
+		t.Errorf("expected the span to be retried (>=2 distill calls), got %d", fd.callCount())
+	}
 }
 
 // waitForEpisodes polls the store until it holds at least n episodes or times out.

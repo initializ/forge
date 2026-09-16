@@ -1,6 +1,8 @@
 package optimizer
 
 import (
+	"fmt"
+	"hash/fnv"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -51,11 +53,23 @@ func (f *MemoryFormer) resolveRepo(body []byte) (string, string) {
 		repo, commit = f.repoResolver(cwd)
 	}
 	if repo == "" {
-		repo = filepath.Base(cwd) // no git resolver → basename of the working dir
+		// No git resolver → basename of the working dir, disambiguated by a short
+		// hash of the FULL path so distinct checkouts that share a basename
+		// (~/a/client vs ~/work/client) don't collapse to one scope and
+		// cross-inject each other's memory.
+		repo = filepath.Base(cwd) + "-" + shortPathHash(cwd)
 	}
 
 	f.mu.Lock()
 	f.repoCache[cwd] = [2]string{repo, commit}
 	f.mu.Unlock()
 	return repo, commit
+}
+
+// shortPathHash returns a 6-hex-char FNV-1a digest of a path, used only to
+// disambiguate same-basename working directories (not security-sensitive).
+func shortPathHash(p string) string {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(p))
+	return fmt.Sprintf("%08x", h.Sum32())[:6]
 }

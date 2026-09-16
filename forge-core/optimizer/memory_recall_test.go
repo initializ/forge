@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -129,6 +130,71 @@ func TestRecall_WrapsStringSystem(t *testing.T) {
 	blocks := systemBlocks(t, out)
 	if len(blocks) != 2 || blocks[0] != "plain string prompt" {
 		t.Fatalf("string system not wrapped correctly: %#v", blocks)
+	}
+}
+
+// TestRecall_StalenessUsesSessionRepoCommit guards MEDIUM #3: staleness must be
+// judged against the SESSION repo's HEAD (resolved from the request), not the
+// optimizer's launch-dir commit. The episode is formed at commit "X"; the launch
+// dir is also at "X" (so the old code saw no drift and would inject it), but the
+// session repo has moved to "Y". With the fix the ×0.85 penalty applies and the
+// just-above-gate episode drops below the confidence bar → not injected.
+func TestRecall_StalenessUsesSessionRepoCommit(t *testing.T) {
+	store, err := NewFileMemoryStore(filepath.Join(t.TempDir(), "m.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = store.WriteEpisode(Episode{
+		ID: "b1", Repo: "repoB", SessionID: "old",
+		TaskSignature: "provision kafka cluster", Lesson: "raise partition count first",
+		Outcome: OutcomeSuccess, Confidence: 0.55, CodeState: CodeState{Commit: "X"},
+	})
+	former := newFormer(t, MemoryFormerConfig{
+		Store:  store,
+		Repo:   "repoB",
+		Commit: "X", // launch dir sits at X — the old code compared against this
+		RepoResolver: func(_ string) (string, string) {
+			return "repoB", "Y" // the SESSION repo has advanced to Y
+		},
+		Recall: RecallConfig{Enabled: true, MinConfidence: 0.5},
+	})
+	// 0.55 base ≥ 0.5 gate normally, but 0.55×0.85 = 0.4675 < 0.5 once stale.
+	// The instruction is unrelated to the episode so the task-specific tail overlay
+	// stays out of it and only the frozen block's staleness gate is exercised.
+	body := []byte(`{"model":"m","system":[{"type":"text","text":"Working directory: /home/u/repoB"}],"messages":[{"role":"user","content":"rename a css variable"}]}`)
+	_, n := former.Inject("sNew", body)
+	if n != 0 {
+		t.Fatalf("stale episode (session at Y, formed at X) should be excluded, got %d injected", n)
+	}
+}
+
+// TestRecall_FrozenBlock_ConcurrentFirstTurns guards MEDIUM #4: overlapping
+// first-turns of one session must inject a byte-identical frozen block (the
+// cache-safety invariant). Also exercises the -race detector on the shared
+// recall cache.
+func TestRecall_FrozenBlock_ConcurrentFirstTurns(t *testing.T) {
+	former := newRecallFormer(t, "forge", []Episode{
+		{ID: "1", Repo: "forge", SessionID: "old", TaskSignature: "task a", Lesson: "lesson a", Outcome: OutcomeSuccess},
+		{ID: "2", Repo: "forge", SessionID: "old", TaskSignature: "task b", Lesson: "lesson b", Outcome: OutcomeSuccess},
+	})
+	body := []byte(`{"model":"m","system":[{"type":"text","text":"You are Claude Code."}],"messages":[{"role":"user","content":"hi"}]}`)
+
+	const g = 8
+	results := make([][]byte, g)
+	var wg sync.WaitGroup
+	for i := 0; i < g; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			out, _ := former.Inject("sConc", body)
+			results[i] = out
+		}(i)
+	}
+	wg.Wait()
+	for i := 1; i < g; i++ {
+		if !bytes.Equal(results[0], results[i]) {
+			t.Fatalf("concurrent first-turns produced non-identical recall blocks (cache-bust): goroutine %d differs", i)
+		}
 	}
 }
 

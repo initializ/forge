@@ -59,13 +59,15 @@ func (f *MemoryFormer) Inject(sessionID string, body []byte) ([]byte, int) {
 
 	// Scope recall to the SESSION's repo (from its working directory), not the
 	// optimizer's launch dir — so a session in repo B never gets repo A's memory.
-	repo, _ := f.resolveRepo(body)
+	// The resolved commit is the SESSION repo's HEAD; carry it through so staleness
+	// is judged against the right repo (not the launch dir's), see computeRecall.
+	repo, commit := f.resolveRepo(body)
 
 	// 1. Frozen, task-AGNOSTIC block (procedures + top general lessons) appended
 	//    to the SYSTEM prompt. Computed once per session and reused verbatim, so
 	//    it never disturbs the cached prefix — and a procedure consolidated later
 	//    in the session is NOT retro-injected here; it surfaces in a new session.
-	block, n, frozenIDs := f.frozenBlock(sessionID, repo)
+	block, n, frozenIDs := f.frozenBlock(sessionID, repo, commit)
 	if block != "" {
 		if b, err := appendSystemBlock(out, block); err == nil {
 			out = b
@@ -89,27 +91,26 @@ func (f *MemoryFormer) Inject(sessionID string, body []byte) ([]byte, int) {
 }
 
 // frozenBlock returns the session-frozen, task-agnostic recall block (block,
-// count, ids), computing it once on first use.
-func (f *MemoryFormer) frozenBlock(sessionID, repo string) (string, int, []string) {
+// count, ids), computing it once on first use. The lock is held across the
+// compute so two overlapping first-turns of the same session can't each compute
+// (and each fire RecordRecall) and return non-identical blocks — the block MUST
+// be byte-stable per session for cache safety, so this must be atomic, not just
+// eventually-cached. computeRecall does not take f.mu, so no re-entrancy.
+func (f *MemoryFormer) frozenBlock(sessionID, repo, commit string) (string, int, []string) {
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	if cached, ok := f.recallCache[sessionID]; ok {
-		f.mu.Unlock()
 		return cached.block, cached.count, cached.ids
 	}
-	f.mu.Unlock()
-
-	block, ids := f.computeRecall(sessionID, repo)
-
-	f.mu.Lock()
+	block, ids := f.computeRecall(sessionID, repo, commit)
 	f.recallCache[sessionID] = recallEntry{block: block, count: len(ids), ids: ids}
-	f.mu.Unlock()
 	return block, len(ids), ids
 }
 
 // computeRecall builds the frozen block: procedures-dominant and task-agnostic
 // (ranked by procedural boost + confidence + recency, NOT the current task), so
 // it applies to any task in the session and needs no re-targeting.
-func (f *MemoryFormer) computeRecall(sessionID, repo string) (string, []string) {
+func (f *MemoryFormer) computeRecall(sessionID, repo, commit string) (string, []string) {
 	eps, err := f.store.ListEpisodes(repo, 0)
 	if err != nil || len(eps) == 0 {
 		return "", nil
@@ -137,8 +138,11 @@ func (f *MemoryFormer) computeRecall(sessionID, repo string) (string, []string) 
 			continue
 		}
 		conf := EffectiveConfidence(e.Confidence, fb[e.ID])
-		// Staleness: down-weight memory formed against a now-moved commit.
-		if f.commit != "" && e.CodeState.Commit != "" && e.CodeState.Commit != f.commit {
+		// Staleness: down-weight memory formed against a now-moved commit. Compare
+		// against the SESSION repo's HEAD (passed in), not f.commit (the launch
+		// dir) — otherwise a proxy serving multiple repos checks repo B's episodes
+		// against repo A's HEAD.
+		if commit != "" && e.CodeState.Commit != "" && e.CodeState.Commit != commit {
 			conf *= 0.85
 		}
 		if conf < minConf {

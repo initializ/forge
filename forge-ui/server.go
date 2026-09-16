@@ -198,12 +198,29 @@ func (s *UIServer) Start(ctx context.Context) error {
 	return nil
 }
 
-// corsMiddleware adds CORS headers.
+// corsMiddleware adds CORS headers, EXCEPT for the optimizer endpoints. Those
+// return private distilled memory (summaries of the user's code work) and can
+// rewrite ~/.claude/settings.json (daemon start/stop), so they must not be
+// readable or invokable cross-origin. For them we (a) never emit
+// Access-Control-Allow-Origin, so a browser blocks cross-origin reads of the
+// response, and (b) refuse cross-site requests outright via the Fetch Metadata
+// Sec-Fetch-Site header, which blocks CSRF on the state-changing routes.
+// Non-browser clients (curl; no Sec-Fetch-Site) and same-origin dashboard calls
+// pass through — this preserves the localhost single-user posture without adding
+// auth, while closing the cross-origin hole.
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if strings.HasPrefix(r.URL.Path, "/api/optimizer/") {
+			if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "same-site" && site != "none" {
+				http.Error(w, "cross-site request to optimizer endpoint refused", http.StatusForbidden)
+				return
+			}
+			// Deliberately no Access-Control-Allow-Origin here.
+		} else {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

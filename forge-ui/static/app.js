@@ -2699,14 +2699,14 @@ function OptimizerSavingsTab({ data, loading, stats, savings }) {
             <${OptimizerStatTile} label="Output tokens" value=${optimizerCommas(T.output_tokens)} />
             <${OptimizerStatTile} label="Tokens saved" value=${optimizerCommas(T.saved_tokens)} sub="vs. uncompressed" />
             <${OptimizerStatTile} label="Spend" value=${'$' + sp.toFixed(2)} sub="actual, all tiers" />
-            <${OptimizerStatTile} label="Cost avoided" value=${'$' + av.toFixed(2)} sub="input+write+read" />
-            <${OptimizerStatTile} label="Effective savings" value=${(eff * 100).toFixed(0) + '%'} sub="avoided vs spent" />
+            <${OptimizerStatTile} label="Cost avoided" value=${'≈$' + av.toFixed(2)} sub="est. · input+write+read" />
+            <${OptimizerStatTile} label="Effective savings" value=${'≤' + (eff * 100).toFixed(0) + '%'} sub="avoided vs spent (est.)" />
           </div>
 
           <div style="background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.18);border-radius:10px;padding:14px 16px;margin-bottom:20px;max-width:720px">
             <div style="font-size:15px">
-              <b>${(eff * 100).toFixed(0)}% effective savings</b>${' '}
-              <span style="opacity:.75">— this traffic cost <b>$${sp.toFixed(2)}</b> instead of <b>$${wouldHave.toFixed(2)}</b> uncompressed ($${av.toFixed(2)} avoided, all-time)</span>
+              <b>up to ${(eff * 100).toFixed(0)}% effective savings</b>${' '}
+              <span style="opacity:.75">— this traffic cost <b>$${sp.toFixed(2)}</b> instead of an estimated <b>$${wouldHave.toFixed(2)}</b> uncompressed (≈$${av.toFixed(2)} avoided, all-time)</span>
             </div>
             ${at && html`<${OptimizerCompositionBar} input=${at.avoided_input_usd} cacheWrite=${at.avoided_cache_write_usd} cacheRead=${at.avoided_cache_read_usd} />`}
             ${at && html`<div style="opacity:.6;font-size:11.5px;margin-top:6px">
@@ -2716,7 +2716,8 @@ function OptimizerSavingsTab({ data, loading, stats, savings }) {
               Compression removes each chunk from the cached prefix for <i>every later turn</i> of a session, so the${' '}
               <b>${optimizerCommas(T.saved_tokens)}</b>${' '}tokens compressed away avoided${' '}
               <b>${optimizerCommas(at.avoided_cache_read_tokens)}</b>${' '}cache-reads (×0.1) across sessions — that compounding
-              read term is most of the total, which is why the dollars far exceed a per-turn view of the saved tokens.
+              read term is most of the total. It's an <b>upper bound</b>: it assumes the shrunk prefix stays cache-warm and
+              would have been re-read on every later turn, so treat the dollars as an estimate, not a billed figure.
             </div>`}
           </div>
 

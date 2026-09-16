@@ -364,14 +364,35 @@ func readClaudeSettings() (map[string]any, error) {
 
 func writeClaudeSettings(m map[string]any) error {
 	path := claudeSettingsPath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(b, '\n'), 0o644)
+	b = append(b, '\n')
+	// Atomic write (temp in the same dir + rename) at 0600: the file can hold an
+	// upstream URL with embedded credentials, and `claude` may read it
+	// concurrently — a partial file would break it. 0600 keeps it owner-only.
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".settings-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }() // no-op after a successful rename
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(b); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 // captureStr returns a pointer to the string value if present, else nil.

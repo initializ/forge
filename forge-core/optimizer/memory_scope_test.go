@@ -2,6 +2,7 @@ package optimizer
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -38,5 +39,30 @@ func TestResolveRepo_PerSessionScope(t *testing.T) {
 	// No working dir → falls back to the launch repo.
 	if r, c := former.resolveRepo(noCwd); r != "launch-dir" || c != "aaa" {
 		t.Errorf("fallback scope = (%q,%q)", r, c)
+	}
+}
+
+// TestResolveRepo_BasenameCollisionDisambiguated guards MEDIUM #5: with no git
+// resolver the scope falls back to the working-dir basename, so two distinct
+// checkouts that share a basename (~/a/client vs ~/work/client) must NOT collapse
+// to one scope and cross-inject. The fix appends a short path hash.
+func TestResolveRepo_BasenameCollisionDisambiguated(t *testing.T) {
+	store, _ := NewFileMemoryStore(filepath.Join(t.TempDir(), "m.jsonl"))
+	former := newFormer(t, MemoryFormerConfig{Store: store}) // no RepoResolver → basename+hash
+
+	bodyA := []byte(`{"model":"m","system":[{"type":"text","text":"Working directory: /home/u/a/client"}],"messages":[]}`)
+	bodyB := []byte(`{"model":"m","system":[{"type":"text","text":"Working directory: /home/u/work/client"}],"messages":[]}`)
+
+	rA, _ := former.resolveRepo(bodyA)
+	rB, _ := former.resolveRepo(bodyB)
+	if rA == rB {
+		t.Fatalf("distinct paths collided to the same scope %q — memory would cross-inject", rA)
+	}
+	if !strings.HasPrefix(rA, "client-") || !strings.HasPrefix(rB, "client-") {
+		t.Errorf("expected basename-prefixed scopes, got %q and %q", rA, rB)
+	}
+	// Same path must be stable (memoized) across calls.
+	if rA2, _ := former.resolveRepo(bodyA); rA2 != rA {
+		t.Errorf("scope not stable for the same path: %q then %q", rA, rA2)
 	}
 }

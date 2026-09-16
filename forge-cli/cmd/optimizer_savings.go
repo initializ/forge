@@ -78,6 +78,8 @@ func renderSavings(r *optimizer.UsageReport) {
 	printWindow("Today       ", r.Today)
 	printWindow("Last 7 days ", r.Last7Days)
 	printWindow("Last 30 days", r.Last30Days)
+	fmt.Println("\n≈ dollars are an UPPER-BOUND estimate: the compounding cache-read term assumes\n" +
+		"  the shrunk prefix stayed cache-warm and would have been re-read every later turn.")
 
 	if len(r.PerModel) > 0 {
 		fmt.Println("\nCost avoided per model:")
@@ -122,7 +124,7 @@ func printWindow(label string, w optimizer.WindowTotals) {
 	// content would have been cached at, + the compounding cache-read (0.1×) it
 	// avoids on every later turn of the session.
 	ratio := pct(w.SavedTokens, w.CacheWriteTokens)
-	fmt.Printf("%s %s  %5.1f%% saved %s / %s (cache write)   $%.2f\n",
+	fmt.Printf("%s %s  %5.1f%% saved %s / %s (cache write)   ≈$%.2f\n",
 		label, bar(ratio/100, 15), ratio, commaInt(w.SavedTokens), commaInt(w.CacheWriteTokens), w.Dollars)
 	fmt.Printf("               ↳ avoided  input %s ·  cache-write %s ·  cache-read %s (×0.1, compounding)\n",
 		commaInt(w.AvoidedInputTokens), commaInt(w.AvoidedCacheWriteTokens), commaInt(w.AvoidedCacheReadTokens))

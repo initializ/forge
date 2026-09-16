@@ -22,6 +22,10 @@ const (
 	providerOAuthPhase
 	providerModelPhase
 	providerOrgIDPhase
+	// providerRegionPhase collects the AWS region for provider "bedrock"
+	// (written to model.aws_region). Bedrock signs with SigV4 from AWS env
+	// credentials, so no API key is prompted — just the region. Issue #205.
+	providerRegionPhase
 	providerCustomURLPhase
 	// providerCustomShapePhase asks whether the custom endpoint
 	// speaks OpenAI Chat Completions or Anthropic Messages wire
@@ -96,6 +100,7 @@ type ProviderStep struct {
 	authMethod         string // "apikey" or "oauth"
 	modelID            string // selected model ID
 	orgID              string // OpenAI enterprise organization ID
+	awsRegion          string // AWS region for provider "bedrock" (#205)
 	customURL          string
 	customModel        string
 	customAuth         string
@@ -112,11 +117,18 @@ type ProviderStep struct {
 	validating        bool
 	valErr            error
 	oauthRunning      bool
+	// defaultModel is settings models.default.model (#454); used to preselect
+	// the model in the OpenAI model-selector phase when it's in the list.
+	defaultModel string
 }
 
-// NewProviderStep creates a new provider selection step.
-// oauthFn is optional — pass nil to disable OAuth login.
-func NewProviderStep(styles *tui.StyleSet, validateFn ValidateKeyFunc, oauthFn ...OAuthFlowFunc) *ProviderStep {
+// NewProviderStep creates a new provider selection step. defaultProvider /
+// defaultModel are the settings models.default (#454): the provider is
+// pre-highlighted in the selector (the user still confirms), and defaultModel
+// preselects the model where a model-selector phase applies (OpenAI). Empty
+// values leave the built-in defaults. oauthFn is optional — pass nil to disable
+// OAuth login.
+func NewProviderStep(styles *tui.StyleSet, validateFn ValidateKeyFunc, defaultProvider, defaultModel string, oauthFn ...OAuthFlowFunc) *ProviderStep {
 	items := providerSelectItems()
 
 	selector := components.NewSingleSelect(
@@ -132,16 +144,21 @@ func NewProviderStep(styles *tui.StyleSet, validateFn ValidateKeyFunc, oauthFn .
 		styles.KbdDesc,
 	)
 
+	// Pre-highlight the settings default provider (#454). No-op when empty /
+	// not a known provider; does not auto-confirm.
+	selector.SelectByValue(defaultProvider)
+
 	var oFn OAuthFlowFunc
 	if len(oauthFn) > 0 {
 		oFn = oauthFn[0]
 	}
 
 	return &ProviderStep{
-		styles:     styles,
-		selector:   selector,
-		validateFn: validateFn,
-		oauthFn:    oFn,
+		styles:       styles,
+		selector:     selector,
+		validateFn:   validateFn,
+		oauthFn:      oFn,
+		defaultModel: defaultModel,
 	}
 }
 
@@ -196,6 +213,8 @@ func (s *ProviderStep) Update(msg tea.Msg) (tui.Step, tea.Cmd) {
 		return s.updateModelPhase(msg)
 	case providerOrgIDPhase:
 		return s.updateOrgIDPhase(msg)
+	case providerRegionPhase:
+		return s.updateRegionPhase(msg)
 	case providerCustomURLPhase:
 		return s.updateCustomURLPhase(msg)
 	case providerCustomShapePhase:
@@ -223,6 +242,29 @@ func (s *ProviderStep) updateSelectPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
 			s.phase = providerValidatingPhase
 			s.validating = true
 			return s, s.runValidation()
+		case "bedrock":
+			// Bedrock signs with SigV4 from AWS env credentials — no API
+			// key. Prompt for the region, then the model. Issue #205.
+			s.phase = providerRegionPhase
+			s.textInput = components.NewTextInput(
+				"AWS region (e.g. us-east-1)",
+				"us-east-1",
+				false, // no slug hint
+				func(val string) error {
+					if strings.TrimSpace(val) == "" {
+						return fmt.Errorf("region is required for Bedrock")
+					}
+					return nil
+				},
+				s.styles.Theme.Accent,
+				s.styles.AccentTxt,
+				s.styles.InactiveBorder,
+				s.styles.ErrorTxt,
+				s.styles.DimTxt,
+				s.styles.KbdKey,
+				s.styles.KbdDesc,
+			)
+			return s, s.textInput.Init()
 		case "custom":
 			s.phase = providerCustomURLPhase
 			s.textInput = components.NewTextInput(
@@ -467,6 +509,8 @@ func (s *ProviderStep) showModelSelector() tea.Cmd {
 		s.styles.KbdKey,
 		s.styles.KbdDesc,
 	)
+	// Preselect the settings default model (#454) when it's in this list.
+	s.modelSelector.SelectByValue(s.defaultModel)
 	s.phase = providerModelPhase
 	return s.modelSelector.Init()
 }
@@ -524,6 +568,51 @@ func (s *ProviderStep) updateOrgIDPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
 	}
 
 	return s, cmd
+}
+
+// updateRegionPhase collects the Bedrock AWS region, then advances to the
+// model picker. Backspace at an empty input returns to provider selection.
+func (s *ProviderStep) updateRegionPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
+	if km, ok := msg.(tea.KeyMsg); ok && km.String() == "backspace" && s.textInput.Value() == "" {
+		s.phase = providerSelectPhase
+		s.provider = ""
+		s.selector.Reset()
+		return s, s.selector.Init()
+	}
+
+	updated, cmd := s.textInput.Update(msg)
+	s.textInput = updated
+
+	if s.textInput.Done() {
+		s.awsRegion = strings.TrimSpace(s.textInput.Value())
+		return s, s.showBedrockModelSelector()
+	}
+	return s, cmd
+}
+
+// showBedrockModelSelector builds the model picker from the catalog's
+// Bedrock model list and enters providerModelPhase. Bedrock has no
+// api-key/org-id follow-up, so updateModelPhase completes the step.
+func (s *ProviderStep) showBedrockModelSelector() tea.Cmd {
+	p, _ := catalog.ProviderByID("bedrock")
+	items := make([]components.SingleSelectItem, len(p.Models))
+	for i, m := range p.Models {
+		items[i] = components.SingleSelectItem{Label: m.Label, Value: m.ModelID}
+	}
+	s.modelSelector = components.NewSingleSelect(
+		items,
+		s.styles.Theme.Accent,
+		s.styles.Theme.Primary,
+		s.styles.Theme.Secondary,
+		s.styles.Theme.Dim,
+		s.styles.Theme.Border,
+		s.styles.Theme.ActiveBorder,
+		s.styles.Theme.ActiveBg,
+		s.styles.KbdKey,
+		s.styles.KbdDesc,
+	)
+	s.phase = providerModelPhase
+	return s.modelSelector.Init()
 }
 
 func (s *ProviderStep) updateCustomURLPhase(msg tea.Msg) (tui.Step, tea.Cmd) {
@@ -674,6 +763,8 @@ func (s *ProviderStep) View(width int) string {
 		return s.modelSelector.View(width)
 	case providerOrgIDPhase:
 		return s.textInput.View(width)
+	case providerRegionPhase:
+		return s.textInput.View(width)
 	case providerCustomURLPhase, providerCustomModelPhase:
 		return s.textInput.View(width)
 	case providerCustomShapePhase:
@@ -717,6 +808,7 @@ func (s *ProviderStep) Apply(ctx *tui.WizardContext) {
 	ctx.AuthMethod = s.authMethod
 	ctx.ModelName = s.modelID
 	ctx.OrganizationID = s.orgID
+	ctx.AWSRegion = s.awsRegion
 	ctx.CustomBaseURL = s.customURL
 	ctx.CustomModel = s.customModel
 	ctx.CustomAPIKey = s.customAuth
@@ -747,6 +839,13 @@ func modelDisplayName(modelID string) string {
 			return m.DisplayName
 		}
 	}
+	if p, ok := catalog.ProviderByID("bedrock"); ok {
+		for _, m := range p.Models {
+			if m.ModelID == modelID {
+				return m.Label
+			}
+		}
+	}
 	for _, m := range openAIAPIKeyModels {
 		if m.ModelID == modelID {
 			return m.DisplayName
@@ -761,6 +860,8 @@ func providerDisplayName(provider string) string {
 		return "OpenAI"
 	case "anthropic":
 		return "Anthropic"
+	case "bedrock":
+		return "AWS Bedrock"
 	case "gemini":
 		return "Google Gemini"
 	case "ollama":

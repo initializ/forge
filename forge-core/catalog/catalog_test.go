@@ -96,6 +96,24 @@ func TestProvidersWellFormed(t *testing.T) {
 	}
 }
 
+// TestBedrockProvider pins the #205 wizard entry: Bedrock prompts for a
+// region (not an API key), signs with SigV4, and offers a model picker.
+func TestBedrockProvider(t *testing.T) {
+	p, ok := catalog.ProviderByID("bedrock")
+	if !ok {
+		t.Fatal("expected bedrock provider in catalog")
+	}
+	if !p.NeedsAWSRegion {
+		t.Error("bedrock must set NeedsAWSRegion (region drives host + SigV4 scope)")
+	}
+	if p.NeedsAPIKey || p.APIKeyEnvVar != "" {
+		t.Error("bedrock must not prompt for an API key (SigV4 from AWS env creds)")
+	}
+	if p.DefaultModel == "" || len(p.Models) == 0 {
+		t.Error("bedrock must offer a default model and a model picker list")
+	}
+}
+
 func TestChannelsWellFormed(t *testing.T) {
 	seen := map[string]bool{}
 	for _, c := range catalog.AllChannels() {

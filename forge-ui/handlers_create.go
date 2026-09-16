@@ -45,7 +45,7 @@ func openAIProviderModels() ProviderModels {
 // per-provider model lists, and web search provider options.
 func (s *UIServer) handleGetWizardMeta(w http.ResponseWriter, _ *http.Request) {
 	meta := WizardMetadata{
-		Providers:  []string{"openai", "anthropic", "gemini", "ollama", "custom"},
+		Providers:  []string{"openai", "anthropic", "bedrock", "gemini", "ollama", "custom"},
 		Frameworks: []string{"forge", "crewai", "langchain"},
 		Channels:   []string{"slack", "telegram"},
 	}
@@ -96,6 +96,21 @@ func (s *UIServer) handleGetWizardMeta(w http.ResponseWriter, _ *http.Request) {
 			// runtime resolver never read.
 			BaseURLEnv: "OPENAI_BASE_URL",
 		},
+	}
+
+	// Bedrock is sourced from the shared catalog (not hardcoded like the
+	// other providers) so the web wizard's model list + region flag cannot
+	// drift from the CLI/TUI. #205 review (provider-metadata-drift finding).
+	if p, ok := catalog.ProviderByID("bedrock"); ok {
+		bm := ProviderModels{
+			Default:        p.DefaultModel,
+			NeedsKey:       p.NeedsAPIKey,
+			NeedsAWSRegion: p.NeedsAWSRegion,
+		}
+		for _, m := range p.Models {
+			bm.APIKey = append(bm.APIKey, ModelOption{DisplayName: m.Label, ModelID: m.ModelID})
+		}
+		meta.ProviderModels["bedrock"] = bm
 	}
 
 	// Web search providers
@@ -170,6 +185,14 @@ func (s *UIServer) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if opts.ModelProvider == "" {
 		writeError(w, http.StatusBadRequest, "model_provider is required")
+		return
+	}
+
+	// Bedrock signs with SigV4 for a region-scoped endpoint, so the region
+	// is required (drives host + signature scope). Reject early rather than
+	// scaffold a forge.yaml that only fails at `forge validate`/run. #205.
+	if opts.ModelProvider == "bedrock" && strings.TrimSpace(opts.AWSRegion) == "" {
+		writeError(w, http.StatusBadRequest, "aws_region is required for model_provider \"bedrock\"")
 		return
 	}
 

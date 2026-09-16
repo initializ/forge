@@ -16,11 +16,11 @@ registry: "ghcr.io/org"             # Container registry
 entrypoint: "agent.py"              # Required for crewai/langchain, omit for forge
 
 model:
-  provider: "openai"                # openai, openai-responses, anthropic, gemini, ollama
+  provider: "openai"                # openai, openai-responses, anthropic, bedrock, gemini, ollama
   name: "gpt-4o"                    # Model name
   base_url: ""                      # Override the provider's default API host (issue #139)
   organization_id: "org-xxx"        # OpenAI Organization ID (enterprise, optional)
-  auth_scheme: ""                   # "" (default) / "x_api_key" / "bearer" / "aws_sigv4" (#202) / "apikey_header" (#302) / "apikey_header_only"
+  auth_scheme: ""                   # "" (default) / "x_api_key" / "bearer" (Authorization: Bearer; for anthropic replaces x-api-key — #455) / "aws_sigv4" (#202) / "apikey_header" (#302) / "apikey_header_only"
   aws_region: ""                    # Required when auth_scheme: aws_sigv4 — issue #202
   auth_header_name: ""              # apikey_header[_only] custom header name; default "apikey" — issue #302
   disable_store: false              # openai-responses only: send store=false so OpenAI doesn't retain responses — issue #383
@@ -56,11 +56,32 @@ model:
 # break this provider — verify SSE passthrough when routing it through one.
 # Issue #383.
 
-# AWS Bedrock with native API key auth is not supported (Bedrock uses
-# SigV4 signing). Set auth_scheme: aws_sigv4 + aws_region to use AWS
-# credentials (AWS_ACCESS_KEY_ID / _SECRET_ACCESS_KEY / _SESSION_TOKEN
-# env) for outbound LLM calls — works against any SigV4-fronted endpoint
-# that speaks OpenAI or Anthropic wire format. Issue #202 Phase 2.
+# AWS Bedrock — two ways in:
+#
+#   1. provider: "bedrock" (RECOMMENDED, native Converse API, issue #205)
+#      Speaks Bedrock's model-agnostic Converse wire format directly, so any
+#      Bedrock model works with tool-calling through one translation. SigV4
+#      signing is intrinsic (no auth_scheme). Set aws_region; base_url
+#      defaults to https://bedrock-runtime.<region>.amazonaws.com.
+#
+#        model:
+#          provider: "bedrock"
+#          name: "us.anthropic.claude-sonnet-4-20250514-v1:0"
+#          aws_region: "us-east-1"
+#
+#      model.name is a Bedrock model id OR a cross-region inference-profile
+#      id. Most current models are invokable ONLY via a profile — the
+#      region-scoped "us."/"eu."/"apac." prefix (e.g.
+#      us.anthropic.claude-sonnet-4-20250514-v1:0) — and a bare on-demand id
+#      returns ValidationException. Match the prefix to aws_region.
+#
+#   2. auth_scheme: "aws_sigv4" on the openai / anthropic provider (#202)
+#      Signs an OpenAI or Anthropic wire-format request with AWS credentials
+#      (AWS_ACCESS_KEY_ID / _SECRET_ACCESS_KEY / _SESSION_TOKEN env). Use it
+#      to reach a SigV4-fronted endpoint that already speaks one of those wire
+#      formats (Bedrock's OpenAI-compat endpoint, or a compat proxy).
+#
+# Native API-key auth is not supported either way (Bedrock uses SigV4).
 
 # API gateways with fixed key headers: auth_scheme: apikey_header sends the
 # API key in the auth_header_name header (default "apikey") IN ADDITION to

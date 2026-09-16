@@ -1087,10 +1087,12 @@ type ModelRef struct {
 	// behavior matches the pre-#202 contract byte-for-byte.
 	AuthScheme string `yaml:"auth_scheme,omitempty"`
 
-	// AWSRegion is the AWS region used for SigV4 signing when
-	// AuthScheme == "aws_sigv4". Required on that path. Forge does
-	// not parse the region out of the BaseURL because Bedrock URLs
-	// often go through customer-side proxies that re-write the host.
+	// AWSRegion is the AWS region used for SigV4 signing. Required on
+	// two paths: AuthScheme == "aws_sigv4" (#202), and Provider ==
+	// "bedrock" (#205), where it also drives the default endpoint host
+	// (bedrock-runtime.<region>.amazonaws.com). Forge does not parse the
+	// region out of the BaseURL because Bedrock URLs often go through
+	// customer-side proxies that re-write the host.
 	AWSRegion string `yaml:"aws_region,omitempty"`
 
 	// AuthHeaderName overrides the header used by the "apikey_header"

@@ -173,7 +173,16 @@ func (t *SigV4Transport) sign(req *http.Request, payload []byte, creds SigV4Cred
 
 	canonicalRequest := strings.Join([]string{
 		req.Method,
-		canonicalURI(req.URL.Path),
+		// EscapedPath() (not Path): SigV4 for every service except S3
+		// double-encodes the canonical URI. The request target on the wire
+		// is already percent-encoded (EscapedPath, e.g. ".../v1%3A0/..."),
+		// and the canonical request encodes it a SECOND time (".../v1%253A0/...").
+		// Using the decoded Path would single-encode and yield
+		// SignatureDoesNotMatch for any path with reserved chars — e.g. the
+		// colon in a Bedrock Converse model id. Paths with no special chars
+		// (the #202 /v1/messages, /chat/completions passthrough) are
+		// unaffected: EscapedPath == Path there.
+		canonicalURI(req.URL.EscapedPath()),
 		canonicalQuery(req.URL.RawQuery),
 		canonicalHeaders,
 		signedHeaders,
@@ -236,11 +245,14 @@ func canonicalHeaderSet(h http.Header, host string) (string, string) {
 }
 
 // canonicalURI returns the path component encoded per SigV4 rules —
-// each segment gets URI-encoded except for unreserved characters. For
-// Bedrock the path looks like
-// "/model/anthropic.claude-sonnet-4-20250514-v1%3A0/invoke" which is
-// already encoded by net/url when the operator built the request, so
-// we re-encode safely (idempotent for the unreserved set).
+// each segment gets URI-encoded except for unreserved characters.
+//
+// Callers pass req.URL.EscapedPath() (the already-percent-encoded wire
+// path), so this re-encoding is the SECOND encoding SigV4 mandates for
+// every service except S3: a wire segment like "v1%3A0" becomes
+// "v1%253A0" in the canonical request. For unreserved-only paths
+// (/v1/messages, /chat/completions) EscapedPath == Path and the encoding
+// is a no-op, so the #202 passthrough behavior is unchanged.
 func canonicalURI(path string) string {
 	if path == "" {
 		return "/"

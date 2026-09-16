@@ -1,6 +1,9 @@
 package security
 
-import "github.com/initializ/forge/forge-core/types"
+import (
+	"github.com/initializ/forge/forge-core/llm"
+	"github.com/initializ/forge/forge-core/types"
+)
 
 // LLMProviderDomains returns the hostnames of every custom base URL
 // declared on the agent's primary model and its fallbacks. Used by the
@@ -51,6 +54,14 @@ func LLMProviderDomains(cfg *types.ForgeConfig) []string {
 		out = append(out, host)
 	}
 	add(cfg.Model.BaseURL)
+	// Native Bedrock (provider: bedrock, #205) derives its host from the
+	// region when base_url is omitted — the ergonomic default the client
+	// uses (bedrock.go: https://bedrock-runtime.<region>.amazonaws.com).
+	// Register it so the generated NetworkPolicy doesn't block Bedrock for
+	// the common region-only config.
+	if cfg.Model.Provider == llm.ProviderBedrock && cfg.Model.BaseURL == "" && cfg.Model.AWSRegion != "" {
+		add("https://bedrock-runtime." + cfg.Model.AWSRegion + ".amazonaws.com")
+	}
 	for _, fb := range cfg.Model.Fallbacks {
 		add(fb.BaseURL)
 	}

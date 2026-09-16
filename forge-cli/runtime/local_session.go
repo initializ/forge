@@ -108,6 +108,9 @@ func NewLocalSession(ctx context.Context, opts LocalSessionOptions) (*LocalSessi
 	if mc == nil {
 		return nil, fmt.Errorf("no model provider could be resolved for the demo agent")
 	}
+	// Overlay the local-dev model gateway from settings (#455): may redirect
+	// base_url/auth and inject a cached gateway token. No-op without settings.
+	r.applyGatewaySettings(ctx, mc)
 	r.modelConfig = mc
 
 	// Egress: in-process enforced client (for builtin http tools) + a local

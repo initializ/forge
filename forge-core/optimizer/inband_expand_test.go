@@ -93,7 +93,7 @@ func TestInbandExpand_EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	out, _ := io.ReadAll(resp.Body)
 
 	waitReport(t, sig)

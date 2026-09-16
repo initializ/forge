@@ -29,7 +29,7 @@ func rpc(t *testing.T, url, method string, id int, params any) fmcp.JSONRPCMessa
 	if err != nil {
 		t.Fatalf("post %s: %v", method, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(resp.Body)
 	var out fmcp.JSONRPCMessage
 	if err := json.Unmarshal(raw, &out); err != nil {
@@ -153,7 +153,7 @@ func TestExpandMCP_NotificationNoBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusAccepted {
 		t.Errorf("status = %d, want 202", resp.StatusCode)
 	}

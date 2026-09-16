@@ -108,9 +108,9 @@ func runOptimizerBench(_ *cobra.Command, _ []string) error {
 
 	fmt.Printf("\nforge optimizer — compression benchmark (priced at %s)\n\n", optimizerBenchModel)
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "PAYLOAD\tTOKENS\tSAVED\tRATIO\tBYTES\t$ AVOIDED")
+	_, _ = fmt.Fprintln(tw, "PAYLOAD\tTOKENS\tSAVED\tRATIO\tBYTES\t$ AVOIDED")
 	for _, r := range results {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%5.1f%%\t%s→%s\t$%.4f\n",
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%5.1f%%\t%s→%s\t$%.4f\n",
 			r.Name, commaInt(int64(r.TokensBefore)), commaInt(int64(r.Saved)), r.Ratio*100,
 			commaInt(int64(r.BytesBefore)), commaInt(int64(r.BytesAfter)), r.Dollars)
 	}
@@ -118,7 +118,7 @@ func runOptimizerBench(_ *cobra.Command, _ []string) error {
 	if totBefore > 0 {
 		totRatio = float64(totSaved) / float64(totBefore)
 	}
-	fmt.Fprintf(tw, "%s\t%s\t%s\t%5.1f%%\t\t$%.4f\n", "TOTAL",
+	_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%5.1f%%\t\t$%.4f\n", "TOTAL",
 		commaInt(int64(totBefore)), commaInt(int64(totSaved)), totRatio*100, totDollars)
 	_ = tw.Flush()
 	fmt.Println("\nctxzip targets structured/repetitive output (JSON, logs, search dumps); prose and code compress less.")

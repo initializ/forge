@@ -73,7 +73,7 @@ func TestProxy_StreamingPassthroughAndUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 
 	// Fidelity: the client receives the SSE stream byte-for-byte.
@@ -117,7 +117,7 @@ func TestProxy_NonStreamingUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.ReadAll(resp.Body)
 
 	waitReport(t, sig)
@@ -159,7 +159,7 @@ func TestHealthz(t *testing.T) {
 	if err != nil {
 		t.Fatalf("healthz: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("healthz status = %d", resp.StatusCode)
 	}

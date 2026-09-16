@@ -225,10 +225,10 @@ func renderStats(body []byte) error {
 
 	fmt.Printf("\nPer session (%d):\n", len(ids))
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "SESSION\tREQS\tINPUT\tOUTPUT\tCACHE_RD\tSAVED\tEXPAND\tLAST SEEN")
+	_, _ = fmt.Fprintln(tw, "SESSION\tREQS\tINPUT\tOUTPUT\tCACHE_RD\tSAVED\tEXPAND\tLAST SEEN")
 	for _, id := range ids {
 		s := snap.Sessions[id]
-		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\n",
+		_, _ = fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\n",
 			id, s.Requests, s.InputTokens, s.OutputTokens,
 			s.CacheReadInputTokens, s.CompressionSavedTokens, s.Expansions, s.LastSeen)
 	}

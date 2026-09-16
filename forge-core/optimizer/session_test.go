@@ -65,7 +65,7 @@ func TestStats_KeyedBySession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stats: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var snap Snapshot
 	if err := json.NewDecoder(resp.Body).Decode(&snap); err != nil {
 		t.Fatalf("decode stats: %v", err)
@@ -86,8 +86,11 @@ func TestStats_KeyedBySession(t *testing.T) {
 	}
 
 	// The ?session= filter returns just that session.
-	fresp, _ := http.Get(front.URL + "/stats?session=" + idB)
-	defer fresp.Body.Close()
+	fresp, err := http.Get(front.URL + "/stats?session=" + idB)
+	if err != nil {
+		t.Fatalf("stats filter: %v", err)
+	}
+	defer func() { _ = fresp.Body.Close() }()
 	var filtered struct {
 		Session string       `json:"session"`
 		Stats   SessionStats `json:"stats"`

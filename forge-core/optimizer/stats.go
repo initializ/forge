@@ -112,7 +112,7 @@ func (s *StatsReporter) Report(_ context.Context, r Report) {
 		s.perSession[session] = ps
 		s.sessOrder = append(s.sessOrder, session)
 	}
-	ps.Totals.add(r)
+	ps.add(r)
 	ps.lastSeen = time.Now()
 
 	s.recent = append(s.recent, r)

@@ -15,7 +15,7 @@ func writeLog(t *testing.T, dir string, lines []map[string]any) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	enc := json.NewEncoder(f)
 	for _, l := range lines {
 		if err := enc.Encode(l); err != nil {

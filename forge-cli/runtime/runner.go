@@ -130,12 +130,26 @@ type ScheduleNotifier func(ctx context.Context, channel, target string, response
 type DeferralNotifier func(ctx context.Context, to, taskID, tool, approverContext string, timeout time.Duration) error
 
 // codeAgentDirective is appended to the system prompt when code-agent skill
-// is active. Forces the LLM to always call tools — never respond with text only.
+// is active. It pushes the LLM to act with tools on CODING work rather than
+// narrating intent ("Let me patch that") without calling anything.
+//
+// The CONVERSATION carve-out is load-bearing. This opened with an
+// unconditional "Every response MUST include tool calls. NEVER respond with
+// only text." — and since the prompt is built once at startup and never sees
+// the incoming message, that also governed a plain "Hi", leaving no legal
+// move: the model discharged the obligation through the nearest write tool and
+// saved its greeting to a file. Keep the acting-over-narrating pressure scoped
+// to coding requests; a greeting must have a legal text-only answer.
 const codeAgentDirective = `## Code Agent — MANDATORY RULES
 
-You are a coding agent. Every response MUST include tool calls. NEVER respond with only text.
+You are a coding agent. When the user asks you to build, fix, or change code, ACT with tools in the same response instead of describing what you would do.
 
-FORBIDDEN:
+CONVERSATION (not coding work):
+- Greetings, small talk, questions about who you are or what you can do, and requests for an explanation or opinion get a normal text reply in chat.
+- Do NOT call tools for these, and NEVER write your reply to a file. Saving a conversational answer to a file instead of saying it is always wrong.
+- When a request is ambiguous, answer in chat and ask what to build. Do not scaffold a project to find out.
+
+FORBIDDEN (on coding requests):
 - Respond with "I'll do X now" or "Let me X" without calling tools in the same response
 - Output code in markdown blocks for the user to copy-paste
 - Ask the user for permission or confirmation before acting
@@ -143,10 +157,10 @@ FORBIDDEN:
 - Read files unrelated to the error path or code you plan to change
 - Edit test files before fixing the source code — always fix source first, then update tests
 
-REQUIRED:
+REQUIRED (on coding requests):
 - New project → code_agent_scaffold → code_agent_write (all files) → code_agent_run
 - Modify existing code → search + trace error origin + read functions to change → code_agent_edit or code_agent_write
-- Any request → ACT IMMEDIATELY with tools. Write ALL files and run in ONE turn.
+- Any CODING request → ACT IMMEDIATELY with tools. Write ALL files and run in ONE turn.
 
 EXPLORATION RULES:
 Bug fixes: search for the error message → trace to its origin (not just where it surfaces) → read functions you plan to call or replace → edit.

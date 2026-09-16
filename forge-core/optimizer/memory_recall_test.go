@@ -18,11 +18,22 @@ func newRecallFormer(t *testing.T, repo string, seed []Episode) *MemoryFormer {
 			t.Fatal(err)
 		}
 	}
-	return NewMemoryFormer(MemoryFormerConfig{
+	return newFormer(t, MemoryFormerConfig{
 		Store:  store,
 		Repo:   repo,
 		Recall: RecallConfig{Enabled: true},
 	})
+}
+
+// newFormer builds a MemoryFormer and drains its fire-and-forget store writers
+// before t.TempDir() cleanup runs — otherwise a background recall/consolidation
+// write can race RemoveAll ("directory not empty"). t.Cleanup is LIFO, so this
+// (registered after the store's TempDir) runs before the dir is removed.
+func newFormer(t *testing.T, cfg MemoryFormerConfig) *MemoryFormer {
+	t.Helper()
+	f := NewMemoryFormer(cfg)
+	t.Cleanup(f.waitAsync)
+	return f
 }
 
 // systemBlocks decodes the system field of a request body into text strings.
@@ -124,7 +135,7 @@ func TestRecall_WrapsStringSystem(t *testing.T) {
 func TestRecall_DisabledIsNoop(t *testing.T) {
 	store, _ := NewFileMemoryStore(filepath.Join(t.TempDir(), "m.jsonl"))
 	_ = store.WriteEpisode(Episode{ID: "1", Repo: "forge", SessionID: "old", TaskSignature: "t", Lesson: "l", Outcome: OutcomeSuccess})
-	former := NewMemoryFormer(MemoryFormerConfig{Store: store, Repo: "forge"}) // Recall disabled
+	former := newFormer(t, MemoryFormerConfig{Store: store, Repo: "forge"}) // Recall disabled
 	body := []byte(`{"model":"m","messages":[]}`)
 	out, n := former.Inject("s1", body)
 	if n != 0 || !bytes.Equal(out, body) {
@@ -173,7 +184,7 @@ func TestTailOverlay_InjectsTaskRelevantEpisodeIntoTail(t *testing.T) {
 	_ = store.WriteEpisode(Episode{ID: "B", Repo: "forge", SessionID: "old", TaskSignature: "add retry to client",
 		Lesson: "reuse the shared retry helper", Entities: []string{"forge-core/llm/client.go"}, Outcome: OutcomeSuccess, Confidence: 0.6})
 
-	former := NewMemoryFormer(MemoryFormerConfig{
+	former := newFormer(t, MemoryFormerConfig{
 		Store: store, Distiller: &fakeDistiller{result: &Episode{}}, Repo: "forge",
 		Recall: RecallConfig{Enabled: true, TopN: 1}, // frozen holds only the top (unrelated) one
 	})
@@ -206,7 +217,7 @@ func TestTailOverlay_SkipsToolResultTurns(t *testing.T) {
 	store, _ := NewFileMemoryStore(filepath.Join(t.TempDir(), "mem.jsonl"))
 	_ = store.WriteEpisode(Episode{ID: "B", Repo: "forge", SessionID: "old", TaskSignature: "add retry to client",
 		Lesson: "reuse the shared retry helper", Entities: []string{"forge-core/llm/client.go"}, Outcome: OutcomeSuccess, Confidence: 0.6})
-	former := NewMemoryFormer(MemoryFormerConfig{Store: store, Repo: "forge", Recall: RecallConfig{Enabled: true}})
+	former := newFormer(t, MemoryFormerConfig{Store: store, Repo: "forge", Recall: RecallConfig{Enabled: true}})
 
 	// Latest message is a tool_result continuation, not a fresh instruction.
 	body := []byte(`{"model":"m","messages":[

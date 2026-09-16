@@ -183,7 +183,9 @@ func (f *MemoryFormer) computeRecall(sessionID, repo string) (string, []string) 
 	}
 	if len(ids) > 0 {
 		f.logger.Info("memory: frozen recall block (task-agnostic)", "session", sessionID, "count", len(ids), "ids", strings.Join(ids, ","))
+		f.bg.Add(1)
 		go func() {
+			defer f.bg.Done()
 			if err := f.store.RecordRecall(sessionID, ids); err != nil {
 				f.logger.Debug("memory: recording recall failed", "err", err)
 			}
@@ -296,7 +298,8 @@ func (f *MemoryFormer) recordTailRecall(sessionID string, ids []string) {
 	f.mu.Unlock()
 	if len(fresh) > 0 {
 		f.logger.Info("memory: tail overlay (task-relevant)", "session", sessionID, "ids", strings.Join(fresh, ","))
-		go func() { _ = f.store.RecordRecall(sessionID, fresh) }()
+		f.bg.Add(1)
+		go func() { defer f.bg.Done(); _ = f.store.RecordRecall(sessionID, fresh) }()
 	}
 }
 

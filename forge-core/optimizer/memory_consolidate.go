@@ -194,7 +194,8 @@ func (f *MemoryFormer) noteEpisodeFormed(in DistillInput) {
 	}
 	f.mu.Unlock()
 	if trigger {
-		go f.consolidateRepo(in)
+		f.bg.Add(1)
+		go func() { defer f.bg.Done(); f.consolidateRepo(in) }()
 	}
 }
 

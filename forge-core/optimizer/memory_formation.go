@@ -255,7 +255,8 @@ type MemoryFormer struct {
 	repoResolver func(cwd string) (repo, commit string)
 	logger       *slog.Logger
 
-	sem chan struct{} // bounds concurrent distillations
+	sem chan struct{}  // bounds concurrent distillations
+	bg  sync.WaitGroup // tracks fire-and-forget store writers so tests can drain them
 
 	// recall injection (see memory_recall.go)
 	recall        bool
@@ -287,6 +288,11 @@ type MemoryFormer struct {
 	consolidating      map[string]bool
 	consolidatedOnce   map[string]bool
 }
+
+// waitAsync blocks until all fire-and-forget store writers (recall recording,
+// consolidation, distillation) have finished. Used by tests to drain background
+// writes before t.TempDir() cleanup so RemoveAll doesn't race a concurrent write.
+func (f *MemoryFormer) waitAsync() { f.bg.Wait() }
 
 // recallEntry is the frozen recall injection for one session.
 type recallEntry struct {
@@ -434,7 +440,9 @@ func (f *MemoryFormer) Observe(sessionID string, body []byte, headers http.Heade
 
 // dispatch runs one distillation asynchronously under the concurrency bound.
 func (f *MemoryFormer) dispatch(in DistillInput, spanKey string) {
+	f.bg.Add(1)
 	go func() {
+		defer f.bg.Done()
 		f.sem <- struct{}{}
 		defer func() { <-f.sem }()
 		ctx, cancel := context.WithTimeout(context.Background(), 70*time.Second)

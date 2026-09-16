@@ -75,7 +75,7 @@ func TestMemoryFormer_FormsEpisodeOnTaskBoundary(t *testing.T) {
 		Outcome:       OutcomeSuccess,
 		Files:         []string{"client.go"},
 	}}
-	former := NewMemoryFormer(MemoryFormerConfig{
+	former := newFormer(t, MemoryFormerConfig{
 		Store:     store,
 		Distiller: fd,
 		Repo:      "forge",
@@ -143,7 +143,7 @@ func TestMemoryFormer_SkipsChitchatSpans(t *testing.T) {
 		t.Fatal(err)
 	}
 	fd := &fakeDistiller{result: &Episode{TaskSignature: "x", Summary: "y", Outcome: OutcomeSuccess}}
-	former := NewMemoryFormer(MemoryFormerConfig{Store: store, Distiller: fd, Repo: "forge"})
+	former := newFormer(t, MemoryFormerConfig{Store: store, Distiller: fd, Repo: "forge"})
 
 	// Two instructions but the completed span has NO tool activity → skip.
 	body := []byte(`{

@@ -30,7 +30,7 @@ func TestApplyFeedback_CreditsRecalledAndCorroborates(t *testing.T) {
 	_ = store.WriteEpisode(Episode{ID: "M", Kind: KindEpisodic, Repo: "forge", SessionID: "old", Entities: []string{"client.go"}})
 	_ = store.RecordRecall("S", []string{"P", "M"})
 
-	former := NewMemoryFormer(MemoryFormerConfig{Store: store, Distiller: &fakeDistiller{result: &Episode{}}, Repo: "forge"})
+	former := newFormer(t, MemoryFormerConfig{Store: store, Distiller: &fakeDistiller{result: &Episode{}}, Repo: "forge"})
 	// A new successful episode in S touching client.go.
 	former.applyFeedback(Episode{ID: "E", Repo: "forge", SessionID: "S", Entities: []string{"client.go"}, Outcome: OutcomeSuccess})
 
@@ -57,7 +57,7 @@ func TestRecall_ConfidenceGate_ExcludesLowConfidence(t *testing.T) {
 		ID: "x", Kind: KindEpisodic, Repo: "forge", SessionID: "old",
 		TaskSignature: "flaky memory", Lesson: "maybe", Confidence: 0.6,
 	})
-	former := NewMemoryFormer(MemoryFormerConfig{
+	former := newFormer(t, MemoryFormerConfig{
 		Store: store, Distiller: &fakeDistiller{result: &Episode{}}, Repo: "forge",
 		Recall: RecallConfig{Enabled: true, MinConfidence: 0.5},
 	})

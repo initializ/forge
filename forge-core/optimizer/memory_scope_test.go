@@ -20,7 +20,7 @@ func TestWorkingDirFromBody(t *testing.T) {
 func TestResolveRepo_PerSessionScope(t *testing.T) {
 	store, _ := NewFileMemoryStore(filepath.Join(t.TempDir(), "m.jsonl"))
 	// Resolver echoes the basename (stands in for git toplevel).
-	former := NewMemoryFormer(MemoryFormerConfig{
+	former := newFormer(t, MemoryFormerConfig{
 		Store: store, Repo: "launch-dir", Commit: "aaa",
 		RepoResolver: func(cwd string) (string, string) { return filepath.Base(cwd), "sha1" },
 	})

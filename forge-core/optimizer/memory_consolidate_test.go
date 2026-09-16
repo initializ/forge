@@ -37,7 +37,7 @@ func TestConsolidateRepo_WritesProcedureFromCluster(t *testing.T) {
 		}
 	}
 	fd := &fakeDistiller{result: &Episode{}}
-	former := NewMemoryFormer(MemoryFormerConfig{
+	former := newFormer(t, MemoryFormerConfig{
 		Store: store, Distiller: fd, Repo: "forge",
 		Consolidate: true, ConsolidateEvery: 3, MinCluster: 3,
 	})

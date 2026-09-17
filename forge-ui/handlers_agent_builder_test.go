@@ -24,7 +24,7 @@ func agentBuilderTestServer(t *testing.T, stream LLMStreamFunc) *UIServer {
 	}
 	writeFile(t, wsConfig, `skill_builder:
   provider: openai
-  model: gpt-5.4
+  model: gpt-5.6-terra
   api_key_env: OPENAI_API_KEY
 `)
 	t.Setenv("OPENAI_API_KEY", "test-key")
@@ -53,7 +53,7 @@ func postAgentBuilderChat(t *testing.T, srv *UIServer) (*httptest.ResponseRecord
 // The agent builder must emit message → agent_draft → done with the draft
 // carried on the agent_draft event (never raw JSON in the message).
 func TestAgentBuilderChat_EmitsDraft(t *testing.T) {
-	envelope := `{"message":"Here's your agent.","agent":{"name":"PR Reviewer","model_provider":"openai","model_name":"gpt-5.4","builtin_tools":["web_fetch"],"skills":[],"system_prompt":"You review PRs."}}`
+	envelope := `{"message":"Here's your agent.","agent":{"name":"PR Reviewer","model_provider":"openai","model_name":"gpt-5.6-terra","builtin_tools":["web_fetch"],"skills":[],"system_prompt":"You review PRs."}}`
 	srv := agentBuilderTestServer(t, func(_ context.Context, opts LLMStreamOptions) error {
 		// The system prompt should enumerate the provider/tool catalog.
 		if !strings.Contains(opts.SystemPrompt, "Available Model Providers") {

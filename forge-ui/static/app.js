@@ -560,9 +560,35 @@ function inlineFormat(text) {
   s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   // Italic (single *)
   s = s.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>');
-  // Links
-  s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // Links. The URL is written into an href attribute, so it must be
+  // scheme-filtered (block javascript:/data:/vbscript:/file:) and
+  // attribute-escaped — the outer renderMarkdown escape pass only handles
+  // &<>, NOT quotes, so an unescaped `"` in the URL would otherwise break
+  // out of the attribute and inject an event handler. This sink is fed by
+  // untrusted content (the builder/skill LLM's message), so the guard is
+  // load-bearing, not cosmetic.
+  s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label, url) =>
+    `<a href="${attrEscape(sanitizeHref(url))}" target="_blank" rel="noopener noreferrer">${label}</a>`);
   return s;
+}
+
+// sanitizeHref returns the URL if it uses a safe scheme, else "#". The scheme
+// check runs on a copy with whitespace + ASCII control chars removed, because
+// browsers ignore those when parsing a scheme (so `java\tscript:` still fires);
+// the original string is returned for the href when the scheme is allowed.
+function sanitizeHref(url) {
+  const stripped = String(url).replace(/[\u0000-\u0020\u007f]/g, '');
+  if (/^(?:javascript|data|vbscript|file):/i.test(stripped)) return '#';
+  return url;
+}
+
+// attrEscape escapes the characters that could break out of a double-quoted
+// HTML attribute value.
+function attrEscape(s) {
+  // Only quotes need escaping here: renderMarkdown already escaped &<>
+  // globally before inline processing, so re-escaping & would double-encode
+  // it in legitimate query strings.
+  return String(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 // ── Helpers ──────────────────────────────────────────────────

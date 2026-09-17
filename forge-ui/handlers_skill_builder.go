@@ -141,6 +141,10 @@ func (s *UIServer) handleSkillBuilderChat(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusNotImplemented, "skill builder LLM streaming not available")
 		return
 	}
+	if !s.builderBudget.allow() {
+		writeError(w, http.StatusTooManyRequests, "builder turn budget exceeded — slow down and retry shortly")
+		return
+	}
 
 	agentDir := s.resolveAgentDir(w, r)
 	if agentDir == "" {

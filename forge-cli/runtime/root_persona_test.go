@@ -22,6 +22,11 @@ func TestStripYAMLFrontmatter(t *testing.T) {
 			want: "---\nname: agent\nno closing delimiter here",
 		},
 		{
+			name: "leading BOM before frontmatter",
+			in:   "\ufeff---\nname: a\n---\nBody",
+			want: "Body",
+		},
+		{
 			name: "crlf line endings",
 			in:   "---\r\nname: agent\r\n---\r\nBody here",
 			want: "Body here",

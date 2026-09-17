@@ -38,7 +38,7 @@ func TestLoad_GlobalOAuthFillsGapInWorkspaceConfig(t *testing.T) {
 	writeFile(t, filepath.Join(workspace, ".forge", "ui.yaml"), `
 skill_builder:
   provider: openai
-  model: gpt-5.4
+  model: gpt-5.6-terra
 `)
 
 	got, err := LoadSkillBuilderLLM(workspace, "", staticEnv(map[string]string{}))
@@ -69,7 +69,7 @@ func TestLoad_GlobalOAuthDoesNotOverrideExplicitKey(t *testing.T) {
 	writeFile(t, filepath.Join(workspace, ".forge", "ui.yaml"), `
 skill_builder:
   provider: openai
-  model: gpt-5.4
+  model: gpt-5.6-terra
 `)
 
 	got, err := LoadSkillBuilderLLM(workspace, "", staticEnv(map[string]string{
@@ -96,7 +96,7 @@ func TestLoad_UseGlobalAuthForcesOAuth(t *testing.T) {
 	writeFile(t, filepath.Join(workspace, ".forge", "ui.yaml"), `
 skill_builder:
   provider: openai
-  model: gpt-5.4
+  model: gpt-5.6-terra
   use_global_auth: true
 `)
 
@@ -124,7 +124,7 @@ func TestLoad_GlobalEnvFillsGapForCustomEnvName(t *testing.T) {
 	writeFile(t, filepath.Join(workspace, ".forge", "ui.yaml"), `
 skill_builder:
   provider: openai
-  model: gpt-5.4
+  model: gpt-5.6-terra
   api_key_env: CUSTOM_UNSET_KEY
 `)
 
@@ -260,7 +260,7 @@ func TestAvailable_ListsDefaultThenAlternatives(t *testing.T) {
 	writeFile(t, filepath.Join(workspace, ".forge", "ui.yaml"), `
 skill_builder:
   provider: openai
-  model: gpt-5.4
+  model: gpt-5.6-terra
 `)
 
 	list, err := AvailableSkillBuilderLLMs(workspace, "", staticEnv(map[string]string{"OPENAI_API_KEY": "sk-o"}))
@@ -286,7 +286,7 @@ func TestResolveForProvider_SelectsAndRejects(t *testing.T) {
 	writeFile(t, filepath.Join(workspace, ".forge", "ui.yaml"), `
 skill_builder:
   provider: openai
-  model: gpt-5.4
+  model: gpt-5.6-terra
 `)
 	env := staticEnv(map[string]string{"OPENAI_API_KEY": "sk-o"})
 

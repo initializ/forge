@@ -3,7 +3,7 @@ package forgeui
 import "testing"
 
 func TestParseAgentEnvelope_FullDraft(t *testing.T) {
-	resp := `{"message":"Here's your agent.","agent":{"name":"PR Reviewer","model_provider":"openai","model_name":"gpt-5.4","builtin_tools":["web_fetch"],"skills":["github-pr-review"],"system_prompt":"You review PRs."}}`
+	resp := `{"message":"Here's your agent.","agent":{"name":"PR Reviewer","model_provider":"openai","model_name":"gpt-5.6-terra","builtin_tools":["web_fetch"],"skills":["github-pr-review"],"system_prompt":"You review PRs."}}`
 	msg, agent, structured := parseAgentEnvelope(resp)
 	if !structured {
 		t.Fatalf("structured = false, want true")
@@ -14,7 +14,7 @@ func TestParseAgentEnvelope_FullDraft(t *testing.T) {
 	if agent == nil {
 		t.Fatalf("agent is nil")
 	}
-	if agent.Name != "PR Reviewer" || agent.ModelProvider != "openai" || agent.ModelName != "gpt-5.4" {
+	if agent.Name != "PR Reviewer" || agent.ModelProvider != "openai" || agent.ModelName != "gpt-5.6-terra" {
 		t.Errorf("agent fields wrong: %+v", agent)
 	}
 	if len(agent.BuiltinTools) != 1 || agent.BuiltinTools[0] != "web_fetch" {
@@ -82,5 +82,37 @@ func TestParseAgentEnvelope_IgnoresIncidentalMessageObject(t *testing.T) {
 	}
 	if agent != nil {
 		t.Errorf("agent = %+v, want nil", agent)
+	}
+}
+
+// A candidate that carries both envelope keys but is invalid JSON must NOT be
+// treated as structured — it falls through to the raw-message path.
+func TestParseAgentEnvelope_UnmarshalErrorFallsThrough(t *testing.T) {
+	resp := `{"message": "x", "agent": }` // invalid JSON (trailing value missing)
+	msg, agent, structured := parseAgentEnvelope(resp)
+	if structured {
+		t.Errorf("structured = true, want false for malformed envelope")
+	}
+	if agent != nil {
+		t.Errorf("agent = %+v, want nil", agent)
+	}
+	if msg == "" {
+		t.Errorf("message should surface the raw response")
+	}
+}
+
+// A wrapper object that unmarshals to a zero-value envelope (no message, no
+// agent) must be skipped so the inner real envelope wins.
+func TestParseAgentEnvelope_ZeroValueWrapperSkipped(t *testing.T) {
+	resp := `{"response": {"message":"inner wins","agent":null}}`
+	msg, agent, structured := parseAgentEnvelope(resp)
+	if !structured {
+		t.Fatalf("structured = false, want true (inner envelope)")
+	}
+	if agent != nil {
+		t.Errorf("agent = %+v, want nil", agent)
+	}
+	if msg != "inner wins" {
+		t.Errorf("message = %q, want inner wins", msg)
 	}
 }

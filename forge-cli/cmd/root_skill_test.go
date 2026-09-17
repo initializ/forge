@@ -63,3 +63,31 @@ func TestYAMLQuote(t *testing.T) {
 		}
 	}
 }
+
+func TestWriteRootSkill_ForceClobbersExisting(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "SKILL.md")
+	if err := os.WriteFile(path, []byte("old persona"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opts := &initOptions{Name: "X", AgentID: "x", SystemPrompt: "new persona", Force: true}
+	if err := writeRootSkill(dir, opts); err != nil {
+		t.Fatalf("writeRootSkill: %v", err)
+	}
+	got, _ := os.ReadFile(path)
+	if !strings.Contains(string(got), "new persona") {
+		t.Errorf("Force should overwrite; got %q", got)
+	}
+}
+
+func TestWriteRootSkill_EmptyDescriptionDefault(t *testing.T) {
+	dir := t.TempDir()
+	opts := &initOptions{Name: "Cool Agent", AgentID: "cool-agent", SystemPrompt: "persona"}
+	if err := writeRootSkill(dir, opts); err != nil {
+		t.Fatalf("writeRootSkill: %v", err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	if !strings.Contains(string(got), `description: "Cool Agent agent"`) {
+		t.Errorf("empty description should default to '<name> agent'; got %q", got)
+	}
+}

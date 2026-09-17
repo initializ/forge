@@ -19,8 +19,15 @@ import (
 // uses) so the LLM only ever picks values the scaffold will accept —
 // there is no second, drifting copy of the catalog.
 func agentBuilderSystemPrompt(providerModels map[string]ProviderModels, builtinTools []BuiltinToolInfo, skills []SkillBrowserEntry) string {
+	// Inject the current OpenAI default into the envelope example so the
+	// prompt can never teach the model a retired id (#450). Falls back to
+	// the catalog default; only the placeholder ships hardcoded.
+	exampleModel := "gpt-5.6-terra"
+	if pm, ok := providerModels["openai"]; ok && pm.Default != "" {
+		exampleModel = pm.Default
+	}
 	var b strings.Builder
-	b.WriteString(agentBuilderPromptBase)
+	b.WriteString(strings.ReplaceAll(agentBuilderPromptBase, "__OPENAI_DEFAULT_MODEL__", exampleModel))
 
 	b.WriteString("\n\n## Available Model Providers and Models\n\n")
 	b.WriteString("Pick `model_provider` + `model_name` from EXACTLY these. Never invent a model id. `ollama` and `bedrock` need no API key; every other provider needs a key or OAuth the operator supplies in the UI (never ask for it in chat).\n\n")
@@ -107,7 +114,7 @@ While still interviewing, set "agent" to null. The MOMENT the agent is fully spe
     "name": "Release Notes Writer",
     "description": "One-line summary of what the agent does.",
     "model_provider": "openai",
-    "model_name": "gpt-5.4",
+    "model_name": "__OPENAI_DEFAULT_MODEL__",
     "builtin_tools": ["web_fetch", "file_create"],
     "skills": [],
     "channels": [],

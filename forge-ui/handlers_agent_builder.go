@@ -25,6 +25,10 @@ func (s *UIServer) handleAgentBuilderChat(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusNotImplemented, "agent builder LLM streaming not available")
 		return
 	}
+	if !s.builderBudget.allow() {
+		writeError(w, http.StatusTooManyRequests, "builder turn budget exceeded — slow down and retry shortly")
+		return
+	}
 
 	var req AgentBuilderChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

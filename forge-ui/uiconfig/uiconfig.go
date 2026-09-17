@@ -30,6 +30,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/initializ/forge/forge-core/catalog"
 	"github.com/initializ/forge/forge-core/llm/oauth"
 	"github.com/initializ/forge/forge-core/settings"
 	"gopkg.in/yaml.v3"
@@ -482,18 +483,14 @@ func ResolveSkillBuilderLLMForProvider(workspaceDir, agentDir, provider string, 
 	return SkillBuilderLLM{}, false, nil
 }
 
-// defaultModelForProvider returns a reasonable default model for the
-// global-auth convenience path (no ui.yaml). These mirror the wizard's
-// per-provider defaults in handlers_create.go; duplicated here because
-// uiconfig must not import the parent forge-ui package (import cycle).
+// defaultModelForProvider returns the default model for the global-auth
+// convenience path (no ui.yaml). It reads forge-core/catalog — the single
+// source of truth for provider/model metadata (#450/#461) — so it can never
+// re-offer a Codex-retired model or drift from the wizard. catalog is pure
+// data (no import cycle back into forge-ui). Empty for an unknown provider.
 func defaultModelForProvider(provider string) string {
-	switch provider {
-	case "openai":
-		return "gpt-5.4"
-	case "anthropic":
-		return "claude-sonnet-4-20250514"
-	case "gemini":
-		return "gemini-2.5-flash"
+	if p, ok := catalog.ProviderByID(provider); ok {
+		return p.DefaultModel
 	}
 	return ""
 }

@@ -3,6 +3,7 @@ package oauth
 import (
 	"context"
 	"fmt"
+	"html"
 	"net"
 	"net/http"
 	"sync"
@@ -84,7 +85,10 @@ func (s *CallbackServer) handleCallback(w http.ResponseWriter, r *http.Request) 
 	if errMsg := query.Get("error"); errMsg != "" {
 		desc := query.Get("error_description")
 		s.resultCh <- CallbackResult{Error: fmt.Sprintf("%s: %s", errMsg, desc)}
-		_, _ = fmt.Fprintf(w, "<html><body><h1>Authorization Failed</h1><p>%s</p><p>You can close this tab.</p></body></html>", desc)
+		// desc is an untrusted OAuth query param reflected into the page; escape
+		// it so a crafted error_description can't inject markup/script into this
+		// (loopback) callback page.
+		_, _ = fmt.Fprintf(w, "<html><body><h1>Authorization Failed</h1><p>%s</p><p>You can close this tab.</p></body></html>", html.EscapeString(desc))
 		return
 	}
 

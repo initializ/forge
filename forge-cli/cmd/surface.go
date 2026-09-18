@@ -44,7 +44,7 @@ func runSurface(cmd *cobra.Command, _ []string) error {
 	switch agent {
 	case surface.ChoiceClaude:
 		if claudeErr != nil {
-			fmt.Fprintf(out, "  Claude Code isn't on your PATH — using forge native instead.\n\n")
+			_, _ = fmt.Fprintf(out, "  Claude Code isn't on your PATH — using forge native instead.\n\n")
 			return runNativeSurface(cmd, color)
 		}
 		useOpt, ok, err := surface.ChooseOptimizer(os.Stdin, out, color)
@@ -74,7 +74,7 @@ func launchClaudeSurface(cmd *cobra.Command, out io.Writer, claudeBin string, us
 		// Plain Claude Code. If an optimizer is already active system-wide (a
 		// daemon wired claude settings), say so rather than silently routing.
 		if running, ours := probeExistingOptimizer(resolveListen()); running && ours {
-			fmt.Fprintf(os.Stderr, "  Note: a forge optimizer is running at %s and may be wired into Claude Code globally.\n"+
+			_, _ = fmt.Fprintf(os.Stderr, "  Note: a forge optimizer is running at %s and may be wired into Claude Code globally.\n"+
 				"        Your session will use it. Run `forge optimizer stop` to disable it.\n\n", resolveListen())
 		}
 		surface.PrintLaunching(out, color, "launching Claude Code with forge wired in…")
@@ -138,19 +138,19 @@ func registerForgeMCP(out io.Writer, claudeBin string) {
 	_ = exec.Command(claudeBin, "mcp", "remove", forgeMCPName, "--scope", "user").Run()                        //nolint:gosec // fixed args
 	add := exec.Command(claudeBin, "mcp", "add", "--scope", "user", forgeMCPName, "--", forgeBin, "mcp-serve") //nolint:gosec // fixed args
 	if o, addErr := add.CombinedOutput(); addErr != nil {
-		fmt.Fprintf(os.Stderr, "  Warning: could not register forge tools with Claude Code: %s\n"+
+		_, _ = fmt.Fprintf(os.Stderr, "  Warning: could not register forge tools with Claude Code: %s\n"+
 			"    Add manually: claude mcp add --scope user %s -- %q mcp-serve\n\n",
 			strings.TrimSpace(string(o)), forgeMCPName, forgeBin)
 		return
 	}
-	fmt.Fprintf(out, "  forge tools registered with Claude Code (stays available on resume; remove with `claude mcp remove %s`).\n", forgeMCPName)
+	_, _ = fmt.Fprintf(out, "  forge tools registered with Claude Code (stays available on resume; remove with `claude mcp remove %s`).\n", forgeMCPName)
 }
 
 // printOptimizerDashboardNote points the user at the savings + memory dashboard.
 func printOptimizerDashboardNote(out io.Writer, color bool) {
 	dim := surface.Dim(color)
-	fmt.Fprintf(out, "  %s\n", dim("Optimizer on: compressing context (cache-safe, reversible) and forming memory."))
-	fmt.Fprintf(out, "  %s\n\n", dim("View token savings + memory at http://127.0.0.1:4200/#/optimizer  (run `forge ui`)."))
+	_, _ = fmt.Fprintf(out, "  %s\n", dim("Optimizer on: compressing context (cache-safe, reversible) and forming memory."))
+	_, _ = fmt.Fprintf(out, "  %s\n\n", dim("View token savings + memory at http://127.0.0.1:4200/#/optimizer  (run `forge ui`)."))
 }
 
 // execClaude runs claude inheriting the terminal, then runs cleanup (if any)
@@ -180,7 +180,7 @@ func runNativeSurface(cmd *cobra.Command, color bool) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "  %s\n\n", res.Label)
+	_, _ = fmt.Fprintf(out, "  %s\n\n", res.Label)
 
 	workDir, err := os.Getwd()
 	if err != nil {
@@ -204,7 +204,7 @@ func runNativeSurface(cmd *cobra.Command, color bool) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 	defer stop()
 
-	fmt.Fprintf(out, "  Ask me to build an agent, or a how-to question. /exit to quit.\n")
+	_, _ = fmt.Fprintf(out, "  Ask me to build an agent, or a how-to question. /exit to quit.\n")
 	return surfaceREPL(ctx, sess, out, color)
 }
 
@@ -223,14 +223,14 @@ func surfaceREPL(ctx context.Context, sess *runtime.BuilderSession, out io.Write
 	}()
 
 	for {
-		fmt.Fprint(out, "\nyou › ")
+		_, _ = fmt.Fprint(out, "\nyou › ")
 		var pending string
 		select {
 		case <-ctx.Done():
-			fmt.Fprintln(out)
+			_, _ = fmt.Fprintln(out)
 			return nil
 		case <-eof:
-			fmt.Fprintln(out)
+			_, _ = fmt.Fprintln(out)
 			return nil
 		case line := <-lines:
 			pending = strings.TrimSpace(line)
@@ -242,7 +242,7 @@ func surfaceREPL(ctx context.Context, sess *runtime.BuilderSession, out io.Write
 			return nil
 		}
 		if pending == "/help" {
-			fmt.Fprintln(out, "  Ask me to build/modify a forge agent, or any how-to question about forge.\n  Commands: /help, /exit")
+			_, _ = fmt.Fprintln(out, "  Ask me to build/modify a forge agent, or any how-to question about forge.\n  Commands: /help, /exit")
 			continue
 		}
 		reply, err := sess.RunTurn(ctx, pending, nil)
@@ -250,9 +250,9 @@ func surfaceREPL(ctx context.Context, sess *runtime.BuilderSession, out io.Write
 			if ctx.Err() != nil {
 				return nil
 			}
-			fmt.Fprintf(out, "\n  error: %v\n", err)
+			_, _ = fmt.Fprintf(out, "\n  error: %v\n", err)
 			continue
 		}
-		fmt.Fprintf(out, "\n%s\n%s\n", surface.Accent(color)("forge ›"), surface.RenderMarkdown(reply, color))
+		_, _ = fmt.Fprintf(out, "\n%s\n%s\n", surface.Accent(color)("forge ›"), surface.RenderMarkdown(reply, color))
 	}
 }

@@ -140,13 +140,13 @@ func ChooseOptimizer(in io.Reader, out io.Writer, color bool) (bool, bool, error
 func printOptimizerPitch(out io.Writer, color bool) {
 	dim := dimFn(color)
 	acc := accentFn(color)
-	fmt.Fprintf(out, "\n  %s\n", acc("The forge optimizer routes Claude Code through a local proxy that:"))
-	fmt.Fprintf(out, "    %s reversibly, cache-safely compresses context to cut token cost\n", acc("•"))
-	fmt.Fprintf(out, "    %s builds episodic + procedural memory from your sessions\n", acc("•"))
-	fmt.Fprintf(out, "  %s\n", dim("View token savings + memory at http://127.0.0.1:4200/#/optimizer  (run `forge ui`)."))
+	_, _ = fmt.Fprintf(out, "\n  %s\n", acc("The forge optimizer routes Claude Code through a local proxy that:"))
+	_, _ = fmt.Fprintf(out, "    %s reversibly, cache-safely compresses context to cut token cost\n", acc("•"))
+	_, _ = fmt.Fprintf(out, "    %s builds episodic + procedural memory from your sessions\n", acc("•"))
+	_, _ = fmt.Fprintf(out, "  %s\n", dim("View token savings + memory at http://127.0.0.1:4200/#/optimizer  (run `forge ui`)."))
 }
 
 // PrintLaunching prints a one-line "launching X" notice before handing off.
 func PrintLaunching(out io.Writer, color bool, msg string) {
-	fmt.Fprintf(out, "  %s\n\n", accentFn(color)("→ "+msg))
+	_, _ = fmt.Fprintf(out, "  %s\n\n", accentFn(color)("→ "+msg))
 }

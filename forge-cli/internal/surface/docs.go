@@ -297,8 +297,12 @@ func SearchDocs(query string) string {
 func queryTerms(q string) []string {
 	seen := map[string]bool{}
 	var out []string
+	// Split on any non-alphanumeric rune (so the predicate marks separators).
+	isAlnum := func(r rune) bool {
+		return (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+	}
 	for _, f := range strings.FieldsFunc(strings.ToLower(q), func(r rune) bool {
-		return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9')
+		return !isAlnum(r)
 	}) {
 		if len(f) > 2 && !seen[f] {
 			seen[f] = true

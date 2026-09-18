@@ -20,7 +20,7 @@ func TestForgeMCPServerEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer srv.Close()
+	defer func() { _ = srv.Close() }()
 
 	call := func(body string) map[string]any {
 		req, _ := http.NewRequest(http.MethodPost, srv.URL(), strings.NewReader(body))
@@ -29,7 +29,7 @@ func TestForgeMCPServerEndToEnd(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		raw, _ := io.ReadAll(resp.Body)
 		var m map[string]any
 		if len(raw) > 0 {

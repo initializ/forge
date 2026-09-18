@@ -10,6 +10,23 @@ import (
 	"time"
 )
 
+func TestIsLoopbackHost(t *testing.T) {
+	cases := map[string]bool{
+		"127.0.0.1":   true,
+		"::1":         true,
+		"localhost":   true,
+		"":            false, // ":8787" binds all interfaces
+		"0.0.0.0":     false,
+		"192.168.1.5": false,
+		"example.com": false, // non-IP hostname → assume routable
+	}
+	for host, want := range cases {
+		if got := isLoopbackHost(host); got != want {
+			t.Errorf("isLoopbackHost(%q) = %v, want %v", host, got, want)
+		}
+	}
+}
+
 // fakeUpstream stands in for the Anthropic API: it echoes a canned SSE stream
 // or JSON body and records what it received, so tests can assert both
 // pass-through fidelity and header forwarding.

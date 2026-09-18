@@ -112,6 +112,16 @@ func New(cfg Config) (*Server, error) {
 		logger = slog.Default()
 	}
 
+	// Warn loudly on a non-loopback bind. The proxy forwards the caller's
+	// Authorization header untouched and serves /stats, so binding to a routable
+	// interface turns it into an open forwarding proxy and a stats leak. The
+	// default is loopback; an explicit override is allowed (trusted, access-
+	// controlled network / container) but must never be silent.
+	if host, _, err := net.SplitHostPort(cfg.Listen); err == nil && !isLoopbackHost(host) {
+		logger.Warn("optimizer: binding to a NON-LOOPBACK address exposes an open forwarding proxy (forwards caller auth) and /stats to the network — bind 127.0.0.1 unless this is a trusted, access-controlled network",
+			"listen", cfg.Listen)
+	}
+
 	// The stats reporter is always wired in so local running totals are
 	// available at /stats regardless of what the caller configured. Any
 	// caller-supplied reporter (log, file, control plane) runs alongside it.
@@ -195,6 +205,23 @@ func (s *Server) Handler() http.Handler {
 
 // Run starts the server and blocks until ctx is cancelled, then shuts down
 // gracefully.
+// isLoopbackHost reports whether a bind host is loopback-only. An empty host
+// (":8787") binds all interfaces, so it is NOT loopback. "localhost" is treated
+// as loopback; any other non-IP hostname could resolve anywhere, so it's treated
+// as non-loopback (warn rather than assume safe).
+func isLoopbackHost(host string) bool {
+	switch host {
+	case "":
+		return false
+	case "localhost":
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
 func (s *Server) Run(ctx context.Context) error {
 	srv := &http.Server{
 		Addr:    s.listen,

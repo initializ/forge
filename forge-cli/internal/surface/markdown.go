@@ -17,6 +17,10 @@ import (
 // that query would race/hang the terminal. A fixed style never touches the
 // terminal, so rendering is safe alongside the stdin reader.
 func RenderMarkdown(md string, color bool) string {
+	// Scrub control/escape bytes from the (LLM/tool-sourced) content first, so a
+	// malicious tool result or model output can't smuggle raw ANSI/OSC sequences
+	// straight to the TTY. glamour re-adds only its own styling escapes.
+	md = scrubControl(md)
 	if !color || strings.TrimSpace(md) == "" {
 		return md
 	}
@@ -32,4 +36,26 @@ func RenderMarkdown(md string, color bool) string {
 		return md
 	}
 	return strings.Trim(out, "\n")
+}
+
+// scrubControl removes C0/C1 control characters (including ESC, which starts
+// ANSI/OSC sequences) from s, keeping only newline and tab. Printable text and
+// multibyte UTF-8 are untouched.
+func scrubControl(s string) string {
+	if !strings.ContainsFunc(s, isStripControl) {
+		return s
+	}
+	return strings.Map(func(r rune) rune {
+		if isStripControl(r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+func isStripControl(r rune) bool {
+	if r == '\n' || r == '\t' {
+		return false
+	}
+	return r < 0x20 || (r >= 0x7f && r <= 0x9f)
 }

@@ -78,24 +78,27 @@ func launchClaudeSurface(cmd *cobra.Command, out io.Writer, claudeBin string, us
 				"        Your session will use it. Run `forge optimizer stop` to disable it.\n\n", resolveListen())
 		}
 		surface.PrintLaunching(out, color, "launching Claude Code with forge wired in…")
-		return execClaude(claudeBin, nil, os.Environ())
+		return execClaude(claudeBin, nil, os.Environ(), nil)
 	}
 
 	// Optimizer on: obtain a proxy (adopt an existing one, else start our own with
 	// in-band expansion so there is NO second MCP server), then route claude
-	// through it via ANTHROPIC_BASE_URL.
+	// through it via ANTHROPIC_BASE_URL. Teardown is threaded through execClaude's
+	// cleanup so it runs even when claude exits non-zero (Ctrl-C = 130) — os.Exit
+	// would otherwise skip deferred cleanup (leaking the ctxzip temp store and
+	// dropping buffered memory/usage writes).
 	logger, logClose, _ := newWrapLogger()
-	defer logClose()
 	listen := resolveListen()
 
 	switch running, ours := probeExistingOptimizer(listen); {
 	case running && !ours:
+		logClose()
 		return fmt.Errorf("address %s is already in use by a non-optimizer service; stop it or choose another optimizer --listen", listen)
 	case running && ours:
 		logger.Info("attaching to existing forge optimizer", "base_url", "http://"+listen)
 		printOptimizerDashboardNote(out, color)
 		surface.PrintLaunching(out, color, "launching Claude Code through your running optimizer, with forge wired in…")
-		return execClaude(claudeBin, nil, childEnvForClaude(listen))
+		return execClaude(claudeBin, nil, childEnvForClaude(listen), logClose)
 	}
 
 	// Own path: start the optimizer in-process with compression + memory + in-band
@@ -105,25 +108,23 @@ func launchClaudeSurface(cmd *cobra.Command, out io.Writer, claudeBin string, us
 	optimizerInbandExpand = true
 	setup, err := buildOptimizerSetup(logger)
 	if err != nil {
+		logClose()
 		return fmt.Errorf("starting optimizer: %w", err)
 	}
 	ctx, cancel := context.WithCancel(cmd.Context())
-	defer cancel()
 	go func() {
 		if runErr := setup.srv.Run(ctx); runErr != nil {
 			logger.Error("optimizer server stopped", "error", runErr.Error())
 		}
 	}()
+	cleanup := func() { cancel(); setup.cleanup(); logClose() }
 	if err := waitListenReady(setup.listen, 5*time.Second); err != nil {
-		setup.cleanup()
+		cleanup()
 		return fmt.Errorf("optimizer did not become ready on %s: %w", setup.listen, err)
 	}
 	printOptimizerDashboardNote(out, color)
 	surface.PrintLaunching(out, color, "launching Claude Code through the forge optimizer, with forge wired in…")
-	err = execClaude(claudeBin, nil, childEnvForClaude(setup.listen))
-	cancel()
-	setup.cleanup()
-	return err
+	return execClaude(claudeBin, nil, childEnvForClaude(setup.listen), cleanup)
 }
 
 // registerForgeMCP registers the forge stdio MCP server with Claude Code at user
@@ -138,7 +139,7 @@ func registerForgeMCP(out io.Writer, claudeBin string) {
 	add := exec.Command(claudeBin, "mcp", "add", "--scope", "user", forgeMCPName, "--", forgeBin, "mcp-serve") //nolint:gosec // fixed args
 	if o, addErr := add.CombinedOutput(); addErr != nil {
 		fmt.Fprintf(os.Stderr, "  Warning: could not register forge tools with Claude Code: %s\n"+
-			"    Add manually: claude mcp add --scope user %s -- %s mcp-serve\n\n",
+			"    Add manually: claude mcp add --scope user %s -- %q mcp-serve\n\n",
 			strings.TrimSpace(string(o)), forgeMCPName, forgeBin)
 		return
 	}
@@ -152,12 +153,18 @@ func printOptimizerDashboardNote(out io.Writer, color bool) {
 	fmt.Fprintf(out, "  %s\n\n", dim("View token savings + memory at http://127.0.0.1:4200/#/optimizer  (run `forge ui`)."))
 }
 
-// execClaude runs claude inheriting the terminal, propagating its exit code.
-func execClaude(resolved string, args []string, env []string) error {
+// execClaude runs claude inheriting the terminal, then runs cleanup (if any)
+// BEFORE propagating claude's exit code — so a non-zero exit (e.g. Ctrl-C = 130,
+// the usual way users quit) doesn't skip optimizer teardown the way a bare
+// os.Exit would skip deferred cleanup.
+func execClaude(resolved string, args, env []string, cleanup func()) error {
 	child := exec.Command(resolved, args...) //nolint:gosec // user-invoked wrap of their own claude binary
 	child.Env = env
 	child.Stdin, child.Stdout, child.Stderr = os.Stdin, os.Stdout, os.Stderr
 	runErr := child.Run()
+	if cleanup != nil {
+		cleanup()
+	}
 	if exitErr, ok := runErr.(*exec.ExitError); ok {
 		os.Exit(exitErr.ExitCode())
 	}

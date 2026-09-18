@@ -214,11 +214,14 @@ func dirOnly(tool string, sub ...string) func(json.RawMessage) ([]string, string
 
 const dirSchema = `{"type":"object","properties":{"dir":{"type":"string","description":"Agent project subdirectory to run in (relative to the workspace; default: workspace root)."}}}`
 
-// longRunningForgeCmds are forge subcommands that don't terminate (servers /
-// interactive), so the generic passthrough refuses them — they'd hang the tool
-// call. forge_run covers the "does it boot?" check instead.
-var longRunningForgeCmds = map[string]bool{
-	"run": true, "serve": true, "ui": true, "mcp-serve": true, "try": true,
+// refusedForgeCmds are forge subcommands the generic passthrough refuses:
+// long-running/interactive servers that would hang the tool call (run/serve/ui/
+// mcp-serve/try), and state-changing/detaching commands that reach outside the
+// workspace — notably `optimizer` (its `start` detaches a daemon and rewrites
+// ~/.claude/settings.json, #466). forge_run covers the "does it boot?" check;
+// the optimizer is managed via the surface's own chooser, not the passthrough.
+var refusedForgeCmds = map[string]bool{
+	"run": true, "serve": true, "ui": true, "mcp-serve": true, "try": true, "optimizer": true,
 }
 
 // forgeCLIArgs is the argument shape for forge_cli.
@@ -237,8 +240,8 @@ func buildForgeCLIArgv(raw json.RawMessage) ([]string, string, error) {
 	if len(a.Args) == 0 || strings.TrimSpace(a.Args[0]) == "" {
 		return nil, "", fmt.Errorf("forge_cli: args is required, e.g. [\"skills\",\"list\"] or [\"validate\",\"--help\"]")
 	}
-	if longRunningForgeCmds[a.Args[0]] {
-		return nil, "", fmt.Errorf("forge_cli: %q is long-running/interactive; use forge_run for a boot check, or run it in your own shell", a.Args[0])
+	if refusedForgeCmds[a.Args[0]] {
+		return nil, "", fmt.Errorf("forge_cli: %q is not allowed via the passthrough (long-running/interactive or state-changing outside the workspace); use forge_run for a boot check, the surface chooser for the optimizer, or run it in your own shell", a.Args[0])
 	}
 	return a.Args, a.Dir, nil
 }

@@ -136,7 +136,7 @@ func TestBuildForgeCLIArgv(t *testing.T) {
 	if _, _, err := buildForgeCLIArgv(json.RawMessage(`{"args":[]}`)); err == nil {
 		t.Error("empty args should error")
 	}
-	for _, cmd := range []string{"run", "serve", "ui"} {
+	for _, cmd := range []string{"run", "serve", "ui", "optimizer"} {
 		if _, _, err := buildForgeCLIArgv(json.RawMessage(`{"args":["` + cmd + `"]}`)); err == nil {
 			t.Errorf("%q should be refused", cmd)
 		}

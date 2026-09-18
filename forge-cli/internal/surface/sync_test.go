@@ -17,9 +17,15 @@ func TestEmbeddedKnowledgeInSync(t *testing.T) {
 		{filepath.Join("..", "..", "..", ".claude", "skills", "forge.md"), forgeKnowledgeMD},
 		{filepath.Join("..", "..", "..", ".claude", "skills", "forge-skill-builder.md"), skillBuilderMD},
 	}
+	inCI := os.Getenv("CI") != ""
 	for _, c := range cases {
 		src, err := os.ReadFile(c.src)
 		if err != nil {
+			// A vacuous skip would let drift pass silently. In CI the source must be
+			// present, so fail there; locally (e.g. isolated module build) skip.
+			if inCI {
+				t.Fatalf("source %s not reachable in CI: %v", c.src, err)
+			}
 			t.Skipf("source %s not reachable: %v", c.src, err)
 		}
 		if string(src) != c.embedded {

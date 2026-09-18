@@ -47,6 +47,7 @@ func (p *perplexityProvider) search(ctx context.Context, query string, opts webS
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	httpReq.Header.Set("X-Pplx-Integration", "forge")
 
 	client := security.EgressClientFromContext(ctx)
 	resp, err := client.Do(httpReq)

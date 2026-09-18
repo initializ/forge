@@ -22,6 +22,14 @@ var rootCmd = &cobra.Command{
 	Use:   "forge",
 	Short: "Forge — scaffold, build, and deploy AI agents",
 	Long:  "Forge is a CLI tool for initializing, building, validating, and deploying AI agent projects.",
+	// Bare `forge` (no subcommand) opens the interactive surface: a builder that
+	// shells into a coding agent wired with forge knowledge + tools, or forge's
+	// own in-process agent. All subcommands below still dispatch normally.
+	// NoArgs so a mistyped subcommand (`forge inti`) still errors with
+	// "unknown command" instead of silently opening the surface with stray args.
+	Args:         cobra.NoArgs,
+	SilenceUsage: true,
+	RunE:         runSurface,
 }
 
 func init() {

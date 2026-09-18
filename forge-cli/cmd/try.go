@@ -15,6 +15,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/initializ/forge/forge-cli/config"
+	"github.com/initializ/forge/forge-cli/internal/surface"
 	"github.com/initializ/forge/forge-cli/internal/tryview"
 	"github.com/initializ/forge/forge-cli/runtime"
 	"github.com/initializ/forge/forge-core/llm/oauth"
@@ -324,29 +325,10 @@ var trySuggestions = []string{
 }
 
 // forgeLogo renders the FORGE block wordmark with a vertical orange gradient
-// (plain, uncolored, when color is off — a non-TTY / NO_COLOR).
+// (plain, uncolored, when color is off — a non-TTY / NO_COLOR). The wordmark is
+// shared with the bare-`forge` surface, so the canonical copy lives there.
 func forgeLogo(color bool) string {
-	lines := []string{
-		`███████╗ ██████╗ ██████╗  ██████╗ ███████╗`,
-		`██╔════╝██╔═══██╗██╔══██╗██╔════╝ ██╔════╝`,
-		`█████╗  ██║   ██║██████╔╝██║  ███╗█████╗  `,
-		`██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝  `,
-		`██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗`,
-		`╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝`,
-	}
-	// Bright at the top, warm at the base — the forge-heat gradient.
-	shades := []string{"#fdba74", "#fb923c", "#f97316", "#f97316", "#ea580c", "#c2410c"}
-	var b strings.Builder
-	b.WriteByte('\n')
-	for i, ln := range lines {
-		row := "  " + ln
-		if color {
-			row = lipgloss.NewStyle().Foreground(lipgloss.Color(shades[i])).Render(row)
-		}
-		b.WriteString(row)
-		b.WriteByte('\n')
-	}
-	return b.String()
+	return surface.Logo(color)
 }
 
 // printTryHeader prints the branded intro: the FORGE logo + tagline in a color

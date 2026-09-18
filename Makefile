@@ -5,11 +5,17 @@ LDFLAGS   := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)
 COVERFILE := coverage.out
 MODULES   := forge-core forge-cli forge-skills forge-plugins forge-ui
 
-.PHONY: build test test-integration vet fmt lint cover cover-html install clean release fetch-monaco help
+.PHONY: build test test-integration vet fmt lint cover cover-html install clean release fetch-monaco sync-knowledge help
 
 ## build: Compile the forge binary
 build:
 	cd forge-cli && go build -ldflags "$(LDFLAGS)" -o ../$(BINARY) ./cmd/forge
+
+## sync-knowledge: Refresh the surface's embedded forge knowledge from the canonical skills
+sync-knowledge:
+	cp .claude/skills/forge.md forge-cli/internal/surface/knowledge/forge.md
+	cp .claude/skills/forge-skill-builder.md forge-cli/internal/surface/knowledge/forge-skill-builder.md
+	@echo "synced knowledge docs into forge-cli/internal/surface/knowledge/"
 
 ## test: Run all unit tests with race detection across all modules
 test:

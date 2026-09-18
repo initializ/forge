@@ -125,7 +125,10 @@ func validateSkillMD(content string, scripts map[string]string, agentDir, editin
 	// Name uniqueness. Skipped when editingName matches the
 	// frontmatter name — that's the "saving over the skill currently
 	// being edited" case and the warning would be noise (issue #193).
-	if meta != nil && meta.Name != "" && agentDir != "" && meta.Name != editingName {
+	// Gate the on-disk lookup on a valid slug: meta.Name is joined into a path
+	// below, so a name containing "/" or ".." would let the Stat escape agentDir.
+	// An invalid name is already surfaced by the kebab-case check above.
+	if meta != nil && meta.Name != "" && agentDir != "" && meta.Name != editingName && skillNamePattern.MatchString(meta.Name) {
 		skillDir := filepath.Join(agentDir, "skills", meta.Name)
 		if _, err := os.Stat(skillDir); err == nil {
 			result.Warnings = append(result.Warnings, ValidationError{

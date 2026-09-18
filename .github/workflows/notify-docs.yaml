@@ -6,6 +6,12 @@ on:
     paths:
       - 'docs/**'
 
+# Least privilege: this workflow only fires a repository_dispatch to another
+# repo via a dedicated PAT (USEFORGE_DISPATCH_TOKEN); it needs no write scope
+# on GITHUB_TOKEN for this repo.
+permissions:
+  contents: read
+
 jobs:
   notify:
     runs-on: ubuntu-latest

@@ -258,6 +258,9 @@ func TestWebSearchTool_PerplexityProvider(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
+		if integration := r.Header.Get("X-Pplx-Integration"); integration != "forge" {
+			t.Errorf("expected forge integration header, got %q", integration)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
 			"choices": []map[string]any{

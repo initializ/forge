@@ -1,0 +1,77 @@
+name: CodeQL
+
+# Advanced (workflow-based) CodeQL setup — replaces the UI "default setup".
+#
+# Why advanced setup: this is a five-module Go workspace (forge-core, forge-cli,
+# forge-plugins, forge-skills, forge-ui). Default setup's Go autobuild does not
+# reliably compile all five modules, so the package set it analyzes varies run
+# to run. When the analysis on `main` (the baseline) covers a different set than
+# the analysis on a PR head, GitHub's diff reports pre-existing alerts in
+# untouched files as "new alerts in code changed by this pull request" — which
+# is what was blocking PRs that never touched the tool layer.
+#
+# This workflow builds all five modules explicitly (mirroring ci.yaml), so every
+# run — the `main` baseline and every PR — analyzes the identical, complete
+# package set. The PR diff then only flags alerts a PR actually introduces.
+#
+# NOTE: default setup must be turned off in repo Settings → Code security →
+# "CodeQL analysis" (switch to Advanced) before this runs, or GitHub rejects the
+# results upload as conflicting with default setup.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "27 3 * * 1" # weekly, so alerts refresh even without a push
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: go
+            build-mode: manual
+          - language: actions
+            build-mode: none
+          - language: javascript-typescript
+            build-mode: none
+          - language: python
+            build-mode: none
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        if: matrix.language == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      # Deterministic, complete build across all five workspace modules so the
+      # analyzed package set is identical on main and on every PR (see header).
+      - name: Build (Go)
+        if: matrix.language == 'go'
+        run: go build ./forge-core/... ./forge-cli/... ./forge-skills/... ./forge-plugins/... ./forge-ui/...
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"

@@ -33,14 +33,17 @@ func (s *UIServer) handleGetSkillBuilderSettings(w http.ResponseWriter, _ *http.
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"provider":    llm.Provider,
-		"model":       llm.Model,
-		"base_url":    llm.BaseURL,
-		"api_key_env": llm.APIKeyEnv,
-		"has_key":     llm.HasCredentials(),
-		"source":      llm.Source,
-		"warning":     llm.Warning,
-		"providers":   []string{"openai", "anthropic", "gemini", "ollama"},
+		"provider":        llm.Provider,
+		"model":           llm.Model,
+		"base_url":        llm.BaseURL,
+		"api_key_env":     llm.APIKeyEnv,
+		"has_key":         llm.HasCredentials(),
+		"use_oauth":       llm.UseOAuth,
+		"use_gateway":     llm.UseGateway,
+		"use_global_auth": llm.UseGlobalAuth,
+		"source":          llm.Source,
+		"warning":         llm.Warning,
+		"providers":       []string{"openai", "anthropic", "gemini", "ollama"},
 	})
 }
 
@@ -94,13 +97,16 @@ func (s *UIServer) handlePutSkillBuilderSettings(w http.ResponseWriter, r *http.
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"provider":    llm.Provider,
-		"model":       llm.Model,
-		"base_url":    llm.BaseURL,
-		"api_key_env": llm.APIKeyEnv,
-		"has_key":     llm.HasCredentials(),
-		"source":      llm.Source,
-		"warning":     llm.Warning,
+		"provider":        llm.Provider,
+		"model":           llm.Model,
+		"base_url":        llm.BaseURL,
+		"api_key_env":     llm.APIKeyEnv,
+		"has_key":         llm.HasCredentials(),
+		"use_oauth":       llm.UseOAuth,
+		"use_gateway":     llm.UseGateway,
+		"use_global_auth": llm.UseGlobalAuth,
+		"source":          llm.Source,
+		"warning":         llm.Warning,
 	})
 }
 

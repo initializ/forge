@@ -4058,6 +4058,13 @@ func (r *Runner) registerSkillTools(reg *tools.Registry, proxyURL string, socksU
 // buildSystemPrompt constructs the system prompt with an optional skill catalog.
 func (r *Runner) buildSystemPrompt() string {
 	base := fmt.Sprintf("You are %s, an AI agent.", r.cfg.Config.AgentID)
+	// A root SKILL.md (written by the AI agent builder from the user's
+	// described persona/instructions) replaces the generic lead with a
+	// real persona. Agents scaffolded by the wizard have no root SKILL.md,
+	// so this is a no-op for them.
+	if persona := r.rootSkillPersona(); persona != "" {
+		base = persona
+	}
 	catalog := r.buildSkillCatalog()
 	if catalog != "" {
 		base += "\n\n" + catalog
@@ -4070,6 +4077,47 @@ func (r *Runner) buildSystemPrompt() string {
 	}
 
 	return base
+}
+
+// rootSkillPersona returns the agent's persona — the prose body of the
+// root SKILL.md (frontmatter stripped). The AI agent builder (forge ui)
+// writes this file from the user's described persona/instructions; when
+// present it replaces the generic "You are <id>, an AI agent." lead of
+// the system prompt. Returns "" when no root SKILL.md exists or it has no
+// body, so agents without one are unaffected.
+func (r *Runner) rootSkillPersona() string {
+	mainSkill := "SKILL.md"
+	if r.cfg.Config.Skills.Path != "" {
+		mainSkill = r.cfg.Config.Skills.Path
+	}
+	if !filepath.IsAbs(mainSkill) {
+		mainSkill = filepath.Join(r.cfg.WorkDir, mainSkill)
+	}
+	data, err := os.ReadFile(mainSkill)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(stripYAMLFrontmatter(string(data)))
+}
+
+// stripYAMLFrontmatter removes a leading `---` … `---` YAML frontmatter
+// block from markdown content and returns the body. Content without a
+// frontmatter block (or with an unterminated one) is returned unchanged.
+func stripYAMLFrontmatter(s string) string {
+	trimmed := strings.TrimPrefix(s, "\ufeff")
+	if !strings.HasPrefix(trimmed, "---") {
+		return s
+	}
+	lines := strings.Split(trimmed, "\n")
+	if strings.TrimRight(lines[0], "\r") != "---" {
+		return s
+	}
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimRight(lines[i], "\r") == "---" {
+			return strings.Join(lines[i+1:], "\n")
+		}
+	}
+	return s
 }
 
 // buildSkillCatalog generates a lightweight catalog of binary-backed skills

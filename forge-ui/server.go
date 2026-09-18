@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/initializ/forge/forge-ui/static"
@@ -36,6 +37,10 @@ type UIServer struct {
 	broker        *SSEBroker
 	srv           *http.Server
 	updateChecker *updateInfo
+	// builderBudget caps how many builder LLM turns this process will serve
+	// per rolling minute — a spend backstop on the credentialed builder chat
+	// endpoints, complementing the cross-origin guard in corsMiddleware.
+	builderBudget *turnBudget
 }
 
 // NewUIServer creates a UIServer with the given configuration.
@@ -62,7 +67,46 @@ func NewUIServer(cfg UIServerConfig) *UIServer {
 		pm:            pm,
 		broker:        broker,
 		updateChecker: uc,
+		// ~60 builder turns/min across all builder chat endpoints. Generous
+		// for a single interactive operator, but bounds a runaway loop (e.g. a
+		// same-origin script or a wedged client) from burning credits.
+		builderBudget: newTurnBudget(60, time.Minute),
 	}
+}
+
+// turnBudget is a simple fixed-window rate limiter: at most maxPerWindow
+// allowed events per window, process-wide. Cheap and good enough as a spend
+// backstop — not a precise token accountant.
+type turnBudget struct {
+	mu          sync.Mutex
+	max         int
+	window      time.Duration
+	windowStart time.Time
+	count       int
+	nowFn       func() time.Time // injectable for tests
+}
+
+func newTurnBudget(maxPerWindow int, window time.Duration) *turnBudget {
+	return &turnBudget{max: maxPerWindow, window: window, nowFn: time.Now}
+}
+
+// allow records one event and reports whether it is within budget.
+func (b *turnBudget) allow() bool {
+	if b == nil {
+		return true
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := b.nowFn()
+	if b.windowStart.IsZero() || now.Sub(b.windowStart) >= b.window {
+		b.windowStart = now
+		b.count = 0
+	}
+	if b.count >= b.max {
+		return false
+	}
+	b.count++
+	return true
 }
 
 // Start starts the server and blocks until ctx is cancelled.
@@ -110,12 +154,19 @@ func (s *UIServer) Start(ctx context.Context) error {
 	mux.HandleFunc("POST /api/optimizer/daemon/start", s.handleOptimizerDaemonControl("start"))
 	mux.HandleFunc("POST /api/optimizer/daemon/stop", s.handleOptimizerDaemonControl("stop"))
 
+	// AI Agent Builder route (workspace-level — no agent id yet). The
+	// conversational alternative to the New Agent wizard; reuses the
+	// workspace/global skill-builder LLM and the path-less
+	// /api/skill-builder/provider endpoint for its config banner.
+	mux.HandleFunc("POST /api/agent-builder/chat", s.handleAgentBuilderChat)
+
 	// Skill Builder routes
 	mux.HandleFunc("POST /api/agents/{id}/skill-builder/chat", s.handleSkillBuilderChat)
 	mux.HandleFunc("POST /api/agents/{id}/skill-builder/validate", s.handleSkillBuilderValidate)
 	mux.HandleFunc("POST /api/agents/{id}/skill-builder/save", s.handleSkillBuilderSave)
 	mux.HandleFunc("GET /api/agents/{id}/skill-builder/context", s.handleSkillBuilderContext)
 	mux.HandleFunc("GET /api/agents/{id}/skill-builder/provider", s.handleSkillBuilderProvider)
+	mux.HandleFunc("GET /api/agents/{id}/skill-builder/providers", s.handleSkillBuilderProviders)
 	// Custom-skill listing + loading for the Skill Builder edit flow
 	// (issue #193). Distinct from /api/skills which returns registry /
 	// embedded skills — these endpoints surface only project-local
@@ -127,6 +178,7 @@ func (s *UIServer) Start(ctx context.Context) error {
 	// resolved config before any agent is picked — needed for first-run
 	// in an empty workspace.
 	mux.HandleFunc("GET /api/skill-builder/provider", s.handleSkillBuilderProvider)
+	mux.HandleFunc("GET /api/skill-builder/providers", s.handleSkillBuilderProviders)
 	mux.HandleFunc("GET /api/settings/skill-builder", s.handleGetSkillBuilderSettings)
 	mux.HandleFunc("PUT /api/settings/skill-builder", s.handlePutSkillBuilderSettings)
 
@@ -198,10 +250,23 @@ func (s *UIServer) Start(ctx context.Context) error {
 	return nil
 }
 
-// corsMiddleware adds CORS headers, EXCEPT for the optimizer endpoints. Those
-// return private distilled memory (summaries of the user's code work) and can
-// rewrite ~/.claude/settings.json (daemon start/stop), so they must not be
-// readable or invokable cross-origin. For them we (a) never emit
+// crossOriginProtected reports whether a path must be shielded from
+// cross-origin browser access. Two classes qualify:
+//   - optimizer endpoints (#466): private distilled memory + daemon control.
+//   - skill/agent builder endpoints: they stream an LLM using the operator's
+//     MACHINE-GLOBAL credentials (OAuth / gateway / global key) and return the
+//     generated draft. Without this guard, while `forge ui` runs any page the
+//     operator visits could POST to the builder in a loop — spending their LLM
+//     credits and reading the streamed drafts cross-origin (ACAO:*). Match the
+//     optimizer's Fetch-Metadata posture rather than adding auth.
+func crossOriginProtected(path string) bool {
+	return strings.HasPrefix(path, "/api/optimizer/") ||
+		strings.HasPrefix(path, "/api/agent-builder/") ||
+		strings.Contains(path, "skill-builder")
+}
+
+// corsMiddleware adds CORS headers, EXCEPT for the cross-origin-protected
+// endpoints (see crossOriginProtected). For those we (a) never emit
 // Access-Control-Allow-Origin, so a browser blocks cross-origin reads of the
 // response, and (b) refuse cross-site requests outright via the Fetch Metadata
 // Sec-Fetch-Site header, which blocks CSRF on the state-changing routes.
@@ -210,9 +275,9 @@ func (s *UIServer) Start(ctx context.Context) error {
 // auth, while closing the cross-origin hole.
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/optimizer/") {
+		if crossOriginProtected(r.URL.Path) {
 			if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "same-site" && site != "none" {
-				http.Error(w, "cross-site request to optimizer endpoint refused", http.StatusForbidden)
+				http.Error(w, "cross-site request to a credentialed endpoint refused", http.StatusForbidden)
 				return
 			}
 			// Deliberately no Access-Control-Allow-Origin here.

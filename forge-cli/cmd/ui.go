@@ -10,8 +10,11 @@ import (
 	"syscall"
 
 	"github.com/initializ/forge/forge-cli/internal/tui"
+	"github.com/initializ/forge/forge-cli/runtime"
 	"github.com/initializ/forge/forge-core/llm"
+	"github.com/initializ/forge/forge-core/llm/oauth"
 	"github.com/initializ/forge/forge-core/llm/providers"
+	"github.com/initializ/forge/forge-core/settings"
 	"github.com/initializ/forge/forge-core/util"
 	forgeui "github.com/initializ/forge/forge-ui"
 	"github.com/spf13/cobra"
@@ -86,6 +89,8 @@ func runUI(cmd *cobra.Command, args []string) error {
 			EnvVars:        opts.EnvVars,
 			Force:          opts.Force,
 			NonInteractive: true,
+			Description:    opts.Description,
+			SystemPrompt:   opts.SystemPrompt,
 		}
 		if initOpts.Framework == "" {
 			initOpts.Framework = "forge"
@@ -151,22 +156,49 @@ func runUI(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("skill-builder LLM is not configured (no workspace ui.yaml and no agent fallback available)")
 		}
 
-		// Construct the LLM client from the resolved workspace config.
-		// No env reading, no os.Setenv. OAuth is intentionally NOT
-		// supported on this path — workspace-level config requires an
-		// explicit API key under api_key_env. (Operators who want to
-		// use ChatGPT OAuth specifically can set OPENAI_API_KEY from
-		// the OAuth token themselves; the workspace-LLM design does
-		// not silently override an explicit endpoint via the codex
-		// backend, per the issue #83 guardrail.)
+		// Resolve auth for the builder LLM exactly the way `forge run` /
+		// `forge try` do, so the skill/agent builder authenticates through
+		// the operator's existing login:
+		//
+		//   1. A model gateway from settings (managed OR user layer) for this
+		//      provider — overlays base_url + auth_scheme (bearer / x-api-key /
+		//      apikey_header) and injects the token from ~/.forge/credentials,
+		//      minting/refreshing it via the gateway's api_key_helper. This is
+		//      the enterprise-Anthropic path (and works for OpenAI gateways):
+		//      settings decide HOW the token is sent.
+		//   2. Otherwise, for openai with a stored ChatGPT OAuth token, the
+		//      codex Responses OAuth client.
+		//   3. Otherwise the explicit API key forge-ui resolved.
 		clientCfg := llm.ClientConfig{
 			Model:   opts.LLM.Model,
 			APIKey:  opts.LLM.APIKey,
 			BaseURL: opts.LLM.BaseURL,
 		}
-		client, err := providers.NewClient(opts.LLM.Provider, clientCfg)
-		if err != nil {
-			return fmt.Errorf("creating LLM client: %w", err)
+
+		var client llm.Client
+		gwApplied, gwErr := applyBuilderGateway(ctx, workDir, opts.LLM.Provider, &clientCfg)
+		if gwErr != nil {
+			return gwErr
+		}
+		switch {
+		case gwApplied:
+			c, err := providers.NewClient(opts.LLM.Provider, clientCfg)
+			if err != nil {
+				return fmt.Errorf("creating gateway LLM client: %w", err)
+			}
+			client = c
+		case opts.LLM.UseOAuth:
+			c, err := buildSkillBuilderOAuthClient(opts.LLM.Provider, clientCfg)
+			if err != nil {
+				return err
+			}
+			client = c
+		default:
+			c, err := providers.NewClient(opts.LLM.Provider, clientCfg)
+			if err != nil {
+				return fmt.Errorf("creating LLM client: %w", err)
+			}
+			client = c
 		}
 
 		// Build chat request with system prompt + conversation messages.
@@ -240,4 +272,80 @@ func runUI(cmd *cobra.Command, args []string) error {
 	}()
 
 	return server.Start(ctx)
+}
+
+// applyBuilderGateway overlays a settings model gateway (managed or user
+// layer) for provider onto cfg — base_url + auth_scheme + auth_header_name —
+// and, when the gateway declares an api_key_helper, injects a fresh token
+// from the credential cache (~/.forge/credentials), minting/refreshing it via
+// the helper on expiry. It mirrors the runtime's applyGatewaySettings so the
+// skill/agent builder authenticates exactly like `forge run` / `forge try`.
+// Returns true when a gateway matched (the caller then builds a native client
+// whose auth_scheme carries bearer / x-api-key / apikey_header).
+//
+// Only TRUSTED layers (system + user, never a cloned repo's project
+// .forge/settings.json) can supply base_url / api_key_helper — the same trust
+// boundary the runtime enforces (#464), so a hostile repo can't redirect the
+// endpoint or run a host command.
+func applyBuilderGateway(ctx context.Context, workDir, provider string, cfg *llm.ClientConfig) (bool, error) {
+	if provider == "" {
+		return false, nil
+	}
+	layers, err := settings.LoadAllLayers(settings.LoadOptions{WorkingDir: workDir})
+	if err != nil {
+		// No/!unreadable settings → no gateway; the native/OAuth path applies.
+		return false, nil
+	}
+	gw := settings.Resolve(settings.TrustedGatewayLayers(layers)).Models.GatewayForProvider(provider)
+	if gw == nil {
+		return false, nil
+	}
+	if gw.BaseURL != "" {
+		cfg.BaseURL = gw.BaseURL
+	}
+	if gw.AuthScheme != "" {
+		cfg.AuthScheme = gw.AuthScheme
+	}
+	if gw.AuthHeaderName != "" {
+		cfg.AuthHeaderName = gw.AuthHeaderName
+	}
+	if gw.APIKeyHelper != "" {
+		tok, err := runtime.EnsureGatewayToken(ctx, gw.APIKeyHelper, gw.Env)
+		if err != nil {
+			return true, fmt.Errorf("gateway login failed for %s (run 'forge auth login'): %w", provider, err)
+		}
+		if tok != nil && tok.AccessToken != "" {
+			cfg.APIKey = tok.AccessToken
+		}
+	}
+	return true, nil
+}
+
+// buildSkillBuilderOAuthClient constructs the OAuth-aware LLM client the
+// skill/agent builder uses when credentials come from a stored ChatGPT OAuth
+// token (uiconfig.SkillBuilderLLM.UseOAuth) and no gateway overrides it. It
+// mirrors the runtime's createProviderClient OAuth path: load the token,
+// route through its base URL (or the provider default), and hand off to
+// providers.NewOAuthClient, which refreshes on each call. OAuth without a
+// gateway is only wired for provider=openai (the codex Responses backend);
+// enterprise Anthropic goes through the gateway path above.
+func buildSkillBuilderOAuthClient(provider string, cfg llm.ClientConfig) (llm.Client, error) {
+	if provider != "openai" {
+		return nil, fmt.Errorf("OAuth builder auth without a gateway is not supported for provider %q (configure a model gateway in settings)", provider)
+	}
+	token, err := oauth.LoadCredentials(provider)
+	if err != nil {
+		return nil, fmt.Errorf("loading global OAuth credentials for %s: %w", provider, err)
+	}
+	if token == nil || token.RefreshToken == "" {
+		return nil, fmt.Errorf("no usable global OAuth credentials for %s; run 'forge init' with OAuth or set an API key in Settings → Skill Builder", provider)
+	}
+	oauthCfg := oauth.OpenAIConfig()
+	baseURL := token.BaseURL
+	if baseURL == "" {
+		baseURL = oauthCfg.BaseURL
+	}
+	cfg.APIKey = token.AccessToken
+	cfg.BaseURL = baseURL
+	return providers.NewOAuthClient(cfg, provider, oauthCfg), nil
 }

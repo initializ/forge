@@ -160,6 +160,44 @@ type SkillBuilderChatRequest struct {
 	Messages    []SkillBuilderMessage `json:"messages"`
 	Mode        string                `json:"mode,omitempty"`
 	EditingName string                `json:"editing_name,omitempty"`
+	// Provider, when set, is the build-time provider switch selection.
+	// Must be a currently-available builder provider; empty = default.
+	Provider string `json:"provider,omitempty"`
+}
+
+// AgentBuilderChatRequest is the POST body for the AI agent-builder
+// chat endpoint (the conversational alternative to the New Agent
+// wizard). It is workspace-level — no agent exists yet — so unlike
+// SkillBuilderChatRequest it carries no agent id or edit mode. The LLM
+// interviews the operator and returns an {message, agent} envelope the
+// UI turns into a prefilled create form.
+type AgentBuilderChatRequest struct {
+	Messages []SkillBuilderMessage `json:"messages"`
+	// Provider, when set, is the build-time provider switch selection
+	// (e.g. "anthropic"). It must be one of the currently-available
+	// builder providers; empty means use the resolved default.
+	Provider string `json:"provider,omitempty"`
+}
+
+// AgentDraft is the agent spec the AI agent-builder LLM produces. It is
+// a superset-subset of AgentCreateOptions: the fields the LLM can
+// reasonably decide from a conversation. Credentials (API key / OAuth)
+// are deliberately NOT here — the UI collects those out-of-band so
+// secrets never pass through the LLM. The UI maps an AgentDraft onto
+// AgentCreateOptions (adding the key/auth the operator supplies) before
+// POSTing to /api/agents.
+type AgentDraft struct {
+	Name          string   `json:"name"`
+	Description   string   `json:"description,omitempty"`
+	ModelProvider string   `json:"model_provider,omitempty"`
+	ModelName     string   `json:"model_name,omitempty"`
+	BuiltinTools  []string `json:"builtin_tools,omitempty"`
+	Skills        []string `json:"skills,omitempty"`
+	Channels      []string `json:"channels,omitempty"`
+	// SystemPrompt is the agent's persona / operating instructions. The
+	// scaffold writes it to the agent's root SKILL.md, which the runtime
+	// injects at the top of the system prompt (see buildSystemPrompt).
+	SystemPrompt string `json:"system_prompt,omitempty"`
 }
 
 // SkillBuilderValidateRequest is the POST body for skill validation.
@@ -254,6 +292,13 @@ type AgentCreateOptions struct {
 	EnvVars           map[string]string  `json:"env_vars,omitempty"`
 	Force             bool               `json:"force,omitempty"`
 	Auth              *AuthCreateOptions `json:"auth,omitempty"` // A2A server auth chain (PR6+)
+	// Description + SystemPrompt are set by the AI agent builder (the
+	// conversational create flow). Description is a one-line summary;
+	// SystemPrompt is the agent's persona/instructions, written to the
+	// new agent's root SKILL.md so the runtime uses it as the system-
+	// prompt lead (see Runner.rootSkillPersona). Empty for the wizard.
+	Description  string `json:"description,omitempty"`
+	SystemPrompt string `json:"system_prompt,omitempty"`
 }
 
 // AuthCreateOptions describes the auth chain selection the web wizard

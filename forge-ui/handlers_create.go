@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -51,52 +52,7 @@ func (s *UIServer) handleGetWizardMeta(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	// Per-provider model lists
-	meta.ProviderModels = map[string]ProviderModels{
-		// OpenAI is projected from forge-core/catalog rather than duplicated
-		// here. The two lists had drifted — this one still offered models the
-		// Codex backend retired — which is exactly what the catalog exists to
-		// prevent. APIKeyOnly in the catalog decides the OAuth/APIKey split.
-		"openai": openAIProviderModels(),
-		"anthropic": {
-			Default:  "claude-sonnet-4-20250514",
-			NeedsKey: true,
-			APIKey: []ModelOption{
-				{DisplayName: "Claude Sonnet 4", ModelID: "claude-sonnet-4-20250514"},
-				{DisplayName: "Claude Haiku 3.5", ModelID: "claude-3-5-haiku-20241022"},
-				{DisplayName: "Claude Opus 4", ModelID: "claude-opus-4-20250514"},
-			},
-		},
-		"gemini": {
-			Default:  "gemini-2.5-flash",
-			NeedsKey: true,
-			APIKey: []ModelOption{
-				{DisplayName: "Gemini 2.5 Flash", ModelID: "gemini-2.5-flash"},
-				{DisplayName: "Gemini 2.5 Pro", ModelID: "gemini-2.5-pro"},
-			},
-		},
-		"ollama": {
-			Default:  "llama3",
-			NeedsKey: false,
-			APIKey: []ModelOption{
-				{DisplayName: "Llama 3", ModelID: "llama3"},
-				{DisplayName: "Mistral", ModelID: "mistral"},
-				{DisplayName: "CodeLlama", ModelID: "codellama"},
-				{DisplayName: "Phi-3", ModelID: "phi3"},
-			},
-		},
-		"custom": {
-			Default:  "default",
-			NeedsKey: true,
-			IsCustom: true,
-			// Custom-provider normalization (issue #83): the wizard's
-			// Custom path is wired through provider=openai +
-			// OPENAI_BASE_URL/OPENAI_API_KEY at scaffold time. The
-			// frontend therefore writes OPENAI_BASE_URL directly
-			// rather than the legacy MODEL_BASE_URL alias, which the
-			// runtime resolver never read.
-			BaseURLEnv: "OPENAI_BASE_URL",
-		},
-	}
+	meta.ProviderModels = defaultProviderModels()
 
 	// Bedrock is sourced from the shared catalog (not hardcoded like the
 	// other providers) so the web wizard's model list + region flag cannot
@@ -166,6 +122,98 @@ func (s *UIServer) handleGetWizardMeta(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, meta)
 }
 
+// defaultProviderModels returns the per-provider model lists the wizard
+// and the AI agent builder both consume. Extracted from the wizard-meta
+// handler so the agent-builder system prompt can enumerate the same
+// valid provider/model IDs (single source of truth — the LLM must only
+// pick models the scaffold accepts).
+// defaultProviderModels returns the per-provider model lists the wizard and
+// the AI agent builder both consume. OpenAI is projected from the shared
+// forge-core/catalog (openAIProviderModels) so its model list — the OAuth /
+// APIKey split and the current default — never drifts or re-offers a
+// Codex-retired model (#450). Bedrock is added from the catalog by
+// handleGetWizardMeta; the remaining providers are static.
+func defaultProviderModels() map[string]ProviderModels {
+	return map[string]ProviderModels{
+		"openai": openAIProviderModels(),
+		"anthropic": {
+			Default:  "claude-sonnet-4-20250514",
+			NeedsKey: true,
+			APIKey: []ModelOption{
+				{DisplayName: "Claude Sonnet 4", ModelID: "claude-sonnet-4-20250514"},
+				{DisplayName: "Claude Haiku 3.5", ModelID: "claude-3-5-haiku-20241022"},
+				{DisplayName: "Claude Opus 4", ModelID: "claude-opus-4-20250514"},
+			},
+		},
+		"gemini": {
+			Default:  "gemini-2.5-flash",
+			NeedsKey: true,
+			APIKey: []ModelOption{
+				{DisplayName: "Gemini 2.5 Flash", ModelID: "gemini-2.5-flash"},
+				{DisplayName: "Gemini 2.5 Pro", ModelID: "gemini-2.5-pro"},
+			},
+		},
+		"ollama": {
+			Default:  "llama3",
+			NeedsKey: false,
+			APIKey: []ModelOption{
+				{DisplayName: "Llama 3", ModelID: "llama3"},
+				{DisplayName: "Mistral", ModelID: "mistral"},
+				{DisplayName: "CodeLlama", ModelID: "codellama"},
+				{DisplayName: "Phi-3", ModelID: "phi3"},
+			},
+		},
+		"custom": {
+			Default:    "default",
+			NeedsKey:   true,
+			IsCustom:   true,
+			BaseURLEnv: "OPENAI_BASE_URL",
+		},
+	}
+}
+
+// maxSystemPromptBytes caps the AI-builder persona written to the agent's
+// root SKILL.md (prepended to every runtime completion).
+const maxSystemPromptBytes = 20000
+
+// agentIDPattern is the charset util.Slugify guarantees; asserted at create
+// time as defense-in-depth for the id/directory name.
+var agentIDPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
+
+// validateAgentAssets rejects builtin_tools / skills not present in the
+// server catalogs. It's a create-time allowlist so a hijacked AI-builder
+// draft can't smuggle arbitrary tool-name strings into forge.yaml; the wizard
+// only ever submits catalog values, so it's transparent to that path.
+func validateAgentAssets(builtinTools, skills []string) error {
+	if len(builtinTools) > 0 {
+		known := make(map[string]bool)
+		for _, t := range builtins.All() {
+			known[t.Name()] = true
+		}
+		for _, name := range builtinTools {
+			if !known[name] {
+				return fmt.Errorf("unknown builtin tool %q", name)
+			}
+		}
+	}
+	if len(skills) > 0 {
+		known := make(map[string]bool)
+		if reg, err := local.NewEmbeddedRegistry(); err == nil {
+			if list, listErr := reg.List(); listErr == nil {
+				for _, sk := range list {
+					known[sk.Name] = true
+				}
+			}
+		}
+		for _, name := range skills {
+			if !known[name] {
+				return fmt.Errorf("unknown skill %q", name)
+			}
+		}
+	}
+	return nil
+}
+
 // handleCreateAgent creates a new agent via the injected CreateFunc.
 func (s *UIServer) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.CreateFunc == nil {
@@ -181,6 +229,32 @@ func (s *UIServer) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 
 	if opts.Name == "" {
 		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	// The name becomes the agent id / directory name via Slugify. A name
+	// that slugifies to "" (e.g. "###") would scaffold into the workspace
+	// ROOT (dir="."). Reject it, and assert the slug charset server-side
+	// rather than trusting Slugify alone.
+	agentID := util.Slugify(opts.Name)
+	if agentID == "" || !agentIDPattern.MatchString(agentID) {
+		writeError(w, http.StatusBadRequest, "name must contain at least one letter or digit (it becomes the agent id / directory name)")
+		return
+	}
+	// Cap the free-text persona so a create call can't write an unbounded
+	// SKILL.md that is then prepended to every runtime completion.
+	if len(opts.SystemPrompt) > maxSystemPromptBytes {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("system_prompt is too long (%d bytes; max %d)", len(opts.SystemPrompt), maxSystemPromptBytes))
+		return
+	}
+	// Defense-in-depth: reject builtin_tools / skills that aren't in the
+	// server catalogs, so a hijacked AI-builder draft can't inject arbitrary
+	// tool-name strings into forge.yaml. The wizard only sends catalog values.
+	if err := validateAgentAssets(opts.BuiltinTools, opts.Skills); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if opts.ModelProvider == "" {
+		writeError(w, http.StatusBadRequest, "model_provider is required")
 		return
 	}
 	if opts.ModelProvider == "" {
@@ -212,7 +286,7 @@ func (s *UIServer) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	agentID := util.Slugify(opts.Name)
+	// agentID was validated above.
 
 	// Broadcast creation event so the dashboard updates
 	s.broker.Broadcast(SSEEvent{

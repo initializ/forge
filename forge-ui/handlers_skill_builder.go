@@ -72,12 +72,53 @@ func (s *UIServer) handleSkillBuilderProvider(w http.ResponseWriter, r *http.Req
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"provider": llm.Provider,
-		"model":    llm.Model,
-		"base_url": llm.BaseURL,
-		"has_key":  llm.HasCredentials(),
-		"source":   llm.Source,
-		"warning":  llm.Warning,
+		"provider":    llm.Provider,
+		"model":       llm.Model,
+		"base_url":    llm.BaseURL,
+		"has_key":     llm.HasCredentials(),
+		"use_oauth":   llm.UseOAuth,
+		"use_gateway": llm.UseGateway,
+		"source":      llm.Source,
+		"warning":     llm.Warning,
+	})
+}
+
+// handleSkillBuilderProviders lists every builder LLM the operator can use
+// right now — the resolved default first, then any other provider with
+// machine-global credentials (gateway / OAuth / global env). Backs the
+// build-time provider switch in the Skill/Agent Builder headers. Like
+// handleSkillBuilderProvider, the agent id is optional (workspace-level).
+func (s *UIServer) handleSkillBuilderProviders(w http.ResponseWriter, r *http.Request) {
+	agentDir := ""
+	if r.PathValue("id") != "" {
+		agentDir = s.resolveAgentDir(w, r)
+		if agentDir == "" {
+			return // resolveAgentDir wrote the error response
+		}
+	}
+	list, err := uiconfig.AvailableSkillBuilderLLMs(s.cfg.WorkDir, agentDir, uiconfig.EnvLookupForWorkspace(s.cfg.WorkDir))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "loading builder providers: "+err.Error())
+		return
+	}
+	providers := make([]map[string]any, 0, len(list))
+	for _, llm := range list {
+		providers = append(providers, map[string]any{
+			"provider":    llm.Provider,
+			"model":       llm.Model,
+			"source":      llm.Source,
+			"use_oauth":   llm.UseOAuth,
+			"use_gateway": llm.UseGateway,
+			"has_key":     llm.HasCredentials(),
+		})
+	}
+	def := ""
+	if len(list) > 0 {
+		def = list[0].Provider
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"default":   def,
+		"providers": providers,
 	})
 }
 
@@ -100,6 +141,10 @@ func (s *UIServer) handleSkillBuilderChat(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusNotImplemented, "skill builder LLM streaming not available")
 		return
 	}
+	if !s.builderBudget.allow() {
+		writeError(w, http.StatusTooManyRequests, "builder turn budget exceeded — slow down and retry shortly")
+		return
+	}
 
 	agentDir := s.resolveAgentDir(w, r)
 	if agentDir == "" {
@@ -117,17 +162,23 @@ func (s *UIServer) handleSkillBuilderChat(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Resolve the workspace-level skill-builder LLM ONCE per request and
-	// pass it through LLMStreamOptions. The forge-cli callback consumes
+	// Resolve the skill-builder LLM ONCE per request and pass it through
+	// LLMStreamOptions. req.Provider carries the build-time provider switch
+	// selection (empty = resolved default). The forge-cli callback consumes
 	// LLM directly — it must not re-read the agent's forge.yaml / .env,
 	// since that would re-introduce the per-agent env-stomping the
 	// workspace-LLM design replaced (issue #92).
-	llm, err := uiconfig.LoadSkillBuilderLLM(s.cfg.WorkDir, agentDir, uiconfig.EnvLookupForWorkspace(s.cfg.WorkDir))
+	llm, avail, err := uiconfig.ResolveSkillBuilderLLMForProvider(s.cfg.WorkDir, agentDir, req.Provider, uiconfig.EnvLookupForWorkspace(s.cfg.WorkDir))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "loading skill-builder config: "+err.Error())
 		return
 	}
-	if llm.Source == uiconfig.SourceUnset {
+	if !avail || llm.Source == uiconfig.SourceUnset {
+		if req.Provider != "" {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf(
+				"provider %q is not available for the skill builder (no gateway, OAuth, or API key). Pick an available provider or configure one.", req.Provider))
+			return
+		}
 		writeError(w, http.StatusBadRequest,
 			"skill-builder LLM is not configured. Open Settings → Skill Builder to pick a provider, model, and API key env var.")
 		return

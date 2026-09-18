@@ -161,7 +161,9 @@ apis:                                # Per-operation API tools from admitted Ope
       base_url: "https://member-service.internal"   # host must be on the egress allowlist
       timeout: 30s
       auth:
-        token_env: "MEMBERSERVICE_TOKEN"             # bearer/static only (oauth rejected for apis)
+        token_env: "MEMBERSERVICE_TOKEN"             # env var holding the token (static only; oauth rejected for apis)
+        scheme: "bearer"                             # "" / "bearer" (default → Authorization: Bearer) | "header" | "query" — issue #479
+        name: ""                                     #   header name (scheme: header, e.g. x-api-key) or query key (scheme: query, e.g. api_key)
       operations:
         - name: "reverse_fee"       # tool suffix → memberservice__reverse_fee
           method: "POST"

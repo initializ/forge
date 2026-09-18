@@ -1250,12 +1250,8 @@ func (r *Runner) Run(ctx context.Context) error {
 			// "<server>__<op>" tool the PDP keys rules on; the adapter uses the
 			// egress transport from the tool ctx at call time.
 			for _, srv := range r.cfg.Config.APIs.Servers {
-				tokenEnv := ""
-				if srv.Auth != nil {
-					tokenEnv = srv.Auth.TokenEnv
-				}
 				for _, op := range srv.Ops {
-					apiTool := adapters.NewAPITool(srv.Name, srv.BaseURL, tokenEnv, op, srv.Timeout)
+					apiTool := adapters.NewAPITool(srv.Name, srv.BaseURL, srv.Auth, op, srv.Timeout)
 					if regErr := reg.Register(apiTool); regErr != nil {
 						r.logger.Warn("api tool registration", map[string]any{
 							"tool": apiTool.Name(), "error": regErr.Error(),

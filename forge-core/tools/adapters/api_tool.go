@@ -25,22 +25,55 @@ import (
 // builtin: an authenticated request built from the op's method+path, sent
 // through the egress-enforcing transport so the call is allowlist-gated.
 type apiTool struct {
-	server   string
-	baseURL  string
-	tokenEnv string
-	timeout  time.Duration
-	op       types.APIOp
+	server     string
+	baseURL    string
+	tokenEnv   string
+	authScheme string // "" | "bearer" | "header" | "query" (#479)
+	authName   string // header name / query key for the header|query schemes
+	timeout    time.Duration
+	op         types.APIOp
 }
+
+// API-tool auth schemes (APIAuth.Scheme). "" and "bearer" both mean the
+// default Authorization: Bearer placement (handled by the switch default).
+const (
+	apiAuthHeader = "header"
+	apiAuthQuery  = "query"
+)
 
 // apiPathParamRe matches {name} path template segments.
 var apiPathParamRe = regexp.MustCompile(`\{([^}]+)\}`)
 
-// NewAPITool builds a per-op API tool.
-func NewAPITool(server, baseURL, tokenEnv string, op types.APIOp, timeout time.Duration) tools.Tool {
+// appendQueryParam adds key=val to a URL's query string, preserving any
+// existing params (e.g. the GET args already encoded onto rawURL) and escaping
+// correctly. Used for the "query" auth scheme (#479).
+func appendQueryParam(rawURL, key, val string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		sep := "?"
+		if strings.Contains(rawURL, "?") {
+			sep = "&"
+		}
+		return rawURL + sep + url.QueryEscape(key) + "=" + url.QueryEscape(val)
+	}
+	q := u.Query()
+	q.Set(key, val)
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+// NewAPITool builds a per-op API tool. auth may be nil (no outbound auth).
+func NewAPITool(server, baseURL string, auth *types.APIAuth, op types.APIOp, timeout time.Duration) tools.Tool {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	return &apiTool{server: server, baseURL: baseURL, tokenEnv: tokenEnv, timeout: timeout, op: op}
+	t := &apiTool{server: server, baseURL: baseURL, timeout: timeout, op: op}
+	if auth != nil {
+		t.tokenEnv = auth.TokenEnv
+		t.authScheme = strings.ToLower(strings.TrimSpace(auth.Scheme))
+		t.authName = auth.Name
+	}
+	return t
 }
 
 // NamespacedSource opts this tool into the "__" namespace at registration
@@ -119,6 +152,16 @@ func (t *apiTool) Execute(ctx context.Context, args json.RawMessage) (string, er
 		jsonBody = true
 	}
 
+	// Resolve the outbound token once; place it per the auth scheme (#479).
+	// Query-param auth must land on the URL before the request is built.
+	var authToken string
+	if t.tokenEnv != "" {
+		authToken = os.Getenv(t.tokenEnv)
+	}
+	if authToken != "" && t.authScheme == apiAuthQuery && t.authName != "" {
+		fullURL = appendQueryParam(fullURL, t.authName, authToken)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, method, fullURL, bodyReader)
 	if err != nil {
 		return "", fmt.Errorf("creating request: %w", err)
@@ -127,9 +170,18 @@ func (t *apiTool) Execute(ctx context.Context, args json.RawMessage) (string, er
 	if jsonBody {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if t.tokenEnv != "" {
-		if tok := os.Getenv(t.tokenEnv); tok != "" {
-			req.Header.Set("Authorization", "Bearer "+tok)
+	// Header / bearer placement. Empty scheme defaults to Bearer, preserving
+	// the pre-#479 behavior for every existing config.
+	if authToken != "" {
+		switch t.authScheme {
+		case apiAuthHeader:
+			if t.authName != "" {
+				req.Header.Set(t.authName, authToken)
+			}
+		case apiAuthQuery:
+			// already appended to the URL above
+		default: // "" or "bearer"
+			req.Header.Set("Authorization", "Bearer "+authToken)
 		}
 	}
 

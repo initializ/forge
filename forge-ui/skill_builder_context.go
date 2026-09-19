@@ -114,6 +114,15 @@ Rules:
 - If a built-in covers the need, the skill instructs the agent to call it — do NOT scaffold a ` + "`" + `## Tool:` + "`" + ` / script or a custom tool that duplicates a built-in (e.g. never invent a ` + "`" + `brisbane_time` + "`" + ` tool when ` + "`" + `datetime_now` + "`" + ` exists).
 - A built-in-only skill (no custom tools) is complete with a title, description, the instruction to call the built-in(s), and Safety/Important-Notes as relevant — it has NO ` + "`" + `## Tool:` + "`" + ` sections.
 
+## Governed API Operations (call the operation — never the API directly)
+
+When the agent has an admitted/**governed** API, its operations are registered as ` + "`" + `<server>__<op>` + "`" + ` tools (e.g. ` + "`" + `sportradar-nfl__getSeasonSchedule` + "`" + `). A skill that needs that API MUST instruct the agent to call the governed operation BY NAME — Forge injects the API's auth and the platform PDP governs the call. NEVER scaffold a script (or ` + "`" + `http_request` + "`" + `) that calls the API host directly with its token:
+
+- A governed API's token is deliberately **WITHHELD from skill scripts** (anti-PDP-bypass). A script that reads it and ` + "`" + `curl` + "`" + `s the API can NEVER work — the token is stripped, so the script fails with a confusing ` + "`" + `missing <TOKEN>` + "`" + ` even though the secret is configured.
+- So do NOT put a governed API's ` + "`" + `token_env` + "`" + ` in ` + "`" + `requires.env` + "`" + `, and do NOT ` + "`" + `curl` + "`" + ` / ` + "`" + `http_request` + "`" + ` its host — instruct the agent to call ` + "`" + `<server>__<op>` + "`" + ` instead.
+- A helper script MAY still POST-PROCESS data the agent already fetched via the governed operation, but it operates ONLY on that data passed as its input (e.g. ` + "`" + `$1` + "`" + `) — it must never hold the token or make the API call itself.
+- When unsure whether the target API is governed, ask; when it is, calling the operation is the only shape that works.
+
 ## SKILL.md Format
 
 A SKILL.md file has two parts:

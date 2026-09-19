@@ -787,12 +787,17 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 			}
 			toolsUsed = append(toolsUsed, tc.Function.Name)
 
+			// Classify the tool once for the tool_exec audit stamping (#484).
+			toolClass, toolKind := e.classifyTool(tc.Function.Name)
+
 			// Fire BeforeToolExec hook
 			if err := e.hooks.Fire(ctx, BeforeToolExec, &HookContext{
 				ToolName:      tc.Function.Name,
 				ToolInput:     tc.Function.Arguments,
 				TaskID:        TaskIDFromContext(ctx),
 				CorrelationID: CorrelationIDFromContext(ctx),
+				ToolClass:     toolClass,
+				ToolKind:      toolKind,
 			}); err != nil {
 				return nil, fmt.Errorf("before tool exec hook: %w", err)
 			}
@@ -912,6 +917,8 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 				TaskID:           TaskIDFromContext(ctx),
 				CorrelationID:    CorrelationIDFromContext(ctx),
 				ToolExecDuration: toolDuration,
+				ToolClass:        toolClass,
+				ToolKind:         toolKind,
 			}
 			if err := e.hooks.Fire(ctx, AfterToolExec, afterHctx); err != nil {
 				return nil, fmt.Errorf("after tool exec hook: %w", err)
@@ -1045,6 +1052,31 @@ func (e *LLMExecutor) ExecuteStream(ctx context.Context, task *a2a.Task, msg *a2
 
 // Close is a no-op for LLMExecutor.
 func (e *LLMExecutor) Close() error { return nil }
+
+// classifyTool resolves the tool's class (Category) and a finer kind for the
+// tool_exec audit stamping (#484). class is one of "builtin" | "adapter" |
+// "dev" | "custom", or "" when the executor can't classify the tool (e.g. a
+// test stub that doesn't expose ClassOf). kind is set only where cheaply known:
+// an adapter tool splits into "mcp" (MCP-backed) vs "api". "adapter" is the
+// string form of tools.CategoryAdapter — kept as a literal so runtime need not
+// import the tools package (the ToolExecutor interface is structural for the
+// same reason).
+func (e *LLMExecutor) classifyTool(name string) (class, kind string) {
+	if c, ok := e.tools.(interface{ ClassOf(string) string }); ok {
+		class = c.ClassOf(name)
+	}
+	if class == "adapter" && e.tools != nil {
+		// Adapters are api/mcp today, so non-MCP ⇒ api. If a third adapter kind
+		// is ever added it would be mislabeled "api" here — revisit this split
+		// when a new tools.CategoryAdapter subtype appears.
+		if e.tools.IsMCPTool(name) {
+			kind = "mcp"
+		} else {
+			kind = "api"
+		}
+	}
+	return class, kind
+}
 
 // a2aMessageToLLM converts an A2A message to an LLM chat message.
 func a2aMessageToLLM(msg a2a.Message) llm.ChatMessage {

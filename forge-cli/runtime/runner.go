@@ -2739,11 +2739,25 @@ func (r *Runner) registerLoggingHooks(hooks *coreruntime.HookRegistry) {
 // LLMMessages, LLMResponse, ToolArgs, ToolResult. Captured strings
 // are truncated to a per-field byte cap so a runaway prompt or
 // gigabyte tool output cannot bloat one event.
+// stampToolClass adds tool_class (and tool_kind when known) to a tool_exec
+// field map, from the classification the engine attached to the hook context
+// (#484). Omits either key when empty so consumers that don't classify (or a
+// tool the executor couldn't classify) are unaffected.
+func stampToolClass(fields map[string]any, hctx *coreruntime.HookContext) {
+	if hctx.ToolClass != "" {
+		fields["tool_class"] = hctx.ToolClass
+	}
+	if hctx.ToolKind != "" {
+		fields["tool_kind"] = hctx.ToolKind
+	}
+}
+
 func (r *Runner) registerAuditHooks(hooks *coreruntime.HookRegistry, auditLogger *coreruntime.AuditLogger) {
 	capture := r.cfg.AuditPayloadCapture
 
 	hooks.Register(coreruntime.BeforeToolExec, func(ctxStart context.Context, hctx *coreruntime.HookContext) error {
 		fields := map[string]any{"tool": hctx.ToolName, "phase": "start"}
+		stampToolClass(fields, hctx)
 		// FWS-8: opt-in raw tool args. We only emit them here at the
 		// start hook (the end hook has them too — duplicating would
 		// double the audit footprint). args_size always lands; args
@@ -2771,6 +2785,7 @@ func (r *Runner) registerAuditHooks(hooks *coreruntime.HookRegistry, auditLogger
 
 	hooks.Register(coreruntime.AfterToolExec, func(ctxEnd context.Context, hctx *coreruntime.HookContext) error {
 		fields := map[string]any{"tool": hctx.ToolName, "phase": "end"}
+		stampToolClass(fields, hctx)
 		if hctx.Error != nil {
 			fields["error"] = hctx.Error.Error()
 		}

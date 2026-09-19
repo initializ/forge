@@ -67,6 +67,17 @@ func (r *Registry) Get(name string) Tool {
 	return r.tools[name]
 }
 
+// ClassOf returns the registered tool's Category as a string ("builtin",
+// "adapter", "dev", "custom"), or "" when the tool is not registered. Lets the
+// engine stamp tool_class on tool_exec audit events so usage analytics can
+// classify tools authoritatively instead of guessing from the name (#484).
+func (r *Registry) ClassOf(name string) string {
+	if t := r.Get(name); t != nil {
+		return string(t.Category())
+	}
+	return ""
+}
+
 // List returns the names of all registered tools, sorted alphabetically.
 func (r *Registry) List() []string {
 	r.mu.RLock()

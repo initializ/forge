@@ -45,6 +45,36 @@ func TestWithoutEnvNames(t *testing.T) {
 	}
 }
 
+// governedEnvCollisions surfaces the #480 misconfiguration: a skill declaring a
+// governed API/MCP token in requires.env (which is then withheld from scripts,
+// yielding a confusing "missing <TOKEN>" downstream). It returns the sorted,
+// de-duplicated intersection so the diagnostic is stable.
+func TestGovernedEnvCollisions(t *testing.T) {
+	governed := map[string]bool{"API_SPORTRADAR_NFL_TOKEN": true, "MCP_JIRA_TOKEN": true}
+
+	// A skill that declares the governed token (the field repro) → flagged.
+	declared := []string{"WEATHER_API_KEY", "API_SPORTRADAR_NFL_TOKEN"}
+	got := governedEnvCollisions(declared, governed)
+	if len(got) != 1 || got[0] != "API_SPORTRADAR_NFL_TOKEN" {
+		t.Fatalf("collisions = %v, want [API_SPORTRADAR_NFL_TOKEN]", got)
+	}
+
+	// Multiple + duplicate declarations → sorted, de-duplicated.
+	multi := governedEnvCollisions([]string{"MCP_JIRA_TOKEN", "API_SPORTRADAR_NFL_TOKEN", "MCP_JIRA_TOKEN"}, governed)
+	if len(multi) != 2 || multi[0] != "API_SPORTRADAR_NFL_TOKEN" || multi[1] != "MCP_JIRA_TOKEN" {
+		t.Fatalf("collisions = %v, want [API_SPORTRADAR_NFL_TOKEN MCP_JIRA_TOKEN]", multi)
+	}
+
+	// A well-formed skill (only its own script secret) → no collision.
+	if got := governedEnvCollisions([]string{"WEATHER_API_KEY"}, governed); got != nil {
+		t.Errorf("expected no collision, got %v", got)
+	}
+	// No governed tokens configured → nothing to flag.
+	if got := governedEnvCollisions([]string{"API_SPORTRADAR_NFL_TOKEN"}, nil); got != nil {
+		t.Errorf("empty governed set should yield nil, got %v", got)
+	}
+}
+
 // The EXPLICIT cli_execute path must also strip governed tokens from its
 // env_passthrough (mirrors the runner's explicit-cli_execute registration).
 func TestExplicitCLIExecuteStripsGovernedToken(t *testing.T) {

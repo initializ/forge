@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -3975,7 +3976,20 @@ func (r *Runner) registerSkillTools(reg *tools.Registry, proxyURL string, socksU
 			// Withhold governed-tool bearer tokens from the skill script env —
 			// they belong to the in-process tool adapter, not scripts (a script
 			// with the token could bypass the PDP; see governedToolTokenEnvs).
-			envVars = withoutEnvNames(envVars, governedToolTokenEnvs(r.cfg.Config))
+			// If a skill DECLARED a governed token in requires.env, that is the
+			// #480 misconfiguration: the strip below is correct, but the script's
+			// direct API call would then fail with a confusing "missing <TOKEN>"
+			// (the secret is present, just withheld). Surface a clear, actionable
+			// diagnostic instead of letting it fail silently downstream.
+			governedEnvs := governedToolTokenEnvs(r.cfg.Config)
+			if withheld := governedEnvCollisions(envVars, governedEnvs); len(withheld) > 0 {
+				r.logger.Warn("skill requires a governed API token that is WITHHELD from scripts (anti-PDP-bypass); call the governed operation instead of the API directly", map[string]any{
+					"skill":        entry.Name,
+					"withheld_env": withheld,
+					"hint":         "use the governed <server>__<op> tool (Forge injects auth and the PDP governs the call); a script may post-process the fetched data but must never read the token or call the API itself",
+				})
+			}
+			envVars = withoutEnvNames(envVars, governedEnvs)
 
 			var modelName string
 			if r.modelConfig != nil {
@@ -4436,6 +4450,28 @@ func governedToolTokenEnvs(cfg *types.ForgeConfig) map[string]bool {
 			out[s.Auth.TokenEnv] = true
 		}
 	}
+	return out
+}
+
+// governedEnvCollisions returns the declared env names that are governed-tool
+// token envs (and will therefore be WITHHELD from a skill script). A non-empty
+// result means a skill declared a governed API/MCP token in requires.env — the
+// #480 misconfiguration: the token is stripped anti-PDP-bypass, so the script's
+// direct API call fails with a confusing "missing <TOKEN>" even though the
+// secret is present. Returned sorted for a stable diagnostic.
+func governedEnvCollisions(declared []string, governed map[string]bool) []string {
+	if len(governed) == 0 {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, n := range declared {
+		if governed[n] && !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	sort.Strings(out)
 	return out
 }
 

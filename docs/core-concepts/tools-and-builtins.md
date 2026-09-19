@@ -111,13 +111,19 @@ apis:
     - name: memberservice
       base_url: https://member-service.internal   # host must be on the egress allowlist
       auth:
-        token_env: MEMBERSERVICE_TOKEN             # bearer/static only (oauth rejected for apis)
+        token_env: MEMBERSERVICE_TOKEN             # env var holding the token (static only; oauth rejected)
+        scheme: bearer                             # bearer (default) | header | query — issue #479
+        name: ""                                   #   header name / query key for the header|query schemes
       operations:
         - name: reverse_fee
           method: POST
           path: /accounts/{account_id}/reversals   # {…} segments filled from typed args
           description: Reverse a fee on an account
 ```
+
+**Auth placement (#479).** By default the token is sent as `Authorization: Bearer <value>`. APIs that use an API-key **header** (e.g. Sportradar's `x-api-key`) or a **query param** (`?api_key=`) — a large share of real APIs — set `scheme: header` / `scheme: query` with `name:` giving the header name or query key. `scheme: header` sends the token in that header (no `Authorization`); `scheme: query` appends `?name=<value>` (preserving the operation's own query args). For a platform-materialized entry, the admission/agent-builder side derives `scheme`/`name` from the OpenAPI `securityScheme` (`apiKey` with `in: header|query`), so the default stays Bearer and existing configs are unchanged.
+
+> **Prefer `bearer`/`header` over `query`.** A URL-embedded key is intrinsically more exposed than a header — it can land in upstream access logs, intermediary proxies, and `Referer` headers. Forge keeps the query token out of its own tool errors (it redacts the value on a request failure), but the wider exposure is inherent to query-string secrets. Use `scheme: query` only when the API requires it.
 
 `apis.servers[]` entries are typically **platform-materialized** from admitted
 OpenAPI specs. Because each operation is its own `<name>__<op>` tool, the

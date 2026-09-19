@@ -57,6 +57,29 @@ func TestAPIConfigValidate(t *testing.T) {
 			}}}},
 			wantErr: "path is required",
 		},
+		// #479 auth schemes.
+		{
+			name: "bearer auth is valid (name optional)",
+			cfg:  APIConfig{Servers: []APIServer{{Name: "member", BaseURL: "https://x", Auth: &APIAuth{TokenEnv: "T", Scheme: "bearer"}, Ops: []APIOp{okOp}}}},
+		},
+		{
+			name: "header auth with name is valid",
+			cfg:  APIConfig{Servers: []APIServer{{Name: "sr", BaseURL: "https://x", Auth: &APIAuth{TokenEnv: "T", Scheme: "header", Name: "x-api-key"}, Ops: []APIOp{okOp}}}},
+		},
+		{
+			name: "query auth with name is valid",
+			cfg:  APIConfig{Servers: []APIServer{{Name: "sr", BaseURL: "https://x", Auth: &APIAuth{TokenEnv: "T", Scheme: "query", Name: "api_key"}, Ops: []APIOp{okOp}}}},
+		},
+		{
+			name:    "header auth without name is rejected",
+			cfg:     APIConfig{Servers: []APIServer{{Name: "sr", BaseURL: "https://x", Auth: &APIAuth{TokenEnv: "T", Scheme: "header"}, Ops: []APIOp{okOp}}}},
+			wantErr: "name is required for scheme",
+		},
+		{
+			name:    "unknown auth scheme is rejected",
+			cfg:     APIConfig{Servers: []APIServer{{Name: "sr", BaseURL: "https://x", Auth: &APIAuth{TokenEnv: "T", Scheme: "basic"}, Ops: []APIOp{okOp}}}},
+			wantErr: "not recognized",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

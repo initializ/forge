@@ -691,13 +691,25 @@ type APIServer struct {
 	Timeout time.Duration `yaml:"timeout,omitempty"`
 }
 
-// APIAuth declares outbound auth for an API server. Bearer/static only — the
-// admission gate rejects oauth for api entries.
+// APIAuth declares outbound auth for an API server. Static-token only — the
+// admission gate rejects oauth for api entries. The token value comes from
+// TokenEnv (a per-agent secret, never stored on the config); Scheme/Name decide
+// where it is placed on the request.
 type APIAuth struct {
-	// TokenEnv names the env var holding the bearer token, sent as
-	// Authorization: Bearer <value>. The value is a per-agent secret, never
-	// stored on the config.
+	// TokenEnv names the env var holding the token value. Never stored on the
+	// config; resolved at call time.
 	TokenEnv string `yaml:"token_env,omitempty"`
+	// Scheme selects where the token is placed (#479):
+	//   "" / "bearer" → Authorization: Bearer <value>   (default)
+	//   "header"      → the Name header set to <value>   (e.g. x-api-key)
+	//   "query"       → the Name query param set to <value> (e.g. api_key)
+	// Derived at registration from the OpenAPI securityScheme (apiKey in:
+	// header|query) so the default stays Bearer and existing configs are
+	// unchanged.
+	Scheme string `yaml:"scheme,omitempty"`
+	// Name is the header name (for scheme "header") or query-param key (for
+	// scheme "query"). Ignored for bearer.
+	Name string `yaml:"name,omitempty"`
 }
 
 // APIOp is one operation of an APIServer — an OpenAPI path+method with its
@@ -740,6 +752,22 @@ func (c APIConfig) Validate() error {
 		}
 		if len(s.Ops) == 0 {
 			return fmt.Errorf("apis.servers[%q]: at least one operation is required", s.Name)
+		}
+		// Auth scheme (#479): "" / bearer / header / query. header + query
+		// place the token in a named header / query param, so Name is required
+		// there — otherwise the token would be silently dropped (the exact
+		// silent-default failure mode this feature fixes).
+		if s.Auth != nil {
+			switch scheme := strings.ToLower(strings.TrimSpace(s.Auth.Scheme)); scheme {
+			case "", "bearer":
+				// default Authorization: Bearer — Name is ignored
+			case "header", "query":
+				if strings.TrimSpace(s.Auth.Name) == "" {
+					return fmt.Errorf("apis.servers[%q].auth: name is required for scheme %q (the header name / query key)", s.Name, scheme)
+				}
+			default:
+				return fmt.Errorf("apis.servers[%q].auth: scheme %q is not recognized (want bearer, header, or query)", s.Name, s.Auth.Scheme)
+			}
 		}
 		seenOp := map[string]struct{}{}
 		for j, op := range s.Ops {

@@ -45,6 +45,15 @@ type HookContext struct {
 	// ToolExecDuration is the wall-clock time spent executing the tool.
 	// Populated for AfterToolExec hooks.
 	ToolExecDuration time.Duration
+
+	// ToolClass is the tool's Category — "builtin" | "adapter" | "dev" |
+	// "custom" (adapter = api/mcp = governed). ToolKind is a finer type where
+	// cheaply known — "mcp" | "api" for adapter tools. Populated for
+	// Before/AfterToolExec hooks so usage analytics can classify tools
+	// authoritatively rather than guessing from the name (#484). Empty when the
+	// executor can't classify the tool (e.g. a test stub).
+	ToolClass string
+	ToolKind  string
 }
 
 // Hook is a function invoked at a specific point in the agent loop.

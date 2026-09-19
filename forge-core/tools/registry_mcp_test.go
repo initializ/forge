@@ -55,6 +55,38 @@ func TestRegistry_AllowsSingleUnderscore(t *testing.T) {
 	}
 }
 
+// fakeCatTool is a Tool with a settable Category, for ClassOf.
+type fakeCatTool struct {
+	fakeTool
+	cat Category
+}
+
+func (f *fakeCatTool) Category() Category { return f.cat }
+
+// TestRegistryClassOf pins the #484 lookup used to stamp tool_class on
+// tool_exec: ClassOf returns the registered tool's Category as a string, and ""
+// for an unknown tool.
+func TestRegistryClassOf(t *testing.T) {
+	t.Parallel()
+	r := NewRegistry()
+	_ = r.Register(&fakeTool{name: "json_parse"}) // builtin (fakeTool default)
+	_ = r.Register(&fakeCatTool{fakeTool{name: "my_api"}, CategoryAdapter})
+	_ = r.Register(&fakeCatTool{fakeTool{name: "code_agent"}, CategoryDev})
+	_ = r.Register(&fakeCatTool{fakeTool{name: "custom_thing"}, CategoryCustom})
+
+	for name, want := range map[string]string{
+		"json_parse":   "builtin",
+		"my_api":       "adapter",
+		"code_agent":   "dev",
+		"custom_thing": "custom",
+		"nonexistent":  "",
+	} {
+		if got := r.ClassOf(name); got != want {
+			t.Errorf("ClassOf(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
 func TestRegistry_DuplicateRejected(t *testing.T) {
 	t.Parallel()
 	r := NewRegistry()

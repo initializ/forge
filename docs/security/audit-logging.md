@@ -14,7 +14,7 @@ All runtime security events are emitted as structured NDJSON to stderr with corr
 |-------|-------------|
 | `session_start` | New task session begins |
 | `session_end` | Task session completes (with final state) |
-| `tool_exec` | Tool execution start/end (with tool name) |
+| `tool_exec` | Tool execution start/end (tool name + class/kind) |
 | `egress_allowed` | Outbound request allowed (with domain, mode) |
 | `egress_blocked` | Outbound request blocked (with domain, mode) |
 | `llm_call` | LLM API call completed (with `input_tokens`, `output_tokens`, `model`, `provider`, `duration_ms`, `request_id`, and `fields.url` — the actual endpoint the request hit, e.g. a Kong base URL + `/v1/messages`; recorded even when payload capture is off since the URL is header-authed metadata, not payload). Any `user:pass@` userinfo in the base URL is **stripped** from the recorded `fields.url` so an inline-credential base URL doesn't leak into the audit stream (#358). See [Token usage and duration](#token-usage-and-execution-duration). |
@@ -165,7 +165,7 @@ Every `llm_call` audit event carries the normalized token counts the provider re
 | `duration_ms` | Captured at call site | Wall-clock time spent in `client.Chat`, in milliseconds |
 | `request_id` | Provider response | Opaque provider call ID (Anthropic `id`, OpenAI `id`) — debug-correlation handle only, never used for billing |
 
-Each `tool_exec` event (phase=end) carries `duration_ms` for the tool execution plus structured arg-shape metadata (`args_size`, `result_size`) — raw arg values are deliberately not included (payload stripping is FWS-8's concern). One `invocation_complete` event closes each A2A invocation with the total wall-clock duration and aggregated token totals across all LLM calls in the invocation.
+Each `tool_exec` event (both phases) also carries `tool_class` — the tool's category, `builtin` | `adapter` | `dev` | `custom` (`adapter` = api/mcp = governed) — and, where cheaply known, a finer `tool_kind` (`mcp` | `api` for adapter tools). This lets usage analytics classify tools authoritatively and uniformly instead of guessing from the name (#484). Both keys are omitted when the tool can't be classified. Each `tool_exec` event (phase=end) carries `duration_ms` for the tool execution plus structured arg-shape metadata (`args_size`, `result_size`) — raw arg values are deliberately not included (payload stripping is FWS-8's concern). One `invocation_complete` event closes each A2A invocation with the total wall-clock duration and aggregated token totals across all LLM calls in the invocation.
 
 Workflow correlation fields (`workflow_id` / `workflow_execution_id` / `stage_id` / `step_id` / `invocation_caller` from FWS-2) also auto-tag every `llm_call` / `tool_exec` / `invocation_complete` event when the inbound request carried orchestrator headers — billing and audit consumers can attribute cost not just to a task but to a specific workflow run / stage / step. `workflow_id` rollups answer "cost per workflow definition over time"; `workflow_execution_id` joins answer "cost for this specific run."
 

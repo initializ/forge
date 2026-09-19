@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -278,6 +279,37 @@ func TestDiscoverSkillFiles(t *testing.T) {
 	}
 	if !found[wantMain] {
 		t.Errorf("missing main SKILL.md: %s", wantMain)
+	}
+}
+
+// #481: when skills.path points at a file the skills/ glob already discovers
+// (skills/<name>/SKILL.md), discoverSkillFiles must return it ONCE — otherwise
+// the live agent's system-prompt catalog lists the skill twice.
+func TestDiscoverSkillFiles_DedupsSkillsPathInsideTree(t *testing.T) {
+	dir := t.TempDir()
+	subDir := filepath.Join(dir, "skills", "weather")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillFile := filepath.Join(subDir, "SKILL.md")
+	if err := os.WriteFile(skillFile, []byte("# weather"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &Runner{cfg: RunnerConfig{
+		WorkDir: dir,
+		// points inside skills/ — the subdir glob already finds it
+		Config: &types.ForgeConfig{Skills: types.SkillsRef{Path: "skills/weather/SKILL.md"}},
+	}}
+
+	files := runner.discoverSkillFiles()
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file (deduped), got %d: %v", len(files), files)
+	}
+	// And the count is unaffected by an absolute skills.path naming the same file.
+	runner.cfg.Config.Skills.Path = skillFile
+	if files := runner.discoverSkillFiles(); len(files) != 1 {
+		t.Fatalf("absolute skills.path: expected 1 file (deduped), got %d: %v", len(files), files)
 	}
 }
 

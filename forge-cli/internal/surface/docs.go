@@ -27,6 +27,14 @@ var forgeKnowledgeMD string
 //go:embed knowledge/forge-skill-builder.md
 var skillBuilderMD string
 
+// initializKnowledgeMD is the platform-deploy knowledge: how to author an
+// initializ-deploy.yaml (agent types forge / claude-agent / strands) and deploy
+// via the initializ CLI. Authored from the initializ CLI's deployspec schema +
+// examples so one surface can also connect the agent to the platform.
+//
+//go:embed knowledge/initializ-deploy.md
+var initializKnowledgeMD string
+
 // maxDocChars caps a single forge_docs response so a topic dump (some sections
 // run long) can't blow the caller's context. Query mode returns the top chunks
 // under the same ceiling.
@@ -51,8 +59,19 @@ type docChunk struct {
 type Topic struct {
 	Name        string
 	Description string
-	sections    []int // section numbers whose bodies make up the topic
+	sections    []int // section numbers into forge.md whose bodies make up the topic
 }
+
+// staticTopic is a topic whose body is a whole standalone embedded doc (not
+// forge.md sections) — e.g. the initializ platform-deploy guide.
+type staticTopic struct {
+	Description string
+	Body        string
+}
+
+// staticTopics are registered in init(); they render verbatim and appear in the
+// topic index + search index alongside the forge.md topics.
+var staticTopics = map[string]staticTopic{}
 
 // topics is the curated topic → section(s) map over forge.md's `## 1..20`.
 var topics = []Topic{
@@ -96,6 +115,14 @@ func init() {
 	// create-skill topic (see RenderTopic).
 	knowledgeChunks = buildChunks(knowledgeSections)
 	knowledgeChunks = append(knowledgeChunks, buildChunks(skillBuilderSections)...)
+
+	// The platform-deploy doc is a standalone topic (its body is the whole doc,
+	// not forge.md sections) and also feeds the search index.
+	knowledgeChunks = append(knowledgeChunks, buildChunks(parseSections(initializKnowledgeMD))...)
+	staticTopics["initializ-deploy"] = staticTopic{
+		Description: "Generate initializ-deploy.yaml + deploy to the initializ platform (forge/claude-agent/strands)",
+		Body:        initializKnowledgeMD,
+	}
 }
 
 // stripFrontmatter drops a leading `---`…`---` YAML block (skill docs carry one)
@@ -203,12 +230,17 @@ func leadingNum(title string) int {
 	return n
 }
 
-// TopicNames returns the stable topic names, in presentation order.
+// staticTopicOrder pins deterministic ordering for the static topics (map
+// iteration is random) so TopicNames/TopicIndex are stable.
+var staticTopicOrder = []string{"initializ-deploy"}
+
+// TopicNames returns the stable topic names (forge.md topics then static ones).
 func TopicNames() []string {
-	names := make([]string, len(topics))
-	for i, t := range topics {
-		names[i] = t.Name
+	names := make([]string, 0, len(topics)+len(staticTopicOrder))
+	for _, t := range topics {
+		names = append(names, t.Name)
 	}
+	names = append(names, staticTopicOrder...)
 	return names
 }
 
@@ -218,6 +250,9 @@ func TopicIndex() string {
 	for _, t := range topics {
 		fmt.Fprintf(&b, "- %s — %s\n", t.Name, t.Description)
 	}
+	for _, name := range staticTopicOrder {
+		fmt.Fprintf(&b, "- %s — %s\n", name, staticTopics[name].Description)
+	}
 	return b.String()
 }
 
@@ -225,6 +260,10 @@ func TopicIndex() string {
 // Reports ok=false for an unknown topic.
 func RenderTopic(name string) (string, bool) {
 	name = strings.ToLower(strings.TrimSpace(name))
+	// Standalone-doc topics (e.g. initializ-deploy) render their whole body.
+	if st, ok := staticTopics[name]; ok {
+		return capText(st.Body, maxDocChars), true
+	}
 	for _, t := range topics {
 		if t.Name != name {
 			continue

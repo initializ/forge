@@ -95,6 +95,7 @@ func NewBuilderSession(ctx context.Context, opts BuilderSessionOptions) (*Builde
 	}
 	extra := append([]tools.Tool{surface.NewShellTool(opts.WorkDir), surface.ForgeDocsTool{}},
 		surface.ForgeOpsTools(opts.WorkDir)...)
+	extra = append(extra, surface.InitializTools(opts.WorkDir)...)
 	for _, t := range extra {
 		if err := reg.Register(t); err != nil {
 			return nil, fmt.Errorf("registering %s: %w", t.Name(), err)

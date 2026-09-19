@@ -64,14 +64,13 @@ func safeJoin(base, dir string) string {
 	if dir == "" || dir == "." {
 		return base
 	}
-	if filepath.IsAbs(dir) {
+	// filepath.IsLocal rejects absolute paths, ".." traversal that escapes, and
+	// (on Windows) reserved names — the canonical path-traversal barrier. Anything
+	// non-local falls back to base so a caller can never escape the workspace.
+	if !filepath.IsLocal(dir) {
 		return base
 	}
-	clean := filepath.Clean(dir)
-	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return base
-	}
-	return filepath.Join(base, clean)
+	return filepath.Join(base, dir)
 }
 
 // forgeOp is a self-exec forge-ops tool: it builds a forge argv from JSON args

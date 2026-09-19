@@ -43,6 +43,18 @@ func BuilderSystemPrompt() string {
 		"- Into an existing project: `forge skills import <folder>` (for a plain SKILL.md with no metadata.forge it infers a suggested block; `--write-forge-meta` injects requires.bins). Exposed as the forge_import_skill tool.\n" +
 		"Use these instead of telling the user to copy files manually.\n")
 
+	b.WriteString("\n## Generating an initializ platform deploy spec\n")
+	b.WriteString("When the user asks to generate an initializ deploy config, follow this order:\n" +
+		"1. INVESTIGATE the project first with initializ_detect_agent — it looks for forge.yaml (→ forge) or a " +
+		"Claude/Strands dependency in package.json (node) / requirements.txt / pyproject.toml (python).\n" +
+		"2. CONFIRM with the user what you're generating for — type (forge, claude-agent, strands) and, for the " +
+		"non-forge runtimes, node or python — before generating. Don't assume; ask.\n" +
+		"3. GENERATE with initializ_deploy_generate. forge specs read forge.yaml (do NOT set model/expose/a2a/http) " +
+		"and are always A2A automatically. claude-agent & strands need name + model.provider (anthropic|openai) and " +
+		"pick ONE exposure via `expose`: \"a2a\" (default) or \"http\" (a plain invoke endpoint — set http_path).\n" +
+		"You generate the manifest only — the operator deploys it with `initializ agent deploy -f initializ-deploy.yaml " +
+		"--image <ref> --wait` (don't run the deploy). See forge_docs topic \"initializ-deploy\".\n")
+
 	b.WriteString("\n## Doc topics — call forge_docs{topic} for full detail\n")
 	b.WriteString(TopicIndex())
 

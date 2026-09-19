@@ -7,29 +7,30 @@ import "strings"
 // topic module(s) once per session. Order within a topic doesn't matter; the
 // first matching alias wins per topic.
 var topicAliases = map[string][]string{
-	"channels":     {"channel", "slack", "telegram", "whatsapp", "msteams", "ms teams", "teams", "adapter"},
-	"mcp":          {"mcp", "model context protocol", "oauth server", "tool server"},
-	"forge-yaml":   {"forge.yaml", "yaml", "config", "egress", "allowed_domains", "provider block", "model block"},
-	"models":       {"provider", "model", "anthropic", "openai", "ollama", "bedrock", "gemini", "credential", "api key", "api_key"},
-	"tools":        {"tool", "builtin", "http_request", "web_fetch", "web_search", "function call"},
-	"create-skill": {"skill", "skill.md", "write a skill", "author a skill", "create a skill", "new skill", "skill builder", "import", "from-skill-dir", "convert", "anthropic skill", "existing skill"},
-	"create-agent": {"create an agent", "scaffold", "new agent", "build an agent", "make an agent"},
-	"scheduling":   {"schedule", "cron", "recurring", "every day", "daily", "interval"},
-	"secrets":      {"secret", "encrypt", "passphrase", "credential store"},
-	"memory":       {"memory", "remember", "recall", "vector", "embedding"},
-	"security":     {"security", "egress", "guardrail", "defer", "approval", "policy", "audit"},
-	"build-deploy": {"deploy", "kubernetes", "k8s", "package", "container", "docker", "image", "build"},
-	"cli":          {"command", "subcommand", "cli", "forge run", "forge build"},
-	"audit":        {"audit", "ndjson", "hash chain", "event"},
-	"how-it-works": {"a2a", "how does forge", "end-to-end", "executor", "runtime loop"},
-	"recipes":      {"recipe", "how do i", "example"},
+	"channels":         {"channel", "slack", "telegram", "whatsapp", "msteams", "ms teams", "teams", "adapter"},
+	"mcp":              {"mcp", "model context protocol", "oauth server", "tool server"},
+	"forge-yaml":       {"forge.yaml", "yaml", "config", "egress", "allowed_domains", "provider block", "model block"},
+	"models":           {"provider", "model", "anthropic", "openai", "ollama", "bedrock", "gemini", "credential", "api key", "api_key"},
+	"tools":            {"tool", "builtin", "http_request", "web_fetch", "web_search", "function call"},
+	"create-skill":     {"skill", "skill.md", "write a skill", "author a skill", "create a skill", "new skill", "skill builder", "import", "from-skill-dir", "convert", "anthropic skill", "existing skill"},
+	"create-agent":     {"create an agent", "scaffold", "new agent", "build an agent", "make an agent"},
+	"scheduling":       {"schedule", "cron", "recurring", "every day", "daily", "interval"},
+	"secrets":          {"secret", "encrypt", "passphrase", "credential store"},
+	"memory":           {"memory", "remember", "recall", "vector", "embedding"},
+	"security":         {"security", "egress", "guardrail", "defer", "approval", "policy", "audit"},
+	"initializ-deploy": {"initializ", "initializ-deploy", "initializ-deploy.yaml", "platform", "deploy to the platform", "deploy spec", "agent deploy", "claude-agent", "claude agent", "strands", "deploy.yaml"},
+	"build-deploy":     {"deploy", "kubernetes", "k8s", "package", "container", "docker", "image", "build"},
+	"cli":              {"command", "subcommand", "cli", "forge run", "forge build"},
+	"audit":            {"audit", "ndjson", "hash chain", "event"},
+	"how-it-works":     {"a2a", "how does forge", "end-to-end", "executor", "runtime loop"},
+	"recipes":          {"recipe", "how do i", "example"},
 }
 
 // aliasOrder pins deterministic topic scan order (map iteration is random), most
 // specific topics first so, e.g., "write a skill" prefers create-skill over the
 // broad skills topic.
 var aliasOrder = []string{
-	"create-skill", "create-agent", "channels", "mcp", "forge-yaml", "models",
+	"create-skill", "create-agent", "initializ-deploy", "channels", "mcp", "forge-yaml", "models",
 	"tools", "scheduling", "secrets", "memory", "security",
 	"build-deploy", "audit", "how-it-works", "cli", "recipes",
 }

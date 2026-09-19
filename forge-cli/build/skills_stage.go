@@ -29,18 +29,24 @@ func (s *SkillsStage) Execute(ctx context.Context, bc *pipeline.BuildContext) er
 		skillsPath = filepath.Join(bc.Opts.WorkDir, skillsPath)
 	}
 
-	// Parse root skills file if it exists
+	skillsSubDir := filepath.Join(bc.Opts.WorkDir, "skills")
+
+	// Parse root skills file if it exists — UNLESS it is a skills/<name>/SKILL.md
+	// that scanSkillsSubDir below already discovers. Parsing it as the root file
+	// AND finding it in the scan would count the same skill twice (#481:
+	// skills_count doubles, and the runtime prompt catalog lists it twice).
 	var entries []contract.SkillEntry
-	if _, err := os.Stat(skillsPath); err == nil {
-		parsed, meta, parseErr := cliskills.ParseFileWithMetadata(skillsPath)
-		if parseErr != nil {
-			return fmt.Errorf("parsing skills file: %w", parseErr)
+	if !coveredBySkillsScan(skillsPath, skillsSubDir) {
+		if _, err := os.Stat(skillsPath); err == nil {
+			parsed, meta, parseErr := cliskills.ParseFileWithMetadata(skillsPath)
+			if parseErr != nil {
+				return fmt.Errorf("parsing skills file: %w", parseErr)
+			}
+			entries = synthesizeInstructional(parsed, meta)
 		}
-		entries = synthesizeInstructional(parsed, meta)
 	}
 
 	// Always scan skills/ subdirectory (skills may exist without root SKILL.md)
-	skillsSubDir := filepath.Join(bc.Opts.WorkDir, "skills")
 	subEntries, subErr := scanSkillsSubDir(skillsSubDir)
 	if subErr != nil {
 		fmt.Fprintf(os.Stderr, "  [skills] warning: scanning skills/ subdirectory: %v\n", subErr)
@@ -118,6 +124,18 @@ func discoverSkillPipRequirements(skillsDir string) []string {
 	}
 	sort.Strings(reqs)
 	return reqs
+}
+
+// coveredBySkillsScan reports whether skillsPath is a skills/<name>/SKILL.md
+// that scanSkillsSubDir already discovers (a direct child dir's SKILL.md).
+// When it is, the root-file parse must be skipped or the skill is counted
+// twice (#481). Paths are compared cleaned; both derive from bc.Opts.WorkDir,
+// so they share a base.
+func coveredBySkillsScan(skillsPath, skillsSubDir string) bool {
+	if filepath.Base(skillsPath) != "SKILL.md" {
+		return false
+	}
+	return filepath.Clean(filepath.Dir(filepath.Dir(skillsPath))) == filepath.Clean(skillsSubDir)
 }
 
 // scanSkillsSubDir scans the skills/ subdirectory for SKILL.md files in each

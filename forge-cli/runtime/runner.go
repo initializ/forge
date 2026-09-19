@@ -3783,7 +3783,36 @@ func (r *Runner) discoverSkillFiles() []string {
 		matches = append(matches, mainSkill)
 	}
 
-	return matches
+	// Dedup by resolved path. skills.path may name a file the skills/ globs
+	// already found (e.g. skills.path: skills/x/SKILL.md, or a flat
+	// skills/x.md) — without this the same skill is listed twice in the live
+	// agent's system-prompt catalog and its requirements aggregated twice
+	// (#481). Order (flat → subdir → mainSkill) is first-wins, so the collision
+	// is deliberately resolved in favor of the skills/-tree occurrence: an
+	// inside-skills/ skills.path is treated as a regular subdir skill and its
+	// duplicate dropped. The build side agrees (coveredBySkillsScan skips the
+	// root parse), so both discovery sites resolve it the same way.
+	return dedupResolvedPaths(matches)
+}
+
+// dedupResolvedPaths removes duplicate file paths that resolve to the same file,
+// comparing by absolute+cleaned path (falling back to Clean if Abs fails), and
+// preserves first-seen order.
+func dedupResolvedPaths(paths []string) []string {
+	seen := make(map[string]bool, len(paths))
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		key, err := filepath.Abs(p)
+		if err != nil {
+			key = filepath.Clean(p)
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, p)
+	}
+	return out
 }
 
 // resolveBinarySkillPath looks up the executable for a `runtime: binary`

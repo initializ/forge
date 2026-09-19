@@ -76,6 +76,41 @@ Summarize text content.
 	}
 }
 
+// #481: skills.path pointing INSIDE the skills/ tree (skills/<name>/SKILL.md)
+// must not double-count — the subdir scan already discovers it, so the root
+// parse must be skipped.
+func TestSkillsStage_PathInsideSkillsTreeNotDoubled(t *testing.T) {
+	tmpDir := t.TempDir()
+	skillDir := filepath.Join(tmpDir, "skills", "weather")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	content := "## Tool: get_weather\nFetch weather.\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	outDir := filepath.Join(tmpDir, "output")
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		t.Fatalf("mkdir out: %v", err)
+	}
+
+	bc := pipeline.NewBuildContext(pipeline.PipelineOptions{OutputDir: outDir, WorkDir: tmpDir})
+	bc.Config = &types.ForgeConfig{
+		AgentID: "test", Version: "1.0.0", Entrypoint: "python main.py",
+		Skills: types.SkillsRef{Path: "skills/weather/SKILL.md"}, // points inside skills/
+	}
+	bc.Spec = &agentspec.AgentSpec{AgentID: "test"}
+
+	if err := (&SkillsStage{}).Execute(context.Background(), bc); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	// One skill (one tool) — NOT 2. Before the fix this was doubled.
+	if bc.SkillsCount != 1 {
+		t.Errorf("SkillsCount = %d, want 1 (skills.path inside skills/ must not double-count)", bc.SkillsCount)
+	}
+}
+
 func TestSkillsStage_CustomPath(t *testing.T) {
 	tmpDir := t.TempDir()
 

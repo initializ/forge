@@ -1066,6 +1066,9 @@ func (e *LLMExecutor) classifyTool(name string) (class, kind string) {
 		class = c.ClassOf(name)
 	}
 	if class == "adapter" && e.tools != nil {
+		// Adapters are api/mcp today, so non-MCP ⇒ api. If a third adapter kind
+		// is ever added it would be mislabeled "api" here — revisit this split
+		// when a new tools.CategoryAdapter subtype appears.
 		if e.tools.IsMCPTool(name) {
 			kind = "mcp"
 		} else {

@@ -14,6 +14,10 @@ type Category string
 
 const (
 	CategoryBuiltin Category = "builtin"
+	// CategoryAdapter's value ("adapter") is also duplicated as a string
+	// literal in forge-core/runtime loop.go (classifyTool) — which can't import
+	// this package (the ToolExecutor interface is structural to avoid the
+	// dependency). Keep the two in sync; TestClassifyTool guards a rename.
 	CategoryAdapter Category = "adapter"
 	CategoryDev     Category = "dev"
 	CategoryCustom  Category = "custom"

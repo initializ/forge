@@ -120,7 +120,7 @@ When the agent has an admitted/**governed** API, its operations are registered a
 
 - A governed API's token is deliberately **WITHHELD from skill scripts** (anti-PDP-bypass). A script that reads it and ` + "`" + `curl` + "`" + `s the API can NEVER work — the token is stripped, so the script fails with a confusing ` + "`" + `missing <TOKEN>` + "`" + ` even though the secret is configured.
 - So do NOT put a governed API's ` + "`" + `token_env` + "`" + ` in ` + "`" + `requires.env` + "`" + `, and do NOT ` + "`" + `curl` + "`" + ` / ` + "`" + `http_request` + "`" + ` its host — instruct the agent to call ` + "`" + `<server>__<op>` + "`" + ` instead.
-- A helper script MAY still POST-PROCESS data the agent already fetched via the governed operation, but it operates ONLY on that data passed as its ` + "`" + `$1` + "`" + ` input — it must never hold the token or make the API call itself.
+- A helper script MAY still POST-PROCESS data the agent already fetched via the governed operation, but it operates ONLY on that data passed as its input (e.g. ` + "`" + `$1` + "`" + `) — it must never hold the token or make the API call itself.
 - When unsure whether the target API is governed, ask; when it is, calling the operation is the only shape that works.
 
 ## SKILL.md Format

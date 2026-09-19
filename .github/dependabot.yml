@@ -1,9 +1,14 @@
 # Dependabot configuration.
 #
 # forge is a Go workspace (go.work) with five member modules. Without this
-# file, Dependabot filed one PR per otel sub-module per directory — e.g. a
-# single 1.44 -> 1.45 otel bump produced ~10 separate PRs. The `opentelemetry`
-# group below collapses all go.opentelemetry.io/* bumps in a module into one PR.
+# file, Dependabot filed one PR per sub-module per directory — a single otel
+# bump produced ~10 PRs, and interdependent k8s.io modules were split into
+# separate PRs that each left their partner behind, breaking the build.
+#
+# The groups below collapse related bumps in a module into one PR:
+#   - opentelemetry: all go.opentelemetry.io/* modules (they version in lockstep)
+#   - kubernetes:    all k8s.io/* modules (client-go/apimachinery/etc. must move
+#                    together or the build fails on a version mismatch)
 #
 # A `directories:` list is used (rather than a single go.work root entry) so
 # discovery matches Dependabot's existing per-module behavior exactly and only
@@ -24,3 +29,6 @@ updates:
       opentelemetry:
         patterns:
           - "go.opentelemetry.io/*"
+      kubernetes:
+        patterns:
+          - "k8s.io/*"

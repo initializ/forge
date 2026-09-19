@@ -3787,7 +3787,11 @@ func (r *Runner) discoverSkillFiles() []string {
 	// already found (e.g. skills.path: skills/x/SKILL.md, or a flat
 	// skills/x.md) — without this the same skill is listed twice in the live
 	// agent's system-prompt catalog and its requirements aggregated twice
-	// (#481). Order-preserving so the first discovery wins.
+	// (#481). Order (flat → subdir → mainSkill) is first-wins, so the collision
+	// is deliberately resolved in favor of the skills/-tree occurrence: an
+	// inside-skills/ skills.path is treated as a regular subdir skill and its
+	// duplicate dropped. The build side agrees (coveredBySkillsScan skips the
+	// root parse), so both discovery sites resolve it the same way.
 	return dedupResolvedPaths(matches)
 }
 

@@ -9,6 +9,16 @@ function (mode, selector) {
 		return (s || '').replace(/[ \t\u00A0]+/g, ' ').replace(/\s*\n\s*/g, '\n').trim();
 	}
 
+	// Dangerous-scheme denylist for extracted links. Checked case-insensitively
+	// on the trimmed href so JavaScript:/DATA: variants can't slip through -- a
+	// complete scheme check (the js/incomplete-url-scheme-check class), not just
+	// bare "javascript:". Links are returned to the agent as text, but these
+	// schemes are never useful navigation targets and shouldn't be surfaced.
+	function unsafeHref(h) {
+		var s = (h || '').trim().toLowerCase();
+		return s.indexOf('javascript:') === 0 || s.indexOf('data:') === 0 || s.indexOf('vbscript:') === 0;
+	}
+
 	if (mode === 'links') {
 		var out = [];
 		var seen = {};
@@ -16,7 +26,7 @@ function (mode, selector) {
 		for (var i = 0; i < anchors.length; i++) {
 			var a = anchors[i];
 			var href = a.href;
-			if (!href || href.indexOf('javascript:') === 0) continue;
+			if (!href || unsafeHref(href)) continue;
 			var text = clean(a.innerText).replace(/\n/g, ' ') || href;
 			if (text.length > 100) text = text.slice(0, 97) + '...';
 			var key = text + '|' + href;

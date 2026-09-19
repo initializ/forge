@@ -62,6 +62,21 @@ func appendQueryParam(rawURL, key, val string) string {
 	return u.String()
 }
 
+// redactSecret replaces every occurrence of secret in msg with "<redacted>".
+// A no-op when secret is empty (so it never rewrites arbitrary text). Used to
+// keep a query-scheme token out of a surfaced request error (#479). Robust to
+// URL-encoding: the token is scrubbed both raw and percent-encoded.
+func redactSecret(msg, secret string) string {
+	if secret == "" {
+		return msg
+	}
+	msg = strings.ReplaceAll(msg, secret, "<redacted>")
+	if enc := url.QueryEscape(secret); enc != secret {
+		msg = strings.ReplaceAll(msg, enc, "<redacted>")
+	}
+	return msg
+}
+
 // NewAPITool builds a per-op API tool. auth may be nil (no outbound auth).
 func NewAPITool(server, baseURL string, auth *types.APIAuth, op types.APIOp, timeout time.Duration) tools.Tool {
 	if timeout <= 0 {
@@ -194,7 +209,12 @@ func (t *apiTool) Execute(ctx context.Context, args json.RawMessage) (string, er
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("executing request: %w", err)
+		// Go's *url.Error embeds the FULL request URL (query included, userinfo
+		// redacted). For the query auth scheme the token is in the query, so a
+		// raw wrap would leak it into the error → the LLM → transcripts/logs.
+		// Scrub the token value from the message (#479 review). Not %w — the
+		// wrapped *url.Error would still carry the token in its Error().
+		return "", fmt.Errorf("executing request: %s", redactSecret(err.Error(), authToken))
 	}
 	defer func() { _ = resp.Body.Close() }()
 

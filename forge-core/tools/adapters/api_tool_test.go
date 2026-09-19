@@ -151,6 +151,35 @@ func TestAPITool_QueryAuthScheme(t *testing.T) {
 	}
 }
 
+// #479 review: on a request failure the query-scheme token must NOT appear in
+// the returned error (Go's *url.Error embeds the full query-bearing URL, which
+// would leak the key to the LLM / transcripts / logs).
+func TestAPITool_QueryAuthScheme_NoTokenInError(t *testing.T) {
+	const token = "sk-live/ABC+123" // has chars that url-encode, to exercise both forms
+	t.Setenv("SR_KEY", token)
+
+	// 127.0.0.1:1 refuses immediately, so client.Do returns a *url.Error whose
+	// message contains the request URL (with the auth query param).
+	tool := NewAPITool("sportradar-nfl", "http://127.0.0.1:1",
+		&types.APIAuth{TokenEnv: "SR_KEY", Scheme: "query", Name: "api_key"},
+		types.APIOp{Name: "getSeasonSchedule", Method: "GET", Path: "/schedule"}, 2*time.Second)
+
+	_, err := tool.Execute(context.Background(), []byte(`{}`))
+	if err == nil {
+		t.Fatal("expected a request error")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, token) {
+		t.Errorf("raw token leaked into error: %q", msg)
+	}
+	if strings.Contains(msg, url.QueryEscape(token)) {
+		t.Errorf("url-encoded token leaked into error: %q", msg)
+	}
+	if !strings.Contains(msg, "<redacted>") {
+		t.Errorf("expected the token to be redacted in the error, got %q", msg)
+	}
+}
+
 func TestAPITool_InputSchema(t *testing.T) {
 	tool := NewAPITool("s", "https://x", nil,
 		types.APIOp{Name: "op", Method: "POST", Path: "/p", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"amount": map[string]any{"type": "number"}}}}, 0)

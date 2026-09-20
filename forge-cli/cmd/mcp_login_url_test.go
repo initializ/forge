@@ -1,0 +1,72 @@
+package cmd
+
+import (
+	"testing"
+
+	"github.com/spf13/cobra"
+)
+
+// newLoginCmdForTest builds a command carrying the same flags mcpLoginCmd
+// registers, so standaloneServerConfig can be exercised without a browser.
+func newLoginCmdForTest() *cobra.Command {
+	c := &cobra.Command{}
+	c.Flags().String("url", "", "")
+	c.Flags().String("client-id", "", "")
+	c.Flags().StringSlice("scopes", nil, "")
+	c.Flags().String("authorize-url", "", "")
+	c.Flags().String("token-url", "", "")
+	c.Flags().String("token-store-path", "", "")
+	return c
+}
+
+func TestStandaloneServerConfig_FromFlags(t *testing.T) {
+	c := newLoginCmdForTest()
+	_ = c.Flags().Set("url", "https://mcp.example/x")
+	_ = c.Flags().Set("client-id", "cid")
+	_ = c.Flags().Set("scopes", "read:confluence,search")
+	_ = c.Flags().Set("token-store-path", "/tmp/creds")
+
+	sc, store, err := standaloneServerConfig(c)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sc.ServerURL != "https://mcp.example/x" {
+		t.Errorf("ServerURL = %q", sc.ServerURL)
+	}
+	if sc.ClientID != "cid" {
+		t.Errorf("ClientID = %q", sc.ClientID)
+	}
+	if len(sc.Scopes) != 2 || sc.Scopes[0] != "read:confluence" || sc.Scopes[1] != "search" {
+		t.Errorf("Scopes = %v", sc.Scopes)
+	}
+	if sc.Grant != "" {
+		t.Errorf("Grant = %q, want empty (→ authorization_code)", sc.Grant)
+	}
+	if store != "/tmp/creds" {
+		t.Errorf("storePath = %q", store)
+	}
+}
+
+func TestStandaloneServerConfig_EnvStorePathFallback(t *testing.T) {
+	t.Setenv("MCP_TOKEN_STORE_PATH", "/env/creds")
+	c := newLoginCmdForTest()
+	_ = c.Flags().Set("url", "https://x")
+
+	_, store, err := standaloneServerConfig(c)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if store != "/env/creds" {
+		t.Errorf("storePath = %q, want env fallback", store)
+	}
+}
+
+func TestStandaloneServerConfig_EndpointPairing(t *testing.T) {
+	c := newLoginCmdForTest()
+	_ = c.Flags().Set("url", "https://x")
+	_ = c.Flags().Set("authorize-url", "https://a") // token-url intentionally omitted
+
+	if _, _, err := standaloneServerConfig(c); err == nil {
+		t.Fatal("expected an error when --authorize-url is set without --token-url")
+	}
+}

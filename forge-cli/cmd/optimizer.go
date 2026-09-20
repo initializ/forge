@@ -128,7 +128,7 @@ func init() {
 	// `optimizer claude` accept them.
 	pf := optimizerCmd.PersistentFlags()
 	pf.StringVar(&optimizerListen, "listen", optimizer.DefaultListen, "address to listen on (host:port)")
-	pf.StringVar(&optimizerUpstream, "upstream", "", "upstream Anthropic base URL (default: $ANTHROPIC_BASE_URL, else "+optimizer.DefaultUpstream+")")
+	pf.StringVar(&optimizerUpstream, "upstream", "", "upstream base URL to forward to, e.g. an org gateway (default: $FORGE_OPTIMIZER_UPSTREAM, else $ANTHROPIC_BASE_URL, else "+optimizer.DefaultUpstream+"; `optimizer start` also inherits the gateway already set in Claude Code settings)")
 	pf.StringVar(&optimizerTelemetry, "telemetry-url", "", "control-plane URL to POST token usage to (default: $FORGE_OPTIMIZER_TELEMETRY_URL)")
 	pf.StringVar(&optimizerUsageLog, "usage-log", defaultUsageLog, "local NDJSON file to append per-request usage to (empty to disable)")
 	pf.BoolVar(&optimizerCompress, "compress", false, "compress bulky conversation content before it reaches the model (EXPERIMENTAL; default ON for `optimizer claude`)")

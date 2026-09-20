@@ -89,11 +89,11 @@ func TestStandaloneServerConfig_URLValidation(t *testing.T) {
 	}{
 		{"https://mcp.example/x", true},
 		{"http://localhost:9000/mcp", true},
-		{"ftp://x", false},        // wrong scheme
-		{"not-a-url", false},      // no host
-		{"", false},               // empty
-		{"https://", false},       // no host
-		{"://nohost", false},      // malformed
+		{"ftp://x", false},   // wrong scheme
+		{"not-a-url", false}, // no host
+		{"", false},          // empty
+		{"https://", false},  // no host
+		{"://nohost", false}, // malformed
 	}
 	for _, c := range cases {
 		cmd := newLoginCmdForTest()

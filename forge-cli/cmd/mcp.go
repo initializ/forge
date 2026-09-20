@@ -53,8 +53,18 @@ var mcpTestCmd = &cobra.Command{
 var mcpLoginCmd = &cobra.Command{
 	Use:   "login <name>",
 	Short: "OAuth login for an MCP server (laptop-time)",
-	Args:  cobra.ExactArgs(1),
-	RunE:  mcpLoginRun,
+	Long: `Run the OAuth 2.1 PKCE flow for an MCP server and store the token under
+~/.forge/credentials/mcp_<name>.json.
+
+Two modes:
+  * forge.yaml (default): the server is read from forge.yaml's mcp.servers[].
+  * standalone (--url): the connection comes from flags — no forge.yaml needed.
+    For non-forge agents (Strands, Claude, …). Endpoints and the client are
+    discovered from the URL (RFC 9728/8414/7591) when the flags are omitted.
+
+  forge mcp login atlassian-read --url https://mcp.example/…`,
+	Args: cobra.ExactArgs(1),
+	RunE: mcpLoginRun,
 }
 
 // mcpLogoutCmd deletes stored tokens.
@@ -69,6 +79,14 @@ func init() {
 	mcpTestCmd.Flags().String("call", "", "tool name to invoke (optional)")
 	mcpTestCmd.Flags().String("args", "{}", "JSON arguments for --call")
 	mcpTestCmd.Flags().Duration("timeout", 10*time.Second, "per-RPC timeout")
+	// Standalone login (no forge.yaml): --url switches on flag-driven mode; the
+	// rest are optional overrides (discovered from the URL when omitted).
+	mcpLoginCmd.Flags().String("url", "", "MCP server URL — log in standalone without forge.yaml")
+	mcpLoginCmd.Flags().String("client-id", "", "OAuth client_id (standalone; optional — DCR when omitted)")
+	mcpLoginCmd.Flags().StringSlice("scopes", nil, "OAuth scopes (standalone; optional — discovered when omitted)")
+	mcpLoginCmd.Flags().String("authorize-url", "", "OAuth authorize endpoint (standalone; set together with --token-url)")
+	mcpLoginCmd.Flags().String("token-url", "", "OAuth token endpoint (standalone; set together with --authorize-url)")
+	mcpLoginCmd.Flags().String("token-store-path", "", "credential store dir override (default ~/.forge/credentials)")
 	mcpCmd.AddCommand(mcpListCmd, mcpTestCmd, mcpLoginCmd, mcpLogoutCmd)
 }
 

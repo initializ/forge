@@ -214,7 +214,9 @@ func TestRunOIDCAuthCodeFlow(t *testing.T) {
 	defer func() { oidcBrowserOpener = prev }()
 
 	o := &settings.ModelGatewayOIDC{Grant: "auth_code", AuthorizeURL: "https://idp/authorize", TokenURL: tokenSrv.URL, ClientID: "c1", Scopes: []string{"openid", "email"}, RedirectURI: redirect}
-	tok, err := runOIDCAuthCodeFlow(context.Background(), o, "https://idp/authorize", tokenSrv.URL, redirect, GatewayOIDCCredKey(o))
+	// LoginGatewayOIDC drives the interactive auth_code path through the audited
+	// oauth.Flow; the injected opener above simulates the IdP redirect.
+	tok, err := LoginGatewayOIDC(context.Background(), o)
 	if err != nil {
 		t.Fatalf("auth_code flow: %v", err)
 	}
@@ -233,8 +235,12 @@ func TestRunOIDCAuthCodeFlow(t *testing.T) {
 }
 
 func TestRunOIDCAuthCodeFlow_RejectsNonLoopbackRedirect(t *testing.T) {
-	o := &settings.ModelGatewayOIDC{Grant: "auth_code", ClientID: "c1"}
-	if _, err := runOIDCAuthCodeFlow(context.Background(), o, "https://idp/authorize", "https://idp/token", "https://evil.example/callback", "k"); err == nil {
+	oauth.SetCredentialsDir(t.TempDir())
+	t.Cleanup(func() { oauth.SetCredentialsDir("") })
+	// Endpoints are valid so the failure is specifically the non-loopback
+	// redirect_uri (oauth.Flow refuses to bind a listener to it), not Validate.
+	o := &settings.ModelGatewayOIDC{Grant: "auth_code", ClientID: "c1", AuthorizeURL: "https://idp/authorize", TokenURL: "https://idp/token", RedirectURI: "https://evil.example/callback"}
+	if _, err := LoginGatewayOIDC(context.Background(), o); err == nil {
 		t.Error("a non-loopback redirect_uri must be refused")
 	}
 }

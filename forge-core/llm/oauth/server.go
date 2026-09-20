@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 )
 
 // CallbackResult holds the result from the OAuth callback.
@@ -18,16 +19,24 @@ type CallbackResult struct {
 
 // CallbackServer is a local HTTP server that receives the OAuth authorization code.
 type CallbackServer struct {
-	port     int
+	addr     string // loopback listen address, "host:port"
+	path     string // callback path, e.g. /auth/callback
 	resultCh chan CallbackResult
 	server   *http.Server
 	mu       sync.Mutex
 }
 
-// NewCallbackServer creates a callback server on the given port.
-func NewCallbackServer(port int) *CallbackServer {
+// NewCallbackServer creates a callback server bound to addr ("host:port") with
+// the callback handler mounted at path. Both are derived from the flow's
+// redirect_uri so the listener matches what the IdP redirects to (#490 — a
+// configurable loopback, not a fixed port).
+func NewCallbackServer(addr, path string) *CallbackServer {
+	if path == "" {
+		path = "/"
+	}
 	return &CallbackServer{
-		port:     port,
+		addr:     addr,
+		path:     path,
 		resultCh: make(chan CallbackResult, 1),
 	}
 }
@@ -35,17 +44,18 @@ func NewCallbackServer(port int) *CallbackServer {
 // Start starts the callback server and returns immediately.
 func (s *CallbackServer) Start() error {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/auth/callback", s.handleCallback)
+	mux.HandleFunc(s.path, s.handleCallback)
 
 	s.mu.Lock()
 	s.server = &http.Server{
-		Handler: mux,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 	s.mu.Unlock()
 
-	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", s.port))
+	ln, err := net.Listen("tcp", s.addr)
 	if err != nil {
-		return fmt.Errorf("starting callback server on port %d: %w", s.port, err)
+		return fmt.Errorf("starting callback server on %s: %w", s.addr, err)
 	}
 
 	go func() {

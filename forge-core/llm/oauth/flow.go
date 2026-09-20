@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -43,13 +44,17 @@ func OpenAIConfig() ProviderConfig {
 type Flow struct {
 	Config  ProviderConfig
 	Timeout time.Duration // default: 2 minutes
+	// BrowserOpener opens the authorize URL; defaults to the platform opener.
+	// Overridable (e.g. in tests to simulate the IdP redirect to the callback).
+	BrowserOpener func(url string) error
 }
 
 // NewFlow creates a new OAuth flow with the given provider config.
 func NewFlow(config ProviderConfig) *Flow {
 	return &Flow{
-		Config:  config,
-		Timeout: 2 * time.Minute,
+		Config:        config,
+		Timeout:       2 * time.Minute,
+		BrowserOpener: openBrowser,
 	}
 }
 
@@ -72,8 +77,15 @@ func (f *Flow) Execute(ctx context.Context, provider string) (*Token, error) {
 		return nil, fmt.Errorf("generating state: %w", err)
 	}
 
-	// Start callback server on port 1455 (matching redirect_uri)
-	callbackServer := NewCallbackServer(1455)
+	// Derive the callback listen address + path from redirect_uri, so the
+	// server binds exactly what the IdP redirects to (a configurable loopback,
+	// #490). Must be an http loopback — that is the security boundary for
+	// binding a local listener.
+	addr, path, err := loopbackCallback(f.Config.RedirectURI)
+	if err != nil {
+		return nil, err
+	}
+	callbackServer := NewCallbackServer(addr, path)
 	if err := callbackServer.Start(); err != nil {
 		return nil, fmt.Errorf("starting callback server: %w", err)
 	}
@@ -82,9 +94,13 @@ func (f *Flow) Execute(ctx context.Context, provider string) (*Token, error) {
 	// Build authorization URL
 	authURL := f.buildAuthURL(pkce, state)
 
-	// Open browser
-	if err := openBrowser(authURL); err != nil {
-		return nil, fmt.Errorf("opening browser: %w\n\nPlease open this URL manually:\n%s", err, authURL)
+	// Open browser (non-fatal: print the URL for manual paste on failure).
+	open := f.BrowserOpener
+	if open == nil {
+		open = openBrowser
+	}
+	if err := open(authURL); err != nil {
+		fmt.Printf("Open this URL to sign in:\n%s\n", authURL)
 	}
 
 	// Wait for code
@@ -105,8 +121,9 @@ func (f *Flow) Execute(ctx context.Context, provider string) (*Token, error) {
 		return nil, fmt.Errorf("state mismatch: possible CSRF attack")
 	}
 
-	// Exchange code for tokens
-	token, err := ExchangeCode(
+	// Exchange code for tokens (ctx-aware).
+	token, err := ExchangeCodeCtx(
+		waitCtx, nil,
 		f.Config.TokenURL,
 		f.Config.ClientID,
 		result.Code,
@@ -142,6 +159,38 @@ func (f *Flow) buildAuthURL(pkce *PKCEParams, state string) string {
 		params.Set(k, v)
 	}
 	return f.Config.AuthURL + "?" + params.Encode()
+}
+
+// loopbackCallback derives the callback listen address ("host:port") and path
+// from an OAuth redirect_uri. An empty redirect defaults to the historical
+// http://localhost:1455/auth/callback. The redirect MUST be an http loopback
+// (localhost / 127.0.0.1 / [::1]) — binding a local listener to anything else
+// is the security boundary this enforces (#490 configurable loopback).
+func loopbackCallback(redirectURI string) (addr, path string, err error) {
+	if redirectURI == "" {
+		return "localhost:1455", "/auth/callback", nil
+	}
+	u, perr := url.Parse(redirectURI)
+	if perr != nil || u.Host == "" {
+		return "", "", fmt.Errorf("invalid redirect_uri %q", redirectURI)
+	}
+	if !strings.EqualFold(u.Scheme, "http") || !isLoopback(u.Hostname()) {
+		return "", "", fmt.Errorf("redirect_uri must be an http loopback (localhost/127.0.0.1/[::1]), got %q", redirectURI)
+	}
+	p := u.Path
+	if p == "" {
+		p = "/"
+	}
+	return u.Host, p, nil
+}
+
+// isLoopback reports whether host is a loopback host literal.
+func isLoopback(host string) bool {
+	switch strings.ToLower(host) {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	return false
 }
 
 // openBrowser opens the given URL in the default browser.

@@ -29,7 +29,8 @@ type discoveryServer struct {
 	regCalls      atomic.Int32
 	noPRWellKnown bool // suppress /.well-known/oauth-protected-resource (force WWW-Authenticate path)
 	noRegEndpoint bool // omit registration_endpoint from AS metadata
-	confidential  bool // /register returns a client_secret (confidential client)
+	confidential  bool // /register returns a client_secret + no method (confidential client)
+	publicSecret  bool // /register returns a vestigial secret but method "none" (Auth0/Atlassian: public)
 }
 
 func newDiscoveryServer(t *testing.T) *discoveryServer {
@@ -73,11 +74,17 @@ func newDiscoveryServer(t *testing.T) *discoveryServer {
 	mux.HandleFunc("/register", func(w http.ResponseWriter, _ *http.Request) {
 		d.regCalls.Add(1)
 		w.WriteHeader(http.StatusCreated)
-		if d.confidential {
+		switch {
+		case d.confidential:
+			// Secret, no method → genuinely confidential → must fail closed.
 			_, _ = w.Write([]byte(`{"client_id":"dyn-client-123","client_secret":"sh-sh-secret"}`))
-			return
+		case d.publicSecret:
+			// Public client (method "none") that still echoes a vestigial secret
+			// (Auth0/Atlassian) → must SUCCEED, ignoring the secret.
+			_, _ = w.Write([]byte(`{"client_id":"dyn-client-123","client_secret":"vestigial","token_endpoint_auth_method":"none"}`))
+		default:
+			_, _ = w.Write([]byte(`{"client_id":"dyn-client-123"}`))
 		}
-		_, _ = w.Write([]byte(`{"client_id":"dyn-client-123"}`))
 	})
 
 	// The MCP endpoint itself: 401 with a WWW-Authenticate pointer, so
@@ -235,6 +242,32 @@ func TestResolveOAuthConfig_ConfidentialClientFailsClosed(t *testing.T) {
 	// Nothing persisted → no host learned back either.
 	if h := RegisteredOAuthHosts([]string{"srv"}); h != nil {
 		t.Errorf("a confidential-client failure persisted a registration: %v", h)
+	}
+}
+
+// TestResolveOAuthConfig_PublicClientWithVestigialSecret: an AS that registers a
+// PUBLIC client (token_endpoint_auth_method=none) but still echoes a client_secret
+// (Auth0/Atlassian behavior) must SUCCEED — the vestigial secret is ignored and
+// login proceeds as public PKCE, never persisting the secret.
+func TestResolveOAuthConfig_PublicClientWithVestigialSecret(t *testing.T) {
+	withTempCredsDir(t)
+	d := newDiscoveryServer(t)
+	d.publicSecret = true
+	f := NewOAuthFlow()
+
+	got, err := f.resolveOAuthConfig(context.Background(), "srv", OAuthServerConfig{ServerURL: d.url()}, true)
+	if err != nil {
+		t.Fatalf("public client with a vestigial secret must succeed, got: %v", err)
+	}
+	if got.ClientID != "dyn-client-123" {
+		t.Errorf("client_id = %q, want the DCR-minted id", got.ClientID)
+	}
+	if got.ClientSecret != "" {
+		t.Errorf("vestigial secret must not be carried into the config: %q", got.ClientSecret)
+	}
+	// The registration IS persisted (unlike the confidential fail-closed case).
+	if h := RegisteredOAuthHosts([]string{"srv"}); h == nil {
+		t.Errorf("a successful public registration should persist a host")
 	}
 }
 

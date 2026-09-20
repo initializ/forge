@@ -282,16 +282,34 @@ func TestResourceMetadataParam(t *testing.T) {
 }
 
 // TestWellKnown pins the origin-rooted well-known path construction.
-func TestWellKnown(t *testing.T) {
-	cases := map[string]string{
-		"https://as.example.com":            "https://as.example.com/.well-known/oauth-authorization-server",
-		"https://as.example.com/":           "https://as.example.com/.well-known/oauth-authorization-server",
-		"https://mcp.example.com/mcp?x=1":   "https://mcp.example.com/.well-known/oauth-authorization-server",
-		"https://as.example.com/tenant/abc": "https://as.example.com/.well-known/oauth-authorization-server",
+func TestWellKnownURLs(t *testing.T) {
+	cases := []struct {
+		base string
+		want []string
+	}{
+		// No path → origin-rooted only (unchanged behavior).
+		{"https://as.example.com", []string{"https://as.example.com/.well-known/oauth-authorization-server"}},
+		{"https://as.example.com/", []string{"https://as.example.com/.well-known/oauth-authorization-server"}},
+		// Path present → path-aware first (RFC 8414 §3.1), then origin. Query dropped.
+		{"https://mcp.example.com/mcp?x=1", []string{
+			"https://mcp.example.com/.well-known/oauth-authorization-server/mcp",
+			"https://mcp.example.com/.well-known/oauth-authorization-server",
+		}},
+		{"https://as.example.com/tenant/abc", []string{
+			"https://as.example.com/.well-known/oauth-authorization-server/tenant/abc",
+			"https://as.example.com/.well-known/oauth-authorization-server",
+		}},
 	}
-	for base, want := range cases {
-		if got := wellKnown(base, "oauth-authorization-server"); got != want {
-			t.Errorf("wellKnown(%q) = %q, want %q", base, got, want)
+	for _, c := range cases {
+		got := wellKnownURLs(c.base, "oauth-authorization-server")
+		if len(got) != len(c.want) {
+			t.Errorf("wellKnownURLs(%q) = %v, want %v", c.base, got, c.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("wellKnownURLs(%q)[%d] = %q, want %q", c.base, i, got[i], c.want[i])
+			}
 		}
 	}
 }

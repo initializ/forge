@@ -206,13 +206,16 @@ func (f *OAuthFlow) discoverAuthServer(ctx context.Context, serverURL string) (a
 	// OpenID variant as a fallback for servers that only publish
 	// openid-configuration.
 	for _, asURL := range authServers {
-		for _, wk := range []string{
-			wellKnown(asURL, "oauth-authorization-server"),
-			wellKnown(asURL, "openid-configuration"),
-		} {
-			meta, err := fetchJSON[authServerMetadata](ctx, f.httpClient(), wk)
-			if err == nil && meta.TokenEndpoint != "" && meta.AuthorizationEndpoint != "" {
-				return meta, nil
+		for _, name := range []string{"oauth-authorization-server", "openid-configuration"} {
+			// Try path-aware then origin — an issuer WITH a path (e.g. an
+			// Auth0/Atlassian tenant like auth.example.com/TENANT) publishes its
+			// metadata (and registration_endpoint) at the path-aware well-known,
+			// not the origin root (RFC 8414 §3.1).
+			for _, wk := range wellKnownURLs(asURL, name) {
+				meta, err := fetchJSON[authServerMetadata](ctx, f.httpClient(), wk)
+				if err == nil && meta.TokenEndpoint != "" && meta.AuthorizationEndpoint != "" {
+					return meta, nil
+				}
 			}
 		}
 	}
@@ -225,10 +228,12 @@ func (f *OAuthFlow) discoverAuthServer(ctx context.Context, serverURL string) (a
 // if the server instead answers 401 with a WWW-Authenticate
 // `resource_metadata` pointer, that is honored too.
 func (f *OAuthFlow) discoverProtectedResource(ctx context.Context, serverURL string) ([]string, error) {
-	// Primary: the well-known path off the server origin.
-	prURL := wellKnown(serverURL, "oauth-protected-resource")
-	if pr, err := fetchJSON[protectedResourceMetadata](ctx, f.httpClient(), prURL); err == nil && len(pr.AuthorizationServers) > 0 {
-		return pr.AuthorizationServers, nil
+	// Primary: the well-known metadata, path-aware first (RFC 9728 §3.1 inserts
+	// the well-known segment before the resource's path) then origin-rooted.
+	for _, prURL := range wellKnownURLs(serverURL, "oauth-protected-resource") {
+		if pr, err := fetchJSON[protectedResourceMetadata](ctx, f.httpClient(), prURL); err == nil && len(pr.AuthorizationServers) > 0 {
+			return pr.AuthorizationServers, nil
+		}
 	}
 
 	// Fallback: probe the server itself and read the 401
@@ -396,18 +401,41 @@ func fetchJSON[T any](ctx context.Context, client *http.Client, target string) (
 	return out, nil
 }
 
-// wellKnown builds a `.well-known/<name>` URL off the ORIGIN of base
-// (scheme+host), per RFC 8414 §3 / RFC 9728 §3 — the well-known path
-// is rooted at the host, ignoring any path component of base.
-func wellKnown(base, name string) string {
+// wellKnownURLs builds the candidate `.well-known/<name>` metadata URLs for an
+// issuer/resource, in priority order.
+//
+// Per RFC 8414 §3.1 / RFC 9728 §3.1, when the issuer has a PATH the well-known
+// segment is INSERTED between the host and that path — e.g. an Auth0/Atlassian
+// tenant `https://auth.example.com/TENANT` publishes at
+// `https://auth.example.com/.well-known/<name>/TENANT`, NOT at the origin root.
+// The registration_endpoint (DCR) lives in that path-scoped document, so an
+// origin-only lookup misses it. We therefore try path-aware first, then the
+// origin-rooted form (issuers without a path, and servers that publish there).
+// For `openid-configuration` we also try the OIDC path-SUFFIX form.
+func wellKnownURLs(base, name string) []string {
 	u, err := url.Parse(base)
 	if err != nil || u.Host == "" {
-		return ""
+		return nil
 	}
-	u.Path = "/.well-known/" + name
-	u.RawQuery = ""
-	u.Fragment = ""
-	return u.String()
+	origin := (&url.URL{Scheme: u.Scheme, Host: u.Host}).String()
+	path := strings.Trim(u.Path, "/")
+	var out []string
+	add := func(s string) {
+		for _, e := range out {
+			if e == s {
+				return
+			}
+		}
+		out = append(out, s)
+	}
+	if path != "" {
+		add(origin + "/.well-known/" + name + "/" + path) // RFC 8414/9728 path-aware
+		if name == "openid-configuration" {
+			add(origin + "/" + path + "/.well-known/" + name) // OIDC Discovery suffix form
+		}
+	}
+	add(origin + "/.well-known/" + name) // origin-rooted (no path; also a fallback)
+	return out
 }
 
 func hostOf(raw string) string {

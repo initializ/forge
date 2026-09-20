@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/initializ/forge/forge-core/settings"
 )
 
 // TestPickUpstream covers the pure precedence: managed > flag > env > user > chaining.
@@ -16,7 +18,7 @@ func TestPickUpstream(t *testing.T) {
 		{"managed wins over everything (enforced)", "https://managed", "https://flag", "https://env", "https://user", "https://chain", "https://managed"},
 		{"flag when no managed", "", "https://flag", "https://env", "https://user", "https://chain", "https://flag"},
 		{"env when no flag/managed", "", "", "https://env", "https://user", "https://chain", "https://env"},
-		{"user settings.json when no flag/env/managed", "", "", "", "https://user", "https://chain", "https://user"},
+		{"user settings when no flag/env/managed", "", "", "", "https://user", "https://chain", "https://user"},
 		{"chaining last", "", "", "", "", "https://chain", "https://chain"},
 		{"nothing → empty", "", "", "", "", "", ""},
 	}
@@ -30,74 +32,70 @@ func TestPickUpstream(t *testing.T) {
 	}
 }
 
-// TestSettingsUpstream checks the settings.json reader (used for both user and
-// managed files) — missing/bad files never fatal, valid file yields upstream.
-func TestSettingsUpstream(t *testing.T) {
-	if got := settingsUpstream(filepath.Join(t.TempDir(), "nope.json")); got != "" {
-		t.Errorf("missing file should be empty, got %q", got)
-	}
-
+// isolateSettings points the user + managed settings layers at empty temp
+// locations and clears the env tier, so a test's resolution is deterministic
+// and can't pick up the developer's real ~/.forge/settings.json.
+func isolateSettings(t *testing.T) (userPath, managedDir string) {
+	t.Helper()
 	dir := t.TempDir()
-	bad := filepath.Join(dir, "bad.json")
-	if err := os.WriteFile(bad, []byte("{not json"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if got := settingsUpstream(bad); got != "" {
-		t.Errorf("bad json should be empty, got %q", got)
-	}
+	userPath = filepath.Join(dir, "user-settings.json")
+	managedDir = t.TempDir()
+	t.Setenv(settings.EnvUserSettings, userPath)
+	t.Setenv("FORGE_OPTIMIZER_UPSTREAM", "")
+	restore := settings.SetManagedDirForTest(managedDir)
+	t.Cleanup(restore)
+	return userPath, managedDir
+}
 
-	good := filepath.Join(dir, "settings.json")
-	if err := os.WriteFile(good, []byte(`{"optimizer":{"upstream":"https://kong.example/bedrock"}}`), 0o600); err != nil {
+func writeSettings(t *testing.T, path, upstream string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got := settingsUpstream(good); got != "https://kong.example/bedrock" {
-		t.Errorf("valid settings upstream = %q", got)
+	if err := os.WriteFile(path, []byte(`{"optimizer":{"upstream":"`+upstream+`"}}`), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 
-// TestResolveOptimizerUpstream_UserSettings drives the full resolver against a
-// real ~/.forge/settings.json (HOME redirected to a temp dir), env cleared, and
-// no managed file present on the runner.
+// TestResolveOptimizerUpstream_UserSettings: optimizer.upstream in
+// ~/.forge/settings.json is used when no flag/env/managed set it, but a flag
+// still overrides the user layer.
 func TestResolveOptimizerUpstream_UserSettings(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("FORGE_OPTIMIZER_UPSTREAM", "")
-	if err := os.MkdirAll(filepath.Join(home, ".forge"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(home, ".forge", "settings.json"),
-		[]byte(`{"optimizer":{"upstream":"https://user.example"}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	// No flag, no env, no chaining → user settings wins (managed file absent).
+	userPath, _ := isolateSettings(t)
+	writeSettings(t, userPath, "https://user.example")
+
 	if got := resolveOptimizerUpstream("", ""); got != "https://user.example" {
 		t.Errorf("user settings upstream = %q, want https://user.example", got)
 	}
-	// Flag still beats user settings.
 	if got := resolveOptimizerUpstream("https://flag", ""); got != "https://flag" {
-		t.Errorf("flag over user = %q", got)
+		t.Errorf("flag should override user settings, got %q", got)
 	}
 }
 
-// TestResolveChildUpstream_SelfLoopGuard checks the daemon's chaining fallback
-// drops a Claude Code settings gateway that points back at our own listen addr.
+// TestResolveOptimizerUpstream_ManagedEnforced: a managed optimizer.upstream
+// overrides even an explicit --upstream flag (enterprise enforcement).
+func TestResolveOptimizerUpstream_ManagedEnforced(t *testing.T) {
+	userPath, managedDir := isolateSettings(t)
+	writeSettings(t, userPath, "https://user.example")
+	writeSettings(t, filepath.Join(managedDir, "managed-settings.json"), "https://managed.example")
+
+	if got := resolveOptimizerUpstream("https://flag", "https://chain"); got != "https://managed.example" {
+		t.Errorf("managed should win over flag, got %q", got)
+	}
+}
+
+// TestResolveChildUpstream_SelfLoopGuard: the daemon's chaining fallback drops a
+// Claude Code settings gateway that points back at our own listen address.
 func TestResolveChildUpstream_SelfLoopGuard(t *testing.T) {
 	const listen = "127.0.0.1:8787"
-	// Isolate from ambient config: clear the env tier and point HOME at an empty
-	// temp dir so ~/.forge/settings.json can't leak in. (The managed settings
-	// file lives at a system path that won't exist on the test runner.)
-	t.Setenv("FORGE_OPTIMIZER_UPSTREAM", "")
-	t.Setenv("HOME", t.TempDir())
+	isolateSettings(t) // no user/managed/env upstream configured
 
-	// A real gateway in settings → used as chaining.
 	if got := resolveChildUpstream("", "https://kong.example/bedrock", listen); got != "https://kong.example/bedrock" {
 		t.Errorf("gateway chaining = %q, want the gateway", got)
 	}
-	// Settings pointing back at us → dropped, nothing else configured → "".
 	if got := resolveChildUpstream("", "http://"+listen, listen); got != "" {
 		t.Errorf("self-pointing settings should be ignored, got %q", got)
 	}
-	// Explicit flag always wins over chaining.
 	if got := resolveChildUpstream("https://flag", "http://"+listen, listen); got != "https://flag" {
 		t.Errorf("flag should win, got %q", got)
 	}

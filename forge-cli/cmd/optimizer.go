@@ -430,18 +430,15 @@ func resolveListen() string {
 func buildOptimizerSetup(logger *slog.Logger) (*optimizerSetup, error) {
 	listen := resolveListen()
 
-	// Upstream resolution — flag > FORGE_OPTIMIZER_UPSTREAM > ANTHROPIC_BASE_URL
-	// (gateway chaining) > default. Reading ANTHROPIC_BASE_URL lets the
-	// optimizer sit in front of an org gateway. (In `claude` mode we read it
-	// BEFORE overriding the child's ANTHROPIC_BASE_URL, so chaining still works.)
-	upstream := firstNonEmpty(
-		optimizerUpstream,
-		os.Getenv("FORGE_OPTIMIZER_UPSTREAM"),
-		os.Getenv("ANTHROPIC_BASE_URL"),
-		optimizer.DefaultUpstream,
-	)
-	if strings.Contains(upstream, listen) {
-		upstream = optimizer.DefaultUpstream // don't point at ourselves
+	// Upstream resolution — shared precedence (see resolveOptimizerUpstream):
+	// managed env > --upstream > $FORGE_OPTIMIZER_UPSTREAM > forge.yaml
+	// optimizer.upstream > ANTHROPIC_BASE_URL (gateway chaining) > default.
+	// Reading ANTHROPIC_BASE_URL lets the optimizer sit in front of an org
+	// gateway. (In `claude` mode we read it BEFORE overriding the child's
+	// ANTHROPIC_BASE_URL, so chaining still works.)
+	upstream := resolveOptimizerUpstream(optimizerUpstream, os.Getenv("ANTHROPIC_BASE_URL"))
+	if upstream == "" || strings.Contains(upstream, listen) {
+		upstream = optimizer.DefaultUpstream // nothing configured, or don't point at ourselves
 	}
 
 	var closers []func()

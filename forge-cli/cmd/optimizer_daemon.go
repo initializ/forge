@@ -76,22 +76,17 @@ func optimizerListenerPID(addr string) int {
 }
 
 // resolveChildUpstream picks the upstream base URL to hand the detached proxy
-// child, in precedence order: the --upstream flag, then $FORGE_OPTIMIZER_UPSTREAM,
-// then the ANTHROPIC_BASE_URL already configured in Claude Code settings
-// (gateway chaining). The settings value is skipped when it points back at the
-// optimizer's own listen address (avoids a self-loop on repeat starts). Returns
-// "" to let the child fall back to its own default (Anthropic).
-func resolveChildUpstream(flag, envUpstream, settingsBase, listen string) string {
-	if flag != "" {
-		return flag
-	}
-	if envUpstream != "" {
-		return envUpstream
-	}
+// child. It applies the shared optimizer-upstream precedence (managed env >
+// --upstream > $FORGE_OPTIMIZER_UPSTREAM > forge.yaml optimizer.upstream), with
+// the Claude Code settings gateway as the chaining fallback — skipped when it
+// points back at our own listen address (avoids a self-loop on repeat starts).
+// Returns "" to let the child fall back to its own default (Anthropic).
+func resolveChildUpstream(flag, settingsBase, listen string) string {
+	chaining := ""
 	if settingsBase != "" && !strings.Contains(settingsBase, listen) {
-		return settingsBase
+		chaining = settingsBase
 	}
-	return ""
+	return resolveOptimizerUpstream(flag, chaining)
 }
 
 // processAlive, terminatePID, and detachSysProcAttr are platform-specific
@@ -168,7 +163,7 @@ func runOptimizerStart(_ *cobra.Command, _ []string) error {
 		// configured only in Claude Code's settings.json (not the shell env) is
 		// invisible to it — so we resolve here (including that settings gateway,
 		// read BEFORE wireClaudeSettings overwrites it) and hand over one value.
-		childUpstream := resolveChildUpstream(optimizerUpstream, os.Getenv("FORGE_OPTIMIZER_UPSTREAM"), settingsBaseURL(), listen)
+		childUpstream := resolveChildUpstream(optimizerUpstream, settingsBaseURL(), listen)
 
 		args := []string{"optimizer", "--compress", "--memory", "--listen", listen, "--quiet"}
 		if childUpstream != "" {

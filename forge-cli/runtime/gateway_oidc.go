@@ -7,9 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -110,7 +113,7 @@ func LoginGatewayOIDC(ctx context.Context, o *settings.ModelGatewayOIDC) (*oauth
 		return mintClientCredentials(ctx, o, key)
 	}
 
-	// auth_code: interactive browser + loopback callback via oauth.Flow.
+	// auth_code: interactive browser + configurable loopback callback.
 	authorizeURL, tokenURL, err := resolveOIDCEndpoints(ctx, o)
 	if err != nil {
 		return nil, err
@@ -118,23 +121,139 @@ func LoginGatewayOIDC(ctx context.Context, o *settings.ModelGatewayOIDC) (*oauth
 	if err := oidcAnthropicGuard(o.Issuer, authorizeURL, tokenURL); err != nil {
 		return nil, err
 	}
-	flow := oauth.NewFlow(oauth.ProviderConfig{
-		AuthURL:     authorizeURL,
-		TokenURL:    tokenURL,
-		ClientID:    o.ClientID,
-		Scopes:      strings.Join(o.Scopes, " "),
-		RedirectURI: oidcLoopbackRedirect, // fixed loopback the callback server listens on
-	})
-	tok, err := flow.Execute(ctx, key) // PKCE + browser + callback + exchange + SaveCredentials(key, tok)
+	redirect := o.RedirectURI
+	if redirect == "" {
+		redirect = oidcDefaultRedirect
+	}
+	return runOIDCAuthCodeFlow(ctx, o, authorizeURL, tokenURL, redirect, key)
+}
+
+// oidcDefaultRedirect is the loopback callback used when the config sets none.
+const oidcDefaultRedirect = "http://localhost:1455/auth/callback"
+
+// oidcLoginTimeout bounds the interactive auth_code flow (browser login).
+const oidcLoginTimeout = 3 * time.Minute
+
+// oidcBrowserOpener opens a URL in the default browser. A package var so tests
+// can inject a callback simulator.
+var oidcBrowserOpener = openBrowserURL
+
+// runOIDCAuthCodeFlow runs auth-code + PKCE against a CONFIGURABLE loopback
+// redirect (so it matches whatever the IdP client already has registered), then
+// caches the token under key. Reuses oauth's PKCE/state/exchange primitives.
+func runOIDCAuthCodeFlow(ctx context.Context, o *settings.ModelGatewayOIDC, authorizeURL, tokenURL, redirectURI, key string) (*oauth.Token, error) {
+	ru, err := url.Parse(redirectURI)
+	if err != nil || ru.Host == "" {
+		return nil, fmt.Errorf("gateway oidc: invalid redirect_uri %q", redirectURI)
+	}
+	if !strings.EqualFold(ru.Scheme, "http") || !isLoopbackHost(ru.Hostname()) {
+		return nil, fmt.Errorf("gateway oidc: redirect_uri must be an http loopback (localhost/127.0.0.1/[::1]), got %q", redirectURI)
+	}
+	callbackPath := ru.Path
+	if callbackPath == "" {
+		callbackPath = "/"
+	}
+
+	pkce, err := oauth.GeneratePKCE()
 	if err != nil {
 		return nil, err
 	}
-	return tok, nil
+	state, err := oauth.GenerateState()
+	if err != nil {
+		return nil, err
+	}
+
+	ln, err := net.Listen("tcp", ru.Host)
+	if err != nil {
+		return nil, fmt.Errorf("gateway oidc: cannot bind the redirect_uri %q (is the port free / registered?): %w", redirectURI, err)
+	}
+
+	type cbResult struct {
+		code, state, errStr string
+	}
+	resultCh := make(chan cbResult, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc(callbackPath, func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		res := cbResult{code: q.Get("code"), state: q.Get("state"), errStr: q.Get("error")}
+		w.Header().Set("Content-Type", "text/html")
+		if res.errStr != "" || res.code == "" {
+			_, _ = io.WriteString(w, "<html><body><h2>Login failed</h2><p>You can close this tab and return to the terminal.</p></body></html>")
+		} else {
+			_, _ = io.WriteString(w, "<html><body><h2>Login successful</h2><p>You can close this tab and return to the terminal.</p></body></html>")
+		}
+		select {
+		case resultCh <- res:
+		default:
+		}
+	})
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	go func() { _ = srv.Serve(ln) }()
+	defer func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutCtx)
+	}()
+
+	authURL := buildOIDCAuthorizeURL(authorizeURL, o.ClientID, redirectURI, o.Scopes, state, pkce.Challenge)
+	if berr := oidcBrowserOpener(authURL); berr != nil {
+		fmt.Fprintf(os.Stderr, "Open this URL to sign in:\n%s\n", authURL)
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, oidcLoginTimeout)
+	defer cancel()
+	select {
+	case res := <-resultCh:
+		if res.errStr != "" {
+			return nil, fmt.Errorf("gateway oidc: IdP returned error %q", res.errStr)
+		}
+		if res.state != state {
+			return nil, fmt.Errorf("gateway oidc: state mismatch (CSRF check failed)")
+		}
+		tok, err := oauth.ExchangeCodeCtx(waitCtx, nil, tokenURL, o.ClientID, res.code, redirectURI, pkce.Verifier)
+		if err != nil {
+			return nil, err
+		}
+		ensureOIDCExpiry(tok)
+		if err := oauth.SaveCredentials(key, tok); err != nil {
+			return nil, fmt.Errorf("caching gateway token: %w", err)
+		}
+		return tok, nil
+	case <-waitCtx.Done():
+		return nil, fmt.Errorf("gateway oidc: timed out waiting for the browser login")
+	}
 }
 
-// oidcLoopbackRedirect is the fixed callback oauth.Flow's server listens on; the
-// IdP client must register it as an allowed redirect URI.
-const oidcLoopbackRedirect = "http://localhost:1455/auth/callback"
+// buildOIDCAuthorizeURL builds the auth-code + PKCE authorize URL.
+func buildOIDCAuthorizeURL(authorizeURL, clientID, redirectURI string, scopes []string, state, challenge string) string {
+	q := url.Values{}
+	q.Set("response_type", "code")
+	q.Set("client_id", clientID)
+	q.Set("redirect_uri", redirectURI)
+	q.Set("scope", strings.Join(scopes, " "))
+	q.Set("state", state)
+	q.Set("code_challenge", challenge)
+	q.Set("code_challenge_method", "S256")
+	sep := "?"
+	if strings.Contains(authorizeURL, "?") {
+		sep = "&"
+	}
+	return authorizeURL + sep + q.Encode()
+}
+
+// openBrowserURL opens a URL in the platform default browser.
+func openBrowserURL(u string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", u)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", u)
+	default:
+		cmd = exec.Command("xdg-open", u)
+	}
+	return cmd.Start()
+}
 
 func mintClientCredentials(ctx context.Context, o *settings.ModelGatewayOIDC, key string) (*oauth.Token, error) {
 	_, tokenURL, err := resolveOIDCEndpoints(ctx, o)

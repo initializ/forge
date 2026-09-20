@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -162,6 +165,77 @@ func TestEnsureGatewayOIDCToken_AuthCodeNeedsLoginWhenNoCache(t *testing.T) {
 	// No cached token, and the overlay must not open a browser.
 	if _, err := EnsureGatewayOIDCToken(context.Background(), o); err == nil {
 		t.Fatal("auth_code with no cached token must error (prompt to run forge auth login), not open a browser")
+	}
+}
+
+// TestRunOIDCAuthCodeFlow drives the interactive auth-code+PKCE flow end to end
+// against a CONFIGURABLE loopback redirect, with the browser opener replaced by
+// a simulator that plays the IdP's redirect back to the callback. Pins #520:
+// the redirect matches the config (not a fixed :1455) so it works with an IdP
+// client's already-registered redirect URI.
+func TestRunOIDCAuthCodeFlow(t *testing.T) {
+	oauth.SetCredentialsDir(t.TempDir())
+	t.Cleanup(func() { oauth.SetCredentialsDir("") })
+
+	var exchanged bool
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		if r.FormValue("grant_type") == "authorization_code" && r.FormValue("code") == "CODE123" && r.FormValue("code_verifier") != "" && r.FormValue("redirect_uri") != "" {
+			exchanged = true
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "AT-ac", "token_type": "Bearer", "expires_in": 3600, "refresh_token": "RT-1"})
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer tokenSrv.Close()
+
+	// A free loopback port for the redirect the flow will bind.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	_ = l.Close()
+	redirect := fmt.Sprintf("http://127.0.0.1:%d/oauth/callback", port)
+
+	// Replace the browser open with a simulator that reads state + redirect_uri
+	// from the authorize URL and plays the IdP redirect back to the callback.
+	prev := oidcBrowserOpener
+	oidcBrowserOpener = func(authURL string) error {
+		u, perr := url.Parse(authURL)
+		if perr != nil {
+			return perr
+		}
+		q := u.Query()
+		go func() { _, _ = http.Get(q.Get("redirect_uri") + "?code=CODE123&state=" + q.Get("state")) }()
+		return nil
+	}
+	defer func() { oidcBrowserOpener = prev }()
+
+	o := &settings.ModelGatewayOIDC{Grant: "auth_code", AuthorizeURL: "https://idp/authorize", TokenURL: tokenSrv.URL, ClientID: "c1", Scopes: []string{"openid", "email"}, RedirectURI: redirect}
+	tok, err := runOIDCAuthCodeFlow(context.Background(), o, "https://idp/authorize", tokenSrv.URL, redirect, GatewayOIDCCredKey(o))
+	if err != nil {
+		t.Fatalf("auth_code flow: %v", err)
+	}
+	if tok.AccessToken != "AT-ac" {
+		t.Errorf("access token = %q, want AT-ac", tok.AccessToken)
+	}
+	if tok.RefreshToken != "RT-1" {
+		t.Errorf("refresh token = %q, want RT-1 (needed for silent overlay refresh)", tok.RefreshToken)
+	}
+	if !exchanged {
+		t.Error("token endpoint was not called with the auth code")
+	}
+	if cached, _ := CachedGatewayOIDCToken(o); cached == nil || cached.AccessToken != "AT-ac" {
+		t.Errorf("token not cached: %+v", cached)
+	}
+}
+
+func TestRunOIDCAuthCodeFlow_RejectsNonLoopbackRedirect(t *testing.T) {
+	o := &settings.ModelGatewayOIDC{Grant: "auth_code", ClientID: "c1"}
+	if _, err := runOIDCAuthCodeFlow(context.Background(), o, "https://idp/authorize", "https://idp/token", "https://evil.example/callback", "k"); err == nil {
+		t.Error("a non-loopback redirect_uri must be refused")
 	}
 }
 

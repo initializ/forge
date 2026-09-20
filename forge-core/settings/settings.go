@@ -169,8 +169,11 @@ type ModelGatewayOIDC struct {
 	// (client_credentials). Never the secret itself.
 	ClientSecretEnv string   `json:"client_secret_env,omitempty"`
 	Scopes          []string `json:"scopes,omitempty"`
-	// The interactive auth_code flow uses forge's fixed loopback callback
-	// (http://localhost:1455/auth/callback); the IdP client must register it.
+	// RedirectURI is the loopback callback the interactive auth_code flow
+	// listens on — it MUST be a redirect URI registered on the IdP client. Must
+	// be an http loopback (localhost / 127.0.0.1 / [::1]) so forge can bind it.
+	// Defaults to http://localhost:1455/auth/callback when empty.
+	RedirectURI string `json:"redirect_uri,omitempty"`
 }
 
 // ToolSettings governs which builtin tools are offered/defaulted.

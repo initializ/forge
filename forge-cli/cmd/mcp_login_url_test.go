@@ -82,6 +82,32 @@ func TestValidateServerName(t *testing.T) {
 	}
 }
 
+func TestStandaloneServerConfig_URLValidation(t *testing.T) {
+	cases := []struct {
+		url string
+		ok  bool
+	}{
+		{"https://mcp.example/x", true},
+		{"http://localhost:9000/mcp", true},
+		{"ftp://x", false},        // wrong scheme
+		{"not-a-url", false},      // no host
+		{"", false},               // empty
+		{"https://", false},       // no host
+		{"://nohost", false},      // malformed
+	}
+	for _, c := range cases {
+		cmd := newLoginCmdForTest()
+		_ = cmd.Flags().Set("url", c.url)
+		_, _, err := standaloneServerConfig(cmd)
+		if c.ok && err != nil {
+			t.Errorf("url %q: unexpected error %v", c.url, err)
+		}
+		if !c.ok && err == nil {
+			t.Errorf("url %q: expected error, got nil", c.url)
+		}
+	}
+}
+
 func TestStandaloneServerConfig_EndpointPairing(t *testing.T) {
 	c := newLoginCmdForTest()
 	_ = c.Flags().Set("url", "https://x")

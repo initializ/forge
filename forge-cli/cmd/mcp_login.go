@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	neturl "net/url"
 	"os"
 	"regexp"
 	"time"
@@ -83,6 +84,16 @@ func standaloneServerConfig(cmd *cobra.Command) (mcp.OAuthServerConfig, string, 
 	if storePath == "" {
 		storePath = os.Getenv("MCP_TOKEN_STORE_PATH")
 	}
+	// Mirror ValidateMCPConfig's server-URL rule (validate/mcp_config.go): the
+	// forge.yaml path gets it from the validator; standalone bypasses that, and the
+	// core OAuth flow doesn't back-stop it (it only parses the authorize URL
+	// mid-flow). Enforce it up front so a bad --url fails clearly here, not with a
+	// confusing discovery error later — and so the http/https-only rule holds.
+	if u, err := neturl.Parse(url); err != nil || u.Host == "" {
+		return mcp.OAuthServerConfig{}, "", fmt.Errorf("--url %q is malformed (need scheme://host)", url)
+	} else if u.Scheme != "http" && u.Scheme != "https" {
+		return mcp.OAuthServerConfig{}, "", fmt.Errorf("--url must use http or https (got %q)", u.Scheme)
+	}
 	// RFC 8414 discovery is all-or-nothing on the pair — a lone endpoint is a
 	// half-configured client the discovery path can't complete.
 	if (authorizeURL == "") != (tokenURL == "") {
@@ -104,6 +115,10 @@ func mcpLoginStandalone(cmd *cobra.Command, name string) error {
 	sc, storePath, err := standaloneServerConfig(cmd)
 	if err != nil {
 		return err
+	}
+	// The OAuth flow carries tokens; nudge toward https for a plain-http server.
+	if u, perr := neturl.Parse(sc.ServerURL); perr == nil && u.Scheme == "http" {
+		fmt.Fprintln(os.Stderr, "warning: --url uses http:// — the OAuth flow carries tokens; prefer https")
 	}
 	return performLogin(name, sc, storePath)
 }

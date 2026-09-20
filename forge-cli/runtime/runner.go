@@ -3139,11 +3139,22 @@ func (r *Runner) applyGatewaySettings(ctx context.Context, mc *coreruntime.Model
 		mc.Client.AuthHeaderName = gw.AuthHeaderName
 	}
 
-	// Credential routing. Helper configured → ensure a FRESH token; otherwise the
-	// native APIKey resolved by ResolveModelConfig stays. (A future OAuth branch
-	// belongs here and must be openai-only — never the anthropic public URL; not
-	// implemented in this slice.)
+	// Credential routing. api_key_helper (slice 1) takes precedence; else a
+	// native OIDC config (slice 2, #490) acquires the token; else the native
+	// APIKey resolved by ResolveModelConfig stays.
 	if gw.APIKeyHelper == "" {
+		if gw.OIDC != nil {
+			// client_credentials mints/refreshes headlessly here; auth_code only
+			// refreshes a cached token (no browser mid-run) and otherwise warns
+			// to run `forge auth login`. Guardrail (never anthropic public URL)
+			// is enforced inside EnsureGatewayOIDCToken.
+			if tok, err := EnsureGatewayOIDCToken(ctx, gw.OIDC); err != nil {
+				r.logger.Warn("gateway OIDC token acquisition failed; run 'forge auth login' (proceeding without a gateway token)",
+					map[string]any{"provider": mc.Provider, "grant": gw.OIDC.Grant, "error": err.Error()})
+			} else if tok != nil && tok.AccessToken != "" {
+				mc.Client.APIKey = tok.AccessToken
+			}
+		}
 		return
 	}
 	// EnsureGatewayToken returns the cached token when it is still valid, else

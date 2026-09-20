@@ -74,6 +74,7 @@ These paths are **fixed** — there is no env var to redirect them (a developer 
 | `models.gateways` | `[{provider, base_url, auth_scheme, auth_header_name, api_key_helper}]` | **Per-provider** model gateways (one for anthropic, one for openai, …). Consumed by the **runtime overlay** only (not scaffold injection). Merged per-provider (a higher layer's entry for a provider replaces the lower one). See [Local-dev gateway overlay](#local-dev-gateway-overlay--api_key_helper) |
 | `models.gateway(s).api_key_helper` | `string` | External command that prints a short-lived token to stdout (the Claude Code apiKeyHelper contract). When set, the runtime injects a helper-minted token as the model credential per `auth_scheme`, instead of a native static API key. A **managed** helper arms the login gate; a user-layer helper uses `forge auth login\|logout\|status` |
 | `models.gateway(s).env` | `map[string]string` | Environment injected into the `api_key_helper` subprocess (on top of forge's own env), so the helper's config (e.g. `OKTA_CLIENT_ID`, `OKTA_ISSUER`) lives in settings instead of a shell export. Read from trusted layers only — put IDs/issuers/endpoints here, not secrets |
+| `models.gateway(s).oidc` | `{grant, issuer, authorize_url, token_url, client_id, client_secret_env, scopes, redirect_uri}` | **Native OAuth/OIDC** token acquisition (an alternative to `api_key_helper` — forge does the flow itself). `grant`: `client_credentials` (headless/CI — mints with `client_secret_env`, no browser) or `auth_code` (interactive browser login, **PKCE, public client — no secret** — plus silent refresh). Endpoints come from `authorize_url`/`token_url`, or are discovered from `issuer`'s `/.well-known/openid-configuration`. The client secret is never stored — `client_secret_env` names the env var. `redirect_uri` (auth_code) is the loopback callback forge binds; it must be a redirect URI already registered on the IdP client. See [Native OIDC](#native-oidc-gateway-login) |
 | `tools.builtins.enabled` | `[]string` | Builtin tools offered/defaulted |
 | `skills.enabled` | `[]string` | **Registry** skills offered/defaulted in `forge init` (the wizard offers only these; non-interactive `--skills` is gated). Empty = all registry skills. Governs registry-skill *selection* only — NOT `--from-skills` / `--from-skill-dir` custom imports (a developer's own local skills). It is a developer-surface offering, not a hard skill boundary; to forbid skills fleet-wide, use platform policy |
 | `env` | `map[string]string` | Environment defaults |
@@ -108,9 +109,27 @@ This is the model for **forge on the server**: a developer checks in a `forge.ya
 
 **`available_models` mismatch is a warning, not a block.** If a resolved model isn't in a **managed** `available_models` lock, forge prints a one-line warning and proceeds with native auth — runtime model-deny remains a server-side [platform policy](../security/platform-policy.md) concern (see **Managed lock** above), not a client-side rejection.
 
-> **Note (OAuth roadmap).** Today the gateway credential is `api_key_helper` only. A native OAuth-login mode is planned but will be **openai-only** — it must never sign in directly against the anthropic public URL.
+## Native OIDC gateway login
 
-Remaining follow-ups (tracked on the settings epic): additional managed delivery mechanisms (server-managed control-plane fetch, macOS config profile, Windows registry); per-fallback / per-endpoint gateway auth (today the overlay is primary-endpoint only); native OIDC login modes. The interactive-wizard defaulting (channel/skill filtering + provider/model pre-selection) is complete.
+Instead of an `api_key_helper` external command, a gateway can set `models.gateway(s).oidc` and have **forge run the OAuth/OIDC flow itself**. Two grants:
+
+- **`client_credentials`** (headless / CI) — forge mints a token from `token_url` (or the `issuer`-discovered endpoint) using `client_id` + the secret in `client_secret_env`, with `scopes`. No browser. The runtime overlay acquires and re-mints it on expiry automatically, so a deployed agent needs no interactive step.
+- **`auth_code`** (interactive) — `forge auth login [provider]` opens a browser (auth-code + PKCE) against `authorize_url` (or the `issuer`-discovered endpoint), catches the loopback callback, and caches the token **with its refresh token**. The runtime overlay then refreshes it silently on expiry; it never opens a browser mid-run — if there's no valid cached token it tells you to run `forge auth login`.
+
+```json
+"gateways": [
+  { "provider": "openai", "base_url": "https://gw.corp/openai/v1", "auth_scheme": "bearer",
+    "oidc": { "grant": "client_credentials", "issuer": "https://idp.corp",
+              "client_id": "forge-gw", "client_secret_env": "FORGE_GW_CLIENT_SECRET",
+              "scopes": ["model.invoke"] } }
+]
+```
+
+The **client secret is never stored in settings** — `client_secret_env` names the env var holding it. The `auth_code` grant is a **public PKCE client and needs no secret** (it's the same flow as an Okta/Entra native app: `client_id` + `issuer`/endpoints + `scopes` + PKCE). Endpoints are taken from `authorize_url`/`token_url`, or discovered from `issuer`'s `/.well-known/openid-configuration` (which must be **https**; loopback http allowed for a local dev IdP). The interactive `auth_code` flow binds the loopback callback in **`redirect_uri`** — set it to a redirect URI **already registered on the IdP client** (e.g. `http://localhost:8199/oauth/callback`); it defaults to `http://localhost:1455/auth/callback`. It must be an http loopback (`localhost`/`127.0.0.1`/`[::1]`). Like the helper, OIDC config is resolved from **trusted layers only** (the checked-in project `.forge/settings.json` is excluded).
+
+> **Guardrail.** The OIDC flow **refuses to run against the anthropic public URL** (`api.anthropic.com`) — that API authenticates with `x-api-key`, not OAuth. A gateway fronting anthropic behind your own IdP (a different host) is fine.
+
+Remaining follow-ups (tracked on the settings epic): additional managed delivery mechanisms (server-managed control-plane fetch, macOS config profile, Windows registry); per-fallback / per-endpoint gateway auth (today the overlay is primary-endpoint only); the **device-code** OIDC grant (client_credentials + auth_code ship now). The interactive-wizard defaulting (channel/skill filtering + provider/model pre-selection) is complete.
 
 ## See also
 

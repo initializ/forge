@@ -137,9 +137,9 @@ func TestAuthGateway_LoginIgnoresCheckedInProjectHelper(t *testing.T) {
 	c, _ := newCmd()
 	err := runAuthLogin(c, []string{"openai"})
 	if err == nil {
-		t.Fatal("expected 'no api_key_helper configured' — the checked-in project helper must be ignored")
+		t.Fatal("expected 'no gateway credential configured' — the checked-in project helper must be ignored")
 	}
-	if !strings.Contains(err.Error(), "no api_key_helper configured") {
+	if !strings.Contains(err.Error(), "no gateway credential configured") {
 		t.Errorf("unexpected error %q; the project-layer helper must not be resolved", err)
 	}
 }
@@ -156,7 +156,7 @@ func TestAuthGateway_StatusNoGateways(t *testing.T) {
 	if err := runAuthStatus(c, nil); err != nil {
 		t.Fatalf("status: %v", err)
 	}
-	if !strings.Contains(buf.String(), "No api_key_helper gateways configured") {
+	if !strings.Contains(buf.String(), "No gateway credential configured") {
 		t.Errorf("status output = %q", buf.String())
 	}
 }

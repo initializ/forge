@@ -12,7 +12,38 @@
 // is the positive counterpart to a policy *deny*; both can coexist. See #454.
 package settings
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
+
+// Validate checks an OIDC gateway config for the required fields per grant.
+// Returns nil for a nil receiver (no OIDC configured).
+func (o *ModelGatewayOIDC) Validate() error {
+	if o == nil {
+		return nil
+	}
+	switch o.Grant {
+	case "client_credentials", "auth_code":
+	case "":
+		return fmt.Errorf("gateway oidc.grant is required (client_credentials | auth_code)")
+	default:
+		return fmt.Errorf("gateway oidc.grant %q is not recognized (want client_credentials | auth_code)", o.Grant)
+	}
+	if o.ClientID == "" {
+		return fmt.Errorf("gateway oidc.client_id is required")
+	}
+	if o.TokenURL == "" && o.Issuer == "" {
+		return fmt.Errorf("gateway oidc needs token_url or issuer")
+	}
+	if o.Grant == "auth_code" && o.AuthorizeURL == "" && o.Issuer == "" {
+		return fmt.Errorf("gateway oidc.grant %q needs authorize_url or issuer", o.Grant)
+	}
+	if o.Grant == "client_credentials" && o.ClientSecretEnv == "" {
+		return fmt.Errorf("gateway oidc.grant %q needs client_secret_env", o.Grant)
+	}
+	return nil
+}
 
 // Settings is the merged, effective forge configuration for a session. Every
 // field is optional; a zero Settings means "nothing configured" and callers
@@ -109,6 +140,40 @@ type ModelGateway struct {
 	// client IDs / issuers / endpoints are the intended use; a secret belongs
 	// in the helper's own secret store. Merged with higher layers winning.
 	Env map[string]string `json:"env,omitempty"`
+
+	// OIDC configures forge to acquire the gateway token by doing the OAuth/OIDC
+	// flow ITSELF (#455 slice 2) — an alternative to APIKeyHelper's external
+	// command. When set, the runtime acquires + caches + refreshes a token per
+	// OIDC.Grant and injects it per AuthScheme. Mutually exclusive with
+	// APIKeyHelper (validation rejects both).
+	OIDC *ModelGatewayOIDC `json:"oidc,omitempty"`
+}
+
+// ModelGatewayOIDC configures native OAuth/OIDC token acquisition for a gateway
+// (#455 slice 2). The client_secret is never stored here — ClientSecretEnv
+// names the env var holding it (the auth_code grant is a public PKCE client and
+// needs none). Endpoints come from AuthorizeURL/TokenURL, or are derived from
+// Issuer's /.well-known/openid-configuration when those are empty.
+type ModelGatewayOIDC struct {
+	// Grant selects the OAuth grant:
+	//   "client_credentials" — headless / CI, no browser (needs ClientSecretEnv).
+	//   "auth_code"          — interactive browser login (auth-code + PKCE).
+	Grant string `json:"grant,omitempty"`
+	// Issuer is the OIDC issuer; when AuthorizeURL/TokenURL are empty they are
+	// discovered from <Issuer>/.well-known/openid-configuration.
+	Issuer       string `json:"issuer,omitempty"`
+	AuthorizeURL string `json:"authorize_url,omitempty"` // required for auth_code if Issuer unset
+	TokenURL     string `json:"token_url,omitempty"`     // required if Issuer unset
+	ClientID     string `json:"client_id,omitempty"`
+	// ClientSecretEnv names the env var holding the client_secret
+	// (client_credentials). Never the secret itself.
+	ClientSecretEnv string   `json:"client_secret_env,omitempty"`
+	Scopes          []string `json:"scopes,omitempty"`
+	// RedirectURI is the loopback callback the interactive auth_code flow
+	// listens on — it MUST be a redirect URI registered on the IdP client. Must
+	// be an http loopback (localhost / 127.0.0.1 / [::1]) so forge can bind it.
+	// Defaults to http://localhost:1455/auth/callback when empty.
+	RedirectURI string `json:"redirect_uri,omitempty"`
 }
 
 // ToolSettings governs which builtin tools are offered/defaulted.
@@ -200,6 +265,9 @@ func mergeGateway(lo, hi *ModelGateway) *ModelGateway {
 			out.APIKeyHelper = hi.APIKeyHelper
 		}
 		out.Env = mergeStringMap(out.Env, hi.Env)
+		if hi.OIDC != nil {
+			out.OIDC = hi.OIDC
+		}
 	}
 	return &out
 }

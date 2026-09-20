@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -22,10 +23,12 @@ import (
 
 var authLoginCmd = &cobra.Command{
 	Use:   "login [provider]",
-	Short: "Log in to the model gateway via its configured api_key_helper",
-	Long: `Run the api_key_helper configured in settings (models.gateway(s)) to
-acquire and cache the gateway model credential. With multiple gateways
-configured, pass the provider to disambiguate (e.g. 'forge auth login openai').
+	Short: "Log in to the model gateway (api_key_helper or native OIDC)",
+	Long: `Acquire and cache the gateway model credential from the source
+configured in settings (models.gateway(s)): an api_key_helper command, or a
+native OIDC flow (client_credentials mints headlessly; auth_code opens a
+browser). With multiple gateways configured, pass the provider to disambiguate
+(e.g. 'forge auth login openai').
 
 This is the manual counterpart to the managed login gate: when managed
 settings configure the helper, LLM-touching commands log you in
@@ -50,12 +53,13 @@ token itself. Pass a provider to show just that gateway.`,
 	SilenceUsage: true,
 }
 
-// gatewaysWithHelper returns the configured gateways that declare an
-// api_key_helper. It resolves from TRUSTED layers only (excluding the
+// gatewaysWithCredential returns the configured gateways that carry a login-able
+// credential source — an api_key_helper (slice 1) or a native OIDC config
+// (slice 2, #490). It resolves from TRUSTED layers only (excluding the
 // checked-in project .forge/settings.json) — `forge auth login` execs the
-// helper, so a cloned repo must not be able to inject the command. See PR #464
-// review (HIGH #1).
-func gatewaysWithHelper() ([]settings.ModelGateway, error) {
+// helper / runs the OAuth flow, so a cloned repo must not be able to configure
+// it. See PR #464 review (HIGH #1).
+func gatewaysWithCredential() ([]settings.ModelGateway, error) {
 	layers, err := settings.LoadAllLayers(settings.LoadOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("loading settings: %w", err)
@@ -63,7 +67,7 @@ func gatewaysWithHelper() ([]settings.ModelGateway, error) {
 	set := settings.Resolve(settings.TrustedGatewayLayers(layers))
 	var out []settings.ModelGateway
 	for _, gw := range set.Models.EffectiveGateways() {
-		if strings.TrimSpace(gw.APIKeyHelper) != "" {
+		if strings.TrimSpace(gw.APIKeyHelper) != "" || gw.OIDC != nil {
 			out = append(out, gw)
 		}
 	}
@@ -85,12 +89,12 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 			"key or platform token", reason)
 	}
 
-	gws, err := gatewaysWithHelper()
+	gws, err := gatewaysWithCredential()
 	if err != nil {
 		return err
 	}
 	if len(gws) == 0 {
-		return fmt.Errorf("no api_key_helper configured in settings (set models.gateway.api_key_helper or a models.gateways entry)")
+		return fmt.Errorf("no gateway credential configured in settings (set models.gateway(s) api_key_helper or oidc)")
 	}
 
 	var chosen *settings.ModelGateway
@@ -112,7 +116,7 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 			}
 		}
 		if chosen == nil {
-			return fmt.Errorf("no gateway with an api_key_helper for provider %q; configured: %s", provider, gatewayProviderList(gws))
+			return fmt.Errorf("no gateway credential for provider %q; configured: %s", provider, gatewayProviderList(gws))
 		}
 	} else if len(gws) == 1 {
 		chosen = &gws[0]
@@ -120,7 +124,7 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("multiple gateways configured — specify a provider: %s", gatewayProviderList(gws))
 	}
 
-	tok, err := runtime.EnsureGatewayToken(cmd.Context(), chosen.APIKeyHelper, chosen.Env)
+	tok, err := loginGateway(cmd.Context(), *chosen)
 	if err != nil {
 		return err
 	}
@@ -129,14 +133,37 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// loginGateway acquires a token for a gateway via its configured credential
+// source: the api_key_helper (slice 1) if set, else native OIDC (slice 2).
+func loginGateway(ctx context.Context, gw settings.ModelGateway) (*oauth.Token, error) {
+	if strings.TrimSpace(gw.APIKeyHelper) != "" {
+		return runtime.EnsureGatewayToken(ctx, gw.APIKeyHelper, gw.Env)
+	}
+	if gw.OIDC != nil {
+		return runtime.LoginGatewayOIDC(ctx, gw.OIDC)
+	}
+	return nil, fmt.Errorf("gateway %s has no credential source", gatewayProviderLabel(gw))
+}
+
+// cachedGatewayToken reads the cached token for a gateway's credential source.
+func cachedGatewayToken(gw settings.ModelGateway) (*oauth.Token, error) {
+	if strings.TrimSpace(gw.APIKeyHelper) != "" {
+		return runtime.CachedGatewayToken(gw.APIKeyHelper, gw.Env)
+	}
+	if gw.OIDC != nil {
+		return runtime.CachedGatewayOIDCToken(gw.OIDC)
+	}
+	return nil, nil
+}
+
 func runAuthStatus(cmd *cobra.Command, args []string) error {
-	gws, err := gatewaysWithHelper()
+	gws, err := gatewaysWithCredential()
 	if err != nil {
 		return err
 	}
 	out := cmd.OutOrStdout()
 	if len(gws) == 0 {
-		_, _ = fmt.Fprintln(out, "No api_key_helper gateways configured in settings.")
+		_, _ = fmt.Fprintln(out, "No gateway credential configured in settings.")
 		return nil
 	}
 
@@ -152,12 +179,12 @@ func runAuthStatus(cmd *cobra.Command, args []string) error {
 			continue
 		}
 		shown++
-		tok, lerr := runtime.CachedGatewayToken(gw.APIKeyHelper, gw.Env)
+		tok, lerr := cachedGatewayToken(gw)
 		state := gatewayTokenState(tok, lerr)
 		_, _ = fmt.Fprintf(out, "%s: %s\n", gatewayProviderLabel(gw), state)
 	}
 	if shown == 0 {
-		_, _ = fmt.Fprintf(out, "No gateway with an api_key_helper for provider %q; configured: %s\n", filter, gatewayProviderList(gws))
+		_, _ = fmt.Fprintf(out, "No gateway credential for provider %q; configured: %s\n", filter, gatewayProviderList(gws))
 	}
 	return nil
 }

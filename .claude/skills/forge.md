@@ -322,6 +322,13 @@ The agent loop calls tools the LLM asks for. The registry merges:
   RFC 7591 dynamic client registration when omitted (#316). Agent-principal
   (headless, no login) via `grant: client_credentials` — 2LO with
   `client_id` + `client_secret_env` + `token_url`, minted at runtime (#324).
+  **Standalone login without a `forge.yaml`** (for non-forge agents — Strands,
+  Claude): `forge mcp login <name> --url <url>` takes the connection inline and
+  skips forge.yaml (`--client-id`/`--scopes`/`--authorize-url`/`--token-url`/
+  `--token-store-path` optional; `--url` must be http/https; `<name>` a slug
+  `^[a-z][a-z0-9-]{0,30}$`). The token lands in the same
+  `~/.forge/credentials/mcp_<name>.json` — consumable by the initializ Strands
+  SDK's direct (`auth: bearer`) lane (#517).
 
 `cli_execute` ships 13 security layers — shell denylist, binary
 allowlist, `LookPath` resolution at startup, argument validation
@@ -922,7 +929,7 @@ Full reference: `docs/reference/cli-reference.md`.
 | `forge auth show-token \| mint-token \| secret-yaml \| logout` | Operator UX for the internal bearer token at `<root>/.forge/runtime.token` (same token channel adapters + K8s CronJob trigger pods use). `secret-yaml` prints a ready-to-apply K8s Secret manifest sourced from the local token; `mint-token` is for first-deploy bootstrap. `logout [provider]` clears a stored LLM OAuth credential (default openai) so the next `forge init`/`forge try` re-prompts sign-in — laptop/dev only, **refuses inside an agent runtime** (container or `FORGE_PLATFORM_TOKEN` set). `forge.agent.id` label always tracks `forge.yaml` `agent_id`, never the `--name` override. (#162 part 1, PR #168) | `--namespace`, `--name` |
 | `forge key generate \| sign \| verify` | Ed25519 build artifact signing | |
 | `forge skills add \| import \| list \| validate \| audit` | Registry: `add` installs from the embedded registry; `import <folder>` vendors an EXTERNAL skill folder (SKILL.md + scripts + reference files) into the current project + wires egress/env, and a vendored `skills/<name>/requirements.txt` is pip-installed at `forge build` (python3/pip auto-provisioned) (#405); for a plain SKILL.md with no `metadata.forge`, `import` infers a suggested block (requires.bins from interpreters; egress/env candidates for review) and `--write-forge-meta` injects requires.bins (#412); `list`/`validate`/`audit` search + check binary/env deps + security audit `--embedded` | `--category`, `--tags`, `--embedded`, `--name`, `--overwrite`, `--write-forge-meta` |
-| `forge mcp list \| test \| login \| logout` | Manage MCP servers + OAuth tokens | `--call <tool>`, `--args '<json>'` |
+| `forge mcp list \| test \| login \| logout` | Manage MCP servers + OAuth tokens. `login --url` logs in standalone (no forge.yaml) for non-forge agents | `--call <tool>`, `--args '<json>'`, `login --url/--client-id/--scopes/--authorize-url/--token-url/--token-store-path` |
 | `forge ui` | Launch the local Web Dashboard | `--port` |
 
 ---

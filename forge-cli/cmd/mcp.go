@@ -79,6 +79,10 @@ func init() {
 	mcpTestCmd.Flags().String("call", "", "tool name to invoke (optional)")
 	mcpTestCmd.Flags().String("args", "{}", "JSON arguments for --call")
 	mcpTestCmd.Flags().Duration("timeout", 10*time.Second, "per-RPC timeout")
+	// Standalone (no forge.yaml): --url resolves the server from flags, reusing the
+	// oauth token/registration stored by `mcp login` under <name>.
+	mcpTestCmd.Flags().String("url", "", "MCP server URL — test standalone without forge.yaml (uses the token from `mcp login`)")
+	mcpTestCmd.Flags().String("token-store-path", "", "credential store dir override (default ~/.forge/credentials)")
 	// Standalone login (no forge.yaml): --url switches on flag-driven mode; the
 	// rest are optional overrides (discovered from the URL when omitted).
 	mcpLoginCmd.Flags().String("url", "", "MCP server URL — log in standalone without forge.yaml")

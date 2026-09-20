@@ -26,7 +26,6 @@ type ForgeConfig struct {
 	Skills         SkillsRef           `yaml:"skills,omitempty"`
 	Memory         MemoryConfig        `yaml:"memory,omitempty"`
 	Compression    CompressionConfig   `yaml:"compression,omitempty"`
-	Optimizer      OptimizerConfig     `yaml:"optimizer,omitempty"`
 	Secrets        SecretsConfig       `yaml:"secrets,omitempty"`
 	Auth           AuthConfig          `yaml:"auth,omitempty"`
 	MCP            MCPConfig           `yaml:"mcp,omitempty"`
@@ -1042,19 +1041,6 @@ type CompressionConfig struct {
 	KeepPatterns []string `yaml:"keep_patterns,omitempty"`
 }
 
-// OptimizerConfig configures the local optimizer proxy (the compression + memory
-// gateway `forge optimizer` runs). It lets an org declare the optimizer's
-// settings in forge.yaml instead of only via flags/env.
-type OptimizerConfig struct {
-	// Upstream is the base URL the proxy forwards to — typically the org's
-	// LLM gateway (e.g. a Kong/Bedrock endpoint). Supports ${VAR} expansion.
-	// This is the USER-level source in the upstream precedence; a
-	// platform-enforced value is injected via $FORGE_MANAGED_OPTIMIZER_UPSTREAM
-	// and overrides it. Empty → the proxy uses its own default resolution
-	// (flag / $FORGE_OPTIMIZER_UPSTREAM / $ANTHROPIC_BASE_URL / Anthropic).
-	Upstream string `yaml:"upstream,omitempty"`
-}
-
 // EgressRef configures egress security controls.
 type EgressRef struct {
 	Profile         string   `yaml:"profile,omitempty"` // strict, standard, permissive
@@ -1202,22 +1188,6 @@ type BinOverride struct {
 }
 
 // ParseForgeConfig parses raw YAML bytes into a ForgeConfig and validates required fields.
-// OptimizerUpstreamFromYAML extracts optimizer.upstream from a forge.yaml
-// document WITHOUT the full-config validation (agent_id/version/entrypoint), so
-// a minimal user-global config (e.g. ~/.forge/forge.yaml carrying only an
-// `optimizer:` block) is usable by the standalone optimizer proxy — which runs
-// detached, often with no project forge.yaml in sight. ${VAR} is expanded.
-// Returns "" if the block is absent or the document doesn't parse.
-func OptimizerUpstreamFromYAML(data []byte) string {
-	var doc struct {
-		Optimizer OptimizerConfig `yaml:"optimizer"`
-	}
-	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return ""
-	}
-	return expandEnvRef(doc.Optimizer.Upstream)
-}
-
 func ParseForgeConfig(data []byte) (*ForgeConfig, error) {
 	var cfg ForgeConfig
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
@@ -1236,7 +1206,6 @@ func ParseForgeConfig(data []byte) (*ForgeConfig, error) {
 	// endpoint") instead of passing validation and silently degrading to a
 	// per-call deny-all when the resolver later expands it to "".
 	cfg.Security.Pdp.Endpoint = expandEnvRef(cfg.Security.Pdp.Endpoint)
-	cfg.Optimizer.Upstream = expandEnvRef(cfg.Optimizer.Upstream)
 
 	if cfg.AgentID == "" {
 		return nil, fmt.Errorf("forge config: agent_id is required")

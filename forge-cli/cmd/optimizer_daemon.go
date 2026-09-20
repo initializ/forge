@@ -76,11 +76,11 @@ func optimizerListenerPID(addr string) int {
 }
 
 // resolveChildUpstream picks the upstream base URL to hand the detached proxy
-// child. It applies the shared optimizer-upstream precedence (managed env >
-// --upstream > $FORGE_OPTIMIZER_UPSTREAM > forge.yaml optimizer.upstream), with
-// the Claude Code settings gateway as the chaining fallback — skipped when it
-// points back at our own listen address (avoids a self-loop on repeat starts).
-// Returns "" to let the child fall back to its own default (Anthropic).
+// child. It applies the shared optimizer-upstream precedence (managed settings >
+// --upstream > $FORGE_OPTIMIZER_UPSTREAM > ~/.forge/settings.json), with the
+// Claude Code settings gateway as the chaining fallback — skipped when it points
+// back at our own listen address (avoids a self-loop on repeat starts). Returns
+// "" to let the child fall back to its own default (Anthropic).
 func resolveChildUpstream(flag, settingsBase, listen string) string {
 	chaining := ""
 	if settingsBase != "" && !strings.Contains(settingsBase, listen) {

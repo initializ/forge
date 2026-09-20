@@ -75,7 +75,7 @@ func EnsureGatewayOIDCToken(ctx context.Context, o *settings.ModelGatewayOIDC) (
 		}
 		// Expired. Refresh without a browser when we hold a refresh token.
 		if tok.RefreshToken != "" {
-			if _, tokenURL, derr := resolveOIDCEndpoints(ctx, o); derr == nil {
+			if _, tokenURL, derr := resolveOIDCEndpoints(ctx, o); derr == nil && oidcAnthropicGuard(o.Issuer, "", tokenURL) == nil {
 				if refreshed, rerr := oauth.RefreshTokenCtx(ctx, nil, tokenURL, o.ClientID, tok.RefreshToken); rerr == nil && refreshed.AccessToken != "" {
 					if refreshed.RefreshToken == "" {
 						refreshed.RefreshToken = tok.RefreshToken // IdP may not re-issue one
@@ -195,6 +195,14 @@ func resolveOIDCEndpoints(ctx context.Context, o *settings.ModelGatewayOIDC) (au
 // discoverOIDC fetches <issuer>/.well-known/openid-configuration (RFC 8414 /
 // OIDC Discovery) and returns the authorization + token endpoints.
 func discoverOIDC(ctx context.Context, issuer string) (authorizeURL, tokenURL string, err error) {
+	// RFC 8414 mandates an https issuer; reject a cleartext/other scheme so a
+	// misconfigured or MITM-able discovery endpoint can't be reached. Loopback
+	// (http://localhost) is allowed for local dev IdPs.
+	if u, perr := url.Parse(issuer); perr != nil {
+		return "", "", fmt.Errorf("oidc issuer is not a valid URL: %q", issuer)
+	} else if !strings.EqualFold(u.Scheme, "https") && !isLoopbackHost(u.Hostname()) {
+		return "", "", fmt.Errorf("oidc issuer must be an https URL (RFC 8414), got %q", issuer)
+	}
 	wk := strings.TrimRight(issuer, "/") + "/.well-known/openid-configuration"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wk, nil)
 	if err != nil {
@@ -221,6 +229,16 @@ func discoverOIDC(ctx context.Context, issuer string) (authorizeURL, tokenURL st
 		return "", "", fmt.Errorf("oidc discovery (%s): parse: %w", wk, err)
 	}
 	return doc.AuthorizationEndpoint, doc.TokenEndpoint, nil
+}
+
+// isLoopbackHost reports whether host is a loopback address (allowed to use
+// http for a local dev IdP).
+func isLoopbackHost(host string) bool {
+	switch strings.ToLower(host) {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	return false
 }
 
 // oidcAnthropicGuard refuses an OIDC flow whose issuer / authorize / token host

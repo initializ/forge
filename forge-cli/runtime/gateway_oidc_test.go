@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -231,5 +232,20 @@ func TestDiscoverOIDC(t *testing.T) {
 	}
 	if a != "https://idp/authorize" || tk != "https://idp/token" {
 		t.Errorf("endpoints = %q, %q", a, tk)
+	}
+}
+
+// #520 review: a non-https, non-loopback issuer must be refused before any
+// discovery fetch (RFC 8414 mandates https).
+func TestDiscoverOIDC_RejectsNonHTTPSIssuer(t *testing.T) {
+	if _, _, err := discoverOIDC(context.Background(), "http://idp.corp"); err == nil {
+		t.Error("cleartext http issuer must be rejected")
+	}
+	// Loopback http is allowed (local dev IdP) — reaches the fetch, which fails
+	// on a closed port rather than the scheme check.
+	if _, _, err := discoverOIDC(context.Background(), "http://127.0.0.1:1"); err == nil {
+		t.Error("expected a fetch error for the unreachable loopback issuer")
+	} else if strings.Contains(err.Error(), "must be an https URL") {
+		t.Errorf("loopback http must pass the scheme check, got %v", err)
 	}
 }

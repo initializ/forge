@@ -120,16 +120,32 @@ func ChooseAgent(in io.Reader, out io.Writer, claudeAvailable bool) (AgentChoice
 }
 
 // ChooseOptimizer asks whether to route Claude Code through the forge optimizer.
-// It first prints the value proposition (cache-safe reversible compression to cut
-// token cost, plus episodic + procedural memory), then offers On/Off with On
-// recommended. Returns ok=false on cancel.
-func ChooseOptimizer(in io.Reader, out io.Writer, color bool) (bool, bool, error) {
-	printOptimizerPitch(out, color)
-	items := []components.SingleSelectItem{
-		{Label: "On", Value: "on", Description: "Cache-safe reversible compression to cut token cost + episodic & procedural memory (recommended)", Icon: "◉"},
-		{Label: "Off", Value: "off", Description: "Plain Claude Code, no proxy", Icon: "○"},
+// It first prints the value proposition, then offers On/Off. The default is OFF
+// unless a forge settings layer enabled it (defaultOn) — enabling the optimizer
+// rewrites ANTHROPIC_BASE_URL, which can't be forced under enterprise-managed
+// Claude Code, so it's opt-in via user/managed settings. Returns ok=false on cancel.
+// enabled controls whether "On" is selectable: it's the first option always,
+// but disabled (dimmed, unselectable) unless a forge settings layer enabled the
+// optimizer — because turning it on rewrites ANTHROPIC_BASE_URL, which can't be
+// forced under enterprise-managed Claude Code.
+func ChooseOptimizer(in io.Reader, out io.Writer, color, enabled bool) (bool, bool, error) {
+	printOptimizerPitch(out, color, enabled)
+	// The On option always shows what it provides (cost optimization + memory);
+	// when settings haven't enabled it, the label marks it disabled and it renders
+	// unselectable. How to enable is explained in the pitch above the selector.
+	onLabel := "On"
+	if !enabled {
+		onLabel = "On (disabled)"
 	}
-	val, ok, err := runSelect(in, out, "Optimizer:", items, "on")
+	items := []components.SingleSelectItem{
+		{Label: onLabel, Value: "on", Description: "Cache-safe reversible compression to cut token cost + episodic & procedural memory", Disabled: !enabled},
+		{Label: "Off", Value: "off", Description: "Plain Claude Code, no proxy"},
+	}
+	preselect := "off"
+	if enabled {
+		preselect = "on" // when allowed, default to On (its value proposition)
+	}
+	val, ok, err := runSelect(in, out, "Optimizer:", items, preselect)
 	if err != nil || !ok {
 		return false, false, err
 	}
@@ -137,13 +153,19 @@ func ChooseOptimizer(in io.Reader, out io.Writer, color bool) (bool, bool, error
 }
 
 // printOptimizerPitch explains what the optimizer does before the selector.
-func printOptimizerPitch(out io.Writer, color bool) {
+func printOptimizerPitch(out io.Writer, color, defaultOn bool) {
 	dim := dimFn(color)
 	acc := accentFn(color)
 	_, _ = fmt.Fprintf(out, "\n  %s\n", acc("The forge optimizer routes Claude Code through a local proxy that:"))
 	_, _ = fmt.Fprintf(out, "    %s reversibly, cache-safely compresses context to cut token cost\n", acc("•"))
 	_, _ = fmt.Fprintf(out, "    %s builds episodic + procedural memory from your sessions\n", acc("•"))
 	_, _ = fmt.Fprintf(out, "  %s\n", dim("View token savings + memory at http://127.0.0.1:4200/#/optimizer  (run `forge ui`)."))
+	if !defaultOn {
+		_, _ = fmt.Fprintf(out, "  %s\n", dim("Optimizer is disabled for your org (it points ANTHROPIC_BASE_URL to a local Optimizer proxy before"))
+		_, _ = fmt.Fprintf(out, "  %s\n", dim("forwarding the request to the enterprise-managed Anthropic Base URL). Enabling requires setting"))
+		_, _ = fmt.Fprintf(out, "  %s\n", dim("ANTHROPIC_BASE_URL to the Optimizer local proxy in Claude Code managed settings, and the Upstream"))
+		_, _ = fmt.Fprintf(out, "  %s\n", dim("Anthropic Base URL in Forge managed settings."))
+	}
 }
 
 // PrintLaunching prints a one-line "launching X" notice before handing off.

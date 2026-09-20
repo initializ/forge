@@ -14,6 +14,13 @@ type SingleSelectItem struct {
 	Value       string
 	Description string
 	Icon        string
+	// Disabled renders the item dimmed and makes it unselectable: navigation
+	// skips over it and it cannot be the initial cursor or an enter target.
+	// Defaults false (a normal, selectable item).
+	//
+	// PRECONDITION: at least one item must be enabled. A fully-disabled list
+	// deadlocks (the cursor can't move and enter is guarded) — only cancel works.
+	Disabled bool
 }
 
 // SingleSelect is a navigable radio-button list.
@@ -41,7 +48,7 @@ func NewSingleSelect(items []SingleSelectItem, accentColor, primaryColor, second
 	kbd := NewKbdHint(kbdKeyStyle, kbdDescStyle)
 	kbd.Bindings = SelectHints()
 
-	return SingleSelect{
+	s := SingleSelect{
 		Items:          items,
 		selected:       -1,
 		AccentColor:    accentColor,
@@ -59,6 +66,29 @@ func NewSingleSelect(items []SingleSelectItem, accentColor, primaryColor, second
 			Padding(0, 1),
 		kbd: kbd,
 	}
+	s.cursor = s.firstSelectable()
+	return s
+}
+
+// firstSelectable returns the index of the first non-disabled item, or 0.
+func (s SingleSelect) firstSelectable() int {
+	for i, it := range s.Items {
+		if !it.Disabled {
+			return i
+		}
+	}
+	return 0
+}
+
+// nextSelectable returns the next non-disabled index from cur in direction dir
+// (+1 down / -1 up), or cur when there is none (so navigation stops at an edge).
+func (s SingleSelect) nextSelectable(cur, dir int) int {
+	for i := cur + dir; i >= 0 && i < len(s.Items); i += dir {
+		if !s.Items[i].Disabled {
+			return i
+		}
+	}
+	return cur
 }
 
 // Init resets done state so the component can be re-used after back-navigation.
@@ -76,7 +106,7 @@ func (s *SingleSelect) SelectByValue(value string) {
 		return
 	}
 	for i, it := range s.Items {
-		if it.Value == value {
+		if it.Value == value && !it.Disabled {
 			s.cursor = i
 			s.adjustOffset()
 			return
@@ -129,16 +159,21 @@ func (s SingleSelect) Update(msg tea.Msg) (SingleSelect, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "up", "k":
-			if s.cursor > 0 {
-				s.cursor--
+			if next := s.nextSelectable(s.cursor, -1); next != s.cursor {
+				s.cursor = next
 				s.adjustOffset()
 			}
 		case "down", "j":
-			if s.cursor < len(s.Items)-1 {
-				s.cursor++
+			if next := s.nextSelectable(s.cursor, +1); next != s.cursor {
+				s.cursor = next
 				s.adjustOffset()
 			}
 		case "enter":
+			// Guard: never confirm a disabled item (navigation shouldn't land on
+			// one, but keep enter safe).
+			if s.cursor >= 0 && s.cursor < len(s.Items) && s.Items[s.cursor].Disabled {
+				break
+			}
 			s.selected = s.cursor
 			s.done = true
 		}
@@ -175,13 +210,22 @@ func (s SingleSelect) View(width int) string {
 		var radio, icon, label, desc string
 
 		icon = item.Icon + "  "
-		if isCursor {
+		switch {
+		case item.Disabled:
+			dim := lipgloss.NewStyle().Foreground(s.DimColor)
+			icon = dim.Render(item.Icon) + "  " // dim the icon too, so a disabled row never looks selected
+			radio = dim.Render("⊘")
+			label = dim.Render(item.Label)
+			if item.Description != "" {
+				desc = "\n      " + dim.Render(item.Description)
+			}
+		case isCursor:
 			radio = lipgloss.NewStyle().Foreground(s.AccentColor).Render("◉")
 			label = lipgloss.NewStyle().Foreground(s.PrimaryColor).Bold(true).Render(item.Label)
 			if item.Description != "" {
 				desc = "\n      " + lipgloss.NewStyle().Foreground(s.SecondaryColor).Render(item.Description)
 			}
-		} else {
+		default:
 			radio = lipgloss.NewStyle().Foreground(s.DimColor).Render("○")
 			label = lipgloss.NewStyle().Foreground(s.SecondaryColor).Render(item.Label)
 		}

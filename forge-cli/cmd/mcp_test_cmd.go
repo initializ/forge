@@ -32,6 +32,10 @@ func resolveTestServerSpec(cmd *cobra.Command, name string) (*types.MCPServer, s
 			URL:       url,
 			Transport: "http",
 			Auth:      &types.MCPAuth{Type: "oauth"},
+			// No forge.yaml allow-list in standalone mode; `test` is a diagnostic,
+			// so surface ALL discovered tools ("*") rather than the empty-allow =
+			// deny-all default that filterTools applies.
+			Tools: types.MCPToolFilter{Allow: []string{"*"}},
 		}, store, nil
 	}
 	cfg, err := loadForgeConfig(cmd)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
 	"time"
 
 	"github.com/initializ/forge/forge-core/llm/oauth"
@@ -11,6 +12,26 @@ import (
 	"github.com/initializ/forge/forge-core/types"
 	"github.com/spf13/cobra"
 )
+
+// mcpServerNameRe mirrors forge-core validate's server-name rule
+// (validate.mcpServerNamePattern). The forge.yaml path gets this enforced by
+// ValidateMCPConfig; standalone mode must apply it too, because `name` reaches
+// the credential store path — storeKey(name) → filepath.Join(dir,
+// "mcp_"+name+".json"). An unconstrained name (e.g. "x/../../../tmp/evil") would
+// write the 0600 token file OUTSIDE ~/.forge/credentials. Restricting to a
+// lowercase slug rejects "/", "\", "." and ".." by construction.
+var mcpServerNameRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,30}$`)
+
+// validateServerName rejects a name that isn't a safe slug (path-traversal guard
+// for the credential store). Applied to BOTH login modes at the dispatcher.
+func validateServerName(name string) error {
+	if !mcpServerNameRe.MatchString(name) {
+		return fmt.Errorf(
+			"invalid server name %q: must be a lowercase slug ^[a-z][a-z0-9-]{0,30}$ "+
+				"(letters, digits, hyphens — no slashes or dots)", name)
+	}
+	return nil
+}
 
 // loginTokenStorePath returns the effective override (forge.yaml >
 // env var > unset). Mirrors runtime's mcpTokenStorePath helper so
@@ -34,6 +55,13 @@ func loginTokenStorePath(cfg *types.ForgeConfig) string {
 // at MCP_TOKEN_STORE_PATH.
 func mcpLoginRun(cmd *cobra.Command, args []string) error {
 	name := args[0]
+	// Guard the credential-store path before either mode runs. The forge.yaml
+	// path's names are already slug-validated by ValidateMCPConfig; standalone
+	// names are free-form, so this is the chokepoint that keeps `name` from
+	// escaping ~/.forge/credentials.
+	if err := validateServerName(name); err != nil {
+		return err
+	}
 	if url, _ := cmd.Flags().GetString("url"); url != "" {
 		return mcpLoginStandalone(cmd, name)
 	}

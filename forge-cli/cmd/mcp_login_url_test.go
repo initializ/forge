@@ -61,6 +61,27 @@ func TestStandaloneServerConfig_EnvStorePathFallback(t *testing.T) {
 	}
 }
 
+func TestValidateServerName(t *testing.T) {
+	good := []string{"atlassian", "atlassian-read", "a", "a1-b2", "x0"}
+	for _, n := range good {
+		if err := validateServerName(n); err != nil {
+			t.Errorf("validateServerName(%q) = %v, want nil", n, err)
+		}
+	}
+	// Traversal / non-slug names must be rejected so the token never escapes the
+	// credential dir (the review's reported gap).
+	bad := []string{
+		"", "1abc", "Atlassian", "a_b", "a.b",
+		"x/../../../../tmp/evil", "a/b", "a\\b", "..", "../x", ".",
+		"toolongtoolongtoolongtoolongtoolong", // > 31 chars
+	}
+	for _, n := range bad {
+		if err := validateServerName(n); err == nil {
+			t.Errorf("validateServerName(%q) = nil, want error (unsafe name)", n)
+		}
+	}
+}
+
 func TestStandaloneServerConfig_EndpointPairing(t *testing.T) {
 	c := newLoginCmdForTest()
 	_ = c.Flags().Set("url", "https://x")

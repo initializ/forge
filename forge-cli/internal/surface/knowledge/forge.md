@@ -39,6 +39,7 @@ repo.
 18. [Workstream recap — FWS-1 through FWS-10 + OTel v1](#18-workstream-recap--fws-1-through-fws-10--otel-v1)
 19. [Docs map](#19-docs-map)
 20. [Recipes — common questions](#20-recipes--common-questions)
+21. [The bare `forge` surface](#21-the-bare-forge-surface)
 
 ---
 
@@ -1347,3 +1348,22 @@ and which canonical doc to deep-dive.
 | "How do I enable distributed tracing?" | § 12.9 | `docs/core-concepts/observability-tracing.md`; set `observability.tracing.enabled: true` + `endpoint` in forge.yaml (or `--otel-enabled --otel-endpoint`); collector host is auto-allowlisted at build time |
 | "How do I pivot from an audit row to a trace?" | § 12.4 + § 12.9 | Audit rows carry `trace_id` + `span_id` when tracing is on; paste either into Tempo / Jaeger / Honeycomb. `docs/security/audit-logging.md` § Trace cross-link |
 | "How do multi-hop A2A traces connect?" | § 12.9 | Phase 5 (#106): the dispatcher extracts the inbound W3C `traceparent` header; outbound HTTP through the egress-enforced transport auto-injects `traceparent` via otelhttp. Both pair to form one connected trace tree |
+
+---
+
+## 21. The bare `forge` surface
+
+Running **`forge` with no subcommand** opens an interactive builder surface (source: `forge-cli/cmd/surface.go` = `rootCmd.RunE`, and `forge-cli/internal/surface/`). It is TTY-gated: `runSurface` opens the surface only when stdin *and* stdout are TTYs; otherwise it prints help and exits, so a deployed/headless agent never launches it. All normal subcommands still dispatch (`Args: cobra.NoArgs` on the root, so a mistyped subcommand still errors).
+
+**Chooser.** Banner + capabilities, then pick a coding agent:
+
+- **Claude Code** — registers a **durable, user-scope** forge MCP server with `claude` (`claude mcp add --scope user forge -- forge mcp-serve`) and execs claude. User scope means the tools survive a `claude` resume (remove with `claude mcp remove forge`). `forge mcp-serve` (hidden) is the stdio MCP server; its toolset (`internal/surface/toolset.go` `MCPToolset`) is `forge_docs` + the structured forge-ops (`forge_scaffold`/`validate`/`build`/`run`/`add_channel`/`add_skill`/`import_skill`/`skills_list`/`mcp_list`) + the generic `forge_cli` passthrough + the initializ generators (`initializ_detect_agent`, `initializ_deploy_generate`). Forge-ops self-exec the matching `forge` subcommand (argv-based, no shell).
+- **forge (native)** — forge's own in-process agent (`forge-cli/runtime/builder_session.go` `NewBuilderSession`, needs no forge.yaml). Its registry adds file read/write/edit + search + a **shell** tool + the forge-ops + `forge_docs` + initializ tools; replies render as terminal markdown; REPL with `/help` and `/exit`. It is the automatic fallback when `claude` isn't installed.
+
+**Optimizer (Claude Code path).** A second prompt offers the [context optimizer](#12-security-model) (cache-safe reversible compression + episodic/procedural memory). It is **OFF by default and unselectable** unless a **trusted** forge settings layer sets `optimizer.enabled: true` — enabling it rewrites `ANTHROPIC_BASE_URL`, which can't be forced under enterprise-managed Claude Code. `runSurface` resolves the flag via `settings.Resolve(settings.TrustedGatewayLayers(settings.LoadAllLayers(...)))`, so a checked-in project `.forge/settings.json` cannot enable it (same base-url-redirect boundary as `models.gateway`, #464); user / project-local / CLI / managed can. When enabled and On, it starts (or **adopts** an already-running) optimizer proxy with in-band expansion — still one MCP server. See `docs/reference/settings.md` (`optimizer.enabled`).
+
+**Generating an `initializ-deploy.yaml`.** The surface can prepare an agent for the initializ platform (generation only; the operator deploys). Workflow: `initializ_detect_agent` investigates the dir (`forge.yaml` → forge; Claude/Strands dep in `package.json` → node, in `requirements.txt`/`pyproject.toml` → python) → confirm type + node/python with the user → `initializ_deploy_generate` writes a spec for `forge` / `claude-agent` / `strands`, mirroring the initializ CLI's `deployspec.Validate` (forge = always A2A, no model/expose; managed = name + `model.provider` + one exposure `expose: a2a` | `http`). Deploy with `initializ agent deploy -f initializ-deploy.yaml --image <ref> --wait`.
+
+**Security boundary.** The unsandboxed shell tool is wired ONLY into the native session — never in `MCPToolset` (what Claude Code / a deployed agent reach) or a built agent (enforced by `TestMCPToolsetExcludesShell`). File/search tools are workspace-confined (`safeJoin` → `filepath.IsLocal`); forge-ops/`forge_cli` are argv-based and refuse long-running/interactive verbs (`run`/`serve`/`ui`/`optimizer`). Because the surface is TTY-gated and `cli_execute` runs binaries with piped stdio (no PTY) against an operator allowlist, a live agent cannot shell into `forge` to start the surface.
+
+Reference: `docs/reference/forge-surface.md`, `docs/reference/cli-reference.md` (§ `forge` no subcommand), `docs/reference/settings.md`.

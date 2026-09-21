@@ -123,6 +123,7 @@ You write a `SKILL.md`. Forge compiles it into a secure, runnable agent with egr
 |----------|-------------|
 | [A2A Agent Card](docs/reference/a2a-agent-card.md) | Spec-conformant Agent Card at `/.well-known/agent-card.json` (A2A 0.3.0) |
 | [Commands](docs/reference/cli-reference.md) | Full CLI reference |
+| [The forge surface](docs/reference/forge-surface.md) | Bare `forge` — an interactive builder that shells into Claude Code (forge MCP tools) or forge's own agent, and generates `initializ-deploy.yaml` |
 | [Configuration](docs/reference/forge-yaml-schema.md) | `forge.yaml` schema and environment variables |
 | [Settings](docs/reference/settings.md) | Layered developer settings (user + managed/MDM) — enabled channels, model default + gateway, builtin tools |
 | [Dashboard](docs/reference/web-dashboard.md) | Web UI features and architecture |

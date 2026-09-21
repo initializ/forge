@@ -436,9 +436,11 @@ func buildOptimizerSetup(logger *slog.Logger) (*optimizerSetup, error) {
 	// Reading ANTHROPIC_BASE_URL lets the optimizer sit in front of an org
 	// gateway. (In `claude` mode we read it BEFORE overriding the child's
 	// ANTHROPIC_BASE_URL, so chaining still works.)
-	upstream := resolveOptimizerUpstream(optimizerUpstream, os.Getenv("ANTHROPIC_BASE_URL"))
-	if upstream == "" || strings.Contains(upstream, listen) {
-		upstream = optimizer.DefaultUpstream // nothing configured, or don't point at ourselves
+	upstream := resolveOptimizerUpstream(optimizerUpstream, os.Getenv("ANTHROPIC_BASE_URL"), listen)
+	if upstream == "" {
+		upstream = optimizer.DefaultUpstream // nothing configured
+	} else if err := validateUpstream(upstream, listen); err != nil {
+		return nil, fmt.Errorf("optimizer upstream: %w", err)
 	}
 
 	var closers []func()

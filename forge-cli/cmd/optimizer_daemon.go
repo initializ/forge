@@ -78,15 +78,12 @@ func optimizerListenerPID(addr string) int {
 // resolveChildUpstream picks the upstream base URL to hand the detached proxy
 // child. It applies the shared optimizer-upstream precedence (managed settings >
 // --upstream > $FORGE_OPTIMIZER_UPSTREAM > ~/.forge/settings.json), with the
-// Claude Code settings gateway as the chaining fallback — skipped when it points
-// back at our own listen address (avoids a self-loop on repeat starts). Returns
-// "" to let the child fall back to its own default (Anthropic).
+// Claude Code settings gateway as the chaining fallback — silently dropped when
+// it points back at our own listen address (avoids a self-loop on repeat starts;
+// see resolveOptimizerUpstream). Returns "" to let the child fall back to its own
+// default (Anthropic).
 func resolveChildUpstream(flag, settingsBase, listen string) string {
-	chaining := ""
-	if settingsBase != "" && !strings.Contains(settingsBase, listen) {
-		chaining = settingsBase
-	}
-	return resolveOptimizerUpstream(flag, chaining)
+	return resolveOptimizerUpstream(flag, settingsBase, listen)
 }
 
 // processAlive, terminatePID, and detachSysProcAttr are platform-specific
@@ -164,6 +161,9 @@ func runOptimizerStart(_ *cobra.Command, _ []string) error {
 		// invisible to it — so we resolve here (including that settings gateway,
 		// read BEFORE wireClaudeSettings overwrites it) and hand over one value.
 		childUpstream := resolveChildUpstream(optimizerUpstream, settingsBaseURL(), listen)
+		if err := validateUpstream(childUpstream, listen); err != nil {
+			return fmt.Errorf("optimizer upstream: %w", err)
+		}
 
 		args := []string{"optimizer", "--compress", "--memory", "--listen", listen, "--quiet"}
 		if childUpstream != "" {

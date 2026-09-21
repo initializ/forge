@@ -64,10 +64,10 @@ func TestResolveOptimizerUpstream_UserSettings(t *testing.T) {
 	userPath, _ := isolateSettings(t)
 	writeSettings(t, userPath, "https://user.example")
 
-	if got := resolveOptimizerUpstream("", ""); got != "https://user.example" {
+	if got := resolveOptimizerUpstream("", "", ""); got != "https://user.example" {
 		t.Errorf("user settings upstream = %q, want https://user.example", got)
 	}
-	if got := resolveOptimizerUpstream("https://flag", ""); got != "https://flag" {
+	if got := resolveOptimizerUpstream("https://flag", "", ""); got != "https://flag" {
 		t.Errorf("flag should override user settings, got %q", got)
 	}
 }
@@ -79,8 +79,32 @@ func TestResolveOptimizerUpstream_ManagedEnforced(t *testing.T) {
 	writeSettings(t, userPath, "https://user.example")
 	writeSettings(t, filepath.Join(managedDir, "managed-settings.json"), "https://managed.example")
 
-	if got := resolveOptimizerUpstream("https://flag", "https://chain"); got != "https://managed.example" {
+	if got := resolveOptimizerUpstream("https://flag", "https://chain", "127.0.0.1:8787"); got != "https://managed.example" {
 		t.Errorf("managed should win over flag, got %q", got)
+	}
+}
+
+// TestValidateUpstream: malformed, wrong-scheme, hostless, and self-referencing
+// values are rejected with a clear error; empty and good URLs pass.
+func TestValidateUpstream(t *testing.T) {
+	const listen = "127.0.0.1:8787"
+	good := []string{"", "https://kong.example", "http://gw.internal:8443/bedrock"}
+	for _, u := range good {
+		if err := validateUpstream(u, listen); err != nil {
+			t.Errorf("validateUpstream(%q) unexpected error: %v", u, err)
+		}
+	}
+	bad := map[string]string{
+		"not a url":            "://nope",
+		"ftp scheme":           "ftp://host",
+		"no host":              "https://",
+		"self-loop (explicit)": "http://" + listen,
+		"self-loop with path":  "http://" + listen + "/bedrock",
+	}
+	for name, u := range bad {
+		if err := validateUpstream(u, listen); err == nil {
+			t.Errorf("%s: validateUpstream(%q) should have errored", name, u)
+		}
 	}
 }
 

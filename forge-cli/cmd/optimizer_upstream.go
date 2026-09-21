@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"fmt"
+	"net/url"
 	"os"
 
 	"github.com/initializ/forge/forge-core/settings"
@@ -25,7 +27,16 @@ import (
 // MUST NOT be honorable from the checked-in project layer (.forge/settings.json
 // ships inside a cloned repo). We resolve over TrustedGatewayLayers, which drops
 // that layer. Returns "" when nothing is configured.
-func resolveOptimizerUpstream(flag, chaining string) string {
+func resolveOptimizerUpstream(flag, chaining, listen string) string {
+	// A chaining source (ANTHROPIC_BASE_URL / the Claude Code settings gateway)
+	// legitimately equals our OWN address when it already points at the optimizer
+	// (e.g. a repeat `start`). Treat that as "no chaining" so we fall back instead
+	// of looping. An EXPLICIT self-reference (flag/env/settings) is a
+	// misconfiguration and is rejected by validateUpstream, not silently dropped.
+	if listen != "" && upstreamHost(chaining) == listen {
+		chaining = ""
+	}
+
 	layers, err := settings.LoadAllLayers(settings.LoadOptions{})
 	if err != nil {
 		layers = nil // settings are best-effort; never block the proxy on a bad file
@@ -55,4 +66,41 @@ func pickUpstream(managed, flag, env, user, chaining string) string {
 	default:
 		return chaining
 	}
+}
+
+// upstreamHost returns the host:port of a URL, or "" if it can't be parsed. Used
+// only to compare against the listen address (self-loop detection).
+func upstreamHost(rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return u.Host
+}
+
+// validateUpstream rejects a malformed or self-referencing resolved upstream with
+// a clear error, so a bad value (typo, non-URL, or a flag/settings value pointing
+// at the optimizer itself) fails at `start` instead of at request time. Empty is
+// OK — the caller applies its own default.
+func validateUpstream(upstream, listen string) error {
+	if upstream == "" {
+		return nil
+	}
+	u, err := url.Parse(upstream)
+	if err != nil {
+		return fmt.Errorf("invalid optimizer upstream %q: %w", upstream, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("optimizer upstream %q must be an http(s) URL", upstream)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("optimizer upstream %q must include a host", upstream)
+	}
+	if listen != "" && u.Host == listen {
+		return fmt.Errorf("optimizer upstream %q points at the optimizer's own listen address (self-loop)", upstream)
+	}
+	return nil
 }

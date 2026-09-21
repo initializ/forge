@@ -16,6 +16,14 @@ Complete reference for all Forge CLI commands.
 
 ---
 
+## `forge` (no subcommand)
+
+Running `forge` with **no subcommand** opens the interactive **[forge surface](forge-surface.md)** — a builder that shells into Claude Code (wired with forge knowledge + tools via a durable MCP server) or runs forge's own in-process agent, and can generate an `initializ-deploy.yaml`. It requires a TTY; in a non-interactive context it prints help and exits. See the [forge surface reference](forge-surface.md) for the chooser, the MCP toolset, the settings-gated optimizer, and the security model.
+
+A hidden companion, `forge mcp-serve`, is the stdio MCP server Claude Code spawns; you don't run it directly.
+
+---
+
 ## `forge init`
 
 Initialize a new agent project. Without `--non-interactive`, a TUI wizard walks through: name → model provider → fallbacks → channel → tools → skills → context compression → authentication → egress review → summary.
@@ -170,6 +178,27 @@ Inspect context compression state.
 ### `forge compression suggestions`
 
 Shows `keep_patterns` candidates mined from `context_expand` retrievals (the [learning loop](../core-concepts/context-compression.md#the-learning-loop)), with a paste-ready `compression.keep_patterns` block for entries that crossed the suggestion threshold.
+
+## `forge optimizer`
+
+Runs the local optimizer proxy that Claude Code routes through (via `ANTHROPIC_BASE_URL`): cache-safe reversible compression + episodic/procedural memory + usage metering. `forge optimizer` runs it in the foreground; `forge optimizer claude [-- <args>]` launches Claude Code wired to it; `forge optimizer start` / `stop` / `status` manage a detached background daemon.
+
+### Upstream
+
+The proxy forwards each request to an **upstream** base URL — the real Anthropic API by default, or an org **gateway** (e.g. Kong/Bedrock). Point it at a gateway when Claude Code sits behind one. Resolution precedence (highest first):
+
+| Source | |
+|---|---|
+| **managed settings** (`optimizer.upstream`) | Enterprise-enforced; overrides even `--upstream`. Read from the fixed OS `managed-settings.json` path — see [settings](settings.md). |
+| `--upstream <url>` | Explicit flag (also forwarded by `optimizer start` to the daemon). |
+| `$FORGE_OPTIMIZER_UPSTREAM` | Environment override. |
+| **user settings** (`optimizer.upstream`) | `~/.forge/settings.json` (and trusted project-local / CLI layers; the checked-in project layer is excluded — it would redirect Claude Code's traffic + auth). |
+| `$ANTHROPIC_BASE_URL` | Gateway **chaining**: if it already points at your gateway when the optimizer starts, the optimizer captures it (dropped if it points back at the optimizer's own address). |
+| default | `https://api.anthropic.com` |
+
+The resolved upstream is validated as an `http(s)` URL at startup (a self-reference or malformed value fails clearly) and shown by `forge optimizer start` / `status`.
+
+> **Managed Claude Code caveat:** if `ANTHROPIC_BASE_URL` is pinned in Claude Code's own **managed** settings, that outranks the user settings the daemon writes — so the proxy can't be inserted by `forge optimizer start` alone. There, point the managed `ANTHROPIC_BASE_URL` at the optimizer and set the gateway via `optimizer.upstream` / `--upstream`.
 
 ## `forge build`
 

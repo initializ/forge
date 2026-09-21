@@ -14,6 +14,7 @@ import (
 	"github.com/initializ/forge/forge-cli/internal/surface"
 	"github.com/initializ/forge/forge-cli/internal/tryview"
 	"github.com/initializ/forge/forge-cli/runtime"
+	"github.com/initializ/forge/forge-core/settings"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -47,7 +48,17 @@ func runSurface(cmd *cobra.Command, _ []string) error {
 			_, _ = fmt.Fprintf(out, "  Claude Code isn't on your PATH — using forge native instead.\n\n")
 			return runNativeSurface(cmd, color)
 		}
-		useOpt, ok, err := surface.ChooseOptimizer(os.Stdin, out, color)
+		// The optimizer is OFF by default; a forge settings layer opts it in. It
+		// rewrites ANTHROPIC_BASE_URL (routing Claude Code through the local proxy,
+		// which sees all prompt context), so — like the model gateway (#464) — it
+		// must NOT be enableable by an untrusted checked-in project layer. Resolve
+		// from TRUSTED layers only (user / project-local / CLI / managed), which
+		// excludes a hostile cloned repo's .forge/settings.json.
+		defaultOptimizer := false
+		if layers, lErr := settings.LoadAllLayers(settings.LoadOptions{}); lErr == nil {
+			defaultOptimizer = settings.Resolve(settings.TrustedGatewayLayers(layers)).OptimizerEnabled()
+		}
+		useOpt, ok, err := surface.ChooseOptimizer(os.Stdin, out, color, defaultOptimizer)
 		if err != nil || !ok {
 			return err
 		}

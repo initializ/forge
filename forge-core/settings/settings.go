@@ -49,11 +49,37 @@ func (o *ModelGatewayOIDC) Validate() error {
 // field is optional; a zero Settings means "nothing configured" and callers
 // fall back to their built-in defaults, preserving pre-#454 behavior.
 type Settings struct {
-	Channels ChannelSettings   `json:"channels,omitempty"`
-	Models   ModelSettings     `json:"models,omitempty"`
-	Tools    ToolSettings      `json:"tools,omitempty"`
-	Skills   SkillSettings     `json:"skills,omitempty"`
-	Env      map[string]string `json:"env,omitempty"`
+	Channels  ChannelSettings   `json:"channels,omitempty"`
+	Models    ModelSettings     `json:"models,omitempty"`
+	Tools     ToolSettings      `json:"tools,omitempty"`
+	Skills    SkillSettings     `json:"skills,omitempty"`
+	Optimizer OptimizerSettings `json:"optimizer,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
+}
+
+// OptimizerSettings configures the forge context optimizer.
+type OptimizerSettings struct {
+	// Enabled tri-states whether the optimizer is offered ON by default when the
+	// bare-`forge` surface shells into a coding agent: nil = unset (default off),
+	// false = explicitly off, true = on. It defaults OFF because enabling the
+	// optimizer rewrites ANTHROPIC_BASE_URL, which can't be forced under
+	// enterprise-managed Claude Code settings — so it must be opted in explicitly,
+	// via user settings or an enterprise-managed settings layer. Scalar — the
+	// highest layer that sets it wins (a managed layer is the enterprise-approved
+	// enablement path).
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Upstream is the base URL the proxy forwards to — typically the org's LLM
+	// gateway (e.g. a Kong/Bedrock endpoint). Scalar: the highest layer wins, so
+	// a MANAGED value overrides a user one (enterprise enforcement). Empty →
+	// the proxy uses its flag/env/chaining/default resolution instead.
+	Upstream string `json:"upstream,omitempty"`
+}
+
+// OptimizerEnabled reports the effective default for the optimizer: true only
+// when a settings layer explicitly enabled it. Unset → false.
+func (s Settings) OptimizerEnabled() bool {
+	return s.Optimizer.Enabled != nil && *s.Optimizer.Enabled
 }
 
 // ChannelSettings governs which channel adapters forge offers/enables in
@@ -216,9 +242,25 @@ func merge(lo, hi Settings) Settings {
 	out.Models.Default = mergeModelDefault(lo.Models.Default, hi.Models.Default)
 	out.Models.Gateway = mergeGateway(lo.Models.Gateway, hi.Models.Gateway)
 	out.Models.Gateways = mergeGateways(lo.Models.Gateways, hi.Models.Gateways)
+	out.Optimizer.Enabled = mergeBoolPtr(lo.Optimizer.Enabled, hi.Optimizer.Enabled)
 	out.Env = mergeStringMap(lo.Env, hi.Env)
 
+	// Scalar: higher layer wins when set (managed over user).
+	if hi.Optimizer.Upstream != "" {
+		out.Optimizer.Upstream = hi.Optimizer.Upstream
+	}
+
 	return out
+}
+
+// mergeBoolPtr returns hi when it is set (non-nil), else lo — so the highest
+// layer that expressed a value wins, and an unset layer never clobbers a lower
+// one's explicit choice.
+func mergeBoolPtr(lo, hi *bool) *bool {
+	if hi != nil {
+		return hi
+	}
+	return lo
 }
 
 func mergeModelDefault(lo, hi *ModelDefault) *ModelDefault {

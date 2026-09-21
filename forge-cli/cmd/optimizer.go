@@ -128,7 +128,7 @@ func init() {
 	// `optimizer claude` accept them.
 	pf := optimizerCmd.PersistentFlags()
 	pf.StringVar(&optimizerListen, "listen", optimizer.DefaultListen, "address to listen on (host:port)")
-	pf.StringVar(&optimizerUpstream, "upstream", "", "upstream Anthropic base URL (default: $ANTHROPIC_BASE_URL, else "+optimizer.DefaultUpstream+")")
+	pf.StringVar(&optimizerUpstream, "upstream", "", "upstream base URL to forward to, e.g. an org gateway (precedence: managed settings > this flag > $FORGE_OPTIMIZER_UPSTREAM > ~/.forge/settings.json > $ANTHROPIC_BASE_URL > "+optimizer.DefaultUpstream+")")
 	pf.StringVar(&optimizerTelemetry, "telemetry-url", "", "control-plane URL to POST token usage to (default: $FORGE_OPTIMIZER_TELEMETRY_URL)")
 	pf.StringVar(&optimizerUsageLog, "usage-log", defaultUsageLog, "local NDJSON file to append per-request usage to (empty to disable)")
 	pf.BoolVar(&optimizerCompress, "compress", false, "compress bulky conversation content before it reaches the model (EXPERIMENTAL; default ON for `optimizer claude`)")
@@ -430,18 +430,17 @@ func resolveListen() string {
 func buildOptimizerSetup(logger *slog.Logger) (*optimizerSetup, error) {
 	listen := resolveListen()
 
-	// Upstream resolution — flag > FORGE_OPTIMIZER_UPSTREAM > ANTHROPIC_BASE_URL
-	// (gateway chaining) > default. Reading ANTHROPIC_BASE_URL lets the
-	// optimizer sit in front of an org gateway. (In `claude` mode we read it
-	// BEFORE overriding the child's ANTHROPIC_BASE_URL, so chaining still works.)
-	upstream := firstNonEmpty(
-		optimizerUpstream,
-		os.Getenv("FORGE_OPTIMIZER_UPSTREAM"),
-		os.Getenv("ANTHROPIC_BASE_URL"),
-		optimizer.DefaultUpstream,
-	)
-	if strings.Contains(upstream, listen) {
-		upstream = optimizer.DefaultUpstream // don't point at ourselves
+	// Upstream resolution — shared precedence (see resolveOptimizerUpstream):
+	// managed settings > --upstream > $FORGE_OPTIMIZER_UPSTREAM >
+	// ~/.forge/settings.json > ANTHROPIC_BASE_URL (gateway chaining) > default.
+	// Reading ANTHROPIC_BASE_URL lets the optimizer sit in front of an org
+	// gateway. (In `claude` mode we read it BEFORE overriding the child's
+	// ANTHROPIC_BASE_URL, so chaining still works.)
+	upstream := resolveOptimizerUpstream(optimizerUpstream, os.Getenv("ANTHROPIC_BASE_URL"), listen)
+	if upstream == "" {
+		upstream = optimizer.DefaultUpstream // nothing configured
+	} else if err := validateUpstream(upstream, listen); err != nil {
+		return nil, fmt.Errorf("optimizer upstream: %w", err)
 	}
 
 	var closers []func()

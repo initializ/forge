@@ -343,3 +343,55 @@ func TestLoadFile_ErrorsAndOmissions(t *testing.T) {
 		t.Error("unknown field must error")
 	}
 }
+
+func boolPtr(b bool) *bool { return &b }
+
+func TestOptimizerEnabledDefaultsOff(t *testing.T) {
+	if (Settings{}).OptimizerEnabled() {
+		t.Error("unset optimizer should default to off")
+	}
+	if !(Settings{Optimizer: OptimizerSettings{Enabled: boolPtr(true)}}).OptimizerEnabled() {
+		t.Error("explicit true should be on")
+	}
+	if (Settings{Optimizer: OptimizerSettings{Enabled: boolPtr(false)}}).OptimizerEnabled() {
+		t.Error("explicit false should be off")
+	}
+}
+
+func TestResolve_OptimizerManagedWins(t *testing.T) {
+	// User disables, managed enables → managed (enterprise) wins → on.
+	layers := []Layer{
+		{Source: LayerUser, Settings: Settings{Optimizer: OptimizerSettings{Enabled: boolPtr(false)}}},
+		{Source: LayerManaged, Settings: Settings{Optimizer: OptimizerSettings{Enabled: boolPtr(true)}}},
+	}
+	if !Resolve(layers).OptimizerEnabled() {
+		t.Error("managed optimizer enable should win")
+	}
+	// User enables, no managed value → stays on (unset managed doesn't clobber).
+	layers2 := []Layer{
+		{Source: LayerUser, Settings: Settings{Optimizer: OptimizerSettings{Enabled: boolPtr(true)}}},
+		{Source: LayerManaged, Settings: Settings{}},
+	}
+	if !Resolve(layers2).OptimizerEnabled() {
+		t.Error("user enable should survive an unset managed layer")
+	}
+}
+
+func TestOptimizerEnabled_ProjectLayerIsUntrusted(t *testing.T) {
+	// A checked-in project layer must NOT be able to enable the optimizer (it
+	// rewrites ANTHROPIC_BASE_URL — same trust boundary as the model gateway, #464).
+	proj := []Layer{{Source: LayerProject, Settings: Settings{Optimizer: OptimizerSettings{Enabled: boolPtr(true)}}}}
+	if !Resolve(proj).OptimizerEnabled() {
+		t.Fatal("sanity: a full resolve should honor the project layer")
+	}
+	if Resolve(TrustedGatewayLayers(proj)).OptimizerEnabled() {
+		t.Error("SECURITY: project (checked-in) layer must not enable the optimizer via the trusted resolve")
+	}
+	// Trusted layers (user / managed) DO enable it.
+	for _, src := range []string{LayerUser, LayerManaged, LayerProjectLocal} {
+		layers := []Layer{{Source: src, Settings: Settings{Optimizer: OptimizerSettings{Enabled: boolPtr(true)}}}}
+		if !Resolve(TrustedGatewayLayers(layers)).OptimizerEnabled() {
+			t.Errorf("%s layer should enable the optimizer via the trusted resolve", src)
+		}
+	}
+}

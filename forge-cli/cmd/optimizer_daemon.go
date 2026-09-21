@@ -41,8 +41,9 @@ func optDaemonStatePath() string { return forgeFile("optimizer-daemon.json") }
 type optDaemonState struct {
 	Listen         string  `json:"listen"`
 	PID            int     `json:"pid,omitempty"`
-	Spawned        bool    `json:"spawned"`       // true if we launched it (so stop kills it)
-	PrevBaseURL    *string `json:"prev_base_url"` // nil = key was absent before start
+	Spawned        bool    `json:"spawned"`            // true if we launched it (so stop kills it)
+	Upstream       string  `json:"upstream,omitempty"` // upstream we handed the child (empty = child default)
+	PrevBaseURL    *string `json:"prev_base_url"`      // nil = key was absent before start
 	PrevToolSearch *string `json:"prev_tool_search"`
 	MCPRegistered  bool    `json:"mcp_registered"`
 	UIPID          int     `json:"ui_pid,omitempty"` // dashboard we spawned via --ui (stop kills it)
@@ -72,6 +73,23 @@ func optimizerListenerPID(addr string) int {
 		}
 	}
 	return 0
+}
+
+// resolveChildUpstream picks the upstream base URL to hand the detached proxy
+// child. It applies the shared optimizer-upstream precedence (managed settings >
+// --upstream > $FORGE_OPTIMIZER_UPSTREAM > ~/.forge/settings.json), with a
+// chaining fallback of the Claude Code settings gateway, else ANTHROPIC_BASE_URL
+// inherited from our env — the latter is what the child would chain to on its
+// own, so folding it in here means the PARENT resolves (and validates) the SAME
+// effective upstream the child will use. Without it, an invalid env value would
+// surface only downstream as "daemon did not come up" instead of a clean `start`
+// error. A self-pointing chaining source is dropped (see resolveOptimizerUpstream).
+func resolveChildUpstream(flag, settingsBase, listen string) string {
+	chaining := settingsBase
+	if chaining == "" || upstreamHost(chaining) == listen {
+		chaining = os.Getenv("ANTHROPIC_BASE_URL")
+	}
+	return resolveOptimizerUpstream(flag, chaining, listen)
 }
 
 // processAlive, terminatePID, and detachSysProcAttr are platform-specific
@@ -143,9 +161,25 @@ func runOptimizerStart(_ *cobra.Command, _ []string) error {
 		}
 		defer func() { _ = logf.Close() }()
 
+		// Resolve the upstream the proxy forwards to and pass it EXPLICITLY to the
+		// detached child. The child could resolve flags/env itself, but a gateway
+		// configured only in Claude Code's settings.json (not the shell env) is
+		// invisible to it — so we resolve here (including that settings gateway,
+		// read BEFORE wireClaudeSettings overwrites it) and hand over one value.
+		childUpstream := resolveChildUpstream(optimizerUpstream, settingsBaseURL(), listen)
+		if err := validateUpstream(childUpstream, listen); err != nil {
+			return fmt.Errorf("optimizer upstream: %w", err)
+		}
+
+		args := []string{"optimizer", "--compress", "--memory", "--listen", listen, "--quiet"}
+		if childUpstream != "" {
+			args = append(args, "--upstream", childUpstream)
+			logger.Info("optimizer: forwarding to upstream", "upstream", childUpstream)
+		}
+
 		// Detached child running the standalone proxy with compression + memory.
-		child := exec.Command(self, "optimizer", "--compress", "--memory", "--listen", listen, "--quiet") //nolint:gosec // self-exec, fixed args
-		child.SysProcAttr = detachSysProcAttr()                                                           // survive this shell
+		child := exec.Command(self, args...)    //nolint:gosec // self-exec, controlled args
+		child.SysProcAttr = detachSysProcAttr() // survive this shell
 		child.Stdin = nil
 		child.Stdout = logf
 		child.Stderr = logf
@@ -154,12 +188,18 @@ func runOptimizerStart(_ *cobra.Command, _ []string) error {
 		}
 		st.PID = child.Process.Pid
 		st.Spawned = true
+		st.Upstream = childUpstream
 		_ = child.Process.Release()
 
 		if err := waitListenReady(listen, 8*time.Second); err != nil {
 			return fmt.Errorf("optimizer daemon did not come up on %s (see %s): %w", listen, logPath, err)
 		}
 		fmt.Printf("forge optimizer started (pid %d) at http://%s → logs %s\n", st.PID, listen, logPath)
+		if childUpstream != "" {
+			fmt.Printf("  forwarding to upstream: %s\n", childUpstream)
+		} else {
+			fmt.Printf("  upstream: default (Anthropic) or $ANTHROPIC_BASE_URL — pass --upstream / $FORGE_OPTIMIZER_UPSTREAM to target a gateway\n")
+		}
 	}
 
 	// Wire Claude Code settings so every `claude` inherits the base URL.
@@ -328,6 +368,11 @@ func runOptimizerStatus(_ *cobra.Command, _ []string) error {
 	if st.PID > 0 {
 		alive := processAlive(st.PID)
 		fmt.Printf("  daemon pid  : %d (%s)\n", st.PID, map[bool]string{true: "alive", false: "not found"}[alive])
+	}
+	if st.Upstream != "" {
+		fmt.Printf("  upstream    : %s\n", st.Upstream)
+	} else if st.Spawned {
+		fmt.Printf("  upstream    : default (Anthropic) / $ANTHROPIC_BASE_URL\n")
 	}
 	wired := settingsBaseURL()
 	if wired != "" {

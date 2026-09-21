@@ -57,16 +57,23 @@ type Settings struct {
 	Env       map[string]string `json:"env,omitempty"`
 }
 
-// OptimizerSettings governs whether the forge context optimizer is offered ON by
-// default when the bare-`forge` surface shells into a coding agent. It defaults
-// OFF (nil): enabling the optimizer rewrites ANTHROPIC_BASE_URL, which can't be
-// forced under enterprise-managed Claude Code settings — so it must be opted in
-// explicitly, via user settings or an enterprise-managed settings layer.
+// OptimizerSettings configures the forge context optimizer.
 type OptimizerSettings struct {
-	// Enabled tri-states: nil = unset (default off), false = explicitly off,
-	// true = on. Scalar — the highest layer that sets it wins (a managed layer
-	// is the enterprise-approved enablement path).
+	// Enabled tri-states whether the optimizer is offered ON by default when the
+	// bare-`forge` surface shells into a coding agent: nil = unset (default off),
+	// false = explicitly off, true = on. It defaults OFF because enabling the
+	// optimizer rewrites ANTHROPIC_BASE_URL, which can't be forced under
+	// enterprise-managed Claude Code settings — so it must be opted in explicitly,
+	// via user settings or an enterprise-managed settings layer. Scalar — the
+	// highest layer that sets it wins (a managed layer is the enterprise-approved
+	// enablement path).
 	Enabled *bool `json:"enabled,omitempty"`
+
+	// Upstream is the base URL the proxy forwards to — typically the org's LLM
+	// gateway (e.g. a Kong/Bedrock endpoint). Scalar: the highest layer wins, so
+	// a MANAGED value overrides a user one (enterprise enforcement). Empty →
+	// the proxy uses its flag/env/chaining/default resolution instead.
+	Upstream string `json:"upstream,omitempty"`
 }
 
 // OptimizerEnabled reports the effective default for the optimizer: true only
@@ -237,6 +244,11 @@ func merge(lo, hi Settings) Settings {
 	out.Models.Gateways = mergeGateways(lo.Models.Gateways, hi.Models.Gateways)
 	out.Optimizer.Enabled = mergeBoolPtr(lo.Optimizer.Enabled, hi.Optimizer.Enabled)
 	out.Env = mergeStringMap(lo.Env, hi.Env)
+
+	// Scalar: higher layer wins when set (managed over user).
+	if hi.Optimizer.Upstream != "" {
+		out.Optimizer.Upstream = hi.Optimizer.Upstream
+	}
 
 	return out
 }

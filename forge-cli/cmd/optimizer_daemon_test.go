@@ -42,6 +42,7 @@ func isolateSettings(t *testing.T) (userPath, managedDir string) {
 	managedDir = t.TempDir()
 	t.Setenv(settings.EnvUserSettings, userPath)
 	t.Setenv("FORGE_OPTIMIZER_UPSTREAM", "")
+	t.Setenv("ANTHROPIC_BASE_URL", "") // resolveChildUpstream folds this in as env chaining
 	restore := settings.SetManagedDirForTest(managedDir)
 	t.Cleanup(restore)
 	return userPath, managedDir
@@ -122,5 +123,28 @@ func TestResolveChildUpstream_SelfLoopGuard(t *testing.T) {
 	}
 	if got := resolveChildUpstream("https://flag", "http://"+listen, listen); got != "https://flag" {
 		t.Errorf("flag should win, got %q", got)
+	}
+}
+
+// TestResolveChildUpstream_EnvChainingCaptured: the child would chain to an
+// inherited ANTHROPIC_BASE_URL, so the parent folds it into its own resolution
+// (below the CC settings gateway) — this is what lets `start` validate it up
+// front instead of failing later with "daemon did not come up".
+func TestResolveChildUpstream_EnvChainingCaptured(t *testing.T) {
+	const listen = "127.0.0.1:8787"
+	isolateSettings(t)
+	t.Setenv("ANTHROPIC_BASE_URL", "https://env.gateway/bedrock")
+
+	// No settings gateway → the env chaining is captured by the parent.
+	if got := resolveChildUpstream("", "", listen); got != "https://env.gateway/bedrock" {
+		t.Errorf("env chaining not captured by parent: got %q", got)
+	}
+	// The CC settings gateway still takes precedence over the env when present.
+	if got := resolveChildUpstream("", "https://cc.gateway", listen); got != "https://cc.gateway" {
+		t.Errorf("settings gateway should outrank env chaining, got %q", got)
+	}
+	// A self-pointing settings gateway is skipped, falling back to the env.
+	if got := resolveChildUpstream("", "http://"+listen, listen); got != "https://env.gateway/bedrock" {
+		t.Errorf("self-pointing settings should fall back to env, got %q", got)
 	}
 }

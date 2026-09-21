@@ -77,13 +77,19 @@ func optimizerListenerPID(addr string) int {
 
 // resolveChildUpstream picks the upstream base URL to hand the detached proxy
 // child. It applies the shared optimizer-upstream precedence (managed settings >
-// --upstream > $FORGE_OPTIMIZER_UPSTREAM > ~/.forge/settings.json), with the
-// Claude Code settings gateway as the chaining fallback — silently dropped when
-// it points back at our own listen address (avoids a self-loop on repeat starts;
-// see resolveOptimizerUpstream). Returns "" to let the child fall back to its own
-// default (Anthropic).
+// --upstream > $FORGE_OPTIMIZER_UPSTREAM > ~/.forge/settings.json), with a
+// chaining fallback of the Claude Code settings gateway, else ANTHROPIC_BASE_URL
+// inherited from our env — the latter is what the child would chain to on its
+// own, so folding it in here means the PARENT resolves (and validates) the SAME
+// effective upstream the child will use. Without it, an invalid env value would
+// surface only downstream as "daemon did not come up" instead of a clean `start`
+// error. A self-pointing chaining source is dropped (see resolveOptimizerUpstream).
 func resolveChildUpstream(flag, settingsBase, listen string) string {
-	return resolveOptimizerUpstream(flag, settingsBase, listen)
+	chaining := settingsBase
+	if chaining == "" || upstreamHost(chaining) == listen {
+		chaining = os.Getenv("ANTHROPIC_BASE_URL")
+	}
+	return resolveOptimizerUpstream(flag, chaining, listen)
 }
 
 // processAlive, terminatePID, and detachSysProcAttr are platform-specific

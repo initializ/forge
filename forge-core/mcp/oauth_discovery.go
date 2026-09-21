@@ -139,18 +139,22 @@ func (f *OAuthFlow) resolveOAuthConfig(ctx context.Context, name string, cfg OAu
 		if len(scopes) == 0 {
 			scopes = meta.ScopesSupported
 		}
-		var clientSecret string
-		clientID, clientSecret, err = f.registerClient(ctx, meta.RegistrationEndpoint, scopes)
+		var clientSecret, authMethod string
+		clientID, clientSecret, authMethod, err = f.registerClient(ctx, meta.RegistrationEndpoint, scopes)
 		if err != nil {
 			return cfg, err
 		}
-		if clientSecret != "" {
-			// We register as a public PKCE client (token_endpoint_auth_method
-			// = none) and the token path sends no client_secret. If the AS
-			// ignored that and issued a confidential client, we can't
-			// authenticate it — and we refuse to persist a secret (#320
-			// finding 1). Fail closed rather than half-register.
-			return cfg, fmt.Errorf("%w: server %q issued a confidential client (client_secret); Forge supports only public PKCE clients for MCP OAuth — configure client_id/authorize_url/token_url explicitly for this server", ErrProtocolError, name)
+		// We request a public PKCE client (token_endpoint_auth_method=none) and
+		// never persist or send a secret (#320 finding 1). Decide public vs
+		// confidential from the REGISTERED method, not the mere presence of a
+		// secret: some AS (Auth0/Atlassian) honor "none" — a genuinely PUBLIC
+		// client whose token endpoint needs no secret — yet still echo a
+		// vestigial client_secret, which we safely ignore. Only when the AS
+		// actually registered a CONFIDENTIAL client (a secret AND a method that
+		// isn't "none", including an unstated method) do we fail closed: Forge
+		// can't authenticate it and won't half-register.
+		if clientSecret != "" && authMethod != "none" {
+			return cfg, fmt.Errorf("%w: server %q registered a confidential client (token_endpoint_auth_method=%q); Forge supports only public PKCE clients for MCP OAuth — configure client_id/authorize_url/token_url explicitly for this server", ErrProtocolError, name, authMethod)
 		}
 	}
 
@@ -206,13 +210,16 @@ func (f *OAuthFlow) discoverAuthServer(ctx context.Context, serverURL string) (a
 	// OpenID variant as a fallback for servers that only publish
 	// openid-configuration.
 	for _, asURL := range authServers {
-		for _, wk := range []string{
-			wellKnown(asURL, "oauth-authorization-server"),
-			wellKnown(asURL, "openid-configuration"),
-		} {
-			meta, err := fetchJSON[authServerMetadata](ctx, f.httpClient(), wk)
-			if err == nil && meta.TokenEndpoint != "" && meta.AuthorizationEndpoint != "" {
-				return meta, nil
+		for _, name := range []string{"oauth-authorization-server", "openid-configuration"} {
+			// Try path-aware then origin — an issuer WITH a path (e.g. an
+			// Auth0/Atlassian tenant like auth.example.com/TENANT) publishes its
+			// metadata (and registration_endpoint) at the path-aware well-known,
+			// not the origin root (RFC 8414 §3.1).
+			for _, wk := range wellKnownURLs(asURL, name) {
+				meta, err := fetchJSON[authServerMetadata](ctx, f.httpClient(), wk)
+				if err == nil && meta.TokenEndpoint != "" && meta.AuthorizationEndpoint != "" {
+					return meta, nil
+				}
 			}
 		}
 	}
@@ -225,10 +232,12 @@ func (f *OAuthFlow) discoverAuthServer(ctx context.Context, serverURL string) (a
 // if the server instead answers 401 with a WWW-Authenticate
 // `resource_metadata` pointer, that is honored too.
 func (f *OAuthFlow) discoverProtectedResource(ctx context.Context, serverURL string) ([]string, error) {
-	// Primary: the well-known path off the server origin.
-	prURL := wellKnown(serverURL, "oauth-protected-resource")
-	if pr, err := fetchJSON[protectedResourceMetadata](ctx, f.httpClient(), prURL); err == nil && len(pr.AuthorizationServers) > 0 {
-		return pr.AuthorizationServers, nil
+	// Primary: the well-known metadata, path-aware first (RFC 9728 §3.1 inserts
+	// the well-known segment before the resource's path) then origin-rooted.
+	for _, prURL := range wellKnownURLs(serverURL, "oauth-protected-resource") {
+		if pr, err := fetchJSON[protectedResourceMetadata](ctx, f.httpClient(), prURL); err == nil && len(pr.AuthorizationServers) > 0 {
+			return pr.AuthorizationServers, nil
+		}
 	}
 
 	// Fallback: probe the server itself and read the 401
@@ -278,49 +287,54 @@ func resourceMetadataParam(header string) string {
 	return ""
 }
 
-// registerClient performs RFC 7591 dynamic client registration and
-// returns the minted client_id and (if issued) client_secret.
-func (f *OAuthFlow) registerClient(ctx context.Context, registrationURL string, scopes []string) (clientID, clientSecret string, err error) {
+// registerClient performs RFC 7591 dynamic client registration and returns the
+// minted client_id, any issued client_secret, and the registered
+// token_endpoint_auth_method (RFC 7591 echoes the granted client metadata). The
+// caller decides public vs confidential from the METHOD, not the mere presence
+// of a secret: some AS (Auth0/Atlassian) register a PUBLIC client (method
+// "none") yet still echo a vestigial secret the token endpoint never requires.
+func (f *OAuthFlow) registerClient(ctx context.Context, registrationURL string, scopes []string) (clientID, clientSecret, tokenAuthMethod string, err error) {
 	body := map[string]any{
 		"client_name":                "Forge MCP",
 		"redirect_uris":              loopbackRedirectURIs,
 		"grant_types":                []string{"authorization_code", "refresh_token"},
 		"response_types":             []string{"code"},
-		"token_endpoint_auth_method": "none", // public client (PKCE)
+		"token_endpoint_auth_method": "none", // request a public client (PKCE)
 	}
 	if len(scopes) > 0 {
 		body["scope"] = strings.Join(scopes, " ")
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, registrationURL, strings.NewReader(string(raw)))
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	resp, err := f.httpClient().Do(req)
 	if err != nil {
-		return "", "", fmt.Errorf("%w: dynamic client registration request failed: %v", ErrTransportUnavailable, err)
+		return "", "", "", fmt.Errorf("%w: dynamic client registration request failed: %v", ErrTransportUnavailable, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("%w: dynamic client registration returned %d: %s", ErrProtocolError, resp.StatusCode, strings.TrimSpace(string(data)))
+		return "", "", "", fmt.Errorf("%w: dynamic client registration returned %d: %s", ErrProtocolError, resp.StatusCode, strings.TrimSpace(string(data)))
 	}
 	var out struct {
-		ClientID     string `json:"client_id"`
-		ClientSecret string `json:"client_secret"`
+		ClientID                string `json:"client_id"`
+		ClientSecret            string `json:"client_secret"`
+		TokenEndpointAuthMethod string `json:"token_endpoint_auth_method"`
 	}
 	if err := json.Unmarshal(data, &out); err != nil {
-		return "", "", fmt.Errorf("%w: parsing registration response: %v", ErrProtocolError, err)
+		return "", "", "", fmt.Errorf("%w: parsing registration response: %v", ErrProtocolError, err)
 	}
 	if out.ClientID == "" {
-		return "", "", fmt.Errorf("%w: registration response carried no client_id", ErrProtocolError)
+		return "", "", "", fmt.Errorf("%w: registration response carried no client_id", ErrProtocolError)
 	}
-	return out.ClientID, out.ClientSecret, nil
+	return out.ClientID, out.ClientSecret, out.TokenEndpointAuthMethod, nil
 }
 
 // RegisteredOAuthHosts returns the authorize/token/registration hosts
@@ -396,18 +410,41 @@ func fetchJSON[T any](ctx context.Context, client *http.Client, target string) (
 	return out, nil
 }
 
-// wellKnown builds a `.well-known/<name>` URL off the ORIGIN of base
-// (scheme+host), per RFC 8414 §3 / RFC 9728 §3 — the well-known path
-// is rooted at the host, ignoring any path component of base.
-func wellKnown(base, name string) string {
+// wellKnownURLs builds the candidate `.well-known/<name>` metadata URLs for an
+// issuer/resource, in priority order.
+//
+// Per RFC 8414 §3.1 / RFC 9728 §3.1, when the issuer has a PATH the well-known
+// segment is INSERTED between the host and that path — e.g. an Auth0/Atlassian
+// tenant `https://auth.example.com/TENANT` publishes at
+// `https://auth.example.com/.well-known/<name>/TENANT`, NOT at the origin root.
+// The registration_endpoint (DCR) lives in that path-scoped document, so an
+// origin-only lookup misses it. We therefore try path-aware first, then the
+// origin-rooted form (issuers without a path, and servers that publish there).
+// For `openid-configuration` we also try the OIDC path-SUFFIX form.
+func wellKnownURLs(base, name string) []string {
 	u, err := url.Parse(base)
 	if err != nil || u.Host == "" {
-		return ""
+		return nil
 	}
-	u.Path = "/.well-known/" + name
-	u.RawQuery = ""
-	u.Fragment = ""
-	return u.String()
+	origin := (&url.URL{Scheme: u.Scheme, Host: u.Host}).String()
+	path := strings.Trim(u.Path, "/")
+	var out []string
+	add := func(s string) {
+		for _, e := range out {
+			if e == s {
+				return
+			}
+		}
+		out = append(out, s)
+	}
+	if path != "" {
+		add(origin + "/.well-known/" + name + "/" + path) // RFC 8414/9728 path-aware
+		if name == "openid-configuration" {
+			add(origin + "/" + path + "/.well-known/" + name) // OIDC Discovery suffix form
+		}
+	}
+	add(origin + "/.well-known/" + name) // origin-rooted (no path; also a fallback)
+	return out
 }
 
 func hostOf(raw string) string {

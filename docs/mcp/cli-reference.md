@@ -6,7 +6,8 @@ order: 3
 
 ```
 forge mcp list
-forge mcp test    <name>  [--call <tool> --args '<json>' --timeout <dur>]
+forge mcp test    <name>  [--url <url> --token-store-path <dir>
+                           --call <tool> --args '<json>' --timeout <dur>]
 forge mcp login   <name>  [--url <url> --client-id <id> --scopes a,b
                            --authorize-url <u> --token-url <u> --token-store-path <dir>]
 forge mcp logout  <name>
@@ -38,6 +39,10 @@ store path resolves correctly. Run `forge mcp login <name>` first;
 `test` does not perform interactive login.
 
 Flags:
+- `--url <url>` — test **standalone**, without a `forge.yaml` (mirrors
+  `mcp login --url`; see below).
+- `--token-store-path <dir>` — credential-store dir override (default
+  `~/.forge/credentials`; also honored via `MCP_TOKEN_STORE_PATH`).
 - `--call <tool>` — also invoke this tool after listing.
 - `--args '<json>'` — JSON arguments for `--call`. Default `{}`.
 - `--timeout <duration>` — per-RPC timeout. Default 10s.
@@ -48,6 +53,24 @@ Examples:
 forge mcp test linear
 forge mcp test linear --call list_issues --args '{"first":5}'
 ```
+
+### Standalone — no `forge.yaml` (`--url`)
+
+For a **non-forge agent** (Strands, Claude, …) with no `forge.yaml`, pass `--url`
+to verify a connection you logged into with `mcp login --url`. `test` builds the
+server inline (`auth: oauth`) and reuses the token/registration `mcp login` stored
+under `<name>` — it does not re-authenticate. With no `forge.yaml` allow-list, all
+discovered tools are shown.
+
+```sh
+forge mcp login atlassian-read --url https://mcp.example/…    # once
+forge mcp test  atlassian-read --url https://mcp.example/…    # list tools
+forge mcp test  atlassian-read --url https://mcp.example/… --call search --args '{"query":"…"}'
+```
+
+`<name>` must match the name used at `mcp login` (it keys the stored token) and be a
+slug `^[a-z][a-z0-9-]{0,30}$`. Without `--url`, `test` reads the server from
+`forge.yaml` (unchanged).
 
 ## `forge mcp login <name>`
 

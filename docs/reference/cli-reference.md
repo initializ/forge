@@ -476,6 +476,11 @@ forge mcp test <server> --call <tool> --args '{"key":"value"}'
 # RFC 9728/8414 + dynamic client registration (RFC 7591) at first login
 forge mcp login <server>
 
+# Standalone (no forge.yaml) — for non-forge agents: pass the server inline.
+# login mints + stores the token; test reuses it (both keyed on <server>).
+forge mcp login <server> --url https://mcp.example/…
+forge mcp test  <server> --url https://mcp.example/…
+
 # Clear a stored MCP OAuth token
 forge mcp logout <server>
 ```

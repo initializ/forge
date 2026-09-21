@@ -16,6 +16,14 @@ Complete reference for all Forge CLI commands.
 
 ---
 
+## `forge` (no subcommand)
+
+Running `forge` with **no subcommand** opens the interactive **[forge surface](forge-surface.md)** — a builder that shells into Claude Code (wired with forge knowledge + tools via a durable MCP server) or runs forge's own in-process agent, and can generate an `initializ-deploy.yaml`. It requires a TTY; in a non-interactive context it prints help and exits. See the [forge surface reference](forge-surface.md) for the chooser, the MCP toolset, the settings-gated optimizer, and the security model.
+
+A hidden companion, `forge mcp-serve`, is the stdio MCP server Claude Code spawns; you don't run it directly.
+
+---
+
 ## `forge init`
 
 Initialize a new agent project. Without `--non-interactive`, a TUI wizard walks through: name → model provider → fallbacks → channel → tools → skills → context compression → authentication → egress review → summary.

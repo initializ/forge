@@ -81,6 +81,15 @@ forge mcp test linear                   # print discovered tools
 forge run                               # tools available as linear__create_issue, etc.
 ```
 
+**No forge.yaml?** For a non-forge agent (Strands, Claude, …) pass the server
+inline — login skips forge.yaml and stores the token the same way:
+
+```sh
+forge mcp login linear --url https://mcp.linear.app/sse
+```
+
+See the "Standalone — no `forge.yaml`" section in the [CLI reference](./cli-reference.md).
+
 ## Related docs
 
 - [Configuration reference](./configuration.md) — every `mcp:` field

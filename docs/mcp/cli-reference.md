@@ -7,7 +7,8 @@ order: 3
 ```
 forge mcp list
 forge mcp test    <name>  [--call <tool> --args '<json>' --timeout <dur>]
-forge mcp login   <name>
+forge mcp login   <name>  [--url <url> --client-id <id> --scopes a,b
+                           --authorize-url <u> --token-url <u> --token-store-path <dir>]
 forge mcp logout  <name>
 ```
 
@@ -65,7 +66,34 @@ refresh — login never re-registers. Explicit config in `forge.yaml`
 overrides discovery. See
 [configuration.md](configuration.md#oauth-discovery--dynamic-client-registration-316).
 
-Requires `auth.type: oauth` in the server's config. Fails fast for
+### Standalone — no `forge.yaml` (`--url`)
+
+For a **non-forge agent** (Strands, Claude, …) you have no `forge.yaml`. Pass the
+connection inline and login skips forge.yaml entirely:
+
+```sh
+forge mcp login atlassian-read --url https://mcp.example/…
+```
+
+- `--url <url>` — the MCP server endpoint; **switches on standalone mode**. Must be a
+  valid `http`/`https` URL (same rule the forge.yaml validator applies); discovery
+  (RFC 9728/8414/7591) fills the client + endpoints. Plain `http://` prints a warning
+  (the OAuth flow carries tokens).
+- `--client-id <id>` — optional; DCR mints one when omitted.
+- `--scopes a,b` — optional; discovered scopes are used when omitted.
+- `--authorize-url` / `--token-url` — optional explicit endpoints; **must be set
+  together** (or both omitted for discovery).
+- `--token-store-path <dir>` — override the credential dir (else `MCP_TOKEN_STORE_PATH`,
+  else `~/.forge/credentials`).
+
+`<name>` must be a slug matching `^[a-z][a-z0-9-]{0,30}$` (it becomes the
+`mcp_<name>.json` store file — the slug rule blocks path traversal on the store).
+The stored token is consumable by any runtime — including the initializ Strands
+SDK's direct (`auth: bearer`) lane, which reads the same `~/.forge/credentials/mcp_<name>.json`.
+
+Without `--url`, login reads the server from `forge.yaml` (below) — unchanged.
+
+Requires `auth.type: oauth` in the server's config (forge.yaml mode). Fails fast for
 bearer / static / no-auth servers, and fails closed with a clear message
 if a server advertises no metadata / no registration endpoint and no
 `client_id` is configured.

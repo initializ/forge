@@ -3,7 +3,9 @@ package cmd
 import (
 	"context"
 	"fmt"
+	neturl "net/url"
 	"os"
+	"regexp"
 	"time"
 
 	"github.com/initializ/forge/forge-core/llm/oauth"
@@ -11,6 +13,26 @@ import (
 	"github.com/initializ/forge/forge-core/types"
 	"github.com/spf13/cobra"
 )
+
+// mcpServerNameRe mirrors forge-core validate's server-name rule
+// (validate.mcpServerNamePattern). The forge.yaml path gets this enforced by
+// ValidateMCPConfig; standalone mode must apply it too, because `name` reaches
+// the credential store path — storeKey(name) → filepath.Join(dir,
+// "mcp_"+name+".json"). An unconstrained name (e.g. "x/../../../tmp/evil") would
+// write the 0600 token file OUTSIDE ~/.forge/credentials. Restricting to a
+// lowercase slug rejects "/", "\", "." and ".." by construction.
+var mcpServerNameRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,30}$`)
+
+// validateServerName rejects a name that isn't a safe slug (path-traversal guard
+// for the credential store). Applied to BOTH login modes at the dispatcher.
+func validateServerName(name string) error {
+	if !mcpServerNameRe.MatchString(name) {
+		return fmt.Errorf(
+			"invalid server name %q: must be a lowercase slug ^[a-z][a-z0-9-]{0,30}$ "+
+				"(letters, digits, hyphens — no slashes or dots)", name)
+	}
+	return nil
+}
 
 // loginTokenStorePath returns the effective override (forge.yaml >
 // env var > unset). Mirrors runtime's mcpTokenStorePath helper so
@@ -22,12 +44,87 @@ func loginTokenStorePath(cfg *types.ForgeConfig) string {
 	return os.Getenv("MCP_TOKEN_STORE_PATH")
 }
 
-// mcpLoginRun runs the OAuth 2.1 PKCE flow against the named server,
-// persisting the resulting tokens via the encrypted llm/oauth store.
-// Intended for laptop-time use; pod-time tokens come from the K8s
-// Secret mounted at MCP_TOKEN_STORE_PATH.
+// mcpLoginRun runs the OAuth 2.1 PKCE flow against the named server, persisting
+// the tokens via the encrypted llm/oauth store. Two modes:
+//
+//   - STANDALONE (`--url` set): resolve the connection from flags, no forge.yaml.
+//     For non-forge agents (Strands, Claude, …) that have no forge.yaml but still
+//     want forge to mint + store a direct MCP token.
+//   - forge.yaml (no `--url`): the original path — read the server from forge.yaml.
+//
+// Intended for laptop-time use; pod-time tokens come from the K8s Secret mounted
+// at MCP_TOKEN_STORE_PATH.
 func mcpLoginRun(cmd *cobra.Command, args []string) error {
 	name := args[0]
+	// Guard the credential-store path before either mode runs. The forge.yaml
+	// path's names are already slug-validated by ValidateMCPConfig; standalone
+	// names are free-form, so this is the chokepoint that keeps `name` from
+	// escaping ~/.forge/credentials.
+	if err := validateServerName(name); err != nil {
+		return err
+	}
+	if url, _ := cmd.Flags().GetString("url"); url != "" {
+		return mcpLoginStandalone(cmd, name)
+	}
+	return mcpLoginFromConfig(cmd, name)
+}
+
+// standaloneServerConfig builds an OAuthServerConfig from --url + optional flags,
+// bypassing forge.yaml. Endpoints and client are discovered (RFC 9728/8414/7591)
+// when omitted; --authorize-url and --token-url must be given together. Returns
+// the config + the credential-store dir override (flag > MCP_TOKEN_STORE_PATH >
+// unset). Separated from the flow so it is unit-testable without a browser.
+func standaloneServerConfig(cmd *cobra.Command) (mcp.OAuthServerConfig, string, error) {
+	url, _ := cmd.Flags().GetString("url")
+	clientID, _ := cmd.Flags().GetString("client-id")
+	scopes, _ := cmd.Flags().GetStringSlice("scopes")
+	authorizeURL, _ := cmd.Flags().GetString("authorize-url")
+	tokenURL, _ := cmd.Flags().GetString("token-url")
+	storePath, _ := cmd.Flags().GetString("token-store-path")
+	if storePath == "" {
+		storePath = os.Getenv("MCP_TOKEN_STORE_PATH")
+	}
+	// Mirror ValidateMCPConfig's server-URL rule (validate/mcp_config.go): the
+	// forge.yaml path gets it from the validator; standalone bypasses that, and the
+	// core OAuth flow doesn't back-stop it (it only parses the authorize URL
+	// mid-flow). Enforce it up front so a bad --url fails clearly here, not with a
+	// confusing discovery error later — and so the http/https-only rule holds.
+	if u, err := neturl.Parse(url); err != nil || u.Host == "" {
+		return mcp.OAuthServerConfig{}, "", fmt.Errorf("--url %q is malformed (need scheme://host)", url)
+	} else if u.Scheme != "http" && u.Scheme != "https" {
+		return mcp.OAuthServerConfig{}, "", fmt.Errorf("--url must use http or https (got %q)", u.Scheme)
+	}
+	// RFC 8414 discovery is all-or-nothing on the pair — a lone endpoint is a
+	// half-configured client the discovery path can't complete.
+	if (authorizeURL == "") != (tokenURL == "") {
+		return mcp.OAuthServerConfig{}, "", fmt.Errorf(
+			"--authorize-url and --token-url must be set together (or both omitted for discovery)")
+	}
+	return mcp.OAuthServerConfig{
+		ServerURL:    url,
+		ClientID:     clientID,
+		Scopes:       scopes,
+		AuthorizeURL: authorizeURL,
+		TokenURL:     tokenURL,
+		// Grant "" → authorization_code (interactive 3LO), per OAuthServerConfig.
+	}, storePath, nil
+}
+
+// mcpLoginStandalone logs in from flags alone (no forge.yaml).
+func mcpLoginStandalone(cmd *cobra.Command, name string) error {
+	sc, storePath, err := standaloneServerConfig(cmd)
+	if err != nil {
+		return err
+	}
+	// The OAuth flow carries tokens; nudge toward https for a plain-http server.
+	if u, perr := neturl.Parse(sc.ServerURL); perr == nil && u.Scheme == "http" {
+		fmt.Fprintln(os.Stderr, "warning: --url uses http:// — the OAuth flow carries tokens; prefer https")
+	}
+	return performLogin(name, sc, storePath)
+}
+
+// mcpLoginFromConfig is the original forge.yaml-driven path (unchanged behavior).
+func mcpLoginFromConfig(cmd *cobra.Command, name string) error {
 	cfg, err := loadForgeConfig(cmd)
 	if err != nil {
 		return err
@@ -53,31 +150,35 @@ func mcpLoginRun(cmd *cobra.Command, args []string) error {
 		fmt.Println("the token is minted at runtime from client_id + $" + spec.Auth.ClientSecretEnv + ".")
 		return nil
 	}
+	return performLogin(name, mcp.OAuthServerConfig{
+		ServerURL:    spec.URL, // enables RFC 9728/8414/7591 discovery when endpoints are omitted (#316)
+		ClientID:     spec.Auth.ClientID,
+		Scopes:       spec.Auth.Scopes,
+		AuthorizeURL: spec.Auth.AuthorizeURL,
+		TokenURL:     spec.Auth.TokenURL,
+	}, loginTokenStorePath(cfg))
+}
 
-	// Apply any token-store-path override (review B11) so the
-	// laptop-side Login persists into the same location the
-	// runtime will read from later.
-	if path := loginTokenStorePath(cfg); path != "" {
-		oauth.SetCredentialsDir(path)
+// performLogin runs the browser PKCE flow and stores the token. Shared by the
+// standalone and forge.yaml paths so both persist identically.
+func performLogin(name string, sc mcp.OAuthServerConfig, storePath string) error {
+	// Apply any token-store-path override (review B11) so the laptop-side Login
+	// persists into the same location the runtime will read from later.
+	if storePath != "" {
+		oauth.SetCredentialsDir(storePath)
 	}
 
 	flow := mcp.NewOAuthFlow()
-	// Inject the CLI-side browser opener. forge-core/mcp deliberately
-	// has no os/exec dependency (review B4 / spec §4.6), so the
-	// laptop-time opener lives here in the CLI package.
+	// Inject the CLI-side browser opener. forge-core/mcp deliberately has no
+	// os/exec dependency (review B4 / spec §4.6), so the laptop-time opener
+	// lives here in the CLI package.
 	flow.BrowserOpener = openBrowserCLI
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	fmt.Printf("opening browser to authorize Forge against %s...\n", name)
 	fmt.Println("(if a browser does not open, look for the URL on stdout below)")
-	if err := flow.Login(ctx, name, mcp.OAuthServerConfig{
-		ServerURL:    spec.URL, // enables RFC 9728/8414/7591 discovery when endpoints are omitted (#316)
-		ClientID:     spec.Auth.ClientID,
-		Scopes:       spec.Auth.Scopes,
-		AuthorizeURL: spec.Auth.AuthorizeURL,
-		TokenURL:     spec.Auth.TokenURL,
-	}); err != nil {
+	if err := flow.Login(ctx, name, sc); err != nil {
 		return fmt.Errorf("login: %w", err)
 	}
 	fmt.Println("  login: ok")

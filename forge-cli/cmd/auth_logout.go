@@ -85,12 +85,23 @@ func runAuthLogout(cmd *cobra.Command, args []string) error {
 	gatewayCleared := false
 	if layers, serr := settings.LoadAllLayers(settings.LoadOptions{}); serr == nil {
 		set := settings.Resolve(settings.TrustedGatewayLayers(layers))
-		if gw := set.Models.GatewayForProvider(provider); gw != nil && strings.TrimSpace(gw.APIKeyHelper) != "" {
-			if err := runtime.ClearGatewayToken(gw.APIKeyHelper, gw.Env); err != nil {
-				_, _ = fmt.Fprintf(out, "Warning: could not clear gateway token for %s: %v\n", provider, err)
-			} else {
-				gatewayCleared = true
-				_, _ = fmt.Fprintf(out, "Cleared gateway token for %s.\n", provider)
+		if gw := set.Models.GatewayForProvider(provider); gw != nil {
+			var clearErr error
+			cleared := false
+			if strings.TrimSpace(gw.APIKeyHelper) != "" {
+				clearErr = runtime.ClearGatewayToken(gw.APIKeyHelper, gw.Env)
+				cleared = true
+			} else if gw.OIDC != nil { // native OIDC token (#490)
+				clearErr = runtime.ClearGatewayOIDCToken(gw.OIDC)
+				cleared = true
+			}
+			if cleared {
+				if clearErr != nil {
+					_, _ = fmt.Fprintf(out, "Warning: could not clear gateway token for %s: %v\n", provider, clearErr)
+				} else {
+					gatewayCleared = true
+					_, _ = fmt.Fprintf(out, "Cleared gateway token for %s.\n", provider)
+				}
 			}
 		}
 	}

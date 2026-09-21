@@ -104,6 +104,44 @@ func TestBrowserCommand(t *testing.T) {
 	}
 }
 
+// TestLoopbackCallback pins the redirect_uri → (listen addr, path) derivation
+// that lets oauth.Flow bind a CONFIGURABLE loopback (#490). An empty redirect
+// falls back to the historical :1455/auth/callback; a non-http or non-loopback
+// redirect is refused — binding a local listener to anything else is the
+// security boundary.
+func TestLoopbackCallback(t *testing.T) {
+	cases := []struct {
+		name, in   string
+		addr, path string
+		wantErr    bool
+	}{
+		{"empty defaults", "", "localhost:1455", "/auth/callback", false},
+		{"custom loopback port+path", "http://127.0.0.1:22576/oauth/callback", "127.0.0.1:22576", "/oauth/callback", false},
+		{"localhost host", "http://localhost:9000/cb", "localhost:9000", "/cb", false},
+		{"no path defaults to slash", "http://localhost:9000", "localhost:9000", "/", false},
+		{"https rejected", "https://localhost:1455/cb", "", "", true},
+		{"non-loopback host rejected", "http://evil.example/cb", "", "", true},
+		{"garbage rejected", "://nope", "", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			addr, path, err := loopbackCallback(tc.in)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("loopbackCallback(%q) = (%q,%q,nil), want error", tc.in, addr, path)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("loopbackCallback(%q): unexpected error %v", tc.in, err)
+			}
+			if addr != tc.addr || path != tc.path {
+				t.Errorf("loopbackCallback(%q) = (%q,%q), want (%q,%q)", tc.in, addr, path, tc.addr, tc.path)
+			}
+		})
+	}
+}
+
 // TestOpenAIConfig_ClientIDAndScopes pins the exact values Forge
 // registers with OpenAI's OAuth. Rotating the ClientID or dropping
 // `offline_access` from the scopes is a silent behavior change —

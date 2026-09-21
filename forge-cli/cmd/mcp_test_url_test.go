@@ -63,3 +63,37 @@ func TestResolveTestServerSpec_StandaloneRejectsBadName(t *testing.T) {
 		t.Fatal("expected a validation error for a traversal-y name")
 	}
 }
+
+func TestValidateTestURL(t *testing.T) {
+	cases := []struct {
+		url string
+		ok  bool
+	}{
+		{"https://mcp.example/x", true},
+		{"http://localhost:9000/mcp", true}, // loopback http allowed (dev IdP)
+		{"http://127.0.0.1:9000/mcp", true}, // loopback
+		{"http://[::1]:9000/mcp", true},     // ipv6 loopback
+		{"http://mcp.example/x", false},     // plain http would leak the replayed token
+		{"ftp://x", false},                  // wrong scheme
+		{"not-a-url", false},                // no host
+		{"", false},                         // empty
+		{"https://", false},                 // no host
+	}
+	for _, c := range cases {
+		err := validateTestURL(c.url)
+		if c.ok && err != nil {
+			t.Errorf("url %q: unexpected error %v", c.url, err)
+		}
+		if !c.ok && err == nil {
+			t.Errorf("url %q: expected error, got nil", c.url)
+		}
+	}
+}
+
+func TestResolveTestServerSpec_StandaloneRejectsPlainHTTP(t *testing.T) {
+	c := newTestCmdForTest()
+	_ = c.Flags().Set("url", "http://mcp.example/x") // non-loopback http
+	if _, _, err := resolveTestServerSpec(c, "atlassian-read"); err == nil {
+		t.Fatal("expected an error: plain http would leak the replayed bearer token")
+	}
+}

@@ -68,6 +68,12 @@ forge mcp test  atlassian-read --url https://mcp.example/…    # list tools
 forge mcp test  atlassian-read --url https://mcp.example/… --call search --args '{"query":"…"}'
 ```
 
+`--url` must use **https** (a loopback host — `localhost`/`127.0.0.1`/`[::1]` — may
+use http for a dev IdP): unlike `login`, `test` **replays the stored access token**
+as a bearer to `--url`, so a plain-http target would leak it in cleartext. `--url`
+is also the token *target* — pass the same server you `mcp login`'d against, since
+`<name>` only selects which stored token to send.
+
 `<name>` must match the name used at `mcp login` (it keys the stored token) and be a
 slug `^[a-z][a-z0-9-]{0,30}$`. Without `--url`, `test` reads the server from
 `forge.yaml` (unchanged).

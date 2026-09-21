@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	neturl "net/url"
 	"os"
 	"time"
 
@@ -13,6 +14,28 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// validateTestURL parses a standalone `--url` and requires https, because
+// `mcp test` REPLAYS the stored OAuth access token as a bearer to this URL — a
+// plain-http target would leak it in cleartext (stricter than `mcp login --url`,
+// which only mints a token). Loopback hosts are allowed over http for dev IdPs.
+func validateTestURL(raw string) error {
+	u, err := neturl.Parse(raw)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("--url %q is malformed (need scheme://host)", raw)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("--url must use http or https (got %q)", u.Scheme)
+	}
+	host := u.Hostname()
+	loopback := host == "localhost" || host == "127.0.0.1" || host == "::1"
+	if u.Scheme == "http" && !loopback {
+		return fmt.Errorf(
+			"--url must use https — `mcp test` replays a stored bearer token, and plain http "+
+				"would transmit it in cleartext (%q). Use https, or a localhost URL for a dev IdP", raw)
+	}
+	return nil
+}
+
 // resolveTestServerSpec resolves the server for `mcp test`: standalone from
 // --url (no forge.yaml — mirrors `mcp login --url`, for non-forge agents) or from
 // forge.yaml. Returns the spec plus the credential-store dir override to apply so
@@ -21,6 +44,9 @@ import (
 func resolveTestServerSpec(cmd *cobra.Command, name string) (*types.MCPServer, string, error) {
 	if url, _ := cmd.Flags().GetString("url"); url != "" {
 		if err := validateServerName(name); err != nil {
+			return nil, "", err
+		}
+		if err := validateTestURL(url); err != nil {
 			return nil, "", err
 		}
 		store, _ := cmd.Flags().GetString("token-store-path")

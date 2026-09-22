@@ -4,13 +4,76 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	neturl "net/url"
 	"os"
 	"time"
 
 	"github.com/initializ/forge/forge-core/llm/oauth"
 	"github.com/initializ/forge/forge-core/mcp"
+	"github.com/initializ/forge/forge-core/types"
 	"github.com/spf13/cobra"
 )
+
+// validateTestURL parses a standalone `--url` and requires https, because
+// `mcp test` REPLAYS the stored OAuth access token as a bearer to this URL — a
+// plain-http target would leak it in cleartext (stricter than `mcp login --url`,
+// which only mints a token). Loopback hosts are allowed over http for dev IdPs.
+func validateTestURL(raw string) error {
+	u, err := neturl.Parse(raw)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("--url %q is malformed (need scheme://host)", raw)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("--url must use http or https (got %q)", u.Scheme)
+	}
+	host := u.Hostname()
+	loopback := host == "localhost" || host == "127.0.0.1" || host == "::1"
+	if u.Scheme == "http" && !loopback {
+		return fmt.Errorf(
+			"--url must use https — `mcp test` replays a stored bearer token, and plain http "+
+				"would transmit it in cleartext (%q). Use https, or a localhost URL for a dev IdP", raw)
+	}
+	return nil
+}
+
+// resolveTestServerSpec resolves the server for `mcp test`: standalone from
+// --url (no forge.yaml — mirrors `mcp login --url`, for non-forge agents) or from
+// forge.yaml. Returns the spec plus the credential-store dir override to apply so
+// `test` reads the token `login` wrote. Standalone reuses the OAuth registration +
+// token already persisted under the connection name (auth: oauth, keyed on name).
+func resolveTestServerSpec(cmd *cobra.Command, name string) (*types.MCPServer, string, error) {
+	if url, _ := cmd.Flags().GetString("url"); url != "" {
+		if err := validateServerName(name); err != nil {
+			return nil, "", err
+		}
+		if err := validateTestURL(url); err != nil {
+			return nil, "", err
+		}
+		store, _ := cmd.Flags().GetString("token-store-path")
+		if store == "" {
+			store = os.Getenv("MCP_TOKEN_STORE_PATH")
+		}
+		return &types.MCPServer{
+			Name:      name,
+			URL:       url,
+			Transport: "http",
+			Auth:      &types.MCPAuth{Type: "oauth"},
+			// No forge.yaml allow-list in standalone mode; `test` is a diagnostic,
+			// so surface ALL discovered tools ("*") rather than the empty-allow =
+			// deny-all default that filterTools applies.
+			Tools: types.MCPToolFilter{Allow: []string{"*"}},
+		}, store, nil
+	}
+	cfg, err := loadForgeConfig(cmd)
+	if err != nil {
+		return nil, "", err
+	}
+	spec, err := findServerSpec(cfg, name)
+	if err != nil {
+		return nil, "", err
+	}
+	return spec, loginTokenStorePath(cfg), nil
+}
 
 // mcpTestRun runs a real initialize + tools/list against a single MCP
 // server and prints the discovered tools with their truncated input
@@ -24,22 +87,18 @@ func mcpTestRun(cmd *cobra.Command, args []string) error {
 	callTool, _ := cmd.Flags().GetString("call")
 	callArgs, _ := cmd.Flags().GetString("args")
 
-	cfg, err := loadForgeConfig(cmd)
-	if err != nil {
-		return err
-	}
-	spec, err := findServerSpec(cfg, name)
+	spec, storeOverride, err := resolveTestServerSpec(cmd, name)
 	if err != nil {
 		return err
 	}
 
-	// Apply the token-store-path override (forge.yaml > env) so `mcp test`
-	// reads OAuth tokens from the same location `mcp login` wrote them —
-	// mirroring mcp_login.go / mcp_logout.go. Without this, `test` always
-	// looked in the default ~/.forge/credentials and reported "no stored
-	// token" for any server logged in under MCP_TOKEN_STORE_PATH.
-	if path := loginTokenStorePath(cfg); path != "" {
-		oauth.SetCredentialsDir(path)
+	// Apply the token-store-path override (forge.yaml/--token-store-path > env) so
+	// `mcp test` reads OAuth tokens from the same location `mcp login` wrote them —
+	// mirroring mcp_login.go / mcp_logout.go. Without this, `test` always looked in
+	// the default ~/.forge/credentials and reported "no stored token" for any
+	// server logged in under MCP_TOKEN_STORE_PATH.
+	if storeOverride != "" {
+		oauth.SetCredentialsDir(storeOverride)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*timeout+5*time.Second)
@@ -60,7 +119,7 @@ func mcpTestRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("tools/list: %w", err)
 	}
 	filtered := mcp.FilterTools(tools, spec.Tools)
-	fmt.Printf("  discovered %d tool(s); %d allowed by forge.yaml filter:\n", len(tools), len(filtered))
+	fmt.Printf("  discovered %d tool(s); %d allowed by filter:\n", len(tools), len(filtered))
 	for _, d := range filtered {
 		desc := d.Description
 		if len(desc) > 80 {

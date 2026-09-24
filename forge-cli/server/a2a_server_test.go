@@ -183,10 +183,10 @@ func TestSecurityHeadersOnErrorResponses(t *testing.T) {
 
 func TestHandleJSONRPC_OversizedBody(t *testing.T) {
 	s := NewServer(ServerConfig{Port: 0})
-	// Create a payload past the 32 MiB cap (#255) that's a valid JSON start
-	// but oversized. MaxBytesReader cuts it off, causing a parse error that
-	// includes the "request body too large" message.
-	huge := `{"data":"` + strings.Repeat("x", 33<<20) + `"}`
+	// Create a 3 MiB payload that's valid JSON start but oversized (cap 2 MiB).
+	// MaxBytesReader will cut it off, causing a parse error that includes
+	// the "request body too large" message.
+	huge := `{"data":"` + strings.Repeat("x", 3<<20) + `"}`
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(huge))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

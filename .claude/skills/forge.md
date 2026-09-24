@@ -1198,7 +1198,7 @@ when OTel tracing is enabled (OTel v1 / Phase 4 / #105). Both use
 | `AuditScheduleComplete` | `schedule_complete` | Cron task finished |
 | `AuditScheduleSkip` | `schedule_skip` | Cron task skipped (e.g. agent busy) |
 | `AuditScheduleModify` | `schedule_modify` | Schedule mutated at runtime |
-| `EventAuthVerify` | `auth_verify` | Inbound request authenticated (`provider`, `user_id`, `org_id`, `token_kind`) |
+| `EventAuthVerify` | `auth_verify` | Inbound request authenticated (`provider`, `user_id`, `org_id`, `token_kind`; `email` when the identity carries one). **Channel invoker:** for a channel-originated request the transport credential is the loopback token (`provider:internal`/`user_id:forge-internal`, recorded truthfully) and the human sender is stamped as `channel`/`channel_user`/`channel_email` from the `X-Forge-Channel*` headers — honored only for the runtime-internal identity (same trust gate as `applyChannelOnBehalfOf`). Slack/Teams resolve `channel_email`; Telegram (numeric id) & WhatsApp (msisdn) carry `channel_user` only |
 | `EventAuthFail` | `auth_fail` | Inbound request rejected (`reason`, `token_kind`) |
 | `EventMCPServerStarted` | `mcp_server_started` | MCP server handshake succeeded |
 | `EventMCPServerFailed` | `mcp_server_failed` | MCP server dial / handshake failed |

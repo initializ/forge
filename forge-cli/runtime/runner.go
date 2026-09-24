@@ -3517,10 +3517,24 @@ func (r *Runner) resolveAuth(auditLogger *coreruntime.AuditLogger) (auth.Middlew
 // makeAuthAuditCallback returns the OnAuth callback that emits structured
 // auth_verify / auth_fail audit events.
 //
-// Fields emitted (NO PII — never email, claims, token bytes, or secrets):
+// Fields emitted (never claims, token bytes, or secrets):
 //
-//	auth_verify: { provider, user_id, org_id, groups_count, token_kind, method, path, remote_addr }
+//	auth_verify: { provider, user_id, org_id, groups_count, token_kind, method, path, remote_addr,
+//	               email?, channel?, channel_user?, channel_email? }
 //	auth_fail:   { reason, token_kind, method, path, remote_addr }
+//
+// End-user (invoker) identity on auth_verify:
+//   - `email` is stamped whenever the verified Identity carries one (e.g. an
+//     OIDC user), so the audit records WHO authenticated.
+//   - For a CHANNEL request the transport credential is the runtime's loopback
+//     token (provider=internal, user_id=forge-internal) — recorded truthfully —
+//     and the HUMAN who typed the message is asserted by the in-pod channel
+//     router via the X-Forge-Channel-* headers. When the verified identity is
+//     the loopback identity (IsRuntimeInternal — the SAME trust gate as
+//     applyChannelOnBehalfOf, so external callers cannot spoof it), those
+//     headers are recorded as `channel` (adapter), `channel_user` (platform id:
+//     Slack Uxxx / Telegram numeric id / WhatsApp msisdn / Teams AAD id) and
+//     `channel_email` (Slack/Teams profile email; empty for Telegram/WhatsApp).
 //
 // Reason codes for auth_fail:
 //
@@ -3565,6 +3579,27 @@ func makeAuthAuditCallback(auditLogger *coreruntime.AuditLogger) func(*http.Requ
 				"method":       req.Method,
 				"path":         req.URL.Path,
 				"remote_addr":  req.RemoteAddr,
+			}
+			// Record WHO authenticated when the identity carries an email.
+			if id.Email != "" {
+				fields["email"] = id.Email
+			}
+			// Channel on-behalf-of invoker: the transport credential is the
+			// runtime loopback token, but the human who sent the message is
+			// asserted by the in-pod channel router via X-Forge-Channel-*.
+			// Honored ONLY for the loopback identity (same trust marker as
+			// applyChannelOnBehalfOf) so the headers can't be spoofed by an
+			// external caller.
+			if id.IsRuntimeInternal() {
+				if ch := strings.TrimSpace(req.Header.Get("X-Forge-Channel")); ch != "" {
+					fields["channel"] = ch
+				}
+				if cu := strings.TrimSpace(req.Header.Get("X-Forge-Channel-User")); cu != "" {
+					fields["channel_user"] = cu
+				}
+				if ce := strings.TrimSpace(req.Header.Get("X-Forge-Channel-Email")); ce != "" {
+					fields["channel_email"] = ce
+				}
 			}
 			auditLogger.EmitFromContext(req.Context(), coreruntime.AuditEvent{
 				Event:               coreruntime.EventAuthVerify,

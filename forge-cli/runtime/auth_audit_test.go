@@ -47,7 +47,7 @@ func TestAuthAudit_EmitsAuthVerifyOnSuccess(t *testing.T) {
 	req := httptest.NewRequest("POST", "/tasks", nil)
 	id := &auth.Identity{
 		UserID: "alice-123",
-		Email:  "alice@example.com", // must NOT leak into the event
+		Email:  "alice@example.com", // recorded — audit must capture WHO authenticated
 		OrgID:  "tenant-1",
 		Groups: []string{"a", "b", "c"},
 		Source: "oidc",
@@ -78,6 +78,87 @@ func TestAuthAudit_EmitsAuthVerifyOnSuccess(t *testing.T) {
 	}
 	if ev.Fields["token_kind"] != "jwt" {
 		t.Errorf("token_kind = %v, want jwt", ev.Fields["token_kind"])
+	}
+	// The invoker's email is recorded so the audit answers "who authenticated?".
+	if ev.Fields["email"] != "alice@example.com" {
+		t.Errorf("email = %v, want alice@example.com", ev.Fields["email"])
+	}
+}
+
+// TestAuthAudit_EmitsChannelInvoker verifies that for a channel-originated
+// request — where the transport credential is the runtime loopback token and
+// the human is asserted via X-Forge-Channel-* headers — auth_verify records
+// both the transport credential (provider/user_id) AND the channel invoker.
+func TestAuthAudit_EmitsChannelInvoker(t *testing.T) {
+	cases := []struct {
+		name             string
+		channel          string
+		user, email      string
+		wantEmailPresent bool
+	}{
+		// Slack/Teams resolve a profile email.
+		{"slack with email", "slack", "U08ABC", "bob@example.com", true},
+		// Telegram carries only a numeric id; WhatsApp only a phone number.
+		{"telegram id only", "telegram", "987654321", "", false},
+		{"whatsapp number only", "whatsapp", "14155550123", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			cb := makeAuthAuditCallback(coreruntime.NewAuditLogger(&buf))
+
+			req := httptest.NewRequest("POST", "/tasks", nil)
+			req.Header.Set("X-Forge-Channel", tc.channel)
+			req.Header.Set("X-Forge-Channel-User", tc.user)
+			if tc.email != "" {
+				req.Header.Set("X-Forge-Channel-Email", tc.email)
+			}
+			// The transport identity is the runtime loopback token — the same
+			// trust marker applyChannelOnBehalfOf gates the graft on.
+			id := auth.MarkRuntimeInternal(auth.Identity{UserID: "forge-internal", Source: "internal"})
+
+			cb(req, &id, nil, "opaque")
+
+			ev := captureAudit(t, &buf)[0]
+			if ev.Fields["channel"] != tc.channel {
+				t.Errorf("channel = %v, want %q", ev.Fields["channel"], tc.channel)
+			}
+			if ev.Fields["channel_user"] != tc.user {
+				t.Errorf("channel_user = %v, want %q", ev.Fields["channel_user"], tc.user)
+			}
+			if tc.wantEmailPresent {
+				if ev.Fields["channel_email"] != tc.email {
+					t.Errorf("channel_email = %v, want %q", ev.Fields["channel_email"], tc.email)
+				}
+			} else if _, ok := ev.Fields["channel_email"]; ok {
+				t.Errorf("channel_email should be absent when the channel has no email, got %v", ev.Fields["channel_email"])
+			}
+			// Transport credential still recorded truthfully.
+			if ev.Fields["user_id"] != "forge-internal" || ev.Fields["provider"] != "internal" {
+				t.Errorf("transport credential not recorded: provider=%v user_id=%v", ev.Fields["provider"], ev.Fields["user_id"])
+			}
+		})
+	}
+}
+
+// TestAuthAudit_ChannelHeadersIgnoredForNonLoopback ensures a non-internal
+// identity (e.g. a real OIDC caller) cannot inject a spoofed channel invoker
+// via X-Forge-Channel-* headers — the fields are gated on IsRuntimeInternal.
+func TestAuthAudit_ChannelHeadersIgnoredForNonLoopback(t *testing.T) {
+	var buf bytes.Buffer
+	cb := makeAuthAuditCallback(coreruntime.NewAuditLogger(&buf))
+
+	req := httptest.NewRequest("POST", "/tasks", nil)
+	req.Header.Set("X-Forge-Channel", "slack")
+	req.Header.Set("X-Forge-Channel-Email", "attacker@evil.example")
+
+	cb(req, &auth.Identity{UserID: "u", Source: "oidc"}, nil, "jwt")
+
+	ev := captureAudit(t, &buf)[0]
+	for _, k := range []string{"channel", "channel_user", "channel_email"} {
+		if _, ok := ev.Fields[k]; ok {
+			t.Errorf("field %q must be ignored for a non-loopback identity, got %v", k, ev.Fields[k])
+		}
 	}
 }
 
@@ -123,16 +204,17 @@ func TestAuthAudit_EmitsAuthFailOnError(t *testing.T) {
 	}
 }
 
-func TestAuthAudit_NoPIIInPayload(t *testing.T) {
-	// Strong negative test: even if the Identity carries an email and
-	// rich Claims, the emitted audit line MUST NOT include them.
+func TestAuthAudit_NoClaimsOrSecretsInPayload(t *testing.T) {
+	// The identity's email IS recorded (audit must capture who authenticated),
+	// but the raw Claims bag — which can carry arbitrary sensitive payloads
+	// (SSN, secrets) — MUST NEVER be emitted.
 	var buf bytes.Buffer
 	cb := makeAuthAuditCallback(coreruntime.NewAuditLogger(&buf))
 
 	req := httptest.NewRequest("POST", "/tasks", nil)
 	id := &auth.Identity{
 		UserID: "u",
-		Email:  "secret@hr.example.com",
+		Email:  "user@example.com",
 		Claims: map[string]any{
 			"ssn":    "999-99-9999",
 			"secret": "deadbeef",
@@ -143,16 +225,18 @@ func TestAuthAudit_NoPIIInPayload(t *testing.T) {
 
 	line := buf.String()
 	forbidden := []string{
-		"secret@hr.example.com",
 		"999-99-9999",
 		"deadbeef",
-		"\"email\"",
 		"\"claims\"",
 	}
 	for _, f := range forbidden {
 		if strings.Contains(line, f) {
 			t.Errorf("audit line leaked %q:\n%s", f, line)
 		}
+	}
+	// Email is intentionally present now.
+	if !strings.Contains(line, "user@example.com") {
+		t.Errorf("expected email to be recorded in the auth_verify event:\n%s", line)
 	}
 }
 

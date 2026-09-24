@@ -27,7 +27,7 @@ All runtime security events are emitted as structured NDJSON to stderr with corr
 | `context_compressed` | [Context compression](../core-concepts/context-compression.md) shrank content before it reached the LLM. Carries `fields.seam` (`tool_output` from the AfterToolExec hook / `request` from the client wrapper), `fields.tool`, `tokens_before` / `tokens_after` / `saved_tokens`, plus running totals `total_saved_tokens` / `total_compressions` / `total_expansions` so any single event shows the cumulative picture. Token figures are tokenizer estimates; billed truth stays in `llm_call.input_tokens`. |
 | `context_expanded` | The model retrieved offloaded content via the `context_expand` tool. Carries `fields.hash`, `hit` (`false` = expired/evicted), `bytes`, the producing `tool`, `candidates` (top keep-pattern tokens mined from the retrieved content, ≤5 — lets a platform consuming the audit stream aggregate [learning](../core-concepts/context-compression.md#the-learning-loop) fleet-wide, immune to pod restarts), and the same running totals — expansions are the cost side auditors net against savings. |
 | `context_pattern_suggested` | The [compression learning loop](../core-concepts/context-compression.md#the-learning-loop) surfaced a `keep_patterns` candidate: a domain-state token retrieved via `context_expand` in 3+ distinct expansions that the keep floor does not already protect. Fired once per pattern. Carries `fields.pattern`, `expansions`, `tools` (array). Review via `forge compression suggestions`. |
-| `auth_verify` | Inbound request authenticated successfully (with `provider`, `user_id`, `org_id`, `token_kind`). Carries the invocation `correlation_id` (minted at ingress, before auth — see below) and, for orchestrator-dispatched calls, `workflow_execution_id` — so it groups with the task events that follow it in the same request. **Channel-originated tasks (#356):** when the request arrives through a channel adapter (Slack/Telegram/…), the runtime grafts the human sender onto the identity — `fields.user_id` / `fields.email` carry the channel user (from the adapter's `X-Forge-Channel-User` / `-Email` / `-Channel` headers) and the source is marked `channel:<adapter>`, so a tool call is attributed to the person who asked, not the bot. This graft is bound to a runtime-internal marker and never honored from an external caller. |
+| `auth_verify` | Inbound request authenticated successfully (with `provider`, `user_id`, `org_id`, `token_kind`). Carries the invocation `correlation_id` (minted at ingress, before auth — see below) and, for orchestrator-dispatched calls, `workflow_execution_id` — so it groups with the task events that follow it in the same request. **Channel-originated tasks:** when the request arrives through a channel adapter (Slack/Telegram/WhatsApp/…), the transport credential is the runtime loopback token, so `fields.provider` / `fields.user_id` record it truthfully (`internal` / `forge-internal`); the human who sent the message is recorded alongside in `fields.channel` / `fields.channel_user` / `fields.channel_email` (from the adapter's `X-Forge-Channel` / `-User` / `-Email` headers). These invoker fields are honored **only** for the runtime-internal transport identity and are never accepted from an external caller. (Downstream the runtime *also* grafts that human onto the request identity — `Source: channel:<adapter>` — so the agent run and delegated MCP tools act as the person who asked; see [Authentication](authentication.md).) |
 | `mcp_auth_required` | A delegated (`auth.type: user`) MCP call parked awaiting the user's consent (#330). Carries `server`, `subject`, `deadline`/`timeout_ms`, and the parked call's `correlation_id` / `task_id` / `seq` so it attributes to the invocation that triggered it (#366). |
 | `mcp_auth_resolved` | The parked call's consent arrived (or the wait was canceled) and it resumed (#330). Carries `server`, `subject`, `wait_ms`. Emitted **once**, attributed to the parked invocation (#366). |
 | `mcp_auth_timeout` | No consent within the window; the parked MCP call fails `no_token` (#330). Carries `server`, `subject`, `wait_ms`, `decision`. |
@@ -258,7 +258,42 @@ Every inbound request to `/tasks` emits exactly one of `auth_verify` or `auth_fa
 
 `user_id` is the canonical identifier the verifier returned (ARN for AWS, JWT
 `sub` for OIDC/IAP/AAD). `org_id` is the AWS account, Entra tenant GUID, or
-OIDC `tid`/`org_id`-mapped claim depending on the provider.
+OIDC `tid`/`org_id`-mapped claim depending on the provider. `email` is stamped
+whenever the verified identity carries one, so the audit records **who**
+authenticated.
+
+**Channel invoker (end-user on-behalf-of).** When a request arrives through a
+channel adapter, the transport credential is the runtime's per-process loopback
+token — so `provider":"internal"` and `user_id":"forge-internal"` are recorded
+truthfully — and the human who typed the message is asserted by the in-pod
+channel router via the `X-Forge-Channel` / `-User` / `-Email` headers. Those are
+recorded as dedicated `fields` on `auth_verify` (honored **only** when the
+transport identity is the runtime loopback identity, so an external caller
+cannot spoof them):
+
+| Field | Meaning | Slack | Telegram | WhatsApp | Teams |
+|-------|---------|-------|----------|----------|-------|
+| `channel` | Originating adapter | `slack` | `telegram` | `whatsapp` | `msteams` |
+| `channel_user` | Platform-native user id | `U08ABC…` | numeric id | phone (msisdn) | AAD object id |
+| `channel_email` | Resolved profile email (when the platform has one) | ✓ (`users.info`) | — | — | ✓ (planned, Graph lookup) |
+
+```json
+{
+  "ts":"2026-09-23T10:15:02Z",
+  "event":"auth_verify",
+  "fields":{
+    "method":"POST","path":"/tasks/send",
+    "provider":"internal","user_id":"forge-internal","token_kind":"opaque",
+    "channel":"slack","channel_user":"U08ABC123","channel_email":"bob@example.com"
+  }
+}
+```
+
+Query all invocations by a given human across channels:
+
+```bash
+jq -r 'select(.event=="auth_verify" and .fields.channel) | "\(.fields.channel)\t\(.fields.channel_email // .fields.channel_user)"' forge.log | sort | uniq -c
+```
 
 **Failed authentication:**
 

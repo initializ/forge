@@ -2291,11 +2291,12 @@ type restTaskRequest struct {
 }
 
 // maxRequestBodyBytes bounds an inbound REST A2A request body — an unbounded
-// json.Decode on req.Body is a trivial memory-exhaustion vector. Kept in
-// parity with the JSON-RPC transport cap in server.handleJSONRPC (both 2 MiB)
-// so the inbound-body bound is uniform across transports; inline-media phases
-// (#255) raise both deliberately together rather than letting them drift.
-const maxRequestBodyBytes = 2 << 20 // 2 MiB — matches server.handleJSONRPC
+// json.Decode on req.Body is a trivial memory-exhaustion vector. Sized to
+// admit inline media (images/documents) carried as base64 file parts (#255),
+// which inflates raw bytes ~33%. Kept in parity with the JSON-RPC transport
+// cap in server.handleJSONRPC (both 32 MiB) so the inbound-body bound is
+// uniform across transports.
+const maxRequestBodyBytes = 32 << 20 // 32 MiB — matches server.handleJSONRPC
 
 // checkInboundMedia rejects a message carrying file parts the runtime cannot
 // forward to the model (#255). Today forge projects only text/data parts into

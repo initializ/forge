@@ -250,6 +250,13 @@ const (
 	// platform separately records its own decision as tool_call_decided.
 	AuditPDPDecision = "pdp_decision"
 
+	// AuditInputMediaRejected is emitted when an inbound message carries a
+	// media (file) part the runtime cannot forward to the model, so the
+	// request is rejected with a 4xx instead of silently dropping the
+	// attachment (#255 — the accepted-but-dropped footgun). Carries in
+	// Fields: dropped ([]string of "<kind>:<mimeType>"), count, reason.
+	AuditInputMediaRejected = "input_media_rejected"
+
 	// Deprecated: use EventAuthVerify. Kept as a string alias so any
 	// audit-log consumer that grep'd for "auth_success" can be migrated.
 	// Scheduled for removal in v0.11.0.

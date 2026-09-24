@@ -114,6 +114,37 @@ func (m Message) PromptText() string {
 	return strings.Join(segments, "\n")
 }
 
+// MediaPartInfo describes a non-text "file" part for capability gating and
+// diagnostics. PromptText does not project file parts, so a caller that cannot
+// forward them to the model must reject the request rather than drop the
+// attachment silently (#255).
+type MediaPartInfo struct {
+	Index    int
+	MimeType string
+	Name     string
+}
+
+// FileParts returns info for every file part in the message. File parts carry
+// bytes/URIs (images, documents, …) that only reach the model through a
+// multimodal path; because PromptText omits them, accepting a message with
+// file parts on a path that can't consume them silently discards the
+// attachment — the caller uses this to reject loudly instead.
+func (m Message) FileParts() []MediaPartInfo {
+	var out []MediaPartInfo
+	for i, p := range m.Parts {
+		if p.Kind != PartKindFile {
+			continue
+		}
+		info := MediaPartInfo{Index: i}
+		if p.File != nil {
+			info.MimeType = p.File.MimeType
+			info.Name = p.File.Name
+		}
+		out = append(out, info)
+	}
+	return out
+}
+
 // PartKind discriminates the content type of a Part.
 type PartKind string
 

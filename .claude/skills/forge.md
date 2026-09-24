@@ -1188,6 +1188,7 @@ when OTel tracing is enabled (OTel v1 / Phase 4 / #105). Both use
 | `AuditScheduleModify` | `schedule_modify` | Schedule mutated at runtime |
 | `EventAuthVerify` | `auth_verify` | Inbound request authenticated (`provider`, `user_id`, `org_id`, `token_kind`) |
 | `EventAuthFail` | `auth_fail` | Inbound request rejected (`reason`, `token_kind`) |
+| `AuditInputMediaRejected` | `input_media_rejected` | Inbound message carried `file` parts the runtime can't forward to the model → rejected 4xx instead of silently dropped (#255). Fields: `dropped` (`["file:<mime>"]`), `count`, `reason`. Gate: `Runner.checkInboundMedia` at the four send handlers; `a2a.Message.FileParts()` |
 | `EventMCPServerStarted` | `mcp_server_started` | MCP server handshake succeeded |
 | `EventMCPServerFailed` | `mcp_server_failed` | MCP server dial / handshake failed |
 | `EventMCPServerDegraded` | `mcp_server_degraded` | MCP server in soft-fail |

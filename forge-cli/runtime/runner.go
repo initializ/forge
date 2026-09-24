@@ -1679,6 +1679,12 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 			})
 			return a2a.NewErrorResponse(id, a2a.ErrCodeInvalidParams, "invalid message: "+err.Error())
 		}
+		// Reject file/image parts the runtime can't forward to the model
+		// instead of silently dropping them (#255).
+		if reason := r.checkInboundMedia(ctx, params.Message, auditLogger); reason != "" {
+			r.logger.Warn("tasks/send rejected: unsupported media", map[string]any{"task_id": params.ID, "reason": reason})
+			return a2a.NewErrorResponse(id, a2a.ErrCodeInvalidParams, reason)
+		}
 		r.logger.Info("tasks/send", map[string]any{"task_id": params.ID})
 		// Delegate to executeTask so JSON-RPC and REST share the same
 		// audit + accumulator + invocation_complete wiring (issue #87 /
@@ -1727,6 +1733,14 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 			})
 			server.WriteSSEEvent(w, flusher, "error", //nolint:errcheck
 				a2a.NewErrorResponse(id, a2a.ErrCodeInvalidParams, "invalid message: "+err.Error()))
+			return
+		}
+		// Reject unsupported file/image parts before the stream carries any
+		// content (#255).
+		if reason := r.checkInboundMedia(ctx, params.Message, auditLogger); reason != "" {
+			r.logger.Warn("tasks/sendSubscribe rejected: unsupported media", map[string]any{"task_id": params.ID, "reason": reason})
+			server.WriteSSEEvent(w, flusher, "error", //nolint:errcheck
+				a2a.NewErrorResponse(id, a2a.ErrCodeInvalidParams, reason))
 			return
 		}
 
@@ -2276,6 +2290,49 @@ type restTaskRequest struct {
 	} `json:"task"`
 }
 
+// maxRequestBodyBytes bounds an inbound A2A request body. Generous for text
+// requests while capping abuse (an unbounded json.Decode on req.Body is a
+// trivial memory-exhaustion vector); it is also the ceiling for inline media
+// once multimodal input lands (#255).
+const maxRequestBodyBytes = 32 << 20 // 32 MiB
+
+// checkInboundMedia rejects a message carrying file parts the runtime cannot
+// forward to the model (#255). Today forge projects only text/data parts into
+// the prompt (a2a.Message.PromptText); file parts (images/documents) are not
+// yet consumed by any provider, so accepting them would silently drop the
+// attachment and return a plausible answer that ignored it — the footgun this
+// closes. It returns a human-readable reason for the 4xx / JSON-RPC error and
+// emits an input_media_rejected audit event, or "" when the message is
+// acceptable. Centralized so all four send handlers share one contract.
+func (r *Runner) checkInboundMedia(ctx context.Context, msg a2a.Message, auditLogger *coreruntime.AuditLogger) string {
+	files := msg.FileParts()
+	if len(files) == 0 {
+		return ""
+	}
+	dropped := make([]string, 0, len(files))
+	for _, f := range files {
+		mt := f.MimeType
+		if mt == "" {
+			mt = "application/octet-stream"
+		}
+		dropped = append(dropped, "file:"+mt)
+	}
+	if auditLogger != nil {
+		auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
+			Event: coreruntime.AuditInputMediaRejected,
+			Fields: map[string]any{
+				"dropped": dropped,
+				"count":   len(files),
+				"reason":  "file_input_unsupported",
+			},
+		})
+	}
+	return fmt.Sprintf(
+		"this agent does not accept file/image input: %d file part(s) rejected (%s). Send text or data parts instead.",
+		len(files), strings.Join(dropped, ", "),
+	)
+}
+
 // registerRESTHandlers registers REST-style HTTP endpoints on the server.
 func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.AgentExecutor, guardrails coreruntime.GuardrailChecker, egressClient *http.Client, auditLogger *coreruntime.AuditLogger) {
 	store := srv.TaskStore()
@@ -2286,6 +2343,7 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "agent disabled by kill switch: not accepting new tasks"})
 			return
 		}
+		req.Body = http.MaxBytesReader(w, req.Body, maxRequestBodyBytes)
 		var body restTaskRequest
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body: " + err.Error()})
@@ -2322,6 +2380,12 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 		// Same for tenancy override headers (#157).
 		ctx = coreruntime.WithTenancyContext(ctx,
 			coreruntime.TenancyContextFromHTTPHeaders(req.Header))
+		// Reject file/image parts the runtime can't forward to the model (#255).
+		if reason := r.checkInboundMedia(ctx, params.Message, auditLogger); reason != "" {
+			r.logger.Warn("REST /tasks/send rejected: unsupported media", map[string]any{"task_id": params.ID, "reason": reason, "remote_addr": req.RemoteAddr})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": reason})
+			return
+		}
 		task, snap, err := r.executeTask(ctx, params, store, executor, guardrails, egressClient, auditLogger)
 		if err != nil {
 			// R4b: a step-up-required error takes priority — we
@@ -2349,6 +2413,7 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 			return
 		}
 
+		req.Body = http.MaxBytesReader(w, req.Body, maxRequestBodyBytes)
 		var body restTaskRequest
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body: " + err.Error()})
@@ -2367,6 +2432,13 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 				"remote_addr": req.RemoteAddr,
 			})
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid message: " + err.Error()})
+			return
+		}
+		// Reject unsupported file/image parts while a plain 400 is still
+		// possible — before the SSE Content-Type is committed (#255).
+		if reason := r.checkInboundMedia(req.Context(), body.Task.Message, auditLogger); reason != "" {
+			r.logger.Warn("REST /tasks/sendSubscribe rejected: unsupported media", map[string]any{"task_id": body.Task.ID, "reason": reason, "remote_addr": req.RemoteAddr})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": reason})
 			return
 		}
 

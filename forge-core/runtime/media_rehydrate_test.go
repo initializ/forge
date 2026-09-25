@@ -72,6 +72,35 @@ func TestRehydrateMedia_RejectsPathEscape(t *testing.T) {
 	}
 }
 
+// TestRehydrateMedia_RejectsSymlinkEscape: a symlink placed INSIDE the files
+// dir that points outward passes the lexical confinement but must be caught by
+// the symlink resolution — the Phase-4 hardening from the #528 review.
+func TestRehydrateMedia_RejectsSymlinkEscape(t *testing.T) {
+	dir := t.TempDir()
+	// A secret outside the files dir.
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(outside, []byte("nope"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A symlink INSIDE the files dir pointing at it — lexically confined
+	// (the link path is under dir), but resolves outward.
+	link := filepath.Join(dir, "link.png")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlinks unsupported on this platform: %v", err)
+	}
+	ctx := WithFilesDir(context.Background(), dir)
+	msgs := []llm.ChatMessage{{
+		Role:  llm.RoleUser,
+		Parts: []llm.ContentPart{llm.NewMediaContentPart(llm.ContentPartImage, llm.MediaRef{URI: link})},
+	}}
+	if err := RehydrateMedia(ctx, msgs); err == nil {
+		t.Fatal("a symlink inside the files dir pointing outward must be rejected")
+	}
+	if len(msgs[0].Parts[0].Media.Bytes) != 0 {
+		t.Error("bytes must not be populated from a symlink escaping the files dir")
+	}
+}
+
 // TestMemory_MediaCountsTowardBudget: media parts carry no Content chars but
 // must charge the budget, so an image-heavy history still trims (#255).
 func TestMemory_MediaCountsTowardBudget(t *testing.T) {

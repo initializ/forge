@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"hash/crc32"
+	"strings"
 	"testing"
 )
 
@@ -58,6 +59,38 @@ func TestCheckImageLimits(t *testing.T) {
 		got := CheckImageLimits("image/png", bomb)
 		if got == "" {
 			t.Fatal("a tiny file reporting gigapixel dimensions must be rejected")
+		}
+	})
+
+	t.Run("single oversized dimension rejected (product alone would pass)", func(t *testing.T) {
+		// 100_001 x 1 = 100_001 px — UNDER MaxImagePixels, so the raw
+		// width*height check would ACCEPT it. The per-dimension bound is what
+		// rejects it, and it's also the guard that keeps the product from
+		// overflowing int64 for a forged 32-bit PNG dimension (#532 review).
+		strip := pngWithDims(t, 100_001, 1)
+		got := CheckImageLimits("image/png", strip)
+		if got == "" {
+			t.Fatal("an image with a single dimension over the per-side limit must be rejected")
+		}
+		if !strings.Contains(got, "per-side") {
+			t.Errorf("reject reason should cite the per-side limit; got %q", got)
+		}
+	})
+
+	t.Run("large square dimensions rejected before the product multiply", func(t *testing.T) {
+		// DecodeConfig returns these (verified), so the per-dimension bound
+		// fires before int64(w)*int64(h) is ever computed.
+		if CheckImageLimits("image/png", pngWithDims(t, 200_000, 200_000)) == "" {
+			t.Error("200000x200000 must be rejected")
+		}
+	})
+
+	t.Run("forged overflow dimensions rejected (decoder guards, we don't rely on it)", func(t *testing.T) {
+		// width=height=2^32-1: Go's png DecodeConfig itself errors on this
+		// (non-positive after int32 wrap), so it's rejected as malformed — the
+		// security property holds regardless of the decoder's internal cap.
+		if CheckImageLimits("image/png", pngWithDims(t, 0xFFFFFFFF, 0xFFFFFFFF)) == "" {
+			t.Error("a forged gigantic-dimension png must be rejected")
 		}
 	})
 

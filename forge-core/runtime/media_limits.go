@@ -29,6 +29,14 @@ const (
 	// ~50 MP covers legitimate high-resolution photos. Enforced only for the
 	// stdlib-decodable formats (png/jpeg/gif); webp is bounded by the byte cap.
 	MaxImagePixels = 50_000_000
+
+	// maxImageDim bounds a single dimension BEFORE the width*height product, so
+	// that product can't overflow int64. PNG's IHDR carries 32-bit dimensions
+	// (JPEG/GIF are 16-bit), so a forged PNG can report dims near 2^31; two such
+	// dims multiplied would wrap int64 negative and slip past the pixel check.
+	// 100_000 keeps the product ≤ 1e10 (safe) and no legitimate image is that
+	// large on any single side.
+	maxImageDim = 100_000
 )
 
 // CheckImageLimits validates a single image part's bytes against the per-image
@@ -54,6 +62,11 @@ func CheckImageLimits(mime string, data []byte) string {
 			return "image could not be decoded (malformed or truncated)"
 		}
 		return ""
+	}
+	// Per-dimension bound first, so the product below can't overflow int64
+	// (a forged PNG can report dims near 2^31; the raw product would wrap).
+	if cfg.Width > maxImageDim || cfg.Height > maxImageDim {
+		return fmt.Sprintf("image dimension %dx%d exceeds the %d-px per-side limit", cfg.Width, cfg.Height, maxImageDim)
 	}
 	if int64(cfg.Width)*int64(cfg.Height) > MaxImagePixels {
 		return fmt.Sprintf("image dimensions %dx%d exceed the %d-pixel limit", cfg.Width, cfg.Height, MaxImagePixels)

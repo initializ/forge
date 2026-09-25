@@ -44,7 +44,7 @@ Media the model can't consume is **rejected loudly, never silently dropped** (th
 | Bound | Limit | On breach |
 |-------|-------|-----------|
 | Per-image bytes | 5 MiB (`MaxImagePartBytes`) | 4xx `image_limit_exceeded` |
-| Decoded dimensions | 50 MP (`MaxImagePixels`, png/jpeg/gif via header-only `DecodeConfig`; webp bounded by bytes) | 4xx `image_limit_exceeded` (defuses decompression bombs) |
+| Decoded dimensions | 100 000 px per side **and** 50 MP total (`MaxImagePixels`, png/jpeg/gif via header-only `DecodeConfig`; webp bounded by bytes) | 4xx `image_limit_exceeded` (defuses decompression bombs; the per-side bound also keeps the pixel product from overflowing int64) |
 | Images per message | 20 (`MaxImagePartsPerMessage`) | 4xx `too_many_image_parts` |
 | Concurrent media requests | 4 (`maxConcurrentMediaRequests`) | `429`/unavailable — request is shed, not queued |
 

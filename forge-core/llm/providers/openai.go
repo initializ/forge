@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -180,11 +181,26 @@ type streamOptions struct {
 }
 
 type openaiMessage struct {
+	// Content is either a plain string (text-only, the common/back-compat
+	// case) or a []openaiContentPart for multimodal messages (#255). Kept as
+	// `any` so a text-only message marshals byte-identically to before.
 	Role       string         `json:"role"`
-	Content    *string        `json:"content,omitempty"`
+	Content    any            `json:"content,omitempty"`
 	ToolCalls  []llm.ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 	Name       string         `json:"name,omitempty"`
+}
+
+// openaiContentPart is one element of a multimodal message content array:
+// {"type":"text","text":…} or {"type":"image_url","image_url":{"url":…}}.
+type openaiContentPart struct {
+	Type     string          `json:"type"`
+	Text     string          `json:"text,omitempty"`
+	ImageURL *openaiImageURL `json:"image_url,omitempty"`
+}
+
+type openaiImageURL struct {
+	URL string `json:"url"` // a data: URL (data:<mime>;base64,<data>) or http(s) URL
 }
 
 func (c *OpenAIClient) toOpenAIRequest(req *llm.ChatRequest, stream bool) openaiRequest {
@@ -201,13 +217,17 @@ func (c *OpenAIClient) toOpenAIRequest(req *llm.ChatRequest, stream bool) openai
 			ToolCallID: m.ToolCallID,
 			Name:       m.Name,
 		}
-		// Assistant messages with tool_calls may omit content (valid per OpenAI spec).
-		// All other roles must always include content as a string.
-		if m.Role == "assistant" && len(m.ToolCalls) > 0 && m.Content == "" {
-			// Leave Content nil — omitempty will omit the field entirely.
-		} else {
-			content := m.Content
-			msg.Content = &content
+		switch {
+		case len(m.Parts) > 0:
+			// Multimodal message: content is an array of text/image parts (#255).
+			msg.Content = openaiPartsFromContent(m.Parts)
+		case m.Role == "assistant" && len(m.ToolCalls) > 0 && m.Content == "":
+			// Leave Content nil — omitempty omits the field entirely (valid
+			// per OpenAI spec for a tool-call-only assistant turn).
+		default:
+			// All other roles include content as a plain string (byte-identical
+			// to the pre-#255 wire).
+			msg.Content = m.Content
 		}
 		msgs[i] = msg
 	}
@@ -230,6 +250,27 @@ func (c *OpenAIClient) toOpenAIRequest(req *llm.ChatRequest, stream bool) openai
 	}
 
 	return r
+}
+
+// openaiPartsFromContent maps provider-agnostic content parts to OpenAI
+// message-content parts: text → {type:text}, image → {type:image_url} with the
+// bytes inlined as a data: URL. A media part with no inline bytes is skipped
+// (rehydration is the caller's responsibility before the request is built).
+func openaiPartsFromContent(parts []llm.ContentPart) []openaiContentPart {
+	out := make([]openaiContentPart, 0, len(parts))
+	for _, p := range parts {
+		switch p.Type {
+		case llm.ContentPartImage:
+			if p.Media == nil || len(p.Media.Bytes) == 0 {
+				continue
+			}
+			dataURL := fmt.Sprintf("data:%s;base64,%s", p.Media.MimeType, base64.StdEncoding.EncodeToString(p.Media.Bytes))
+			out = append(out, openaiContentPart{Type: "image_url", ImageURL: &openaiImageURL{URL: dataURL}})
+		default: // text
+			out = append(out, openaiContentPart{Type: "text", Text: p.Text})
+		}
+	}
+	return out
 }
 
 // derivePromptCacheKey builds a stable cache-routing key from the parts of

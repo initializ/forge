@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -230,13 +231,22 @@ type anthropicMessage struct {
 }
 
 type anthropicContentBlock struct {
-	Type      string          `json:"type"`
-	Text      string          `json:"text,omitempty"`
-	ID        string          `json:"id,omitempty"`
-	Name      string          `json:"name,omitempty"`
-	Input     json.RawMessage `json:"input,omitempty"`
-	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Content   string          `json:"content,omitempty"`
+	Type      string                `json:"type"`
+	Text      string                `json:"text,omitempty"`
+	ID        string                `json:"id,omitempty"`
+	Name      string                `json:"name,omitempty"`
+	Input     json.RawMessage       `json:"input,omitempty"`
+	ToolUseID string                `json:"tool_use_id,omitempty"`
+	Content   string                `json:"content,omitempty"`
+	Source    *anthropicImageSource `json:"source,omitempty"` // type=="image" (#255)
+}
+
+// anthropicImageSource is the source of an image content block:
+// {"type":"image","source":{"type":"base64","media_type":"image/png","data":"…"}}.
+type anthropicImageSource struct {
+	Type      string `json:"type"`       // "base64"
+	MediaType string `json:"media_type"` // e.g. image/png
+	Data      string `json:"data"`       // base64-encoded bytes
 }
 
 type anthropicTool struct {
@@ -343,9 +353,42 @@ func (c *AnthropicClient) convertMessage(m llm.ChatMessage) anthropicMessage {
 		return anthropicMessage{Role: "assistant", Content: data}
 	}
 
+	// Multimodal message: serialize content-parts as a block array (#255).
+	if len(m.Parts) > 0 {
+		data, _ := json.Marshal(anthropicBlocksFromParts(m.Parts))
+		return anthropicMessage{Role: role, Content: data}
+	}
+
 	// Simple text message
 	data, _ := json.Marshal(m.Content)
 	return anthropicMessage{Role: role, Content: data}
+}
+
+// anthropicBlocksFromParts maps provider-agnostic content parts to Anthropic
+// content blocks: text → {type:text}, image → {type:image, source:{base64}}.
+// A media part with no inline bytes is skipped (rehydration is the caller's
+// responsibility before the request is built).
+func anthropicBlocksFromParts(parts []llm.ContentPart) []anthropicContentBlock {
+	blocks := make([]anthropicContentBlock, 0, len(parts))
+	for _, p := range parts {
+		switch p.Type {
+		case llm.ContentPartImage:
+			if p.Media == nil || len(p.Media.Bytes) == 0 {
+				continue
+			}
+			blocks = append(blocks, anthropicContentBlock{
+				Type: "image",
+				Source: &anthropicImageSource{
+					Type:      "base64",
+					MediaType: p.Media.MimeType,
+					Data:      base64.StdEncoding.EncodeToString(p.Media.Bytes),
+				},
+			})
+		default: // text
+			blocks = append(blocks, anthropicContentBlock{Type: "text", Text: p.Text})
+		}
+	}
+	return blocks
 }
 
 // Anthropic-specific response types.

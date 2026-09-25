@@ -84,6 +84,13 @@ func NewMemory(systemPrompt string, maxChars int, model string) *Memory {
 // maxMessageChars is the per-message size cap (defense in depth).
 const maxMessageChars = 50_000
 
+// mediaCharWeight is the char-equivalent budget charged per image/document
+// media part in totalChars (#255). Media carries no Content chars but consumes
+// real model token budget; this conservative flat proxy keeps an image-heavy
+// conversation from silently exceeding the true budget. It is a budget estimate
+// only — billed truth is the provider's token accounting.
+const mediaCharWeight = 4_000
+
 // Append adds a message to the conversation history and trims if over budget.
 // Individual messages exceeding maxMessageChars are truncated as a safety net.
 func (m *Memory) Append(msg llm.ChatMessage) {
@@ -346,6 +353,16 @@ func (m *Memory) totalChars() int {
 		}
 		for _, tc := range msg.ToolCalls {
 			total += len(tc.Function.Name) + len(tc.Function.Arguments)
+		}
+		// Media parts consume real token budget (an image is ~hundreds–
+		// thousands of tokens) but carry no Content chars — without a weight
+		// here a conversation of images would blow the true budget while trim
+		// thinks it is tiny (#255). Text parts are already reflected in
+		// msg.Content (the text-of-record), so only media parts are added.
+		for i := range msg.Parts {
+			if msg.Parts[i].Media != nil {
+				total += mediaCharWeight
+			}
 		}
 	}
 	return total

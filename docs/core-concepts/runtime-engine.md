@@ -39,6 +39,15 @@ An image `file` part (`image/png`, `image/jpeg`, `image/gif`, `image/webp`) is f
 
 Media the model can't consume is **rejected loudly, never silently dropped** (the `checkInboundMedia` ingest gate): an image on a text-only model, or a document/video part (not yet supported), returns a 4xx and emits the `input_media_rejected` audit event. Note the image **bytes** themselves are not text-scannable, so guardrail/intent scanning still applies only to the text/data projection; this is an accepted limitation.
 
+**DoS bounds.** Because inline images raise the inbound-body cap to 32 MiB (both transports), the gate also enforces per-image and per-message limits, and a concurrency semaphore bounds how many media-bearing requests run at once — a flat body cap alone is not media DoS protection:
+
+| Bound | Limit | On breach |
+|-------|-------|-----------|
+| Per-image bytes | 5 MiB (`MaxImagePartBytes`) | 4xx `image_limit_exceeded` |
+| Decoded dimensions | 100 000 px per side **and** 50 MP total (`MaxImagePixels`, png/jpeg/gif via header-only `DecodeConfig`; webp bounded by bytes) | 4xx `image_limit_exceeded` (defuses decompression bombs; the per-side bound also keeps the pixel product from overflowing int64) |
+| Images per message | 20 (`MaxImagePartsPerMessage`) | 4xx `too_many_image_parts` |
+| Concurrent media requests | 4 (`maxConcurrentMediaRequests`) | `429`/unavailable — request is shed, not queued |
+
 **Note for guardrail pattern authors:** parts join with **newlines** (matching what the model sees). A pattern intended to match content that may span a part boundary should use `\s+` rather than a literal space — a payload split across two text parts joins as `…end\nstart…`.
 
 ### Session Recovery Deduplication

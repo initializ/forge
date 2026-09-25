@@ -264,7 +264,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 2<<20) // 2 MiB — parity with runtime.maxRequestBodyBytes; raised for inline media in the #255 media phase
+	r.Body = http.MaxBytesReader(w, r.Body, 32<<20) // 32 MiB — parity with runtime.maxRequestBodyBytes; admits inline media (#255, with per-image + concurrency limits enforced downstream)
 
 	var req a2a.JSONRPCRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

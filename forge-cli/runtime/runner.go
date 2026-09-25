@@ -203,6 +203,7 @@ type Runner struct {
 	taskStore              *a2a.TaskStore                    // shared task store, populated once srv is built; read by defer hook when it fires
 	platformCommandGuard   *coreruntime.PlatformCommandGuard // #238 (ASI02) operator-authored command deny, applied to every tool call; empty when no layer declares denied_command_patterns
 	killed                 atomic.Bool                       // kill switch: set by the admin/kill handler; when true, tasks/send + tasks/sendSubscribe refuse new work (in-flight work is cancelled via cancelRegistry.CancelAll, then the platform scales the workload to zero)
+	mediaSem               chan struct{}                     // #255 DoS control: bounds concurrent media-bearing requests so raising the body cap can't be turned into a memory-exhaustion vector; nil disables the bound
 }
 
 // NewRunner creates a Runner from the given config.
@@ -225,6 +226,7 @@ func NewRunner(cfg RunnerConfig) (*Runner, error) {
 		logger:         logger,
 		cancelRegistry: coreruntime.NewCancellationRegistry(),
 		seqRegistry:    coreruntime.NewSequenceRegistry(),
+		mediaSem:       make(chan struct{}, maxConcurrentMediaRequests),
 	}, nil
 }
 
@@ -1685,6 +1687,12 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 			r.logger.Warn("tasks/send rejected: unsupported media", map[string]any{"task_id": params.ID, "reason": reason})
 			return a2a.NewErrorResponse(id, a2a.ErrCodeInvalidParams, reason)
 		}
+		// Bound concurrent media-bearing requests (#255 DoS control).
+		release, ok := r.acquireMediaSlot(len(params.Message.FileParts()) > 0)
+		if !ok {
+			return a2a.NewErrorResponse(id, a2a.ErrCodeUnavailable, "server is busy processing media requests; retry shortly")
+		}
+		defer release()
 		r.logger.Info("tasks/send", map[string]any{"task_id": params.ID})
 		// Delegate to executeTask so JSON-RPC and REST share the same
 		// audit + accumulator + invocation_complete wiring (issue #87 /
@@ -1743,6 +1751,14 @@ func (r *Runner) registerHandlers(srv *server.Server, executor coreruntime.Agent
 				a2a.NewErrorResponse(id, a2a.ErrCodeInvalidParams, reason))
 			return
 		}
+		// Bound concurrent media-bearing requests (#255 DoS control).
+		release, ok := r.acquireMediaSlot(len(params.Message.FileParts()) > 0)
+		if !ok {
+			server.WriteSSEEvent(w, flusher, "error", //nolint:errcheck
+				a2a.NewErrorResponse(id, a2a.ErrCodeUnavailable, "server is busy processing media requests; retry shortly"))
+			return
+		}
+		defer release()
 
 		r.logger.Info("tasks/sendSubscribe", map[string]any{"task_id": params.ID})
 
@@ -2292,17 +2308,38 @@ type restTaskRequest struct {
 
 // maxRequestBodyBytes bounds an inbound REST A2A request body — an unbounded
 // json.Decode on req.Body is a trivial memory-exhaustion vector. Kept in
-// parity with the JSON-RPC transport cap in server.handleJSONRPC (both 2 MiB)
+// parity with the JSON-RPC transport cap in server.handleJSONRPC (both 32 MiB)
 // so the inbound-body bound is uniform across transports.
 //
-// Deliberately NOT raised to admit inline media yet: Phase 0 (#255) rejects all
-// file parts, so a larger cap would only widen the memory-exhaustion surface
-// without admitting anything usable. The media-consuming phase raises this
-// (both transports together) alongside the controls that make a large cap safe
-// — per-part count/size limits, image decode-dimension bounds, and a
-// concurrency semaphore — since a flat MaxBytesReader alone is not media DoS
-// protection.
-const maxRequestBodyBytes = 2 << 20 // 2 MiB — matches server.handleJSONRPC
+// Raised to 32 MiB now that forge consumes inline images (#255) — but ONLY
+// alongside the controls that make a large cap safe: per-image size + count
+// limits and decode-dimension bounds (checkInboundMedia + CheckImageLimits),
+// and the mediaSem concurrency semaphore. A flat MaxBytesReader alone is not
+// media DoS protection; these bound total, per-part, and concurrent memory.
+const maxRequestBodyBytes = 32 << 20 // 32 MiB — matches server.handleJSONRPC
+
+// maxConcurrentMediaRequests bounds how many media-bearing requests the runner
+// processes at once (#255). Peak media memory ≈ this × maxRequestBodyBytes; a
+// request that can't get a slot is shed with a 429/unavailable rather than
+// queued, so a burst of large uploads can't exhaust memory.
+const maxConcurrentMediaRequests = 4
+
+// acquireMediaSlot bounds concurrent media-bearing requests. For a request with
+// no media it is a no-op. For a media request it tries (non-blocking) to take a
+// semaphore slot: on success it returns a release func and true; when the
+// runner is at capacity it returns (nil, false) so the caller sheds the request
+// instead of queueing it.
+func (r *Runner) acquireMediaSlot(hasMedia bool) (release func(), ok bool) {
+	if !hasMedia || r.mediaSem == nil {
+		return func() {}, true
+	}
+	select {
+	case r.mediaSem <- struct{}{}:
+		return func() { <-r.mediaSem }, true
+	default:
+		return nil, false
+	}
+}
 
 // checkInboundMedia rejects a message carrying file parts the runtime cannot
 // forward to the model (#255). Today forge projects only text/data parts into
@@ -2325,18 +2362,42 @@ func (r *Runner) checkInboundMedia(ctx context.Context, msg a2a.Message, auditLo
 
 	var dropped []string
 	reason := "unsupported_media_type"
-	for _, f := range files {
-		mt := f.MimeType
-		if mt == "" {
-			mt = "application/octet-stream"
+	imageCount := 0
+	for _, p := range msg.Parts {
+		if p.Kind != a2a.PartKindFile {
+			continue
 		}
-		if coreruntime.IsImageMIME(mt) {
-			if visionCapable {
-				continue // accepted → projected to the model as vision input
+		mt := "application/octet-stream"
+		var data []byte
+		if p.File != nil {
+			if p.File.MimeType != "" {
+				mt = p.File.MimeType
 			}
-			reason = "model_not_vision_capable"
+			data = p.File.Bytes
 		}
-		dropped = append(dropped, "file:"+mt)
+		if !coreruntime.IsImageMIME(mt) {
+			reason = "unsupported_media_type"
+			dropped = append(dropped, "file:"+mt)
+			continue
+		}
+		if !visionCapable {
+			reason = "model_not_vision_capable"
+			dropped = append(dropped, "file:"+mt)
+			continue
+		}
+		// Image on a vision model: enforce the DoS bounds (#255).
+		imageCount++
+		if imageCount > coreruntime.MaxImagePartsPerMessage {
+			reason = "too_many_image_parts"
+			dropped = append(dropped, fmt.Sprintf("file:%s (over the %d-image limit)", mt, coreruntime.MaxImagePartsPerMessage))
+			continue
+		}
+		if lim := coreruntime.CheckImageLimits(mt, data); lim != "" {
+			reason = "image_limit_exceeded"
+			dropped = append(dropped, fmt.Sprintf("file:%s (%s)", mt, lim))
+			continue
+		}
+		// accepted → projected to the model as vision input
 	}
 	if len(dropped) == 0 {
 		return "" // all file parts are images the model can consume
@@ -2352,13 +2413,18 @@ func (r *Runner) checkInboundMedia(ctx context.Context, msg a2a.Message, auditLo
 		})
 	}
 	var detail string
-	if reason == "model_not_vision_capable" {
+	switch reason {
+	case "model_not_vision_capable":
 		model := ""
 		if r.modelConfig != nil {
 			model = r.modelConfig.Client.Model
 		}
 		detail = fmt.Sprintf("the configured model %q does not support image input", model)
-	} else {
+	case "too_many_image_parts":
+		detail = fmt.Sprintf("a message may carry at most %d image parts", coreruntime.MaxImagePartsPerMessage)
+	case "image_limit_exceeded":
+		detail = fmt.Sprintf("each image must be a decodable png/jpeg/gif/webp under %d bytes and %d pixels", coreruntime.MaxImagePartBytes, coreruntime.MaxImagePixels)
+	default:
 		detail = "only image input (png/jpeg/gif/webp) is accepted; documents and video are not yet supported"
 	}
 	return fmt.Sprintf(
@@ -2420,6 +2486,13 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": reason})
 			return
 		}
+		// Bound concurrent media-bearing requests (#255 DoS control).
+		release, ok := r.acquireMediaSlot(len(params.Message.FileParts()) > 0)
+		if !ok {
+			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "server is busy processing media requests; retry shortly"})
+			return
+		}
+		defer release()
 		task, snap, err := r.executeTask(ctx, params, store, executor, guardrails, egressClient, auditLogger)
 		if err != nil {
 			// R4b: a step-up-required error takes priority — we
@@ -2475,6 +2548,14 @@ func (r *Runner) registerRESTHandlers(srv *server.Server, executor coreruntime.A
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": reason})
 			return
 		}
+		// Bound concurrent media-bearing requests, while a plain non-stream
+		// status is still possible — before the SSE Content-Type commits (#255).
+		release, ok := r.acquireMediaSlot(len(body.Task.Message.FileParts()) > 0)
+		if !ok {
+			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "server is busy processing media requests; retry shortly"})
+			return
+		}
+		defer release()
 
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")

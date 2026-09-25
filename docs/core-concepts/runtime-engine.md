@@ -29,9 +29,15 @@ An inbound A2A message is a list of typed parts. `a2a.Message.PromptText()` proj
 
 - **Text parts** are included verbatim (joined by newlines).
 - **Data parts** (`{"kind":"data","data":{…}}`) are appended as a fenced ` ```json ` block of the part's fields. This means structured input — e.g. a workflow step's output dispatched as a data part with no text part — still reaches the model instead of producing an empty prompt (a message with only a data part must never execute as empty).
-- **File parts** are not projected into prompt text (their bytes/URIs aren't text).
+- **File parts** are not projected into prompt *text* (their bytes/URIs aren't text). Image file parts are handled separately as multimodal input (below).
 
 The same projection feeds the inbound guardrail and intent-alignment scanners, so the security checks see exactly what the model sees — a payload carried in a data part can't reach the LLM while bypassing them. Each data part's projected block is capped (~16KiB, rune-safe) — the cap applies identically to the scanners and the prompt, so truncation can't open a divergence.
+
+#### Image input (multimodal)
+
+An image `file` part (`image/png`, `image/jpeg`, `image/gif`, `image/webp`) is forwarded to the model as native vision input when the resolved model is **vision-capable** (`runtime.ModelSupportsVision` — OpenAI `gpt-4o`/`gpt-4.1`/`gpt-5`/`o1`/`o3`/`o4`, Anthropic Claude 3+, Gemini 1.5/2). `a2aMessageToLLM` projects such parts into `llm.ChatMessage.Parts` (the flattened text stays in `Content` as the text-of-record for the scanners), and each provider serializes them natively — Anthropic `image` source blocks, OpenAI/Gemini `image_url` data URLs. A text-only message keeps `Parts` empty and marshals byte-identically to before.
+
+Media the model can't consume is **rejected loudly, never silently dropped** (the `checkInboundMedia` ingest gate): an image on a text-only model, or a document/video part (not yet supported), returns a 4xx and emits the `input_media_rejected` audit event. Note the image **bytes** themselves are not text-scannable, so guardrail/intent scanning still applies only to the text/data projection; this is an accepted limitation.
 
 **Note for guardrail pattern authors:** parts join with **newlines** (matching what the model sees). A pattern intended to match content that may span a part boundary should use `\s+` rather than a literal space — a payload split across two text parts joins as `…end\nstart…`.
 

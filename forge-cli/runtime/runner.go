@@ -2317,27 +2317,53 @@ func (r *Runner) checkInboundMedia(ctx context.Context, msg a2a.Message, auditLo
 	if len(files) == 0 {
 		return ""
 	}
-	dropped := make([]string, 0, len(files))
+	// Image parts are forwarded to the model as inline vision input when the
+	// resolved model is vision-capable (#255 Phase 2). Everything else — images
+	// on a non-vision model, and documents/video (later phases) — is still
+	// rejected loudly rather than silently dropped.
+	visionCapable := r.modelConfig != nil && coreruntime.ModelSupportsVision(r.modelConfig.Client.Model)
+
+	var dropped []string
+	reason := "unsupported_media_type"
 	for _, f := range files {
 		mt := f.MimeType
 		if mt == "" {
 			mt = "application/octet-stream"
 		}
+		if coreruntime.IsImageMIME(mt) {
+			if visionCapable {
+				continue // accepted → projected to the model as vision input
+			}
+			reason = "model_not_vision_capable"
+		}
 		dropped = append(dropped, "file:"+mt)
+	}
+	if len(dropped) == 0 {
+		return "" // all file parts are images the model can consume
 	}
 	if auditLogger != nil {
 		auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
 			Event: coreruntime.AuditInputMediaRejected,
 			Fields: map[string]any{
 				"dropped": dropped,
-				"count":   len(files),
-				"reason":  "file_input_unsupported",
+				"count":   len(dropped),
+				"reason":  reason,
 			},
 		})
 	}
+	var detail string
+	if reason == "model_not_vision_capable" {
+		model := ""
+		if r.modelConfig != nil {
+			model = r.modelConfig.Client.Model
+		}
+		detail = fmt.Sprintf("the configured model %q does not support image input", model)
+	} else {
+		detail = "only image input (png/jpeg/gif/webp) is accepted; documents and video are not yet supported"
+	}
 	return fmt.Sprintf(
-		"this agent does not accept file/image input: %d file part(s) rejected (%s). Send text or data parts instead.",
-		len(files), strings.Join(dropped, ", "),
+		"%d media part(s) rejected (%s): %s.",
+		len(dropped), strings.Join(dropped, ", "), detail,
 	)
 }
 

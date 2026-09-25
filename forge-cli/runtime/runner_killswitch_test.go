@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/initializ/forge/forge-core/a2a"
 	"github.com/initializ/forge/forge-core/auth"
@@ -39,7 +38,7 @@ func TestRunner_KillSwitch_RefusesNewWorkOnEveryIngress(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 	baseURL := fmt.Sprintf("http://localhost:%d", port)
-	waitForServer(t, baseURL, 5*time.Second)
+	baseURL = waitForServer(t, baseURL, serverReadyTimeout)
 	token, _ := auth.LoadToken(dir)
 
 	// Trip the kill switch. Idle agent → cancelled=0, but the call must still

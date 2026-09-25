@@ -87,7 +87,8 @@ func TestRunner_TracingEnabled_InstallsProviderAndShutsDownCleanly(t *testing.T)
 	go func() { runErrCh <- runner.Run(ctx) }()
 
 	baseURL := "http://localhost:" + itoa(port)
-	waitForServer(t, baseURL, 5*time.Second)
+	// This test only needs readiness (it cancels next), not the resolved URL.
+	waitForServer(t, baseURL, serverReadyTimeout)
 
 	// At this point Run() has progressed past the tracer install (which
 	// happens before the executor + HTTP server come up). Cancel and

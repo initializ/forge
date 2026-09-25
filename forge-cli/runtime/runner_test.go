@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -57,7 +59,7 @@ func TestRunner_MockIntegration(t *testing.T) {
 
 	// Wait for server to be ready
 	baseURL := fmt.Sprintf("http://localhost:%d", port)
-	waitForServer(t, baseURL, 5*time.Second)
+	baseURL = waitForServer(t, baseURL, serverReadyTimeout)
 
 	// Load the auto-generated auth token.
 	token, err := auth.LoadToken(dir)
@@ -385,20 +387,51 @@ func TestExpandEgressDomains(t *testing.T) {
 	}
 }
 
-func waitForServer(t *testing.T, baseURL string, timeout time.Duration) {
+// serverReadyTimeout bounds how long a test waits for the runner's HTTP server
+// to become reachable. Generous on purpose: it only ever elapses on FAILURE
+// (a green run returns as soon as /healthz answers), so a high ceiling costs
+// nothing on passing runs while absorbing CI startup jitter that made the
+// previous 5s ceiling flaky under load.
+const serverReadyTimeout = 20 * time.Second
+
+// waitForServer polls until the runner's HTTP server is reachable and returns
+// the base URL it actually came up on.
+//
+// The server auto-increments its port on conflict (up to 10 attempts, see
+// server.Start), and the port findFreePort hands out can be stolen in the gap
+// before the runner binds it — so the server may listen on requestedPort+k
+// rather than the port the caller put in baseURL. Polling only the requested
+// port then times out even though the server is up (the CI flake in
+// TestRunner_JSONRPC_WorkflowContextThreadsThroughDispatcher). We therefore
+// scan the whole increment window and return the resolved base URL, which the
+// caller must use for its subsequent requests: `baseURL = waitForServer(...)`.
+func waitForServer(t *testing.T, baseURL string, timeout time.Duration) string {
 	t.Helper()
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		t.Fatalf("waitForServer: invalid baseURL %q: %v", baseURL, err)
+	}
+	basePort, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatalf("waitForServer: no numeric port in baseURL %q: %v", baseURL, err)
+	}
+	const portWindow = 10 // matches server.Start's auto-increment attempts
 	deadline := time.After(timeout)
 	for {
 		select {
 		case <-deadline:
-			t.Fatalf("server did not start within %v", timeout)
+			t.Fatalf("server did not start within %v (scanned %s:%d-%d)", timeout, u.Hostname(), basePort, basePort+portWindow-1)
 		default:
 		}
-		resp, err := http.Get(baseURL + "/healthz")
-		if err == nil {
+		for off := range portWindow {
+			cand := fmt.Sprintf("%s://%s:%d", u.Scheme, u.Hostname(), basePort+off)
+			resp, err := http.Get(cand + "/healthz")
+			if err != nil {
+				continue
+			}
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				return
+				return cand
 			}
 		}
 		time.Sleep(50 * time.Millisecond)

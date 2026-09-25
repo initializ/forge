@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strconv"
 	"testing"
-	"time"
 
 	"github.com/initializ/forge/forge-core/a2a"
 	"github.com/initializ/forge/forge-core/auth"
@@ -72,7 +71,7 @@ func TestRunner_JSONRPC_TasksSend_StampsForgeUsageHeaders(t *testing.T) {
 	go func() { _ = runner.Run(ctx) }()
 
 	baseURL := fmt.Sprintf("http://localhost:%d", port)
-	waitForServer(t, baseURL, 5*time.Second)
+	baseURL = waitForServer(t, baseURL, serverReadyTimeout)
 
 	token, err := auth.LoadToken(dir)
 	if err != nil {
@@ -179,7 +178,7 @@ func TestRunner_JSONRPC_WorkflowContextThreadsThroughDispatcher(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 	baseURL := fmt.Sprintf("http://localhost:%d", port)
-	waitForServer(t, baseURL, 5*time.Second)
+	baseURL = waitForServer(t, baseURL, serverReadyTimeout)
 	token, _ := auth.LoadToken(dir)
 
 	rpcReq := a2a.JSONRPCRequest{

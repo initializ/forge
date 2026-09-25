@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/initializ/forge/forge-core/a2a"
 	"github.com/initializ/forge/forge-core/auth"
@@ -45,7 +44,7 @@ func TestRunner_JSONRPC_TasksSend_RejectsLegacyTypeDiscriminator(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 	baseURL := fmt.Sprintf("http://localhost:%d", port)
-	waitForServer(t, baseURL, 5*time.Second)
+	baseURL = waitForServer(t, baseURL, serverReadyTimeout)
 	token, _ := auth.LoadToken(dir)
 
 	// Exact payload shape from issue #119: parts use `"type"` instead
@@ -125,7 +124,7 @@ func TestRunner_JSONRPC_TasksSend_SpecCompliantPayloadStillWorks(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 	baseURL := fmt.Sprintf("http://localhost:%d", port)
-	waitForServer(t, baseURL, 5*time.Second)
+	baseURL = waitForServer(t, baseURL, serverReadyTimeout)
 	token, _ := auth.LoadToken(dir)
 
 	// Same payload, but with the spec-correct `"kind"` discriminator.
@@ -192,7 +191,7 @@ func TestRunner_JSONRPC_TasksSend_RejectsEmptyParts(t *testing.T) {
 	defer cancel()
 	go func() { _ = runner.Run(ctx) }()
 	baseURL := fmt.Sprintf("http://localhost:%d", port)
-	waitForServer(t, baseURL, 5*time.Second)
+	baseURL = waitForServer(t, baseURL, serverReadyTimeout)
 	token, _ := auth.LoadToken(dir)
 
 	body := []byte(`{

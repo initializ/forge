@@ -81,6 +81,36 @@ func TestA2AMessageToLLM_ProjectsPDFDocument(t *testing.T) {
 	}
 }
 
+// TestLLMMessageToA2A_EmitsGeneratedImage verifies a model-generated image on
+// the response message becomes an A2A file part alongside the text (#255 Phase 5).
+func TestLLMMessageToA2A_EmitsGeneratedImage(t *testing.T) {
+	img := []byte("generated-png-bytes")
+	msg := llm.ChatMessage{
+		Role:    llm.RoleAssistant,
+		Content: "here is your image",
+		Parts: []llm.ContentPart{
+			llm.NewMediaContentPart(llm.ContentPartImage, llm.MediaRef{MimeType: "image/png", Bytes: img}),
+		},
+	}
+	out := llmMessageToA2A(msg)
+	if out.Role != a2a.MessageRoleAgent {
+		t.Errorf("role = %q", out.Role)
+	}
+	if len(out.Parts) != 2 {
+		t.Fatalf("parts = %+v, want [text, file]", out.Parts)
+	}
+	if out.Parts[0].Kind != a2a.PartKindText || out.Parts[0].Text != "here is your image" {
+		t.Errorf("first part should be the text; got %+v", out.Parts[0])
+	}
+	f := out.Parts[1]
+	if f.Kind != a2a.PartKindFile || f.File == nil || f.File.MimeType != "image/png" {
+		t.Fatalf("second part should be an image file part; got %+v", f)
+	}
+	if string(f.File.Bytes) != string(img) {
+		t.Errorf("generated image bytes not carried into the file part")
+	}
+}
+
 // TestA2AMessageToLLM_UnsupportedFileNotProjected: an unsupported file part (the
 // gate would reject it) must not be projected into Parts if it reaches here.
 func TestA2AMessageToLLM_UnsupportedFileNotProjected(t *testing.T) {

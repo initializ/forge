@@ -24,6 +24,7 @@ model:
   aws_region: ""                    # Required when auth_scheme: aws_sigv4 — issue #202
   auth_header_name: ""              # apikey_header[_only] custom header name; default "apikey" — issue #302
   disable_store: false              # openai-responses only: send store=false so OpenAI doesn't retain responses — issue #383
+  image_generation: false           # openai-responses only: enable the image_generation tool so the model can return images as file parts — issue #255
   fallbacks:                        # Fallback providers (optional)
     - provider: "anthropic"
       name: "claude-sonnet-4-20250514"

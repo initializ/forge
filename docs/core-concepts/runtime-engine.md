@@ -38,7 +38,7 @@ The same projection feeds the inbound guardrail and intent-alignment scanners, s
 A media `file` part is forwarded to the model as native input when the resolved model supports that modality:
 
 - **Images** (`image/png`, `image/jpeg`, `image/gif`, `image/webp`) → **vision-capable** models (`runtime.ModelSupportsVision` — OpenAI `gpt-4o`/`gpt-4.1`/`gpt-5`/`o1`/`o3`/`o4`, Anthropic Claude 3+, Gemini 1.5/2). Serialized as Anthropic `image` source blocks / OpenAI/Gemini `image_url` data URLs.
-- **PDFs** (`application/pdf`) → **document-capable** models (`runtime.ModelSupportsPDF` — Anthropic Sonnet 3.5+ and Opus 4+; Haiku is excluded pending confirmation, so a Haiku PDF gets a clean reject rather than a provider error). Serialized as Anthropic `document` source blocks. OpenAI Responses `input_file`, Gemini documents, and text-extraction fallback for non-native models are deferred follow-ups.
+- **PDFs** (`application/pdf`) → **document-capable** models (`runtime.ModelSupportsPDF` — Anthropic Sonnet 3.5+, Opus 4+, Haiku 4.5+, and Fable 5; the older Claude 3.0 and 3.5 Haiku are excluded, so a PDF sent to those gets a clean reject rather than a provider error). Serialized as Anthropic `document` source blocks. OpenAI Responses `input_file`, Gemini documents, and text-extraction fallback for non-native models are deferred follow-ups.
 
 `a2aMessageToLLM` projects supported parts into `llm.ChatMessage.Parts` (the flattened text stays in `Content` as the text-of-record for the scanners). A text-only message keeps `Parts` empty and marshals byte-identically to before.
 

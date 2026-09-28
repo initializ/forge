@@ -27,15 +27,14 @@ func TestModelSupportsVision(t *testing.T) {
 }
 
 func TestModelSupportsPDF(t *testing.T) {
-	pdf := []string{"claude-3-5-sonnet", "claude-3-7-sonnet", "claude-opus-4-8", "claude-sonnet-5", "claude-sonnet-4-5"}
+	pdf := []string{"claude-3-5-sonnet", "claude-3-7-sonnet", "claude-opus-4-8", "claude-sonnet-5", "claude-sonnet-4-5", "claude-haiku-4-5", "claude-fable-5"}
 	for _, m := range pdf {
 		if !ModelSupportsPDF(m) {
 			t.Errorf("ModelSupportsPDF(%q) = false, want true", m)
 		}
 	}
-	// Haiku is deliberately excluded (Sonnet-first PDF support, Haiku unconfirmed
-	// → fail closed), as is bare Claude 3.0 and the 3.5 Haiku release.
-	noPDF := []string{"", "claude-3-opus", "claude-3-sonnet", "claude-3-5-haiku", "claude-haiku-4-5", "gpt-4o", "gpt-5", "gemini-2.5-flash", "o3-mini"}
+	// Excluded: bare Claude 3.0, the 3.5 Haiku release (unconfirmed), and non-Anthropic.
+	noPDF := []string{"", "claude-3-opus", "claude-3-sonnet", "claude-3-5-haiku", "gpt-4o", "gpt-5", "gemini-2.5-flash", "o3-mini"}
 	for _, m := range noPDF {
 		if ModelSupportsPDF(m) {
 			t.Errorf("ModelSupportsPDF(%q) = true, want false", m)

@@ -2354,15 +2354,21 @@ func (r *Runner) checkInboundMedia(ctx context.Context, msg a2a.Message, auditLo
 	if len(files) == 0 {
 		return ""
 	}
-	// Image parts are forwarded to the model as inline vision input when the
-	// resolved model is vision-capable (#255 Phase 2). Everything else — images
-	// on a non-vision model, and documents/video (later phases) — is still
-	// rejected loudly rather than silently dropped.
-	visionCapable := r.modelConfig != nil && coreruntime.ModelSupportsVision(r.modelConfig.Client.Model)
+	// Images are forwarded as inline vision input on a vision-capable model
+	// (#255 Phase 2); PDFs as native document blocks on a document-capable model
+	// (Phase 3). Everything else — media on a model that can't consume it, or an
+	// unsupported type (other documents/video) — is rejected loudly rather than
+	// silently dropped.
+	model := ""
+	if r.modelConfig != nil {
+		model = r.modelConfig.Client.Model
+	}
+	visionCapable := coreruntime.ModelSupportsVision(model)
+	pdfCapable := coreruntime.ModelSupportsPDF(model)
 
 	var dropped []string
 	reason := "unsupported_media_type"
-	imageCount := 0
+	imageCount, docCount := 0, 0
 	for _, p := range msg.Parts {
 		if p.Kind != a2a.PartKindFile {
 			continue
@@ -2375,32 +2381,50 @@ func (r *Runner) checkInboundMedia(ctx context.Context, msg a2a.Message, auditLo
 			}
 			data = p.File.Bytes
 		}
-		if !coreruntime.IsImageMIME(mt) {
+		switch {
+		case coreruntime.IsImageMIME(mt):
+			if !visionCapable {
+				reason = "model_not_vision_capable"
+				dropped = append(dropped, "file:"+mt)
+				continue
+			}
+			imageCount++
+			if imageCount > coreruntime.MaxImagePartsPerMessage {
+				reason = "too_many_image_parts"
+				dropped = append(dropped, fmt.Sprintf("file:%s (over the %d-image limit)", mt, coreruntime.MaxImagePartsPerMessage))
+				continue
+			}
+			if lim := coreruntime.CheckImageLimits(mt, data); lim != "" {
+				reason = "image_limit_exceeded"
+				dropped = append(dropped, fmt.Sprintf("file:%s (%s)", mt, lim))
+				continue
+			}
+			// accepted → projected as vision input
+		case coreruntime.IsDocumentMIME(mt):
+			if !pdfCapable {
+				reason = "model_not_document_capable"
+				dropped = append(dropped, "file:"+mt)
+				continue
+			}
+			docCount++
+			if docCount > coreruntime.MaxDocumentPartsPerMessage {
+				reason = "too_many_document_parts"
+				dropped = append(dropped, fmt.Sprintf("file:%s (over the %d-document limit)", mt, coreruntime.MaxDocumentPartsPerMessage))
+				continue
+			}
+			if lim := coreruntime.CheckDocumentLimits(mt, data); lim != "" {
+				reason = "document_limit_exceeded"
+				dropped = append(dropped, fmt.Sprintf("file:%s (%s)", mt, lim))
+				continue
+			}
+			// accepted → projected as a native document block
+		default:
 			reason = "unsupported_media_type"
 			dropped = append(dropped, "file:"+mt)
-			continue
 		}
-		if !visionCapable {
-			reason = "model_not_vision_capable"
-			dropped = append(dropped, "file:"+mt)
-			continue
-		}
-		// Image on a vision model: enforce the DoS bounds (#255).
-		imageCount++
-		if imageCount > coreruntime.MaxImagePartsPerMessage {
-			reason = "too_many_image_parts"
-			dropped = append(dropped, fmt.Sprintf("file:%s (over the %d-image limit)", mt, coreruntime.MaxImagePartsPerMessage))
-			continue
-		}
-		if lim := coreruntime.CheckImageLimits(mt, data); lim != "" {
-			reason = "image_limit_exceeded"
-			dropped = append(dropped, fmt.Sprintf("file:%s (%s)", mt, lim))
-			continue
-		}
-		// accepted → projected to the model as vision input
 	}
 	if len(dropped) == 0 {
-		return "" // all file parts are images the model can consume
+		return "" // all file parts are media the model can consume
 	}
 	if auditLogger != nil {
 		auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
@@ -2415,17 +2439,19 @@ func (r *Runner) checkInboundMedia(ctx context.Context, msg a2a.Message, auditLo
 	var detail string
 	switch reason {
 	case "model_not_vision_capable":
-		model := ""
-		if r.modelConfig != nil {
-			model = r.modelConfig.Client.Model
-		}
 		detail = fmt.Sprintf("the configured model %q does not support image input", model)
 	case "too_many_image_parts":
 		detail = fmt.Sprintf("a message may carry at most %d image parts", coreruntime.MaxImagePartsPerMessage)
 	case "image_limit_exceeded":
 		detail = fmt.Sprintf("each image must be a decodable png/jpeg/gif/webp under %d bytes and %d pixels", coreruntime.MaxImagePartBytes, coreruntime.MaxImagePixels)
+	case "model_not_document_capable":
+		detail = fmt.Sprintf("the configured model %q does not support PDF document input", model)
+	case "too_many_document_parts":
+		detail = fmt.Sprintf("a message may carry at most %d document parts", coreruntime.MaxDocumentPartsPerMessage)
+	case "document_limit_exceeded":
+		detail = fmt.Sprintf("each document must be a valid PDF under %d bytes", coreruntime.MaxDocumentPartBytes)
 	default:
-		detail = "only image input (png/jpeg/gif/webp) is accepted; documents and video are not yet supported"
+		detail = "only image (png/jpeg/gif/webp) and PDF input are accepted; other documents and video are not yet supported"
 	}
 	return fmt.Sprintf(
 		"%d media part(s) rejected (%s): %s.",

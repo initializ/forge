@@ -57,18 +57,42 @@ func TestA2AMessageToLLM_TextOnlyLeavesPartsNil(t *testing.T) {
 	}
 }
 
-// TestA2AMessageToLLM_NonImageFileNotProjected: a non-image file part (the gate
-// would reject it) must not be projected into Parts if it somehow reaches here.
-func TestA2AMessageToLLM_NonImageFileNotProjected(t *testing.T) {
+// TestA2AMessageToLLM_ProjectsPDFDocument: a PDF file part becomes a document
+// content part (#255 Phase 3), alongside the projected text.
+func TestA2AMessageToLLM_ProjectsPDFDocument(t *testing.T) {
+	pdf := []byte("%PDF-1.7\n...")
 	msg := a2a.Message{
 		Role: a2a.MessageRoleUser,
 		Parts: []a2a.Part{
-			a2a.NewTextPart("read this"),
-			a2a.NewFilePart(a2a.FileContent{Name: "d.pdf", MimeType: "application/pdf", Bytes: []byte{1}}),
+			a2a.NewTextPart("summarize this"),
+			a2a.NewFilePart(a2a.FileContent{Name: "d.pdf", MimeType: "application/pdf", Bytes: pdf}),
+		},
+	}
+	got := a2aMessageToLLM(msg)
+	if len(got.Parts) != 2 || got.Parts[0].Type != llm.ContentPartText {
+		t.Fatalf("Parts = %+v, want [text, document]", got.Parts)
+	}
+	doc := got.Parts[1]
+	if doc.Type != llm.ContentPartDocument || doc.Media == nil || doc.Media.MimeType != "application/pdf" {
+		t.Fatalf("second part should be a pdf document; got %+v", doc)
+	}
+	if string(doc.Media.Bytes) != string(pdf) {
+		t.Errorf("document bytes not carried through")
+	}
+}
+
+// TestA2AMessageToLLM_UnsupportedFileNotProjected: an unsupported file part (the
+// gate would reject it) must not be projected into Parts if it reaches here.
+func TestA2AMessageToLLM_UnsupportedFileNotProjected(t *testing.T) {
+	msg := a2a.Message{
+		Role: a2a.MessageRoleUser,
+		Parts: []a2a.Part{
+			a2a.NewTextPart("play this"),
+			a2a.NewFilePart(a2a.FileContent{Name: "v.mp4", MimeType: "video/mp4", Bytes: []byte{1}}),
 		},
 	}
 	got := a2aMessageToLLM(msg)
 	if got.Parts != nil {
-		t.Errorf("non-image file part must not be projected; got %+v", got.Parts)
+		t.Errorf("unsupported file part must not be projected; got %+v", got.Parts)
 	}
 }

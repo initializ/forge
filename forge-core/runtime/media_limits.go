@@ -37,7 +37,38 @@ const (
 	// 100_000 keeps the product ≤ 1e10 (safe) and no legitimate image is that
 	// large on any single side.
 	maxImageDim = 100_000
+
+	// MaxDocumentPartBytes caps a single document (PDF) part's raw bytes,
+	// matching Anthropic's ~32 MiB per-document limit. NOTE the 32 MiB
+	// request-body cap is the binding constraint in practice: a PDF base64-
+	// inflates ~33% in the JSON envelope, so MaxBytesReader rejects anything
+	// over ~24 MiB raw before this per-part check runs (#534 review). This
+	// value stays aligned with the provider limit for when a future
+	// envelope/media-split change lifts the base64 overhead.
+	MaxDocumentPartBytes = 32 << 20
+
+	// MaxDocumentPartsPerMessage caps how many document parts one message may
+	// carry.
+	MaxDocumentPartsPerMessage = 5
 )
+
+// CheckDocumentLimits validates a single document part's bytes against the
+// per-document size bound and a format sniff. Returns a non-empty reason when
+// the part must be rejected, or "" when it passes. PDF is the only supported
+// document format today; the magic-byte check rejects a mislabeled or corrupt
+// payload before it reaches the provider.
+func CheckDocumentLimits(mime string, data []byte) string {
+	if len(data) == 0 {
+		return "document part has no bytes"
+	}
+	if len(data) > MaxDocumentPartBytes {
+		return fmt.Sprintf("document exceeds the %d-byte per-document limit (%d bytes)", MaxDocumentPartBytes, len(data))
+	}
+	if IsDocumentMIME(mime) && !bytes.HasPrefix(data, []byte("%PDF-")) {
+		return "document is not a valid PDF (missing %PDF- header)"
+	}
+	return ""
+}
 
 // CheckImageLimits validates a single image part's bytes against the per-image
 // size and decode-dimension bounds. It returns a non-empty reason string when

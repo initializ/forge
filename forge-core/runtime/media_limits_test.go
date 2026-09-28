@@ -111,3 +111,28 @@ func TestCheckImageLimits(t *testing.T) {
 		}
 	})
 }
+
+func TestCheckDocumentLimits(t *testing.T) {
+	t.Run("valid pdf passes", func(t *testing.T) {
+		if got := CheckDocumentLimits("application/pdf", []byte("%PDF-1.7\n...")); got != "" {
+			t.Errorf("valid pdf rejected: %q", got)
+		}
+	})
+	t.Run("empty bytes rejected", func(t *testing.T) {
+		if CheckDocumentLimits("application/pdf", nil) == "" {
+			t.Error("empty document bytes must be rejected")
+		}
+	})
+	t.Run("oversized rejected", func(t *testing.T) {
+		big := make([]byte, MaxDocumentPartBytes+1)
+		copy(big, []byte("%PDF-1.7"))
+		if CheckDocumentLimits("application/pdf", big) == "" {
+			t.Error("document over the byte cap must be rejected")
+		}
+	})
+	t.Run("mislabeled non-pdf rejected", func(t *testing.T) {
+		if CheckDocumentLimits("application/pdf", []byte("PK\x03\x04 this is a zip")) == "" {
+			t.Error("a payload without the %PDF- header must be rejected")
+		}
+	})
+}

@@ -17,21 +17,55 @@ var visionCapablePrefixes = []string{
 	"gpt-4o", "gpt-4.1", "gpt-4-turbo", "gpt-4-vision", "gpt-5",
 	"o1", "o3", "o4",
 	// Anthropic: Claude 3 and later are all vision-capable. The 4.x/5 models
-	// carry the family name (claude-opus-4…, claude-sonnet-5…) so the family
-	// prefixes cover them.
-	"claude-3", "claude-opus", "claude-sonnet", "claude-haiku",
+	// carry the family name (claude-opus-4…, claude-sonnet-5…, claude-fable-5)
+	// so the family prefixes cover them. Every pdfCapablePrefixes family is
+	// listed here too — Claude document support is built on vision infra, so a
+	// PDF-capable model is necessarily vision-capable.
+	"claude-3", "claude-opus", "claude-sonnet", "claude-haiku", "claude-fable",
 	// Google Gemini (served through the OpenAI-compat client).
 	"gemini-1.5", "gemini-2",
+}
+
+// pdfCapablePrefixes lists model-name prefixes whose models accept a PDF
+// document natively via Anthropic's document block (#255 Phase 3). Covers the
+// confirmed families: Sonnet (3.5/3.7 + 4.x/5), Opus (4.x), Haiku 4.5+, and
+// Fable 5.
+//
+// Prefix design (#534 review):
+//   - "claude-haiku" matches the 4.x/5 family naming (claude-haiku-4-5…), which
+//     Anthropic confirms supports native PDF. It does NOT match the older
+//     "claude-3-5-haiku" naming, so Haiku 3.5 (unconfirmed) stays excluded.
+//   - The 3.5/3.7 prefixes name "sonnet" explicitly so they don't catch
+//     claude-3-5-haiku.
+//   - Bare "claude-3" (Claude 3.0) is excluded — it predates PDF support. Its
+//     models are claude-3-{opus,sonnet,haiku}, which don't match the
+//     "claude-opus"/"claude-sonnet"/"claude-haiku" family prefixes, so they
+//     fall through to a loud reject.
+//
+// Unknown-model default is fail-closed (loud reject, not a provider error).
+// OpenAI Responses input_file and Gemini document support are deferred follow-ups.
+var pdfCapablePrefixes = []string{
+	"claude-3-5-sonnet", "claude-3-7-sonnet", "claude-opus", "claude-sonnet", "claude-haiku", "claude-fable",
 }
 
 // ModelSupportsVision reports whether the named model accepts image input.
 // Case-insensitive prefix match; unknown/empty models return false.
 func ModelSupportsVision(model string) bool {
+	return matchesPrefix(model, visionCapablePrefixes)
+}
+
+// ModelSupportsPDF reports whether the named model accepts a PDF document
+// natively. Case-insensitive prefix match; unknown/empty models return false.
+func ModelSupportsPDF(model string) bool {
+	return matchesPrefix(model, pdfCapablePrefixes)
+}
+
+func matchesPrefix(model string, prefixes []string) bool {
 	m := strings.ToLower(strings.TrimSpace(model))
 	if m == "" {
 		return false
 	}
-	for _, p := range visionCapablePrefixes {
+	for _, p := range prefixes {
 		if strings.HasPrefix(m, p) {
 			return true
 		}
@@ -48,6 +82,13 @@ func IsImageMIME(mime string) bool {
 		return true
 	}
 	return false
+}
+
+// IsDocumentMIME reports whether a MIME type denotes a document forge can
+// forward as a native document block. Restricted to PDF today (the only format
+// with native provider support without extraction).
+func IsDocumentMIME(mime string) bool {
+	return strings.ToLower(strings.TrimSpace(mime)) == "application/pdf"
 }
 
 // NormalizeImageMIME lowercases and canonicalizes an image MIME type — notably

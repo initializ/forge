@@ -33,19 +33,26 @@ An inbound A2A message is a list of typed parts. `a2a.Message.PromptText()` proj
 
 The same projection feeds the inbound guardrail and intent-alignment scanners, so the security checks see exactly what the model sees — a payload carried in a data part can't reach the LLM while bypassing them. Each data part's projected block is capped (~16KiB, rune-safe) — the cap applies identically to the scanners and the prompt, so truncation can't open a divergence.
 
-#### Image input (multimodal)
+#### Image and document input (multimodal)
 
-An image `file` part (`image/png`, `image/jpeg`, `image/gif`, `image/webp`) is forwarded to the model as native vision input when the resolved model is **vision-capable** (`runtime.ModelSupportsVision` — OpenAI `gpt-4o`/`gpt-4.1`/`gpt-5`/`o1`/`o3`/`o4`, Anthropic Claude 3+, Gemini 1.5/2). `a2aMessageToLLM` projects such parts into `llm.ChatMessage.Parts` (the flattened text stays in `Content` as the text-of-record for the scanners), and each provider serializes them natively — Anthropic `image` source blocks, OpenAI/Gemini `image_url` data URLs. A text-only message keeps `Parts` empty and marshals byte-identically to before.
+A media `file` part is forwarded to the model as native input when the resolved model supports that modality:
 
-Media the model can't consume is **rejected loudly, never silently dropped** (the `checkInboundMedia` ingest gate): an image on a text-only model, or a document/video part (not yet supported), returns a 4xx and emits the `input_media_rejected` audit event. Note the image **bytes** themselves are not text-scannable, so guardrail/intent scanning still applies only to the text/data projection; this is an accepted limitation.
+- **Images** (`image/png`, `image/jpeg`, `image/gif`, `image/webp`) → **vision-capable** models (`runtime.ModelSupportsVision` — OpenAI `gpt-4o`/`gpt-4.1`/`gpt-5`/`o1`/`o3`/`o4`, Anthropic Claude 3+, Gemini 1.5/2). Serialized as Anthropic `image` source blocks / OpenAI/Gemini `image_url` data URLs.
+- **PDFs** (`application/pdf`) → **document-capable** models (`runtime.ModelSupportsPDF` — Anthropic Sonnet 3.5+, Opus 4+, Haiku 4.5+, and Fable 5; the older Claude 3.0 and 3.5 Haiku are excluded, so a PDF sent to those gets a clean reject rather than a provider error). Serialized as Anthropic `document` source blocks. OpenAI Responses `input_file`, Gemini documents, and text-extraction fallback for non-native models are deferred follow-ups.
 
-**DoS bounds.** Because inline images raise the inbound-body cap to 32 MiB (both transports), the gate also enforces per-image and per-message limits, and a concurrency semaphore bounds how many media-bearing requests run at once — a flat body cap alone is not media DoS protection:
+`a2aMessageToLLM` projects supported parts into `llm.ChatMessage.Parts` (the flattened text stays in `Content` as the text-of-record for the scanners). A text-only message keeps `Parts` empty and marshals byte-identically to before.
+
+Media the model can't consume is **rejected loudly, never silently dropped** (the `checkInboundMedia` ingest gate): an image on a text-only model, a PDF on a non-document model, or an unsupported type (other documents/video) returns a 4xx and emits the `input_media_rejected` audit event. Note media **bytes** are not text-scannable, so guardrail/intent scanning still applies only to the text/data projection; this is an accepted limitation.
+
+**DoS bounds.** Because inline media raises the inbound-body cap to 32 MiB (both transports), the gate also enforces per-part and per-message limits, and a concurrency semaphore bounds how many media-bearing requests run at once — a flat body cap alone is not media DoS protection:
 
 | Bound | Limit | On breach |
 |-------|-------|-----------|
 | Per-image bytes | 5 MiB (`MaxImagePartBytes`) | 4xx `image_limit_exceeded` |
 | Decoded dimensions | 100 000 px per side **and** 50 MP total (`MaxImagePixels`, png/jpeg/gif via header-only `DecodeConfig`; webp bounded by bytes) | 4xx `image_limit_exceeded` (defuses decompression bombs; the per-side bound also keeps the pixel product from overflowing int64) |
 | Images per message | 20 (`MaxImagePartsPerMessage`) | 4xx `too_many_image_parts` |
+| Per-document bytes | 32 MiB (`MaxDocumentPartBytes`), plus a `%PDF-` format sniff | 4xx `document_limit_exceeded` |
+| Documents per message | 5 (`MaxDocumentPartsPerMessage`) | 4xx `too_many_document_parts` |
 | Concurrent media requests | 4 (`maxConcurrentMediaRequests`) | `429`/unavailable — request is shed, not queued |
 
 **Note for guardrail pattern authors:** parts join with **newlines** (matching what the model sees). A pattern intended to match content that may span a part boundary should use `\s+` rather than a literal space — a payload split across two text parts joins as `…end\nstart…`.

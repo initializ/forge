@@ -6,7 +6,7 @@ func TestModelSupportsVision(t *testing.T) {
 	vision := []string{
 		"gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4-turbo", "gpt-5",
 		"o1", "o3-mini", "o4-mini",
-		"claude-3-5-sonnet", "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5",
+		"claude-3-5-sonnet", "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5", "claude-fable-5",
 		"gemini-1.5-pro", "gemini-2.5-flash",
 		"GPT-4O", // case-insensitive
 	}
@@ -38,6 +38,20 @@ func TestModelSupportsPDF(t *testing.T) {
 	for _, m := range noPDF {
 		if ModelSupportsPDF(m) {
 			t.Errorf("ModelSupportsPDF(%q) = true, want false", m)
+		}
+	}
+}
+
+// TestPDFCapableImpliesVisionCapable pins the invariant that every PDF-capable
+// model is also vision-capable — Claude document support is built on vision
+// infra, so a model declared document-capable must accept images too (#534
+// review). This catches the class of bug where a family is added to
+// pdfCapablePrefixes but forgotten in visionCapablePrefixes.
+func TestPDFCapableImpliesVisionCapable(t *testing.T) {
+	for _, prefix := range pdfCapablePrefixes {
+		sample := prefix + "-x" // a concrete model name in that family
+		if !ModelSupportsVision(sample) {
+			t.Errorf("model %q is PDF-capable but not vision-capable — mirror %q into visionCapablePrefixes", sample, prefix)
 		}
 	}
 }

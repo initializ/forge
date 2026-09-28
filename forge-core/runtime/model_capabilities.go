@@ -17,9 +17,11 @@ var visionCapablePrefixes = []string{
 	"gpt-4o", "gpt-4.1", "gpt-4-turbo", "gpt-4-vision", "gpt-5",
 	"o1", "o3", "o4",
 	// Anthropic: Claude 3 and later are all vision-capable. The 4.x/5 models
-	// carry the family name (claude-opus-4…, claude-sonnet-5…) so the family
-	// prefixes cover them.
-	"claude-3", "claude-opus", "claude-sonnet", "claude-haiku",
+	// carry the family name (claude-opus-4…, claude-sonnet-5…, claude-fable-5)
+	// so the family prefixes cover them. Every pdfCapablePrefixes family is
+	// listed here too — Claude document support is built on vision infra, so a
+	// PDF-capable model is necessarily vision-capable.
+	"claude-3", "claude-opus", "claude-sonnet", "claude-haiku", "claude-fable",
 	// Google Gemini (served through the OpenAI-compat client).
 	"gemini-1.5", "gemini-2",
 }

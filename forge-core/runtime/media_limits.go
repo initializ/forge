@@ -39,8 +39,12 @@ const (
 	maxImageDim = 100_000
 
 	// MaxDocumentPartBytes caps a single document (PDF) part's raw bytes,
-	// matching Anthropic's ~32 MiB per-document limit. The request-body cap
-	// bounds the total; this bounds any one document.
+	// matching Anthropic's ~32 MiB per-document limit. NOTE the 32 MiB
+	// request-body cap is the binding constraint in practice: a PDF base64-
+	// inflates ~33% in the JSON envelope, so MaxBytesReader rejects anything
+	// over ~24 MiB raw before this per-part check runs (#534 review). This
+	// value stays aligned with the provider limit for when a future
+	// envelope/media-split change lifts the base64 overhead.
 	MaxDocumentPartBytes = 32 << 20
 
 	// MaxDocumentPartsPerMessage caps how many document parts one message may

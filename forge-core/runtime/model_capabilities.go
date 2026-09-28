@@ -25,16 +25,25 @@ var visionCapablePrefixes = []string{
 }
 
 // pdfCapablePrefixes lists model-name prefixes whose models accept a PDF
-// document natively via their provider's document block (#255 Phase 3). Today
-// that is Anthropic Claude 3.5 and later — the 3.5/3.7 releases plus the 4.x/5
-// families (claude-opus-4…, claude-sonnet-5…, claude-haiku-4…). NOTE the bare
-// "claude-3" (Claude 3.0) is intentionally EXCLUDED: 3.0 predates PDF support,
-// and 3.0 models are named claude-3-opus/sonnet/haiku (which don't match the
-// claude-opus/sonnet/haiku family prefixes), so they correctly fall through to
-// a loud reject. OpenAI Responses input_file and Gemini document support are
-// deferred follow-ups.
+// document natively via Anthropic's document block (#255 Phase 3). Scoped
+// conservatively to the SONNET and OPUS families, which are confirmed on
+// Anthropic's PDF-support matrix: the 3.5/3.7 Sonnet releases plus the 4.x/5
+// Sonnet & Opus families (claude-sonnet-4…, claude-sonnet-5, claude-opus-4…).
+//
+// Deliberately NARROW (#534 review):
+//   - HAIKU is excluded — Anthropic's PDF support was Sonnet-first and Haiku's
+//     native-PDF coverage is unconfirmed; rejecting a Haiku PDF cleanly at the
+//     gate is preferable to sending it and getting an opaque provider error.
+//     (Fail closed; widen here once confirmed.)
+//   - Bare "claude-3" (Claude 3.0) is excluded — it predates PDF support. The
+//     3.0 models are claude-3-{opus,sonnet,haiku}, which do NOT match the
+//     "claude-sonnet"/"claude-opus" family prefixes, so they fall through to a
+//     loud reject. The 3.5/3.7 prefixes below name "sonnet" explicitly so they
+//     don't catch claude-3-5-haiku.
+//
+// OpenAI Responses input_file and Gemini document support are deferred follow-ups.
 var pdfCapablePrefixes = []string{
-	"claude-3-5", "claude-3-7", "claude-opus", "claude-sonnet", "claude-haiku",
+	"claude-3-5-sonnet", "claude-3-7-sonnet", "claude-opus", "claude-sonnet",
 }
 
 // ModelSupportsVision reports whether the named model accepts image input.

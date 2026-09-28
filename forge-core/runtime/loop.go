@@ -341,7 +341,11 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 			historyToLoad = historyToLoad[:n-1]
 		}
 		for _, histMsg := range historyToLoad {
-			mem.Append(a2aMessageToLLM(histMsg))
+			hm := a2aMessageToLLM(histMsg)
+			// Best-effort persist so any media in replayed history keeps a URI
+			// reference (#255 Phase 4); on failure it stays inline for this turn.
+			_ = persistInboundMedia(ctx, &hm)
+			mem.Append(hm)
 		}
 	}
 
@@ -358,6 +362,11 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 	// replayed the poisoned transcript and repeated the last answer without
 	// re-attempting tools (#378).
 	newMsg := a2aMessageToLLM(*msg)
+	// Persist inbound media to .forge/files/inbound and record the URI on each
+	// part, so it survives into session history (Bytes are json:"-") and can be
+	// rehydrated on the next turn (#255 Phase 4). Bytes stay inline for THIS
+	// turn's request. Best-effort: on failure media is still fed this turn.
+	_ = persistInboundMedia(ctx, &newMsg)
 	if recovered {
 		msgs := mem.Messages()
 		n := len(msgs)
@@ -447,6 +456,13 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 		}
 
 		messages := mem.Messages()
+		// Reload media bytes from their URI for any part replayed from a
+		// persisted session (history stores URI-only; Bytes are json:"-").
+		// Freshly-ingested parts already hold Bytes and are skipped. Best-effort:
+		// a media file that can't be reloaded (e.g. deleted) is left byteless and
+		// the provider serializers skip it, degrading to text rather than failing
+		// the turn (#255 Phase 4).
+		_ = RehydrateMedia(ctx, messages)
 
 		// Fire BeforeLLMCall hook
 		if err := e.hooks.Fire(ctx, BeforeLLMCall, &HookContext{

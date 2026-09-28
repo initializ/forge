@@ -42,6 +42,8 @@ A media `file` part is forwarded to the model as native input when the resolved 
 
 `a2aMessageToLLM` projects supported parts into `llm.ChatMessage.Parts` (the flattened text stays in `Content` as the text-of-record for the scanners). A text-only message keeps `Parts` empty and marshals byte-identically to before.
 
+**Persistence & cross-turn replay.** Inbound media is written to `.forge/files/inbound/<sha256>.<ext>` (`persistInboundMedia`) and the on-disk path is recorded as the part's `MediaRef.URI` — content-addressed, so identical uploads dedup and re-writes are idempotent, and the files are available on disk for tools. The bytes stay inline for the current turn's request; because `MediaRef.Bytes` is `json:"-"`, session history persists only the URI (never base64). On a later turn, `RehydrateMedia` reloads the bytes from the URI before the request is built, so a multi-turn conversation keeps seeing earlier images/PDFs without bloating the session file. A file that can't be reloaded (deleted, or an absolute path from another host — remote/distributed session replay is a follow-up) is left byteless and skipped by the provider serializers, degrading to text rather than failing the turn. Persistence and rehydration are best-effort: a failure never fails the turn (media is still fed inline the turn it arrives).
+
 Media the model can't consume is **rejected loudly, never silently dropped** (the `checkInboundMedia` ingest gate): an image on a text-only model, a PDF on a non-document model, or an unsupported type (other documents/video) returns a 4xx and emits the `input_media_rejected` audit event. Note media **bytes** are not text-scannable, so guardrail/intent scanning still applies only to the text/data projection; this is an accepted limitation.
 
 **DoS bounds.** Because inline media raises the inbound-body cap to 32 MiB (both transports), the gate also enforces per-part and per-message limits, and a concurrency semaphore bounds how many media-bearing requests run at once — a flat body cap alone is not media DoS protection:
@@ -344,7 +346,7 @@ docker run -e KUBECONFIG="$(cat ~/.kube/config)" my-agent
 
 ## File Output Directory
 
-The runtime configures a `FilesDir` for tool-generated files (e.g., from `file_create`). This directory defaults to `<WorkDir>/.forge/files/` and is injected into the execution context so tools can write files that other tools can reference by path.
+The runtime configures a `FilesDir` for tool-generated files (e.g., from `file_create`). This directory defaults to `<WorkDir>/.forge/files/` and is injected into the execution context so tools can write files that other tools can reference by path. Inbound media (uploaded images/PDFs) is persisted under `<FilesDir>/inbound/` — see [Image and document input](#image-and-document-input-multimodal).
 
 ```
 <WorkDir>/

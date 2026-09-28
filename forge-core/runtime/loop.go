@@ -1090,32 +1090,37 @@ func a2aMessageToLLM(msg a2a.Message) llm.ChatMessage {
 		Content: msg.PromptText(),
 	}
 
-	// Project image file parts into multimodal content parts (#255 Phase 2).
-	// Content (PromptText) stays the flattened text-of-record — authoritative
-	// for the guardrail/intent scanners and back-compat. Parts is set only when
-	// the message actually carries a supported image, and then it carries the
-	// projected text as one block plus each image, so the provider serializes
-	// the full turn without dropping the text. Non-image file parts never reach
-	// here: the ingest gate (checkInboundMedia) already rejected them.
-	var images []llm.ContentPart
+	// Project image and document file parts into multimodal content parts
+	// (#255 Phase 2/3). Content (PromptText) stays the flattened text-of-record
+	// — authoritative for the guardrail/intent scanners and back-compat. Parts
+	// is set only when the message carries supported media, and then it carries
+	// the projected text as one block plus each media part, so the provider
+	// serializes the full turn without dropping the text. Unsupported file parts
+	// never reach here: the ingest gate (checkInboundMedia) already rejected them.
+	var media []llm.ContentPart
 	for _, p := range msg.Parts {
-		if p.Kind != a2a.PartKindFile || p.File == nil {
+		if p.Kind != a2a.PartKindFile || p.File == nil || len(p.File.Bytes) == 0 {
 			continue
 		}
-		if !IsImageMIME(p.File.MimeType) || len(p.File.Bytes) == 0 {
-			continue
+		switch {
+		case IsImageMIME(p.File.MimeType):
+			media = append(media, llm.NewMediaContentPart(llm.ContentPartImage, llm.MediaRef{
+				MimeType: NormalizeImageMIME(p.File.MimeType),
+				Bytes:    p.File.Bytes,
+			}))
+		case IsDocumentMIME(p.File.MimeType):
+			media = append(media, llm.NewMediaContentPart(llm.ContentPartDocument, llm.MediaRef{
+				MimeType: p.File.MimeType,
+				Bytes:    p.File.Bytes,
+			}))
 		}
-		images = append(images, llm.NewMediaContentPart(llm.ContentPartImage, llm.MediaRef{
-			MimeType: NormalizeImageMIME(p.File.MimeType),
-			Bytes:    p.File.Bytes,
-		}))
 	}
-	if len(images) > 0 {
-		parts := make([]llm.ContentPart, 0, len(images)+1)
+	if len(media) > 0 {
+		parts := make([]llm.ContentPart, 0, len(media)+1)
 		if out.Content != "" {
 			parts = append(parts, llm.NewTextContentPart(out.Content))
 		}
-		out.Parts = append(parts, images...)
+		out.Parts = append(parts, media...)
 	}
 	return out
 }

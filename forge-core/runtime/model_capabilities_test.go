@@ -26,6 +26,32 @@ func TestModelSupportsVision(t *testing.T) {
 	}
 }
 
+func TestModelSupportsPDF(t *testing.T) {
+	pdf := []string{"claude-3-5-sonnet", "claude-3-7-sonnet", "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5"}
+	for _, m := range pdf {
+		if !ModelSupportsPDF(m) {
+			t.Errorf("ModelSupportsPDF(%q) = false, want true", m)
+		}
+	}
+	noPDF := []string{"", "claude-3-opus", "claude-3-sonnet", "gpt-4o", "gpt-5", "gemini-2.5-flash", "o3-mini"}
+	for _, m := range noPDF {
+		if ModelSupportsPDF(m) {
+			t.Errorf("ModelSupportsPDF(%q) = true, want false", m)
+		}
+	}
+}
+
+func TestIsDocumentMIME(t *testing.T) {
+	if !IsDocumentMIME("application/pdf") || !IsDocumentMIME("APPLICATION/PDF ") {
+		t.Error("application/pdf must be a document MIME")
+	}
+	for _, mt := range []string{"", "image/png", "text/plain", "application/zip", "video/mp4"} {
+		if IsDocumentMIME(mt) {
+			t.Errorf("IsDocumentMIME(%q) = true, want false", mt)
+		}
+	}
+}
+
 func TestIsImageMIME(t *testing.T) {
 	for _, mt := range []string{"image/png", "image/jpeg", "image/jpg", "IMAGE/PNG", "image/gif", "image/webp"} {
 		if !IsImageMIME(mt) {

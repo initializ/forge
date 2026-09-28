@@ -24,14 +24,37 @@ var visionCapablePrefixes = []string{
 	"gemini-1.5", "gemini-2",
 }
 
+// pdfCapablePrefixes lists model-name prefixes whose models accept a PDF
+// document natively via their provider's document block (#255 Phase 3). Today
+// that is Anthropic Claude 3.5 and later — the 3.5/3.7 releases plus the 4.x/5
+// families (claude-opus-4…, claude-sonnet-5…, claude-haiku-4…). NOTE the bare
+// "claude-3" (Claude 3.0) is intentionally EXCLUDED: 3.0 predates PDF support,
+// and 3.0 models are named claude-3-opus/sonnet/haiku (which don't match the
+// claude-opus/sonnet/haiku family prefixes), so they correctly fall through to
+// a loud reject. OpenAI Responses input_file and Gemini document support are
+// deferred follow-ups.
+var pdfCapablePrefixes = []string{
+	"claude-3-5", "claude-3-7", "claude-opus", "claude-sonnet", "claude-haiku",
+}
+
 // ModelSupportsVision reports whether the named model accepts image input.
 // Case-insensitive prefix match; unknown/empty models return false.
 func ModelSupportsVision(model string) bool {
+	return matchesPrefix(model, visionCapablePrefixes)
+}
+
+// ModelSupportsPDF reports whether the named model accepts a PDF document
+// natively. Case-insensitive prefix match; unknown/empty models return false.
+func ModelSupportsPDF(model string) bool {
+	return matchesPrefix(model, pdfCapablePrefixes)
+}
+
+func matchesPrefix(model string, prefixes []string) bool {
 	m := strings.ToLower(strings.TrimSpace(model))
 	if m == "" {
 		return false
 	}
-	for _, p := range visionCapablePrefixes {
+	for _, p := range prefixes {
 		if strings.HasPrefix(m, p) {
 			return true
 		}
@@ -48,6 +71,13 @@ func IsImageMIME(mime string) bool {
 		return true
 	}
 	return false
+}
+
+// IsDocumentMIME reports whether a MIME type denotes a document forge can
+// forward as a native document block. Restricted to PDF today (the only format
+// with native provider support without extraction).
+func IsDocumentMIME(mime string) bool {
+	return strings.ToLower(strings.TrimSpace(mime)) == "application/pdf"
 }
 
 // NormalizeImageMIME lowercases and canonicalizes an image MIME type — notably

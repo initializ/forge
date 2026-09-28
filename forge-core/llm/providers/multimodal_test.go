@@ -48,6 +48,37 @@ func TestAnthropic_ImagePartBecomesSourceBlock(t *testing.T) {
 	}
 }
 
+// TestAnthropic_DocumentPartBecomesDocumentBlock verifies a PDF document part
+// serializes to an Anthropic document source block (#255 Phase 3).
+func TestAnthropic_DocumentPartBecomesDocumentBlock(t *testing.T) {
+	pdf := []byte("%PDF-1.7 body")
+	msg := llm.ChatMessage{
+		Role:    llm.RoleUser,
+		Content: "summarize",
+		Parts: []llm.ContentPart{
+			llm.NewTextContentPart("summarize"),
+			llm.NewMediaContentPart(llm.ContentPartDocument, llm.MediaRef{MimeType: "application/pdf", Bytes: pdf}),
+		},
+	}
+	c := NewAnthropicClient(llm.ClientConfig{Model: "claude-sonnet-5"})
+	body := c.toAnthropicRequest(&llm.ChatRequest{Messages: []llm.ChatMessage{msg}}, false)
+
+	var blocks []anthropicContentBlock
+	if err := json.Unmarshal(body.Messages[0].Content, &blocks); err != nil {
+		t.Fatalf("content should be a block array: %v", err)
+	}
+	if len(blocks) != 2 || blocks[0].Type != "text" || blocks[1].Type != "document" {
+		t.Fatalf("blocks = %+v, want [text, document]", blocks)
+	}
+	src := blocks[1].Source
+	if src == nil || src.Type != "base64" || src.MediaType != "application/pdf" {
+		t.Fatalf("document source malformed: %+v", src)
+	}
+	if src.Data != base64.StdEncoding.EncodeToString(pdf) {
+		t.Errorf("document data not base64 of the bytes")
+	}
+}
+
 // TestAnthropic_TextOnlyWireUnchanged pins that a text-only message still
 // marshals its content as a bare JSON string (no block array) — byte-identical
 // to the pre-#255 wire and prompt-cache prefix.

@@ -66,11 +66,34 @@ func TestCheckInboundMedia_Phase2(t *testing.T) {
 		}
 	})
 
-	t.Run("document rejected even on vision model", func(t *testing.T) {
-		r := runnerWithModel("gpt-4o")
-		got := r.checkInboundMedia(ctx, fileMsg("application/pdf", []byte("%PDF-1.7")), nil)
-		if got == "" || !strings.Contains(got, "application/pdf") {
-			t.Errorf("a document part must still be rejected in Phase 2; got %q", got)
+	t.Run("pdf accepted on a document-capable model", func(t *testing.T) {
+		r := runnerWithModel("claude-sonnet-5")
+		if got := r.checkInboundMedia(ctx, fileMsg("application/pdf", []byte("%PDF-1.7\nbody")), nil); got != "" {
+			t.Errorf("pdf on a document-capable model must be accepted, got reject: %q", got)
+		}
+	})
+
+	t.Run("pdf rejected on a non-document model", func(t *testing.T) {
+		r := runnerWithModel("gpt-4o") // vision-capable but not PDF-capable
+		got := r.checkInboundMedia(ctx, fileMsg("application/pdf", []byte("%PDF-1.7\nbody")), nil)
+		if got == "" || !strings.Contains(got, "application/pdf") || !strings.Contains(got, "does not support PDF") {
+			t.Errorf("pdf on a non-document model must be rejected with a clear reason; got %q", got)
+		}
+	})
+
+	t.Run("mislabeled pdf rejected", func(t *testing.T) {
+		r := runnerWithModel("claude-sonnet-5")
+		got := r.checkInboundMedia(ctx, fileMsg("application/pdf", []byte("PK\x03\x04 zip")), nil)
+		if got == "" {
+			t.Error("a non-PDF payload labeled application/pdf must be rejected")
+		}
+	})
+
+	t.Run("unsupported document type rejected", func(t *testing.T) {
+		r := runnerWithModel("claude-sonnet-5")
+		got := r.checkInboundMedia(ctx, fileMsg("application/vnd.ms-excel", []byte("x")), nil)
+		if got == "" {
+			t.Error("a non-PDF document type must be rejected (only PDF supported)")
 		}
 	})
 

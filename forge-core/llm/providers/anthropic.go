@@ -238,12 +238,13 @@ type anthropicContentBlock struct {
 	Input     json.RawMessage       `json:"input,omitempty"`
 	ToolUseID string                `json:"tool_use_id,omitempty"`
 	Content   string                `json:"content,omitempty"`
-	Source    *anthropicImageSource `json:"source,omitempty"` // type=="image" (#255)
+	Source    *anthropicMediaSource `json:"source,omitempty"` // type=="image" | "document" (#255)
 }
 
-// anthropicImageSource is the source of an image content block:
-// {"type":"image","source":{"type":"base64","media_type":"image/png","data":"…"}}.
-type anthropicImageSource struct {
+// anthropicMediaSource is the base64 source of an image or document content
+// block, e.g. {"type":"image","source":{"type":"base64","media_type":
+// "image/png","data":"…"}} or a "document" block with media_type application/pdf.
+type anthropicMediaSource struct {
 	Type      string `json:"type"`       // "base64"
 	MediaType string `json:"media_type"` // e.g. image/png
 	Data      string `json:"data"`       // base64-encoded bytes
@@ -378,7 +379,21 @@ func anthropicBlocksFromParts(parts []llm.ContentPart) []anthropicContentBlock {
 			}
 			blocks = append(blocks, anthropicContentBlock{
 				Type: "image",
-				Source: &anthropicImageSource{
+				Source: &anthropicMediaSource{
+					Type:      "base64",
+					MediaType: p.Media.MimeType,
+					Data:      base64.StdEncoding.EncodeToString(p.Media.Bytes),
+				},
+			})
+		case llm.ContentPartDocument:
+			if p.Media == nil || len(p.Media.Bytes) == 0 {
+				continue
+			}
+			// Anthropic document block: {"type":"document","source":{"type":
+			// "base64","media_type":"application/pdf","data":…}} (#255 Phase 3).
+			blocks = append(blocks, anthropicContentBlock{
+				Type: "document",
+				Source: &anthropicMediaSource{
 					Type:      "base64",
 					MediaType: p.Media.MimeType,
 					Data:      base64.StdEncoding.EncodeToString(p.Media.Bytes),

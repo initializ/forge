@@ -122,6 +122,11 @@ func ResolveModelConfig(cfg *types.ForgeConfig, envVars map[string]string, provi
 	if cfg.Model.DisableStore {
 		mc.Client.DisableStore = true
 	}
+	// #255 — opt into the OpenAI Responses image_generation built-in tool.
+	// Carried unconditionally; only the openai-responses client honors it.
+	if cfg.Model.ImageGeneration {
+		mc.Client.EnableImageGeneration = true
+	}
 	// AWS_REGION env safety-net for the SigV4 path. Mirrors the
 	// OPENAI_BASE_URL / ANTHROPIC_BASE_URL env pattern above — lets
 	// an operator override the region per-deploy without touching

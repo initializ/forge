@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,6 +27,7 @@ type ResponsesClient struct {
 	authHeaderName string
 	client         *http.Client
 	disableStore   bool // set store=false in requests (required for ChatGPT Codex backend)
+	enableImageGen bool // send the image_generation built-in tool (#255)
 }
 
 // NewResponsesClient creates a new Responses API client.
@@ -57,6 +59,7 @@ func NewResponsesClient(cfg llm.ClientConfig) *ResponsesClient {
 		authScheme:     cfg.AuthScheme,
 		authHeaderName: cfg.AuthHeaderName,
 		disableStore:   cfg.DisableStore,
+		enableImageGen: cfg.EnableImageGeneration,
 		client:         httpClient,
 	}
 }
@@ -83,6 +86,9 @@ func (c *ResponsesClient) Chat(ctx context.Context, req *llm.ChatRequest) (*llm.
 	for delta := range ch {
 		if delta.Content != "" {
 			result.Message.Content += delta.Content
+		}
+		if len(delta.Parts) > 0 {
+			result.Message.Parts = append(result.Message.Parts, delta.Parts...)
 		}
 		for _, tc := range delta.ToolCalls {
 			existing, ok := toolCallMap[tc.ID]
@@ -207,7 +213,7 @@ type responsesInput struct {
 // responsesTool is the Responses API tool format (flat, not nested under "function").
 type responsesTool struct {
 	Type        string          `json:"type"`
-	Name        string          `json:"name"`
+	Name        string          `json:"name,omitempty"` // omitted for built-in tools (e.g. image_generation)
 	Description string          `json:"description,omitempty"`
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
 }
@@ -274,6 +280,11 @@ func (c *ResponsesClient) buildRequest(req *llm.ChatRequest, stream bool) respon
 			Parameters:  t.Function.Parameters,
 		})
 	}
+	// Opt-in: let the model emit images via the image_generation built-in tool
+	// (#255). Surfaced back as file parts in the A2A response.
+	if c.enableImageGen {
+		tools = append(tools, responsesTool{Type: "image_generation"})
+	}
 
 	// The Responses API requires the instructions field. If no system
 	// message was provided (e.g. summarization calls), use a minimal default
@@ -319,6 +330,9 @@ type responsesOutput struct {
 	CallID    string `json:"call_id,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
+
+	// For image_generation_call outputs: base64-encoded image bytes (#255).
+	Result string `json:"result,omitempty"`
 }
 
 type responsesContentPart struct {
@@ -471,6 +485,20 @@ func (c *ResponsesClient) readStream(r io.Reader, ch chan<- llm.StreamDelta) {
 					InputTokens:  ev.Response.Usage.InputTokens,
 					OutputTokens: ev.Response.Usage.OutputTokens,
 					TotalTokens:  ev.Response.Usage.TotalTokens,
+				}
+			}
+			// Surface any model-generated images from the final output array as
+			// content parts (#255). The completed event carries the authoritative
+			// output[], so we read the image_generation_call `result` (base64)
+			// here rather than reassembling partial-image stream events.
+			for _, out := range ev.Response.Output {
+				if out.Type == "image_generation_call" && out.Result != "" {
+					if raw, derr := base64.StdEncoding.DecodeString(out.Result); derr == nil && len(raw) > 0 {
+						delta.Parts = append(delta.Parts, llm.NewMediaContentPart(llm.ContentPartImage, llm.MediaRef{
+							MimeType: "image/png", // Responses image_generation defaults to PNG
+							Bytes:    raw,
+						}))
+					}
 				}
 			}
 			// Determine finish reason from output

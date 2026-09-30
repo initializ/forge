@@ -344,7 +344,7 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 			hm := a2aMessageToLLM(histMsg)
 			// Best-effort persist so any media in replayed history keeps a URI
 			// reference (#255 Phase 4); on failure it stays inline for this turn.
-			_ = persistInboundMedia(ctx, &hm)
+			_ = persistMedia(ctx, &hm, mediaSubdirInbound)
 			mem.Append(hm)
 		}
 	}
@@ -366,7 +366,7 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 	// part, so it survives into session history (Bytes are json:"-") and can be
 	// rehydrated on the next turn (#255 Phase 4). Bytes stay inline for THIS
 	// turn's request. Best-effort: on failure media is still fed this turn.
-	_ = persistInboundMedia(ctx, &newMsg)
+	_ = persistMedia(ctx, &newMsg, mediaSubdirInbound)
 	if recovered {
 		msgs := mem.Messages()
 		n := len(msgs)
@@ -628,9 +628,14 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 		// names the failure mode so an operator scanning a recovered
 		// session understands what happened.
 		assistantMsg := resp.Message
-		if assistantMsg.Content == "" && len(assistantMsg.ToolCalls) == 0 {
+		if assistantMsg.Content == "" && len(assistantMsg.ToolCalls) == 0 && !assistantMsg.HasMedia() {
 			assistantMsg.Content = emptyAssistantPlaceholder
 		}
+		// Persist any model-generated media (e.g. an image_generation result)
+		// to disk and record its URI, so history stores the reference not the
+		// base64 (#255 Phase 5). Bytes stay inline so finalizeResponse still
+		// surfaces the image as a file part in the A2A response this turn.
+		_ = persistMedia(ctx, &assistantMsg, mediaSubdirGenerated)
 		mem.Append(assistantMsg)
 
 		// Check if we're done: the definitive signal is the absence of tool
@@ -1341,6 +1346,20 @@ func llmMessageToA2A(msg llm.ChatMessage, extraParts ...a2a.Part) *a2a.Message {
 	}
 
 	parts := []a2a.Part{a2a.NewTextPart(msg.Content)}
+	// Surface model-generated media (e.g. an image_generation result) as file
+	// parts in the response (#255 Phase 5). Text parts are already covered by
+	// msg.Content above.
+	for _, p := range msg.Parts {
+		if p.Media == nil || len(p.Media.Bytes) == 0 {
+			continue
+		}
+		if p.Type == llm.ContentPartImage || p.Type == llm.ContentPartDocument {
+			parts = append(parts, a2a.NewFilePart(a2a.FileContent{
+				MimeType: p.Media.MimeType,
+				Bytes:    p.Media.Bytes,
+			}))
+		}
+	}
 	parts = append(parts, extraParts...)
 
 	return &a2a.Message{

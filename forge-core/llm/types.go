@@ -138,11 +138,12 @@ type ChatResponse struct {
 
 // StreamDelta represents a single chunk in a streaming response.
 type StreamDelta struct {
-	Content      string     `json:"content,omitempty"`
-	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`
-	FinishReason string     `json:"finish_reason,omitempty"`
-	Done         bool       `json:"done,omitempty"`
-	Usage        *UsageInfo `json:"usage,omitempty"`
+	Content      string        `json:"content,omitempty"`
+	ToolCalls    []ToolCall    `json:"tool_calls,omitempty"`
+	Parts        []ContentPart `json:"parts,omitempty"` // non-text output, e.g. a model-generated image (#255)
+	FinishReason string        `json:"finish_reason,omitempty"`
+	Done         bool          `json:"done,omitempty"`
+	Usage        *UsageInfo    `json:"usage,omitempty"`
 }
 
 // UsageInfo contains token usage information.

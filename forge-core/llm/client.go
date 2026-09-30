@@ -136,4 +136,11 @@ type ClientConfig struct {
 	// unset so the API applies its own default (#383). The ChatGPT OAuth
 	// path forces this true regardless (Codex backend requires it).
 	DisableStore bool
+
+	// EnableImageGeneration opts an OpenAI Responses request into the
+	// `image_generation` built-in tool, letting the model emit images that
+	// forge surfaces as `file` parts in the A2A response (#255). Off by
+	// default; only the openai-responses client honors it (other clients
+	// ignore the field). Opt-in because it changes provider behavior and cost.
+	EnableImageGeneration bool
 }

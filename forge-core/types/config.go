@@ -1136,6 +1136,12 @@ type ModelRef struct {
 	// it; every other provider ignores it. Issue #383.
 	DisableStore bool `yaml:"disable_store,omitempty"`
 
+	// ImageGeneration opts an OpenAI Responses model (provider:
+	// openai-responses) into the `image_generation` built-in tool, letting the
+	// model emit images that forge returns as `file` parts in the response
+	// (#255). Off by default; only the openai-responses provider honors it.
+	ImageGeneration bool `yaml:"image_generation,omitempty"`
+
 	Version        string          `yaml:"version,omitempty"`
 	OrganizationID string          `yaml:"organization_id,omitempty"`
 	Fallbacks      []ModelFallback `yaml:"fallbacks,omitempty"`

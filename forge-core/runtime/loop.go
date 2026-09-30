@@ -344,7 +344,7 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 			hm := a2aMessageToLLM(histMsg)
 			// Best-effort persist so any media in replayed history keeps a URI
 			// reference (#255 Phase 4); on failure it stays inline for this turn.
-			_ = persistInboundMedia(ctx, &hm)
+			_ = persistMedia(ctx, &hm, mediaSubdirInbound)
 			mem.Append(hm)
 		}
 	}
@@ -366,7 +366,7 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 	// part, so it survives into session history (Bytes are json:"-") and can be
 	// rehydrated on the next turn (#255 Phase 4). Bytes stay inline for THIS
 	// turn's request. Best-effort: on failure media is still fed this turn.
-	_ = persistInboundMedia(ctx, &newMsg)
+	_ = persistMedia(ctx, &newMsg, mediaSubdirInbound)
 	if recovered {
 		msgs := mem.Messages()
 		n := len(msgs)
@@ -635,7 +635,7 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 		// to disk and record its URI, so history stores the reference not the
 		// base64 (#255 Phase 5). Bytes stay inline so finalizeResponse still
 		// surfaces the image as a file part in the A2A response this turn.
-		_ = persistInboundMedia(ctx, &assistantMsg)
+		_ = persistMedia(ctx, &assistantMsg, mediaSubdirGenerated)
 		mem.Append(assistantMsg)
 
 		// Check if we're done: the definitive signal is the absence of tool

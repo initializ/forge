@@ -34,7 +34,7 @@ func TestPersistAndRehydrate_CrossTurnRoundTrip(t *testing.T) {
 	orig := []byte("the-real-image-bytes-xyz")
 
 	msg := imageMsg("image/png", orig)
-	if err := persistInboundMedia(ctx, &msg); err != nil {
+	if err := persistMedia(ctx, &msg, mediaSubdirInbound); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
@@ -95,10 +95,10 @@ func TestPersistInboundMedia_ContentAddressedAndIdempotent(t *testing.T) {
 
 	a := imageMsg("image/png", data)
 	b := imageMsg("image/png", data)
-	if err := persistInboundMedia(ctx, &a); err != nil {
+	if err := persistMedia(ctx, &a, mediaSubdirInbound); err != nil {
 		t.Fatal(err)
 	}
-	if err := persistInboundMedia(ctx, &b); err != nil {
+	if err := persistMedia(ctx, &b, mediaSubdirInbound); err != nil {
 		t.Fatal(err)
 	}
 	if a.Parts[1].Media.URI != b.Parts[1].Media.URI {
@@ -108,7 +108,7 @@ func TestPersistInboundMedia_ContentAddressedAndIdempotent(t *testing.T) {
 	// A part that already has a URI is left untouched (idempotent).
 	preset := imageMsg("image/png", data)
 	preset.Parts[1].Media.URI = "/already/set.png"
-	if err := persistInboundMedia(ctx, &preset); err != nil {
+	if err := persistMedia(ctx, &preset, mediaSubdirInbound); err != nil {
 		t.Fatal(err)
 	}
 	if preset.Parts[1].Media.URI != "/already/set.png" {
@@ -116,11 +116,27 @@ func TestPersistInboundMedia_ContentAddressedAndIdempotent(t *testing.T) {
 	}
 }
 
+// TestPersistMedia_GeneratedSubdir: model-generated media lands under the
+// generated/ subdir (distinct from inbound/) so a retention pass can tell
+// received uploads from generated output (#536 review).
+func TestPersistMedia_GeneratedSubdir(t *testing.T) {
+	dir := t.TempDir()
+	ctx := WithFilesDir(context.Background(), dir)
+	msg := imageMsg("image/png", []byte("generated"))
+	if err := persistMedia(ctx, &msg, mediaSubdirGenerated); err != nil {
+		t.Fatal(err)
+	}
+	uri := msg.Parts[1].Media.URI
+	if !strings.HasPrefix(uri, filepath.Join(dir, "generated")) {
+		t.Errorf("generated media should live under generated/, got %q", uri)
+	}
+}
+
 // TestPersistInboundMedia_NoFilesDirIsNoop: without a files dir, persistence is
 // skipped (media stays inline for the turn) and no error is raised.
 func TestPersistInboundMedia_NoFilesDirIsNoop(t *testing.T) {
 	msg := imageMsg("image/png", []byte("x"))
-	if err := persistInboundMedia(context.Background(), &msg); err != nil {
+	if err := persistMedia(context.Background(), &msg, mediaSubdirInbound); err != nil {
 		t.Fatalf("no files dir should be a no-op, got %v", err)
 	}
 	if msg.Parts[1].Media.URI != "" {

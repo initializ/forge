@@ -55,8 +55,19 @@ type AgentModel struct {
 
 // ChatRequest is the POST body for the chat endpoint.
 type ChatRequest struct {
-	Message   string `json:"message"`
-	SessionID string `json:"session_id,omitempty"`
+	Message     string           `json:"message"`
+	SessionID   string           `json:"session_id,omitempty"`
+	Attachments []ChatAttachment `json:"attachments,omitempty"`
+}
+
+// ChatAttachment is an inline file (image/PDF) the user attached to a chat
+// message. Data is the raw file bytes, standard-base64-encoded — the same
+// encoding Go's encoding/json uses for the A2A FileContent.Bytes field, so it
+// is passed straight through into the outbound A2A `file` part (#255).
+type ChatAttachment struct {
+	Name     string `json:"name,omitempty"`
+	MimeType string `json:"mimeType"`
+	Data     string `json:"data"` // base64-encoded file bytes
 }
 
 // SessionInfo describes a stored chat session for listing.

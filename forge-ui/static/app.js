@@ -692,11 +692,11 @@ function useChatStream(agentId) {
     setSessionId(null);
   }, []);
 
-  const sendMessage = useCallback(async (text) => {
+  const sendMessage = useCallback(async (text, attachments = []) => {
     if (streaming) return;
 
-    // Append user message
-    setMessages(prev => [...prev, { role: 'user', content: text }]);
+    // Append user message (with any attachments for display)
+    setMessages(prev => [...prev, { role: 'user', content: text, attachments }]);
     setStreaming(true);
 
     const controller = new AbortController();
@@ -709,6 +709,7 @@ function useChatStream(agentId) {
         body: JSON.stringify({
           message: text,
           session_id: sessionId || undefined,
+          attachments: attachments.map(a => ({ name: a.name, mimeType: a.mimeType, data: a.data })),
         }),
         signal: controller.signal,
       });
@@ -726,7 +727,16 @@ function useChatStream(agentId) {
       let buffer = '';
       let currentTools = [];
       let agentText = '';
+      let agentFiles = []; // file parts (images/docs the agent returned) — #255
       let receivedSessionId = sessionId;
+
+      // Collect `file` parts from a message, newest frame wins (frames carry
+      // the complete message, so replace rather than append to avoid dupes).
+      const collectFiles = (msg) => {
+        if (!msg || !msg.parts) return;
+        const files = msg.parts.filter(p => p.kind === 'file' && p.file).map(p => p.file);
+        if (files.length) agentFiles = files;
+      };
 
       while (true) {
         const { done, value } = await reader.read();
@@ -764,16 +774,17 @@ function useChatStream(agentId) {
                     agentText = part.text;
                   }
                 }
+                collectFiles(status.message);
               }
               // Update messages in real-time to show text as it arrives
               setMessages(prev => {
                 const last = prev[prev.length - 1];
                 if (last && last.role === 'agent' && last.isStreaming) {
                   const updated = [...prev];
-                  updated[updated.length - 1] = { ...last, content: agentText, tools: [...currentTools] };
+                  updated[updated.length - 1] = { ...last, content: agentText, tools: [...currentTools], files: [...agentFiles] };
                   return updated;
                 }
-                return [...prev, { role: 'agent', content: agentText, tools: [...currentTools], isStreaming: true }];
+                return [...prev, { role: 'agent', content: agentText, tools: [...currentTools], files: [...agentFiles], isStreaming: true }];
               });
             } else if (eventType === 'progress') {
               // Tool execution progress. The agent carries the tool name and
@@ -822,16 +833,17 @@ function useChatStream(agentId) {
                     agentText = part.text;
                   }
                 }
+                collectFiles(status.message);
               }
               // Show final text immediately
               setMessages(prev => {
                 const last = prev[prev.length - 1];
                 if (last && last.role === 'agent' && last.isStreaming) {
                   const updated = [...prev];
-                  updated[updated.length - 1] = { ...last, content: agentText, tools: [...currentTools] };
+                  updated[updated.length - 1] = { ...last, content: agentText, tools: [...currentTools], files: [...agentFiles] };
                   return updated;
                 }
-                return [...prev, { role: 'agent', content: agentText, tools: [...currentTools], isStreaming: true }];
+                return [...prev, { role: 'agent', content: agentText, tools: [...currentTools], files: [...agentFiles], isStreaming: true }];
               });
             } else if (eventType === 'done') {
               if (parsed.session_id) {
@@ -843,11 +855,11 @@ function useChatStream(agentId) {
       }
 
       // Finalize: set the agent response
-      if (agentText || currentTools.length > 0) {
+      if (agentText || currentTools.length > 0 || agentFiles.length > 0) {
         setMessages(prev => {
           // Remove streaming placeholder if present
           const filtered = prev.filter(m => !m.isStreaming);
-          return [...filtered, { role: 'agent', content: agentText, tools: currentTools }];
+          return [...filtered, { role: 'agent', content: agentText, tools: currentTools, files: agentFiles }];
         });
       }
 
@@ -1176,6 +1188,74 @@ function ToolCard({ tool }) {
 
 // ── Message Bubble Component ─────────────────────────────────
 
+// Accepted upload types + size caps — kept in sync with the server-side gate
+// (forge-core/runtime: IsImageMIME/IsDocumentMIME, MaxImagePartBytes,
+// MaxDocumentPartBytes, MaxImagePartsPerMessage, MaxDocumentPartsPerMessage).
+// Enforced client-side so the user gets instant feedback instead of a 4xx.
+const ACCEPTED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+const ACCEPTED_DOC_TYPES = ['application/pdf'];
+const ACCEPTED_MEDIA_TYPES = [...ACCEPTED_IMAGE_TYPES, ...ACCEPTED_DOC_TYPES];
+const ACCEPT_ATTR = ACCEPTED_MEDIA_TYPES.join(',');
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5 MiB per image (MaxImagePartBytes)
+// PDFs cap at 32 MiB server-side, but base64 inflation vs the 32 MiB body cap
+// makes ~24 MiB raw the effective ceiling — enforce that here.
+const MAX_PDF_BYTES = 24 * 1024 * 1024;
+const MAX_IMAGES_PER_MSG = 20;
+const MAX_DOCS_PER_MSG = 5;
+
+// readFileAsAttachment reads a File into { name, mimeType, data(base64), size },
+// or rejects with a human-readable reason if the type/size isn't allowed.
+function readFileAsAttachment(file) {
+  return new Promise((resolve, reject) => {
+    const mt = (file.type || '').toLowerCase();
+    if (!ACCEPTED_MEDIA_TYPES.includes(mt)) {
+      reject(new Error(`${file.name}: unsupported type (${file.type || 'unknown'}). Allowed: PNG, JPEG, GIF, WebP, PDF.`));
+      return;
+    }
+    const isImage = ACCEPTED_IMAGE_TYPES.includes(mt);
+    const cap = isImage ? MAX_IMAGE_BYTES : MAX_PDF_BYTES;
+    if (file.size > cap) {
+      reject(new Error(`${file.name}: too large (${(file.size / 1048576).toFixed(1)} MiB, max ${(cap / 1048576).toFixed(0)} MiB).`));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error(`${file.name}: could not be read.`));
+    reader.onload = () => {
+      // readAsDataURL → "data:<mime>;base64,<b64>"; strip the prefix.
+      const b64 = String(reader.result).split(',')[1] || '';
+      resolve({ name: file.name, mimeType: mt, data: b64, size: file.size, isImage });
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+// MediaPart renders one image/document as an inline <img> (raster images) or a
+// download chip (everything else), from base64 bytes. Used for both the user's
+// attachments and media the agent returns (#255). b64 is standard base64.
+//
+// Only the RASTER image types (png/jpeg/gif/webp) get the inline <img> + a
+// clickable top-level data: link. image/svg+xml — and any other image/* — fall
+// through to the download chip: a top-level `data:image/svg+xml` navigation
+// executes the SVG's scripts, so it must never become a clickable href. The
+// inbound gate already rejects SVG uploads, but agent-REPLY file parts carry no
+// such allowlist, so gate it here too (defense in depth). `download` on the
+// chip neutralizes any script-bearing payload.
+function MediaPart({ mimeType, name, b64 }) {
+  const mt = (mimeType || '').toLowerCase();
+  if (!b64) {
+    return html`<div class="chat-file"><span class="chat-file-icon">\u{1F4CE}</span>${name || mt || 'file'}</div>`;
+  }
+  const src = `data:${mt || 'application/octet-stream'};base64,${b64}`;
+  if (ACCEPTED_IMAGE_TYPES.includes(mt)) {
+    return html`<a class="chat-media-link" href=${src} target="_blank" rel="noopener">
+      <img class="chat-media" src=${src} alt=${name || 'image'} />
+    </a>`;
+  }
+  return html`<a class="chat-file" href=${src} download=${name || 'file'}>
+    <span class="chat-file-icon">\u{1F4C4}</span>${name || mt}
+  </a>`;
+}
+
 function MessageBubble({ message }) {
   if (message.role === 'error') {
     return html`
@@ -1188,7 +1268,12 @@ function MessageBubble({ message }) {
   if (message.role === 'user') {
     return html`
       <div class="chat-bubble user">
-        <div class="chat-bubble-content">${message.content}</div>
+        ${message.attachments && message.attachments.length > 0 && html`
+          <div class="chat-media-parts">
+            ${message.attachments.map((a, i) => html`<${MediaPart} key=${i} mimeType=${a.mimeType} name=${a.name} b64=${a.data} />`)}
+          </div>
+        `}
+        ${message.content && html`<div class="chat-bubble-content">${message.content}</div>`}
       </div>
     `;
   }
@@ -1204,7 +1289,12 @@ function MessageBubble({ message }) {
       ${message.content && html`
         <div class="chat-bubble-content" dangerouslySetInnerHTML=${{ __html: renderMarkdown(message.content) }} />
       `}
-      ${message.isStreaming && !message.content && html`
+      ${message.files && message.files.length > 0 && html`
+        <div class="chat-media-parts">
+          ${message.files.map((f, i) => html`<${MediaPart} key=${i} mimeType=${f.mimeType} name=${f.name} b64=${f.bytes} />`)}
+        </div>
+      `}
+      ${message.isStreaming && !message.content && (!message.files || message.files.length === 0) && html`
         <div class="chat-bubble-content"><span class="typing-indicator" /></div>
       `}
     </div>
@@ -1220,10 +1310,13 @@ function ChatPage({ agentId, agents }) {
   const { messages, streaming, sessionId, sendMessage, loadSession, newSession, cancel } = useChatStream(agentId);
   const [sessions, setSessions] = useState([]);
   const [inputText, setInputText] = useState('');
+  const [attachments, setAttachments] = useState([]);
+  const [attachError, setAttachError] = useState('');
   const messagesEndRef = useRef(null);
   const messagesContainerRef = useRef(null);
   const userScrolledUp = useRef(false);
   const textareaRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   // Load sessions on mount
   useEffect(() => {
@@ -1245,13 +1338,50 @@ function ChatPage({ agentId, agents }) {
 
   const handleSend = useCallback(() => {
     const text = inputText.trim();
-    if (!text || streaming || !isRunning) return;
+    if ((!text && attachments.length === 0) || streaming || !isRunning) return;
     setInputText('');
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
-    sendMessage(text);
-  }, [inputText, streaming, isRunning, sendMessage]);
+    sendMessage(text, attachments);
+    setAttachments([]);
+    setAttachError('');
+  }, [inputText, attachments, streaming, isRunning, sendMessage]);
+
+  const handleFiles = useCallback(async (fileList) => {
+    const files = Array.from(fileList || []);
+    if (files.length === 0) return;
+    setAttachError('');
+    const accepted = [];
+    const errors = [];
+    for (const f of files) {
+      try {
+        accepted.push(await readFileAsAttachment(f));
+      } catch (err) {
+        errors.push(err.message);
+      }
+    }
+    setAttachments(prev => {
+      const next = [...prev, ...accepted];
+      // Enforce per-message counts (images vs docs) — keep earliest, drop overflow.
+      const imgs = next.filter(a => a.isImage);
+      const docs = next.filter(a => !a.isImage);
+      if (imgs.length > MAX_IMAGES_PER_MSG) errors.push(`At most ${MAX_IMAGES_PER_MSG} images per message.`);
+      if (docs.length > MAX_DOCS_PER_MSG) errors.push(`At most ${MAX_DOCS_PER_MSG} documents per message.`);
+      const capped = [...imgs.slice(0, MAX_IMAGES_PER_MSG), ...docs.slice(0, MAX_DOCS_PER_MSG)];
+      if (errors.length) setAttachError(errors.join(' '));
+      return capped;
+    });
+  }, []);
+
+  const onFileInputChange = useCallback((e) => {
+    handleFiles(e.target.files);
+    e.target.value = ''; // allow re-selecting the same file
+  }, [handleFiles]);
+
+  const removeAttachment = useCallback((idx) => {
+    setAttachments(prev => prev.filter((_, i) => i !== idx));
+  }, []);
 
   const handleKeyDown = useCallback((e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -1318,6 +1448,19 @@ function ChatPage({ agentId, agents }) {
         </div>
 
         <div class="chat-input">
+          ${attachments.length > 0 && html`
+            <div class="chat-attachments">
+              ${attachments.map((a, i) => html`
+                <div class="chat-attachment-chip" key=${i} title=${a.name}>
+                  <span class="chat-attachment-icon">${a.isImage ? '\u{1F5BC}️' : '\u{1F4C4}'}</span>
+                  <span class="chat-attachment-name">${a.name}</span>
+                  <span class="chat-attachment-size">${(a.size / 1024).toFixed(0)} KB</span>
+                  <button class="chat-attachment-remove" onClick=${() => removeAttachment(i)} title="Remove">×</button>
+                </div>
+              `)}
+            </div>
+          `}
+          ${attachError && html`<div class="chat-attach-error">${attachError}</div>`}
           <textarea
             ref=${textareaRef}
             class="chat-textarea"
@@ -1328,10 +1471,25 @@ function ChatPage({ agentId, agents }) {
             disabled=${!isRunning}
             rows="1"
           />
+          <input
+            ref=${fileInputRef}
+            type="file"
+            class="chat-file-input"
+            accept=${ACCEPT_ATTR}
+            multiple
+            onChange=${onFileInputChange}
+            style="display:none"
+          />
           <div class="chat-input-actions">
+            <button
+              class="btn btn-ghost btn-sm chat-attach-btn"
+              onClick=${() => fileInputRef.current && fileInputRef.current.click()}
+              disabled=${!isRunning || streaming}
+              title="Attach image or PDF"
+            >\u{1F4CE}</button>
             ${streaming
               ? html`<button class="btn btn-danger btn-sm" onClick=${cancel}>Stop</button>`
-              : html`<button class="btn btn-primary btn-sm" onClick=${handleSend} disabled=${!inputText.trim() || !isRunning}>Send</button>`
+              : html`<button class="btn btn-primary btn-sm" onClick=${handleSend} disabled=${(!inputText.trim() && attachments.length === 0) || !isRunning}>Send</button>`
             }
           </div>
         </div>

@@ -1229,16 +1229,24 @@ function readFileAsAttachment(file) {
   });
 }
 
-// MediaPart renders one image/document as an inline <img> (images) or a
+// MediaPart renders one image/document as an inline <img> (raster images) or a
 // download chip (everything else), from base64 bytes. Used for both the user's
 // attachments and media the agent returns (#255). b64 is standard base64.
+//
+// Only the RASTER image types (png/jpeg/gif/webp) get the inline <img> + a
+// clickable top-level data: link. image/svg+xml — and any other image/* — fall
+// through to the download chip: a top-level `data:image/svg+xml` navigation
+// executes the SVG's scripts, so it must never become a clickable href. The
+// inbound gate already rejects SVG uploads, but agent-REPLY file parts carry no
+// such allowlist, so gate it here too (defense in depth). `download` on the
+// chip neutralizes any script-bearing payload.
 function MediaPart({ mimeType, name, b64 }) {
   const mt = (mimeType || '').toLowerCase();
   if (!b64) {
     return html`<div class="chat-file"><span class="chat-file-icon">\u{1F4CE}</span>${name || mt || 'file'}</div>`;
   }
   const src = `data:${mt || 'application/octet-stream'};base64,${b64}`;
-  if (mt.startsWith('image/')) {
+  if (ACCEPTED_IMAGE_TYPES.includes(mt)) {
     return html`<a class="chat-media-link" href=${src} target="_blank" rel="noopener">
       <img class="chat-media" src=${src} alt=${name || 'image'} />
     </a>`;

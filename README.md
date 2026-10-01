@@ -127,6 +127,7 @@ You write a `SKILL.md`. Forge compiles it into a secure, runnable agent with egr
 | [Configuration](docs/reference/forge-yaml-schema.md) | `forge.yaml` schema and environment variables |
 | [Settings](docs/reference/settings.md) | Layered developer settings (user + managed/MDM) — enabled channels, model default + gateway, builtin tools |
 | [Dashboard](docs/reference/web-dashboard.md) | Web UI features and architecture |
+| [Multimodal I/O](docs/reference/multimodal-io.md) | Sending images/PDFs to an agent and receiving media back over A2A |
 | [Deployment](docs/deployment/kubernetes.md) | Container packaging, Kubernetes, air-gap |
 | [Scheduler — Kubernetes](docs/deployment/scheduler-kubernetes.md) | Hybrid file/CronJob scheduler backend, RBAC, token plumbing |
 | [Hooks](docs/core-concepts/hooks.md) | Agent loop hook system |

@@ -148,3 +148,109 @@ func TestResolveChildUpstream_EnvChainingCaptured(t *testing.T) {
 		t.Errorf("self-pointing settings should fall back to env, got %q", got)
 	}
 }
+
+func strptr(s string) *string { return &s }
+
+func TestSanitizePrevWiring(t *testing.T) {
+	gateway := "https://gw.corp.example"
+	tests := []struct {
+		name     string
+		prevBase *string
+		prevTS   *string
+		listen   string
+		prior    *optDaemonState
+		wantBase *string
+		wantTS   *string
+	}{
+		{
+			name:     "absent key stays absent",
+			listen:   "127.0.0.1:8787",
+			wantBase: nil, wantTS: nil,
+		},
+		{
+			name:     "real gateway is captured untouched",
+			prevBase: strptr(gateway), prevTS: strptr("false"),
+			listen:   "127.0.0.1:8787",
+			wantBase: strptr(gateway), wantTS: strptr("false"),
+		},
+		{
+			name:     "our own listen is never recorded as previous",
+			prevBase: strptr("http://127.0.0.1:8787"), prevTS: strptr("true"),
+			listen:   "127.0.0.1:8787",
+			wantBase: nil, wantTS: nil,
+		},
+		{
+			name:     "trailing slash on our own listen still detected",
+			prevBase: strptr("http://127.0.0.1:8787/"), prevTS: strptr("true"),
+			listen:   "127.0.0.1:8787",
+			wantBase: nil, wantTS: nil,
+		},
+		{
+			name:     "re-start carries the prior state's real gateway forward",
+			prevBase: strptr("http://127.0.0.1:8787"), prevTS: strptr("true"),
+			listen:   "127.0.0.1:8787",
+			prior:    &optDaemonState{Listen: "127.0.0.1:8787", PrevBaseURL: strptr(gateway), PrevToolSearch: strptr("false")},
+			wantBase: strptr(gateway), wantTS: strptr("false"),
+		},
+		{
+			name:     "start on a new port still spots the old wiring",
+			prevBase: strptr("http://127.0.0.1:8787"), prevTS: strptr("true"),
+			listen:   "127.0.0.1:9000",
+			prior:    &optDaemonState{Listen: "127.0.0.1:8787", PrevBaseURL: nil, PrevToolSearch: nil},
+			wantBase: nil, wantTS: nil,
+		},
+		{
+			name:     "a different localhost service is a real previous value",
+			prevBase: strptr("http://127.0.0.1:3000"), prevTS: strptr("true"),
+			listen:   "127.0.0.1:8787",
+			prior:    &optDaemonState{Listen: "127.0.0.1:8787"},
+			wantBase: strptr("http://127.0.0.1:3000"), wantTS: strptr("true"),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotBase, gotTS := sanitizePrevWiring(tc.prevBase, tc.prevTS, tc.listen, tc.prior)
+			if !eqStrPtr(gotBase, tc.wantBase) {
+				t.Errorf("base = %s, want %s", showStrPtr(gotBase), showStrPtr(tc.wantBase))
+			}
+			if !eqStrPtr(gotTS, tc.wantTS) {
+				t.Errorf("tool search = %s, want %s", showStrPtr(gotTS), showStrPtr(tc.wantTS))
+			}
+		})
+	}
+}
+
+// TestSanitizePrevWiring_StopNeverRestoresDeadProxy is the regression for the
+// reported break: start -> start -> stop must not leave `claude` pointed at the
+// optimizer's own address once the proxy is gone.
+func TestSanitizePrevWiring_StopNeverRestoresDeadProxy(t *testing.T) {
+	const listen = "127.0.0.1:8787"
+
+	// First start: nothing was set before, so nothing is recorded.
+	base, ts := sanitizePrevWiring(nil, nil, listen, nil)
+	first := optDaemonState{Listen: listen, PrevBaseURL: base, PrevToolSearch: ts}
+
+	// Second start reads back what the first one wrote.
+	base, ts = sanitizePrevWiring(strptr("http://"+listen), strptr("true"), listen, &first)
+
+	if base != nil {
+		t.Fatalf("prev_base_url = %q, want nil; stop would restore a dead proxy", *base)
+	}
+	if ts != nil {
+		t.Fatalf("prev_tool_search = %q, want nil; stop would leave ENABLE_TOOL_SEARCH on", *ts)
+	}
+}
+
+func eqStrPtr(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+func showStrPtr(p *string) string {
+	if p == nil {
+		return "<nil>"
+	}
+	return `"` + *p + `"`
+}

@@ -202,8 +202,14 @@ func runOptimizerStart(_ *cobra.Command, _ []string) error {
 		}
 	}
 
-	// Wire Claude Code settings so every `claude` inherits the base URL.
-	prevBase, prevTS, err := wireClaudeSettings(listen)
+	// Wire Claude Code settings so every `claude` inherits the base URL. A prior
+	// state file carries the genuine pre-forge values; a re-start must hand them
+	// over rather than recapture settings forge itself wrote.
+	var prior *optDaemonState
+	if p, perr := readOptDaemonState(); perr == nil {
+		prior = &p
+	}
+	prevBase, prevTS, err := wireClaudeSettings(listen, prior)
 	if err != nil {
 		logger.Warn("could not update ~/.claude/settings.json; set ANTHROPIC_BASE_URL yourself", "error", err.Error())
 	} else {
@@ -450,9 +456,42 @@ func captureStr(env map[string]any, key string) *string {
 	return nil
 }
 
+// forgeWiredBaseURL reports whether raw is a base URL an earlier `start` wrote:
+// our current listen addr, or the one the prior daemon state recorded (starting
+// on a different --listen leaves the old address behind in settings.json).
+func forgeWiredBaseURL(raw, listen string, prior *optDaemonState) bool {
+	s := strings.TrimSuffix(strings.TrimSpace(raw), "/")
+	if s == "" {
+		return false
+	}
+	if s == "http://"+listen {
+		return true
+	}
+	return prior != nil && prior.Listen != "" && s == "http://"+prior.Listen
+}
+
+// sanitizePrevWiring keeps `stop` honest. A value read back from settings.json
+// is only a genuine "previous" one when forge did not write it itself; when it
+// did, the real pre-forge value is whatever the prior state file already holds
+// (nil = the key was absent). Without this, a second `start` records the
+// optimizer's own URL as prev_base_url and `stop` dutifully restores it,
+// leaving every `claude` pointed at a dead proxy with ECONNREFUSED.
+func sanitizePrevWiring(prevBase, prevTS *string, listen string, prior *optDaemonState) (*string, *string) {
+	if prevBase == nil || !forgeWiredBaseURL(*prevBase, listen, prior) {
+		return prevBase, prevTS
+	}
+	// Already wired by us, so the ENABLE_TOOL_SEARCH we read back is ours too —
+	// neither value may be trusted. Carry the prior originals forward instead.
+	if prior != nil {
+		return prior.PrevBaseURL, prior.PrevToolSearch
+	}
+	return nil, nil
+}
+
 // wireClaudeSettings sets ANTHROPIC_BASE_URL + ENABLE_TOOL_SEARCH under `env`,
 // returning the prior values (nil = key was absent) so stop can revert exactly.
-func wireClaudeSettings(listen string) (*string, *string, error) {
+// prior is the state a previous `start` left behind, or nil on a clean start.
+func wireClaudeSettings(listen string, prior *optDaemonState) (*string, *string, error) {
 	m, err := readClaudeSettings()
 	if err != nil {
 		return nil, nil, err
@@ -461,8 +500,11 @@ func wireClaudeSettings(listen string) (*string, *string, error) {
 	if env == nil {
 		env = map[string]any{}
 	}
-	prevBase := captureStr(env, "ANTHROPIC_BASE_URL")
-	prevTS := captureStr(env, "ENABLE_TOOL_SEARCH")
+	prevBase, prevTS := sanitizePrevWiring(
+		captureStr(env, "ANTHROPIC_BASE_URL"),
+		captureStr(env, "ENABLE_TOOL_SEARCH"),
+		listen, prior,
+	)
 	env["ANTHROPIC_BASE_URL"] = "http://" + listen
 	env["ENABLE_TOOL_SEARCH"] = "true"
 	m["env"] = env

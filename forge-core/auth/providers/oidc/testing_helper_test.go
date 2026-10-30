@@ -176,14 +176,15 @@ func (fi *fakeIssuer) jwksDoc() map[string]any {
 				"e":   base64.RawURLEncoding.EncodeToString(intToBigEndian(pub.E)),
 			})
 		case *ecdsa.PublicKey:
+			ecX, ecY := ecXY(pub)
 			keys = append(keys, map[string]any{
 				"kty": "EC",
 				"kid": kid,
 				"use": "sig",
 				"alg": k.algInJWKS,
 				"crv": ecCurveName(pub.Curve),
-				"x":   base64.RawURLEncoding.EncodeToString(pub.X.Bytes()),
-				"y":   base64.RawURLEncoding.EncodeToString(pub.Y.Bytes()),
+				"x":   base64.RawURLEncoding.EncodeToString(ecX),
+				"y":   base64.RawURLEncoding.EncodeToString(ecY),
 			})
 		default:
 			panic(fmt.Sprintf("unsupported key type: %T", pub))
@@ -218,3 +219,15 @@ func ecCurveName(c elliptic.Curve) string {
 // Compile-time assertion: tests reference math/big to ensure the import
 // graph is exercised in case future refactors lose the dep.
 var _ = big.NewInt
+
+// ecXY returns the fixed-width big-endian X and Y coordinates of an EC public
+// key, via crypto/ecdh (ecdsa.PublicKey.X/Y were deprecated in Go 1.26).
+func ecXY(pub *ecdsa.PublicKey) (x, y []byte) {
+	ek, err := pub.ECDH()
+	if err != nil {
+		panic(err)
+	}
+	raw := ek.Bytes() // 0x04 || X || Y
+	n := (pub.Curve.Params().BitSize + 7) / 8
+	return raw[1 : 1+n], raw[1+n:]
+}

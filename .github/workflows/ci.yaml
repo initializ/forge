@@ -18,7 +18,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.26"
 
       - name: Verify dependencies
         run: |
@@ -58,7 +58,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.26"
 
       - uses: golangci/golangci-lint-action@v7
         with:
@@ -74,7 +74,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.26"
 
       - name: Integration tests
         run: go test -race -tags=integration ./forge-core/... ./forge-cli/... ./forge-skills/... ./forge-plugins/... ./forge-ui/...
@@ -103,7 +103,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.26"
 
       - name: Build
         env:

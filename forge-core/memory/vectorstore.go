@@ -82,8 +82,14 @@ func (s *FileVectorStore) Search(_ context.Context, queryVector []float32, k int
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if k <= 0 {
-		k = 10
+	// k <= 0 means "return every match" (a full scan), used by keyword-only
+	// callers that rank/filter downstream — previously this was silently
+	// clamped to 10, capping full scans. Cap to the corpus size instead.
+	if k <= 0 || k > len(s.chunks) {
+		k = len(s.chunks)
+	}
+	if k == 0 {
+		return nil, nil
 	}
 
 	// Compute similarities and maintain a top-k list.

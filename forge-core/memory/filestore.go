@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -15,12 +16,42 @@ type FileStore struct {
 	dir string
 }
 
-// NewFileStore creates a FileStore rooted at dir, creating it if needed.
+// NewFileStore creates a FileStore rooted at dir, creating it if needed. This
+// is the legacy / repo-local constructor; global-namespace callers should use
+// NewGlobalFileStore so the id is validated as a single safe path segment.
 func NewFileStore(dir string) (*FileStore, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating memory dir: %w", err)
 	}
 	return &FileStore{dir: dir}, nil
+}
+
+// safeSegmentRe matches a single filesystem-safe path segment: it must start
+// with an alphanumeric and contain only lowercase alphanumerics, dot, dash, or
+// underscore. ProjectID (hex or local-<hex>) and AgentID both satisfy it.
+var safeSegmentRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
+
+// safeSegment reports whether s is safe to use as a single path segment (no
+// traversal, no separators).
+func safeSegment(s string) bool {
+	if s == "" || len(s) > 128 || strings.Contains(s, "..") {
+		return false
+	}
+	return safeSegmentRe.MatchString(s)
+}
+
+// NewGlobalFileStore creates a FileStore under the global memory root for a
+// given namespace ("projects" or "agents") and id, i.e. rooted at
+// <root>/<namespace>/<id>/. The id is validated to be a single safe path
+// segment so a crafted id cannot escape the namespace.
+func NewGlobalFileStore(root, namespace, id string) (*FileStore, error) {
+	if namespace != NamespaceProjects && namespace != NamespaceAgents {
+		return nil, fmt.Errorf("invalid namespace %q", namespace)
+	}
+	if !safeSegment(id) {
+		return nil, fmt.Errorf("invalid id segment %q", id)
+	}
+	return NewFileStore(filepath.Join(root, namespace, id))
 }
 
 // Dir returns the root directory of the file store.

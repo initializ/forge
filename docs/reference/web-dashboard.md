@@ -55,6 +55,8 @@ Click any running agent to open a chat interface that streams responses via the 
 | Markdown rendering | Code blocks, tables, lists rendered inline |
 | Session history | Browse and resume previous conversations |
 | Tool call visibility | See which tools the agent invokes during execution |
+| Attachments (📎) | Attach images (PNG/JPEG/GIF/WebP) and PDFs to a message — validated against the accepted types and size caps before upload. Requires a model that supports the modality. See [Multimodal I/O](multimodal-io.md). |
+| Media replies | Images the agent returns render inline; documents appear as download links. |
 
 ## Create Agent Wizard
 

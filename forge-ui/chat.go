@@ -30,8 +30,8 @@ func (s *UIServer) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.Message == "" {
-		writeError(w, http.StatusBadRequest, "message is required")
+	if req.Message == "" && len(req.Attachments) == 0 {
+		writeError(w, http.StatusBadRequest, "message or attachment is required")
 		return
 	}
 
@@ -53,6 +53,8 @@ func (s *UIServer) handleChat(w http.ResponseWriter, r *http.Request) {
 		sessionID = fmt.Sprintf("%s-%d", agentID, time.Now().UnixNano())
 	}
 
+	parts := buildChatParts(req.Message, req.Attachments)
+
 	// Build A2A JSON-RPC request for tasks/sendSubscribe.
 	rpcBody, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
@@ -61,10 +63,8 @@ func (s *UIServer) handleChat(w http.ResponseWriter, r *http.Request) {
 		"params": map[string]any{
 			"id": sessionID,
 			"message": map[string]any{
-				"role": "user",
-				"parts": []map[string]any{
-					{"kind": "text", "text": req.Message},
-				},
+				"role":  "user",
+				"parts": parts,
 			},
 		},
 	})
@@ -150,6 +150,29 @@ func (s *UIServer) handleChat(w http.ResponseWriter, r *http.Request) {
 	doneData, _ := json.Marshal(map[string]string{"session_id": sessionID})
 	_, _ = fmt.Fprintf(w, "event: done\ndata: %s\n\n", doneData)
 	flusher.Flush()
+}
+
+// buildChatParts projects the chat message text plus any attachments into A2A
+// message parts: the text (if non-empty) as a `text` part, then a `file` part
+// per attachment. Each attachment's Data is already standard-base64 — exactly
+// what the agent's FileContent.Bytes ([]byte) decodes from — so it passes
+// straight through onto the wire (#255).
+func buildChatParts(message string, attachments []ChatAttachment) []map[string]any {
+	parts := make([]map[string]any, 0, 1+len(attachments))
+	if message != "" {
+		parts = append(parts, map[string]any{"kind": "text", "text": message})
+	}
+	for _, att := range attachments {
+		parts = append(parts, map[string]any{
+			"kind": "file",
+			"file": map[string]any{
+				"name":     att.Name,
+				"mimeType": att.MimeType,
+				"bytes":    att.Data,
+			},
+		})
+	}
+	return parts
 }
 
 // handleListSessions returns stored chat sessions for an agent.

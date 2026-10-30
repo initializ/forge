@@ -2413,3 +2413,77 @@ body {
   cursor: pointer;
 }
 .sb-provider-switch:disabled { opacity: 0.5; cursor: default; }
+
+/* ── Multimodal chat: inbound/outbound media + upload (#255) ───────── */
+
+/* Media rendered in a message bubble (user attachments or agent files). */
+.chat-media-parts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.chat-media-link { display: inline-block; line-height: 0; }
+.chat-media {
+  max-width: 320px;
+  max-height: 320px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #2a2a2a);
+  object-fit: contain;
+}
+.chat-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #2a2a2a);
+  background: var(--surface-2, #1a1a1a);
+  color: inherit;
+  text-decoration: none;
+  font-size: 13px;
+}
+.chat-file:hover { background: var(--surface-3, #222); }
+.chat-file-icon { font-size: 14px; }
+
+/* Pending attachments shown above the composer before sending. */
+.chat-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.chat-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #2a2a2a);
+  background: var(--surface-2, #1a1a1a);
+  font-size: 12px;
+}
+.chat-attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-attachment-size { color: var(--text-muted, #888); flex-shrink: 0; }
+.chat-attachment-remove {
+  border: none;
+  background: none;
+  color: var(--text-muted, #888);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 2px;
+  flex-shrink: 0;
+}
+.chat-attachment-remove:hover { color: var(--danger, #e05252); }
+.chat-attach-error {
+  color: var(--danger, #e05252);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.chat-attach-btn { font-size: 15px; }

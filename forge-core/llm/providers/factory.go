@@ -25,10 +25,11 @@ func NewClient(provider string, cfg llm.ClientConfig) (llm.Client, error) {
 		// no auth_scheme required. Issue #205.
 		return NewBedrockClient(cfg), nil
 	case "gemini":
-		if cfg.BaseURL == "" {
-			cfg.BaseURL = "https://generativelanguage.googleapis.com/v1beta/openai"
-		}
-		return NewOpenAIClient(cfg), nil
+		// Native Gemini generateContent client (#255): carries inlineData
+		// image/PDF input + model-generated image output, which the former
+		// OpenAI-compat routing (…/v1beta/openai) could not. Embeddings still
+		// use the compat endpoint — see embedder_factory.go.
+		return NewGeminiClient(cfg), nil
 	case "ollama":
 		return NewOllamaClient(cfg), nil
 	default:

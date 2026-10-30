@@ -137,10 +137,11 @@ type ClientConfig struct {
 	// path forces this true regardless (Codex backend requires it).
 	DisableStore bool
 
-	// EnableImageGeneration opts an OpenAI Responses request into the
-	// `image_generation` built-in tool, letting the model emit images that
-	// forge surfaces as `file` parts in the A2A response (#255). Off by
-	// default; only the openai-responses client honors it (other clients
-	// ignore the field). Opt-in because it changes provider behavior and cost.
+	// EnableImageGeneration lets the model emit images that forge surfaces as
+	// `file` parts in the A2A response (#255): the openai-responses client sends
+	// the `image_generation` built-in tool, and the native gemini client sets
+	// responseModalities:["TEXT","IMAGE"]. Off by default; honored only by those
+	// two clients (others ignore the field) and only on image-capable models.
+	// Opt-in because it changes provider behavior and cost.
 	EnableImageGeneration bool
 }

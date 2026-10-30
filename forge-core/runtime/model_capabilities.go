@@ -27,9 +27,10 @@ var visionCapablePrefixes = []string{
 }
 
 // pdfCapablePrefixes lists model-name prefixes whose models accept a PDF
-// document natively via Anthropic's document block (#255 Phase 3). Covers the
-// confirmed families: Sonnet (3.5/3.7 + 4.x/5), Opus (4.x), Haiku 4.5+, and
-// Fable 5.
+// document natively — via Anthropic's document block (#255 Phase 3) or Gemini's
+// inlineData (the native Gemini client, #255 follow-up). Covers the confirmed
+// families: Anthropic Sonnet (3.5/3.7 + 4.x/5), Opus (4.x), Haiku 4.5+, Fable 5;
+// and Gemini 1.5 / 2.x (native generateContent handles PDF inlineData).
 //
 // Prefix design (#534 review):
 //   - "claude-haiku" matches the 4.x/5 family naming (claude-haiku-4-5…), which
@@ -43,9 +44,10 @@ var visionCapablePrefixes = []string{
 //     fall through to a loud reject.
 //
 // Unknown-model default is fail-closed (loud reject, not a provider error).
-// OpenAI Responses input_file and Gemini document support are deferred follow-ups.
+// OpenAI Responses input_file document support remains a deferred follow-up.
 var pdfCapablePrefixes = []string{
 	"claude-3-5-sonnet", "claude-3-7-sonnet", "claude-opus", "claude-sonnet", "claude-haiku", "claude-fable",
+	"gemini-1.5", "gemini-2",
 }
 
 // ModelSupportsVision reports whether the named model accepts image input.

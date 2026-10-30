@@ -39,7 +39,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.26"
 
       # Snapshot build: cross-compiles the same archives a release would, into
       # dist/, without publishing or requiring a git tag. Publishers (brew,

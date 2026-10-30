@@ -24,7 +24,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.26"
 
       - uses: goreleaser/goreleaser-action@v6
         with:
@@ -63,7 +63,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.26"
 
       - name: Tag library modules
         run: ./scripts/release/tag-libraries.sh "${GITHUB_REF_NAME}"

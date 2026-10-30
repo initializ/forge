@@ -56,8 +56,9 @@ func newES256Signer(t *testing.T) *es256Signer {
 }
 
 func (s *es256Signer) writeJWKS(w http.ResponseWriter) {
-	x := base64.RawURLEncoding.EncodeToString(s.pub.X.Bytes())
-	y := base64.RawURLEncoding.EncodeToString(s.pub.Y.Bytes())
+	xb, yb := ecXY(s.pub)
+	x := base64.RawURLEncoding.EncodeToString(xb)
+	y := base64.RawURLEncoding.EncodeToString(yb)
 	doc := map[string]any{
 		"keys": []map[string]any{
 			{
@@ -261,7 +262,8 @@ func TestProvider_HS256WithECPublicKeyAsSecret_Rejected(t *testing.T) {
 	// Use the signer's public EC point coordinates as the HMAC "secret."
 	// The attacker only needs the public key, which they can fetch from
 	// the JWKS endpoint anonymously.
-	pubBytes := append(signer.pub.X.Bytes(), signer.pub.Y.Bytes()...)
+	xb, yb := ecXY(signer.pub)
+	pubBytes := append(append([]byte{}, xb...), yb...)
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims(validClaims("test-aud")))
 	tok.Header["kid"] = signer.kid
 	str, err := tok.SignedString(pubBytes)
@@ -428,8 +430,9 @@ func TestJWKSCache_BodyCap(t *testing.T) {
 func TestParseECJWKSet_DropsNonES256(t *testing.T) {
 	// Build a JWKS with one valid EC key and one RSA-shaped entry.
 	priv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	x := base64.RawURLEncoding.EncodeToString(priv.X.Bytes())
-	y := base64.RawURLEncoding.EncodeToString(priv.Y.Bytes())
+	xb, yb := ecXY(&priv.PublicKey)
+	x := base64.RawURLEncoding.EncodeToString(xb)
+	y := base64.RawURLEncoding.EncodeToString(yb)
 	doc := map[string]any{
 		"keys": []map[string]any{
 			{"kty": "EC", "crv": "P-256", "kid": "good", "alg": "ES256", "x": x, "y": y},
@@ -475,3 +478,16 @@ var (
 	_ = io.EOF
 	_ = big.NewInt
 )
+
+// ecXY returns the fixed-width big-endian X and Y coordinates of an EC public
+// key, via crypto/ecdh. ecdsa.PublicKey.X/Y were deprecated in Go 1.26; this
+// yields the standard RFC 7518 fixed-width coordinates (left-padded).
+func ecXY(pub *ecdsa.PublicKey) (x, y []byte) {
+	ek, err := pub.ECDH()
+	if err != nil {
+		panic(err)
+	}
+	raw := ek.Bytes() // 0x04 || X || Y
+	n := (pub.Curve.Params().BitSize + 7) / 8
+	return raw[1 : 1+n], raw[1+n:]
+}

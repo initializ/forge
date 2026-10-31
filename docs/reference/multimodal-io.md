@@ -59,8 +59,8 @@ Media the resolved model can't consume is **rejected loudly** (a 4xx / JSON-RPC 
 
 | Media | MIME | Capable models |
 |-------|------|----------------|
-| Image | `image/png`, `image/jpeg`, `image/gif`, `image/webp` | vision models — OpenAI `gpt-4o`/`gpt-4.1`/`gpt-5`/`o1`/`o3`/`o4`, Anthropic Claude 3+, Gemini 1.5/2 |
-| PDF | `application/pdf` | Anthropic Sonnet 3.5+, Opus 4+, Haiku 4.5+, Fable 5 |
+| Image | `image/png`, `image/jpeg`, `image/gif`, `image/webp` | vision models — OpenAI `gpt-4o`/`gpt-4.1`/`gpt-5`/`o1`/`o3`/`o4`, Anthropic Claude 3+, Gemini 1.5/2/3.x/4 |
+| PDF | `application/pdf` | Anthropic Sonnet 3.5+, Opus 4+, Haiku 4.5+, Fable 5; Gemini 1.5/2.x/3.x/4 |
 
 ### Limits (enforced at ingest)
 
@@ -93,7 +93,11 @@ Also the existing A2A shape: the response `message.parts` can carry `file` parts
 File parts come from two sources:
 
 - **Tools** that produce files (`file_create`, `browser_screenshot`) — always on.
-- **Model-generated images** — opt-in via `models.default.image_generation: true` on an `openai-responses` model (sends the `image_generation` built-in tool; see [forge.yaml schema](forge-yaml-schema.md)).
+- **Model-generated images** — opt-in via `models.default.image_generation: true` on an image-capable model (see [forge.yaml schema](forge-yaml-schema.md)):
+  - `provider: openai-responses` — sends the `image_generation` built-in tool.
+  - `provider: gemini` (native client) — sets `responseModalities: ["TEXT","IMAGE"]`; use an image model such as `gemini-3-pro-image`.
+
+  Video generation (Veo) is **not** supported — it's a long-running async operation that doesn't fit the synchronous chat loop; a future tool will cover it.
 
 ## Persistence
 
@@ -101,7 +105,11 @@ Inbound uploads and model-generated output are written under the agent's files d
 
 ## In the web dashboard
 
-The [chat UI](web-dashboard.md) has a **📎 attach** button: select one or more images/PDFs (validated against the accepted types and size caps above), send them with your message, and see images rendered inline and documents as download links — in both your message and the agent's reply.
+The [chat UI](web-dashboard.md) has a **📎 attach** button: select one or more images/PDFs (validated against the accepted types and size caps above), send them with your message, and see images rendered inline and documents as download links — in both your message and the agent's reply. Model-**generated** images come back the same way and render inline in the reply. (The dashboard relays the agent's SSE stream frame-by-frame; a generated image is a single large base64 frame, so the relay buffer is sized to carry a full media-bearing response — a frame too large to relay surfaces an error in the chat rather than ending silently.)
+
+Each generated image also emits a [`generated_media` audit event](../security/audit-logging.md) carrying its `{mime, bytes, sha256}`, where `sha256` matches the `.forge/files/generated/<sha256>.<ext>` filename — so image output is visible in the audit trail, not just as `llm_call` output tokens.
+
+Reopening a past session (or switching between sessions) also re-renders its media. History stores media as a URI reference only (the bytes live on disk, not in the session file), so the dashboard serves them on demand from `GET /api/agents/{id}/files/{name}` — a basename-only endpoint, restricted to the agent's `.forge/files/{generated,inbound}/` store. It rejects path separators / traversal and re-confines resolved symlinks to the store, sends `X-Content-Type-Options: nosniff`, and serves only an allowlist of media types inline — anything else is forced to a download attachment so a direct hit can't render active content in the dashboard origin.
 
 ## Follow-ups (not yet supported)
 

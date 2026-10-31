@@ -64,11 +64,20 @@ var providers = []Provider{
 	{
 		ID:           "gemini",
 		Label:        "Google Gemini",
-		Description:  "Gemini 2.5 Flash, Pro",
+		Description:  "Gemini 4 Argon, 3.8 Flash, 3.5 Flash, image + TTS models",
 		Icon:         "🔵",
 		NeedsAPIKey:  true,
 		APIKeyEnvVar: "GEMINI_API_KEY",
-		DefaultModel: "gemini-2.5-flash",
+		DefaultModel: "gemini-3.8-flash",
+		Models: []Model{
+			{Label: "Gemini 4 Argon", ModelID: "gemini-4-argon"},
+			{Label: "Gemini 3.8 Flash", ModelID: "gemini-3.8-flash"},
+			{Label: "Gemini 3.5 Flash", ModelID: "gemini-3.5-flash"},
+			{Label: "Gemini 3.5 Flash Lite", ModelID: "gemini-3.5-flash-lite"},
+			{Label: "Gemini 3.1 Flash Lite (image)", ModelID: "gemini-3.1-flash-lite-image"},
+			{Label: "Gemini 3 Pro (image)", ModelID: "gemini-3-pro-image"},
+			{Label: "Gemini 3.8 Flash TTS", ModelID: "gemini-3.8-flash-tts"},
+		},
 	},
 	{
 		ID:           "ollama",

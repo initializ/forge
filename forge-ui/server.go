@@ -124,6 +124,9 @@ func (s *UIServer) Start(ctx context.Context) error {
 	mux.HandleFunc("POST /api/agents/{id}/chat", s.handleChat)
 	mux.HandleFunc("GET /api/agents/{id}/sessions", s.handleListSessions)
 	mux.HandleFunc("GET /api/agents/{id}/sessions/{sid}", s.handleGetSession)
+	// Serves persisted chat media (.forge/files/{generated,inbound}/<name>) so
+	// a reopened session can render images whose bytes aren't in history (#255).
+	mux.HandleFunc("GET /api/agents/{id}/files/{name}", s.handleGetFile)
 
 	// Phase 3: Create & Configure routes
 	mux.HandleFunc("GET /api/wizard/meta", s.handleGetWizardMeta)

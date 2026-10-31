@@ -3,18 +3,26 @@ package forgeui
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/initializ/forge/forge-core/auth"
 )
+
+// maxSSEFrameBytes bounds a single SSE line relayed from the agent. Sized to
+// hold a `result` frame whose inline base64 media derives from the 32 MiB
+// inbound body cap (~1.37× base64 inflation + JSON envelope), with headroom.
+const maxSSEFrameBytes = 48 << 20
 
 // handleChat proxies a chat message to a running agent via A2A JSON-RPC
 // and streams the SSE response back to the browser.
@@ -115,15 +123,37 @@ func (s *UIServer) handleChat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	flusher.Flush()
 
-	// Parse agent SSE and re-emit to browser.
-	scanner := bufio.NewScanner(agentResp.Body)
+	relayAgentSSE(r.Context(), w, flusher, agentResp.Body)
+
+	// Send final done event with session_id.
+	doneData, _ := json.Marshal(map[string]string{"session_id": sessionID})
+	_, _ = fmt.Fprintf(w, "event: done\ndata: %s\n\n", doneData)
+	flusher.Flush()
+}
+
+// relayAgentSSE reads the agent's SSE stream frame-by-frame and re-emits each
+// frame to the browser, flushing per frame. It stops when src is exhausted or
+// ctx is cancelled (client disconnect).
+//
+// A model-generated image (#255) is carried inline as base64 in a single
+// `data:` line of the agent's `result` frame, which far exceeds
+// bufio.Scanner's default 64 KiB line cap — Scan() would abort with
+// ErrTooLong, the frame would be dropped, and the browser would get `done`
+// with no message ("chat spins forever / never shows anything"). The buffer is
+// raised to comfortably hold a frame built from a 32 MiB media body (the
+// inbound cap) plus base64 inflation and JSON envelope. On any scan failure it
+// emits an `error` frame so the browser can surface it instead of ending
+// silently.
+func relayAgentSSE(ctx context.Context, w io.Writer, flusher http.Flusher, src io.Reader) {
+	scanner := bufio.NewScanner(src)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxSSEFrameBytes)
 	var eventType string
 	var dataLines []string
 
 	for scanner.Scan() {
-		// Check if client disconnected.
+		// Stop if the browser disconnected.
 		select {
-		case <-r.Context().Done():
+		case <-ctx.Done():
 			return
 		default:
 		}
@@ -146,10 +176,14 @@ func (s *UIServer) handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Send final done event with session_id.
-	doneData, _ := json.Marshal(map[string]string{"session_id": sessionID})
-	_, _ = fmt.Fprintf(w, "event: done\ndata: %s\n\n", doneData)
-	flusher.Flush()
+	// Surface a relay failure (e.g. a frame larger than maxSSEFrameBytes)
+	// instead of silently ending with no message — otherwise the browser just
+	// gets `done` and shows nothing, indistinguishable from an empty reply.
+	if err := scanner.Err(); err != nil {
+		errData, _ := json.Marshal(map[string]string{"error": "streaming the agent response failed: " + err.Error()})
+		_, _ = fmt.Fprintf(w, "event: error\ndata: %s\n\n", errData)
+		flusher.Flush()
+	}
 }
 
 // buildChatParts projects the chat message text plus any attachments into A2A
@@ -288,6 +322,124 @@ func (s *UIServer) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(raw)
+}
+
+// mediaFileName matches a content-addressed media filename (<sha256hex>.<ext>).
+// Restricting the {name} path value to this shape rejects any path-traversal or
+// separator attempt before it touches the filesystem.
+var mediaFileName = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// inlineServableMediaTypes is the allowlist of Content-Types the endpoint will
+// serve INLINE. These are the media types the pipeline actually persists
+// (extForMIME in media_persist.go) and the dashboard renders. Anything else —
+// including a stray svg/html that somehow landed in the store — is served as a
+// download attachment with a generic type, so a direct URL hit can never render
+// active content in the dashboard origin.
+var inlineServableMediaTypes = map[string]bool{
+	"image/png":       true,
+	"image/jpeg":      true,
+	"image/gif":       true,
+	"image/webp":      true,
+	"application/pdf": true,
+}
+
+// handleGetFile serves a persisted chat-media file by basename from the agent's
+// files dir. It looks in the generated/ then inbound/ subdir (both are
+// content-addressed, so a basename is unambiguous) and streams the bytes. This
+// backs media rendering for REOPENED sessions, whose history stores only a URI
+// reference (MediaRef.Bytes is json:"-"), so the browser has no inline bytes to
+// render (#255).
+//
+// Hardening for a user-content endpoint: `X-Content-Type-Options: nosniff` is
+// always sent; only an allowlist of known-safe media types is served inline,
+// and everything else is forced to an octet-stream download attachment — so a
+// direct URL hit can't bypass the client renderer's allowlist and execute a
+// stray svg/html in-origin. Symlinks are resolved and re-confined to the files
+// store before serving (parity with RehydrateMedia, #528), so a planted symlink
+// inside the store can't read outward.
+func (s *UIServer) handleGetFile(w http.ResponseWriter, r *http.Request) {
+	agentID := r.PathValue("id")
+	name := r.PathValue("name")
+	if agentID == "" || name == "" {
+		writeError(w, http.StatusBadRequest, "agent id and file name are required")
+		return
+	}
+	// Defense in depth: the name must be a bare content-addressed filename.
+	// Reject separators / traversal / anything else outright.
+	if strings.Contains(name, "/") || strings.Contains(name, "..") || !mediaFileName.MatchString(name) {
+		writeError(w, http.StatusBadRequest, "invalid file name")
+		return
+	}
+
+	agents, err := s.scanner.Scan()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	agent, ok := agents[agentID]
+	if !ok {
+		writeError(w, http.StatusNotFound, "agent not found")
+		return
+	}
+
+	filesDir := filepath.Join(agent.Directory, ".forge", "files")
+	// Resolve symlinks on the store root once so the per-file containment check
+	// compares real paths (the dir itself may sit under a symlink, e.g. macOS
+	// /tmp -> /private/tmp). A missing store → nothing to serve.
+	realFilesDir, err := filepath.EvalSymlinks(filesDir)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "file not found")
+		return
+	}
+	for _, subdir := range []string{"generated", "inbound"} {
+		fpath := filepath.Join(filesDir, subdir, name)
+		// Resolve symlinks and confirm the real target still lives inside the
+		// store — a symlink planted in the store pointing outward passes the
+		// lexical name check but is caught here (#528 parity).
+		realPath, err := filepath.EvalSymlinks(fpath)
+		if err != nil {
+			continue
+		}
+		if rel, err := filepath.Rel(realFilesDir, realPath); err != nil ||
+			rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		f, err := os.Open(realPath)
+		if err != nil {
+			continue
+		}
+		defer func() { _ = f.Close() }()
+		info, err := f.Stat()
+		if err != nil || info.IsDir() {
+			continue
+		}
+
+		// Content-Type from extension; fall back to a sniff of the head.
+		ctype := mime.TypeByExtension(filepath.Ext(name))
+		if ctype == "" {
+			var head [512]byte
+			n, _ := f.Read(head[:])
+			ctype = http.DetectContentType(head[:n])
+			if _, serr := f.Seek(0, io.SeekStart); serr != nil {
+				writeError(w, http.StatusInternalServerError, "failed to read file")
+				return
+			}
+		}
+		// Never let the browser sniff a different (active) type than we declare,
+		// and only serve known media types inline — force anything else to a
+		// download so it can't render in the dashboard origin.
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if base, _, _ := strings.Cut(ctype, ";"); inlineServableMediaTypes[strings.ToLower(strings.TrimSpace(base))] {
+			w.Header().Set("Content-Type", ctype)
+		} else {
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("Content-Disposition", "attachment; filename=\""+name+"\"")
+		}
+		w.Header().Set("Cache-Control", "private, max-age=3600")
+		http.ServeContent(w, r, name, info.ModTime(), f)
+		return
+	}
+	writeError(w, http.StatusNotFound, "file not found")
 }
 
 // extractPreview extracts the first user message text from a messages JSON array.

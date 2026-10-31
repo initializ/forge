@@ -19,6 +19,8 @@ var ModelContextWindows = map[string]int{
 	"claude-haiku":  200_000,
 	"gemini-2.5":    1_000_000,
 	"gemini-2.0":    1_000_000,
+	"gemini-3":      1_000_000,
+	"gemini-4":      1_000_000,
 	"llama3.1":      128_000,
 	"llama3":        8_000,
 	"mistral":       32_000,

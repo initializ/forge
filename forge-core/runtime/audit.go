@@ -257,6 +257,15 @@ const (
 	// Fields: dropped ([]string of "<kind>:<mimeType>"), count, reason.
 	AuditInputMediaRejected = "input_media_rejected"
 
+	// AuditGeneratedMedia is emitted when the model returns media (image)
+	// output in a response — the opt-in image_generation path (#255). Without
+	// it, generated media is invisible in the audit trail (only llm_call fires,
+	// and an image shows up merely as output tokens). Carries in Fields: media
+	// ([]{mime, bytes, sha256}), count. The sha256 matches the content-addressed
+	// filename under .forge/files/generated/<sha256>.<ext>, so an operator can
+	// correlate the event to the persisted file.
+	AuditGeneratedMedia = "generated_media"
+
 	// Deprecated: use EventAuthVerify. Kept as a string alias so any
 	// audit-log consumer that grep'd for "auth_success" can be migrated.
 	// Scheduled for removal in v0.11.0.

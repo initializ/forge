@@ -171,6 +171,10 @@ type geminiPart struct {
 	InlineData       *geminiInlineData       `json:"inlineData,omitempty"`
 	FunctionCall     *geminiFunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *geminiFunctionResponse `json:"functionResponse,omitempty"`
+	// ThoughtSignature is Gemini's opaque signature on a functionCall part. The
+	// API requires it echoed back verbatim when the call is replayed in a later
+	// turn, or it 400s ("Function call is missing a thought_signature").
+	ThoughtSignature string `json:"thoughtSignature,omitempty"`
 }
 
 type geminiInlineData struct {
@@ -346,7 +350,12 @@ func geminiConvertMessage(m llm.ChatMessage) geminiContent {
 			if tc.Function.Arguments != "" {
 				args = json.RawMessage(tc.Function.Arguments)
 			}
-			parts = append(parts, geminiPart{FunctionCall: &geminiFunctionCall{Name: tc.Function.Name, Args: args}})
+			// Echo Gemini's thought_signature back on the functionCall part — the
+			// API rejects the replayed call without it.
+			parts = append(parts, geminiPart{
+				FunctionCall:     &geminiFunctionCall{Name: tc.Function.Name, Args: args},
+				ThoughtSignature: tc.ThoughtSignature,
+			})
 		}
 		return geminiContent{Role: role, Parts: parts}
 	}
@@ -413,9 +422,10 @@ func parseGeminiResponse(r io.Reader) (*llm.ChatResponse, error) {
 					args = string(p.FunctionCall.Args)
 				}
 				result.Message.ToolCalls = append(result.Message.ToolCalls, llm.ToolCall{
-					ID:       p.FunctionCall.Name, // Gemini pairs by name; see geminiConvertMessage
-					Type:     "function",
-					Function: llm.FunctionCall{Name: p.FunctionCall.Name, Arguments: args},
+					ID:               p.FunctionCall.Name, // Gemini pairs by name; see geminiConvertMessage
+					Type:             "function",
+					Function:         llm.FunctionCall{Name: p.FunctionCall.Name, Arguments: args},
+					ThoughtSignature: p.ThoughtSignature, // must be echoed back next turn
 				})
 			case p.InlineData != nil && p.InlineData.Data != "":
 				if raw, derr := base64.StdEncoding.DecodeString(p.InlineData.Data); derr == nil && len(raw) > 0 {
@@ -489,7 +499,8 @@ func readGeminiStream(r io.Reader, ch chan<- llm.StreamDelta) {
 					}
 					ch <- llm.StreamDelta{ToolCalls: []llm.ToolCall{{
 						ID: p.FunctionCall.Name, Type: "function",
-						Function: llm.FunctionCall{Name: p.FunctionCall.Name, Arguments: args},
+						Function:         llm.FunctionCall{Name: p.FunctionCall.Name, Arguments: args},
+						ThoughtSignature: p.ThoughtSignature,
 					}}}
 				case p.InlineData != nil && p.InlineData.Data != "":
 					if raw, derr := base64.StdEncoding.DecodeString(p.InlineData.Data); derr == nil && len(raw) > 0 {

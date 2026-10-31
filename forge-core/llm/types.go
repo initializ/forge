@@ -86,6 +86,14 @@ type ToolCall struct {
 	ID       string       `json:"id"`
 	Type     string       `json:"type"` // always "function"
 	Function FunctionCall `json:"function"`
+	// ThoughtSignature carries Gemini's opaque per-functionCall signature,
+	// which its API REQUIRES echoed back on the functionCall part in the next
+	// turn (#255). json:"-" so it never leaks into other providers' request
+	// bodies (OpenAI serializes llm.ToolCall directly) — it survives in-memory
+	// across the agent's tool round-trip, which is where it's needed; it is not
+	// persisted to session history (a cross-reload mid-tool-loop would simply
+	// re-call).
+	ThoughtSignature string `json:"-"`
 }
 
 // FunctionCall contains the function name and arguments for a tool call.

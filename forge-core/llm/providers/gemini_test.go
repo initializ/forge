@@ -195,6 +195,40 @@ func TestGemini_ParseResponse_TextToolAndUsage(t *testing.T) {
 	}
 }
 
+// TestGemini_ThoughtSignatureRoundTrip pins the fix for Gemini's required
+// thought_signature on functionCall parts (live 400 otherwise): parse captures
+// it from the response, and a replayed assistant tool call echoes it back.
+func TestGemini_ThoughtSignatureRoundTrip(t *testing.T) {
+	// Parse: functionCall part carries thoughtSignature → ToolCall captures it.
+	body := `{"candidates":[{"content":{"role":"model","parts":[
+		{"functionCall":{"name":"search","args":{"q":"x"}},"thoughtSignature":"SIG-abc"}
+	]},"finishReason":"STOP"}]}`
+	resp, err := parseGeminiResponse(strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Message.ToolCalls) != 1 || resp.Message.ToolCalls[0].ThoughtSignature != "SIG-abc" {
+		t.Fatalf("thoughtSignature not captured: %+v", resp.Message.ToolCalls)
+	}
+
+	// Convert: replaying that assistant tool call re-emits the signature.
+	c := geminiClient(llm.ClientConfig{})
+	out := c.toGeminiRequest(&llm.ChatRequest{Messages: []llm.ChatMessage{
+		{Role: llm.RoleAssistant, ToolCalls: resp.Message.ToolCalls},
+	}})
+	part := out.Contents[0].Parts[0]
+	if part.FunctionCall == nil || part.ThoughtSignature != "SIG-abc" {
+		t.Errorf("replayed functionCall must echo thoughtSignature; got %+v", part)
+	}
+
+	// json:"-" guard: the signature must NOT serialize into a generic ToolCall
+	// (it would leak into OpenAI/other provider requests).
+	tcJSON, _ := json.Marshal(resp.Message.ToolCalls[0])
+	if strings.Contains(string(tcJSON), "SIG-abc") || strings.Contains(string(tcJSON), "thought") {
+		t.Errorf("ThoughtSignature must be json:\"-\" (not serialized into llm.ToolCall); got %s", tcJSON)
+	}
+}
+
 func TestGemini_ParseResponse_SafetyBlockNoCandidates(t *testing.T) {
 	// Zero candidates must not error or panic.
 	resp, err := parseGeminiResponse(strings.NewReader(`{"candidates": []}`))

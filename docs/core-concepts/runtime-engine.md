@@ -37,15 +37,15 @@ The same projection feeds the inbound guardrail and intent-alignment scanners, s
 
 A media `file` part is forwarded to the model as native input when the resolved model supports that modality:
 
-- **Images** (`image/png`, `image/jpeg`, `image/gif`, `image/webp`) → **vision-capable** models (`runtime.ModelSupportsVision` — OpenAI `gpt-4o`/`gpt-4.1`/`gpt-5`/`o1`/`o3`/`o4`, Anthropic Claude 3+, Gemini 1.5/2). Serialized as Anthropic `image` source blocks, OpenAI `image_url` data URLs, or Gemini `inlineData` (the native Gemini client).
-- **PDFs** (`application/pdf`) → **document-capable** models (`runtime.ModelSupportsPDF` — Anthropic Sonnet 3.5+, Opus 4+, Haiku 4.5+, and Fable 5; the older Claude 3.0 and 3.5 Haiku are excluded, so a PDF sent to those gets a clean reject rather than a provider error). Serialized as Anthropic `document` source blocks. OpenAI Responses `input_file`, Gemini documents, and text-extraction fallback for non-native models are deferred follow-ups.
+- **Images** (`image/png`, `image/jpeg`, `image/gif`, `image/webp`) → **vision-capable** models (`runtime.ModelSupportsVision` — OpenAI `gpt-4o`/`gpt-4.1`/`gpt-5`/`o1`/`o3`/`o4`, Anthropic Claude 3+, Gemini 1.5/2/3.x/4). Serialized as Anthropic `image` source blocks, OpenAI `image_url` data URLs, or Gemini `inlineData` (the native Gemini client).
+- **PDFs** (`application/pdf`) → **document-capable** models (`runtime.ModelSupportsPDF` — Anthropic Sonnet 3.5+, Opus 4+, Haiku 4.5+, Fable 5, and Gemini 1.5/2/3.x/4; the older Claude 3.0 and 3.5 Haiku are excluded, so a PDF sent to those gets a clean reject rather than a provider error). Serialized as Anthropic `document` source blocks or Gemini `inlineData`. OpenAI Responses `input_file` and text-extraction fallback for non-native models are deferred follow-ups.
 
 `a2aMessageToLLM` projects supported parts into `llm.ChatMessage.Parts` (the flattened text stays in `Content` as the text-of-record for the scanners). A text-only message keeps `Parts` empty and marshals byte-identically to before.
 
 **Model-generated image output.** A model can also *produce* an image, which forge returns as a `file` part in the A2A response. Enable it with `image_generation: true` on the model (`ModelRef.ImageGeneration` → `ClientConfig.EnableImageGeneration`); two providers honor it:
 
 - **`openai-responses`** — sends the `image_generation` built-in tool; the base64 `result` from the `image_generation_call` output (read from the authoritative `response.completed` frame) is decoded into an image `ContentPart`.
-- **`gemini`** (native client) — sets `responseModalities: ["TEXT","IMAGE"]`; the image comes back as an `inlineData` part on `candidates[].content.parts` and is decoded the same way. Requires an image model (e.g. `gemini-2.5-flash-image`).
+- **`gemini`** (native client) — sets `responseModalities: ["TEXT","IMAGE"]`; the image comes back as an `inlineData` part on `candidates[].content.parts` and is decoded the same way. Requires an image model (e.g. `gemini-3-pro-image`).
 
 Either way the image lands on `resp.Message.Parts`; `llmMessageToA2A` projects it into a response `file` part, and it's persisted to `.forge/files/generated/` (URI in history, no base64 bloat). Off by default (it changes provider behavior and cost). Anthropic (and Bedrock) don't generate images through their messages/Converse APIs. **Video generation (Veo)** is a long-running async op and is not supported here — a future tool will cover it.
 

@@ -98,7 +98,7 @@ func TestResolveModelConfig_FallbacksFromYAML(t *testing.T) {
 	if mc.Fallbacks[1].Provider != "gemini" {
 		t.Errorf("expected second fallback gemini, got %s", mc.Fallbacks[1].Provider)
 	}
-	if mc.Fallbacks[1].Client.Model != "gemini-2.5-flash" {
+	if mc.Fallbacks[1].Client.Model != "gemini-3.8-flash" {
 		t.Errorf("expected default gemini model, got %s", mc.Fallbacks[1].Client.Model)
 	}
 }
@@ -434,7 +434,7 @@ func TestDefaultModelForProvider(t *testing.T) {
 		// gpt-5.4 retired from Codex ChatGPT sign-in on 2026-08-31.
 		{"openai", "gpt-5.6-terra"},
 		{"anthropic", "claude-sonnet-4-20250514"},
-		{"gemini", "gemini-2.5-flash"},
+		{"gemini", "gemini-3.8-flash"},
 		{"ollama", "llama3"},
 		{"unknown", ""},
 		// "custom" is in the catalog but carries no default by design — the

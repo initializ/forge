@@ -879,7 +879,7 @@ func TestBuildTemplateData_DefaultModels(t *testing.T) {
 		{"openai", "gpt-5.6-terra"},
 		{"anthropic", "claude-sonnet-4-20250514"},
 		{"bedrock", "us.anthropic.claude-sonnet-4-20250514-v1:0"},
-		{"gemini", "gemini-2.5-flash"},
+		{"gemini", "gemini-3.8-flash"},
 		{"ollama", "llama3"},
 	}
 

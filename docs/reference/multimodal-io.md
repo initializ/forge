@@ -59,8 +59,8 @@ Media the resolved model can't consume is **rejected loudly** (a 4xx / JSON-RPC 
 
 | Media | MIME | Capable models |
 |-------|------|----------------|
-| Image | `image/png`, `image/jpeg`, `image/gif`, `image/webp` | vision models — OpenAI `gpt-4o`/`gpt-4.1`/`gpt-5`/`o1`/`o3`/`o4`, Anthropic Claude 3+, Gemini 1.5/2 |
-| PDF | `application/pdf` | Anthropic Sonnet 3.5+, Opus 4+, Haiku 4.5+, Fable 5; Gemini 1.5/2.x |
+| Image | `image/png`, `image/jpeg`, `image/gif`, `image/webp` | vision models — OpenAI `gpt-4o`/`gpt-4.1`/`gpt-5`/`o1`/`o3`/`o4`, Anthropic Claude 3+, Gemini 1.5/2/3.x/4 |
+| PDF | `application/pdf` | Anthropic Sonnet 3.5+, Opus 4+, Haiku 4.5+, Fable 5; Gemini 1.5/2.x/3.x/4 |
 
 ### Limits (enforced at ingest)
 
@@ -95,7 +95,7 @@ File parts come from two sources:
 - **Tools** that produce files (`file_create`, `browser_screenshot`) — always on.
 - **Model-generated images** — opt-in via `models.default.image_generation: true` on an image-capable model (see [forge.yaml schema](forge-yaml-schema.md)):
   - `provider: openai-responses` — sends the `image_generation` built-in tool.
-  - `provider: gemini` (native client) — sets `responseModalities: ["TEXT","IMAGE"]`; use an image model such as `gemini-2.5-flash-image`.
+  - `provider: gemini` (native client) — sets `responseModalities: ["TEXT","IMAGE"]`; use an image model such as `gemini-3-pro-image`.
 
   Video generation (Veo) is **not** supported — it's a long-running async operation that doesn't fit the synchronous chat loop; a future tool will cover it.
 

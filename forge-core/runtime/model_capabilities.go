@@ -22,8 +22,10 @@ var visionCapablePrefixes = []string{
 	// listed here too — Claude document support is built on vision infra, so a
 	// PDF-capable model is necessarily vision-capable.
 	"claude-3", "claude-opus", "claude-sonnet", "claude-haiku", "claude-fable",
-	// Google Gemini (served through the OpenAI-compat client).
-	"gemini-1.5", "gemini-2",
+	// Google Gemini (native generateContent client). The flagship + flash/pro
+	// families are multimodal; broad prefixes cover 1.5/2.x and the 3.x/4
+	// generations.
+	"gemini-1.5", "gemini-2", "gemini-3", "gemini-4",
 }
 
 // pdfCapablePrefixes lists model-name prefixes whose models accept a PDF
@@ -47,7 +49,7 @@ var visionCapablePrefixes = []string{
 // OpenAI Responses input_file document support remains a deferred follow-up.
 var pdfCapablePrefixes = []string{
 	"claude-3-5-sonnet", "claude-3-7-sonnet", "claude-opus", "claude-sonnet", "claude-haiku", "claude-fable",
-	"gemini-1.5", "gemini-2",
+	"gemini-1.5", "gemini-2", "gemini-3", "gemini-4",
 }
 
 // ModelSupportsVision reports whether the named model accepts image input.

@@ -118,6 +118,57 @@ func TestGemini_ToRequest_ImageGenModalitiesOptIn(t *testing.T) {
 	}
 }
 
+// TestGemini_ToRequest_SanitizesToolSchema is the regression for the live 400:
+// Gemini rejects JSON-Schema keywords like additionalProperties on tool
+// parameters. They must be stripped at every schema level (incl. nested), while
+// a property legitimately NAMED "additionalProperties" is preserved.
+func TestGemini_ToRequest_SanitizesToolSchema(t *testing.T) {
+	schema := json.RawMessage(`{
+      "type": "object",
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "query": {"type": "string"},
+        "opts": {"type": "object", "additionalProperties": true, "properties": {"deep": {"type": "boolean"}}},
+        "additionalProperties": {"type": "string"}
+      },
+      "required": ["query"]
+    }`)
+	c := geminiClient(llm.ClientConfig{})
+	out := c.toGeminiRequest(&llm.ChatRequest{
+		Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: "hi"}},
+		Tools:    []llm.ToolDefinition{{Type: "function", Function: llm.FunctionSchema{Name: "search", Parameters: schema}}},
+	})
+	got := out.Tools[0].FunctionDeclarations[0].Parameters
+
+	var m map[string]any
+	if err := json.Unmarshal(got, &m); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m["additionalProperties"]; ok {
+		t.Error("top-level additionalProperties keyword must be stripped")
+	}
+	if _, ok := m["$schema"]; ok {
+		t.Error("$schema must be stripped")
+	}
+	props := m["properties"].(map[string]any)
+	// Nested keyword stripped...
+	opts := props["opts"].(map[string]any)
+	if _, ok := opts["additionalProperties"]; ok {
+		t.Error("nested additionalProperties keyword must be stripped")
+	}
+	// ...but a property NAMED additionalProperties and real properties survive.
+	if _, ok := props["additionalProperties"]; !ok {
+		t.Error("a property literally named additionalProperties must be preserved")
+	}
+	if _, ok := props["query"]; !ok {
+		t.Error("real properties must be preserved")
+	}
+	if req, _ := m["required"].([]any); len(req) != 1 || req[0] != "query" {
+		t.Errorf("required must be preserved: %v", m["required"])
+	}
+}
+
 func TestGemini_ParseResponse_TextToolAndUsage(t *testing.T) {
 	body := `{
       "candidates": [{"content": {"role":"model","parts": [

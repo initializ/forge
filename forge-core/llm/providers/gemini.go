@@ -220,7 +220,7 @@ func (c *GeminiClient) toGeminiRequest(req *llm.ChatRequest) geminiRequest {
 			decls = append(decls, geminiFuncDecl{
 				Name:        t.Function.Name,
 				Description: t.Function.Description,
-				Parameters:  t.Function.Parameters,
+				Parameters:  sanitizeGeminiSchema(t.Function.Parameters),
 			})
 		}
 		out.Tools = []geminiTool{{FunctionDeclarations: decls}}
@@ -237,6 +237,78 @@ func (c *GeminiClient) toGeminiRequest(req *llm.ChatRequest) geminiRequest {
 		out.GenerationConfig = gc
 	}
 	return out
+}
+
+// geminiUnsupportedSchemaKeys are JSON-Schema keywords Gemini's function-call
+// parameters (a restricted OpenAPI 3.0 Schema subset) does NOT accept — sending
+// them yields a 400 "Unknown name … Cannot find field". forge's tool schemas
+// are full JSON Schema (OpenAI/Anthropic tolerate these), so they are stripped
+// per-request for Gemini only.
+var geminiUnsupportedSchemaKeys = map[string]bool{
+	"additionalProperties":  true,
+	"$schema":               true,
+	"$id":                   true,
+	"$ref":                  true,
+	"$defs":                 true,
+	"definitions":           true,
+	"patternProperties":     true,
+	"additionalItems":       true,
+	"unevaluatedProperties": true,
+	"unevaluatedItems":      true,
+}
+
+// sanitizeGeminiSchema recursively removes unsupported keywords from a tool
+// parameters schema so Gemini accepts it. It is schema-structure aware: inside
+// a `properties` map the keys are property NAMES (kept verbatim) and only their
+// subschema values are cleaned — so a property legitimately named e.g.
+// "additionalProperties" survives, while the `additionalProperties` KEYWORD on
+// any schema object is dropped. Unparseable input is passed through untouched.
+func sanitizeGeminiSchema(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return raw
+	}
+	out, err := json.Marshal(stripGeminiSchema(v))
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+func stripGeminiSchema(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			if geminiUnsupportedSchemaKeys[k] {
+				continue
+			}
+			if k == "properties" {
+				// Keys here are property names, not keywords — keep them; clean
+				// only the subschema values.
+				if props, ok := val.(map[string]any); ok {
+					cleaned := make(map[string]any, len(props))
+					for name, sub := range props {
+						cleaned[name] = stripGeminiSchema(sub)
+					}
+					out[k] = cleaned
+					continue
+				}
+			}
+			out[k] = stripGeminiSchema(val)
+		}
+		return out
+	case []any:
+		for i := range t {
+			t[i] = stripGeminiSchema(t[i])
+		}
+		return t
+	default:
+		return v
+	}
 }
 
 // geminiConvertMessage maps one provider-agnostic message to a Gemini content.

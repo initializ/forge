@@ -329,12 +329,34 @@ func (s *UIServer) handleGetSession(w http.ResponseWriter, r *http.Request) {
 // separator attempt before it touches the filesystem.
 var mediaFileName = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
+// inlineServableMediaTypes is the allowlist of Content-Types the endpoint will
+// serve INLINE. These are the media types the pipeline actually persists
+// (extForMIME in media_persist.go) and the dashboard renders. Anything else —
+// including a stray svg/html that somehow landed in the store — is served as a
+// download attachment with a generic type, so a direct URL hit can never render
+// active content in the dashboard origin.
+var inlineServableMediaTypes = map[string]bool{
+	"image/png":       true,
+	"image/jpeg":      true,
+	"image/gif":       true,
+	"image/webp":      true,
+	"application/pdf": true,
+}
+
 // handleGetFile serves a persisted chat-media file by basename from the agent's
 // files dir. It looks in the generated/ then inbound/ subdir (both are
-// content-addressed, so a basename is unambiguous) and streams the bytes with a
-// sniffed Content-Type. This backs media rendering for REOPENED sessions, whose
-// history stores only a URI reference (MediaRef.Bytes is json:"-"), so the
-// browser has no inline bytes to render (#255).
+// content-addressed, so a basename is unambiguous) and streams the bytes. This
+// backs media rendering for REOPENED sessions, whose history stores only a URI
+// reference (MediaRef.Bytes is json:"-"), so the browser has no inline bytes to
+// render (#255).
+//
+// Hardening for a user-content endpoint: `X-Content-Type-Options: nosniff` is
+// always sent; only an allowlist of known-safe media types is served inline,
+// and everything else is forced to an octet-stream download attachment — so a
+// direct URL hit can't bypass the client renderer's allowlist and execute a
+// stray svg/html in-origin. Symlinks are resolved and re-confined to the files
+// store before serving (parity with RehydrateMedia, #528), so a planted symlink
+// inside the store can't read outward.
 func (s *UIServer) handleGetFile(w http.ResponseWriter, r *http.Request) {
 	agentID := r.PathValue("id")
 	name := r.PathValue("name")
@@ -361,9 +383,28 @@ func (s *UIServer) handleGetFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	filesDir := filepath.Join(agent.Directory, ".forge", "files")
+	// Resolve symlinks on the store root once so the per-file containment check
+	// compares real paths (the dir itself may sit under a symlink, e.g. macOS
+	// /tmp -> /private/tmp). A missing store → nothing to serve.
+	realFilesDir, err := filepath.EvalSymlinks(filesDir)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "file not found")
+		return
+	}
 	for _, subdir := range []string{"generated", "inbound"} {
 		fpath := filepath.Join(filesDir, subdir, name)
-		f, err := os.Open(fpath)
+		// Resolve symlinks and confirm the real target still lives inside the
+		// store — a symlink planted in the store pointing outward passes the
+		// lexical name check but is caught here (#528 parity).
+		realPath, err := filepath.EvalSymlinks(fpath)
+		if err != nil {
+			continue
+		}
+		if rel, err := filepath.Rel(realFilesDir, realPath); err != nil ||
+			rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		f, err := os.Open(realPath)
 		if err != nil {
 			continue
 		}
@@ -372,6 +413,7 @@ func (s *UIServer) handleGetFile(w http.ResponseWriter, r *http.Request) {
 		if err != nil || info.IsDir() {
 			continue
 		}
+
 		// Content-Type from extension; fall back to a sniff of the head.
 		ctype := mime.TypeByExtension(filepath.Ext(name))
 		if ctype == "" {
@@ -383,7 +425,16 @@ func (s *UIServer) handleGetFile(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		w.Header().Set("Content-Type", ctype)
+		// Never let the browser sniff a different (active) type than we declare,
+		// and only serve known media types inline — force anything else to a
+		// download so it can't render in the dashboard origin.
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if base, _, _ := strings.Cut(ctype, ";"); inlineServableMediaTypes[strings.ToLower(strings.TrimSpace(base))] {
+			w.Header().Set("Content-Type", ctype)
+		} else {
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("Content-Disposition", "attachment; filename=\""+name+"\"")
+		}
 		w.Header().Set("Cache-Control", "private, max-age=3600")
 		http.ServeContent(w, r, name, info.ModTime(), f)
 		return

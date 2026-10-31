@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -43,8 +44,14 @@ func TestHandleGetFile_ServesGeneratedAndInbound(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("generated file: got %d, want 200", rec.Code)
 	}
-	if ct := rec.Header().Get("Content-Type"); ct == "" {
-		t.Error("expected a Content-Type header")
+	if ct := rec.Header().Get("Content-Type"); ct != "image/png" {
+		t.Errorf("Content-Type = %q, want image/png (inline-servable)", ct)
+	}
+	if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Error("expected X-Content-Type-Options: nosniff on all responses")
+	}
+	if rec.Header().Get("Content-Disposition") != "" {
+		t.Error("a known image type should be served inline, not as an attachment")
 	}
 	if rec.Body.Len() != len(png) {
 		t.Errorf("body len = %d, want %d", rec.Body.Len(), len(png))
@@ -52,6 +59,54 @@ func TestHandleGetFile_ServesGeneratedAndInbound(t *testing.T) {
 
 	if rec := getFile(t, s, "test-agent", "def456.jpg"); rec.Code != http.StatusOK {
 		t.Fatalf("inbound file: got %d, want 200", rec.Code)
+	}
+}
+
+// A non-media type (e.g. a stray svg/html) must be forced to a download
+// attachment with a generic type + nosniff, so a direct URL hit can't render
+// active content in the dashboard origin.
+func TestHandleGetFile_NonMediaServedAsAttachment(t *testing.T) {
+	s, dir := newTestServer(t)
+	agentDir := createTestAgent(t, dir, "test-agent")
+	writeMediaFile(t, agentDir, "generated", "evil.svg", []byte(`<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`))
+
+	rec := getFile(t, s, "test-agent", "evil.svg")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/octet-stream" {
+		t.Errorf("Content-Type = %q, want application/octet-stream (non-media must not serve inline)", ct)
+	}
+	if cd := rec.Header().Get("Content-Disposition"); !strings.HasPrefix(cd, "attachment") {
+		t.Errorf("Content-Disposition = %q, want an attachment", cd)
+	}
+	if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Error("expected X-Content-Type-Options: nosniff")
+	}
+}
+
+// A symlink planted inside the store pointing outward passes the lexical name
+// check but must be caught by symlink re-confinement (#528 parity).
+func TestHandleGetFile_RejectsSymlinkEscape(t *testing.T) {
+	s, dir := newTestServer(t)
+	agentDir := createTestAgent(t, dir, "test-agent")
+
+	secret := filepath.Join(dir, "secret.png")
+	if err := os.WriteFile(secret, []byte("TOP SECRET"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	genDir := filepath.Join(agentDir, ".forge", "files", "generated")
+	if err := os.MkdirAll(genDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(genDir, "leak.png")
+	if err := os.Symlink(secret, link); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+
+	rec := getFile(t, s, "test-agent", "leak.png")
+	if rec.Code == http.StatusOK {
+		t.Errorf("a symlink escaping the store must not be served, got 200 body %q", rec.Body.String())
 	}
 }
 

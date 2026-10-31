@@ -109,7 +109,7 @@ The [chat UI](web-dashboard.md) has a **📎 attach** button: select one or more
 
 Each generated image also emits a [`generated_media` audit event](../security/audit-logging.md) carrying its `{mime, bytes, sha256}`, where `sha256` matches the `.forge/files/generated/<sha256>.<ext>` filename — so image output is visible in the audit trail, not just as `llm_call` output tokens.
 
-Reopening a past session (or switching between sessions) also re-renders its media. History stores media as a URI reference only (the bytes live on disk, not in the session file), so the dashboard serves them on demand from `GET /api/agents/{id}/files/{name}` — a basename-only endpoint, restricted to the agent's `.forge/files/{generated,inbound}/` store (path separators and traversal are rejected).
+Reopening a past session (or switching between sessions) also re-renders its media. History stores media as a URI reference only (the bytes live on disk, not in the session file), so the dashboard serves them on demand from `GET /api/agents/{id}/files/{name}` — a basename-only endpoint, restricted to the agent's `.forge/files/{generated,inbound}/` store. It rejects path separators / traversal and re-confines resolved symlinks to the store, sends `X-Content-Type-Options: nosniff`, and serves only an allowlist of media types inline — anything else is forced to a download attachment so a direct hit can't render active content in the dashboard origin.
 
 ## Follow-ups (not yet supported)
 

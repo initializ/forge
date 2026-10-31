@@ -752,7 +752,9 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 
 			// If the LLM returned empty text after executing tools, re-prompt
 			// it once to produce a meaningful summary instead of sending nothing.
-			if strings.TrimSpace(resp.Message.Content) == "" && i > 0 {
+			// A media-only response (e.g. a generated image with no caption) is
+			// NOT empty — HasMedia() guards against re-prompting / overwriting it.
+			if strings.TrimSpace(resp.Message.Content) == "" && !resp.Message.HasMedia() && i > 0 {
 				mem.Append(llm.ChatMessage{
 					Role:    llm.RoleUser,
 					Content: "Your response was empty. Please provide a brief summary of what you found, what you were unable to do, and suggest next steps.",
@@ -777,7 +779,7 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 					})
 				}
 			}
-			if strings.TrimSpace(resp.Message.Content) == "" {
+			if strings.TrimSpace(resp.Message.Content) == "" && !resp.Message.HasMedia() {
 				resp.Message.Content = "I processed your request but wasn't able to produce a response. Please try again."
 			}
 			e.persistSession(task.ID, mem)
@@ -786,7 +788,7 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 
 		// Execute tool calls
 		if e.tools == nil {
-			if strings.TrimSpace(resp.Message.Content) == "" {
+			if strings.TrimSpace(resp.Message.Content) == "" && !resp.Message.HasMedia() {
 				resp.Message.Content = "I processed your request but wasn't able to produce a response. Please try again."
 			}
 			e.persistSession(task.ID, mem)

@@ -636,6 +636,16 @@ function useChatStream(agentId) {
       // Convert session messages to display format.
       // Group assistant tool_calls with their tool results, skip system messages.
       const raw = data.messages || [];
+      // Session history stores media parts as a URI reference only (the bytes
+      // are json:"-" and live on disk), so map each media part to a files
+      // entry that renders via the file-serving endpoint by basename (#255).
+      const mediaFiles = (m) => (m.parts || [])
+        .filter(p => p.media && p.media.uri)
+        .map(p => {
+          const uri = p.media.uri;
+          const base = uri.slice(uri.replace(/\\/g, '/').lastIndexOf('/') + 1);
+          return { mimeType: p.media.mimeType, name: base, url: `/api/agents/${agentId}/files/${encodeURIComponent(base)}` };
+        });
       const display = [];
       let i = 0;
       while (i < raw.length) {
@@ -644,7 +654,8 @@ function useChatStream(agentId) {
         if (m.role === 'system') { i++; continue; }
         // User messages.
         if (m.role === 'user') {
-          display.push({ role: 'user', content: m.content || '' });
+          const atts = mediaFiles(m);
+          display.push({ role: 'user', content: m.content || '', attachments: atts.length ? atts : undefined });
           i++;
           continue;
         }
@@ -668,13 +679,15 @@ function useChatStream(agentId) {
             }
             j++;
           }
-          display.push({ role: 'agent', content: m.content || '', tools });
+          const tcFiles = mediaFiles(m);
+          display.push({ role: 'agent', content: m.content || '', tools, files: tcFiles.length ? tcFiles : undefined });
           i = j;
           continue;
         }
         // Plain assistant message (no tool calls).
         if (m.role === 'assistant') {
-          display.push({ role: 'agent', content: m.content || '' });
+          const files = mediaFiles(m);
+          display.push({ role: 'agent', content: m.content || '', files: files.length ? files : undefined });
           i++;
           continue;
         }
@@ -1249,12 +1262,18 @@ function readFileAsAttachment(file) {
 // inbound gate already rejects SVG uploads, but agent-REPLY file parts carry no
 // such allowlist, so gate it here too (defense in depth). `download` on the
 // chip neutralizes any script-bearing payload.
-function MediaPart({ mimeType, name, b64 }) {
+// b64 (inline, live stream / fresh uploads) and url (a /api/.../files/<name>
+// reference, used when a reopened session carries only a URI — #255) are
+// mutually exclusive sources. Raster images (png/jpeg/gif/webp) render inline;
+// svg and everything else fall through to a download chip (a top-level
+// navigation to an svg would execute its scripts — XSS — so it must never be a
+// clickable inline href; `download` neutralizes it).
+function MediaPart({ mimeType, name, b64, url }) {
   const mt = (mimeType || '').toLowerCase();
-  if (!b64) {
+  const src = b64 ? `data:${mt || 'application/octet-stream'};base64,${b64}` : url;
+  if (!src) {
     return html`<div class="chat-file"><span class="chat-file-icon">\u{1F4CE}</span>${name || mt || 'file'}</div>`;
   }
-  const src = `data:${mt || 'application/octet-stream'};base64,${b64}`;
   if (ACCEPTED_IMAGE_TYPES.includes(mt)) {
     return html`<a class="chat-media-link" href=${src} target="_blank" rel="noopener">
       <img class="chat-media" src=${src} alt=${name || 'image'} />
@@ -1279,7 +1298,7 @@ function MessageBubble({ message }) {
       <div class="chat-bubble user">
         ${message.attachments && message.attachments.length > 0 && html`
           <div class="chat-media-parts">
-            ${message.attachments.map((a, i) => html`<${MediaPart} key=${i} mimeType=${a.mimeType} name=${a.name} b64=${a.data} />`)}
+            ${message.attachments.map((a, i) => html`<${MediaPart} key=${i} mimeType=${a.mimeType} name=${a.name} b64=${a.data} url=${a.url} />`)}
           </div>
         `}
         ${message.content && html`<div class="chat-bubble-content">${message.content}</div>`}
@@ -1300,7 +1319,7 @@ function MessageBubble({ message }) {
       `}
       ${message.files && message.files.length > 0 && html`
         <div class="chat-media-parts">
-          ${message.files.map((f, i) => html`<${MediaPart} key=${i} mimeType=${f.mimeType} name=${f.name} b64=${f.bytes} />`)}
+          ${message.files.map((f, i) => html`<${MediaPart} key=${i} mimeType=${f.mimeType} name=${f.name} b64=${f.bytes} url=${f.url} />`)}
         </div>
       `}
       ${message.isStreaming && !message.content && (!message.files || message.files.length === 0) && html`

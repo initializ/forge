@@ -109,6 +109,8 @@ The [chat UI](web-dashboard.md) has a **📎 attach** button: select one or more
 
 Each generated image also emits a [`generated_media` audit event](../security/audit-logging.md) carrying its `{mime, bytes, sha256}`, where `sha256` matches the `.forge/files/generated/<sha256>.<ext>` filename — so image output is visible in the audit trail, not just as `llm_call` output tokens.
 
+Reopening a past session (or switching between sessions) also re-renders its media. History stores media as a URI reference only (the bytes live on disk, not in the session file), so the dashboard serves them on demand from `GET /api/agents/{id}/files/{name}` — a basename-only endpoint, restricted to the agent's `.forge/files/{generated,inbound}/` store (path separators and traversal are rejected).
+
 ## Follow-ups (not yet supported)
 
 URI-fetch input (egress-gated) · OpenAI Responses `input_file` documents · Gemini/Bedrock media · text-extraction fallback for non-native document models · remote/distributed session media replay · streaming (partial-image) generated output.

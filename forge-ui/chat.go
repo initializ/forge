@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -320,6 +322,73 @@ func (s *UIServer) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(raw)
+}
+
+// mediaFileName matches a content-addressed media filename (<sha256hex>.<ext>).
+// Restricting the {name} path value to this shape rejects any path-traversal or
+// separator attempt before it touches the filesystem.
+var mediaFileName = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// handleGetFile serves a persisted chat-media file by basename from the agent's
+// files dir. It looks in the generated/ then inbound/ subdir (both are
+// content-addressed, so a basename is unambiguous) and streams the bytes with a
+// sniffed Content-Type. This backs media rendering for REOPENED sessions, whose
+// history stores only a URI reference (MediaRef.Bytes is json:"-"), so the
+// browser has no inline bytes to render (#255).
+func (s *UIServer) handleGetFile(w http.ResponseWriter, r *http.Request) {
+	agentID := r.PathValue("id")
+	name := r.PathValue("name")
+	if agentID == "" || name == "" {
+		writeError(w, http.StatusBadRequest, "agent id and file name are required")
+		return
+	}
+	// Defense in depth: the name must be a bare content-addressed filename.
+	// Reject separators / traversal / anything else outright.
+	if strings.Contains(name, "/") || strings.Contains(name, "..") || !mediaFileName.MatchString(name) {
+		writeError(w, http.StatusBadRequest, "invalid file name")
+		return
+	}
+
+	agents, err := s.scanner.Scan()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	agent, ok := agents[agentID]
+	if !ok {
+		writeError(w, http.StatusNotFound, "agent not found")
+		return
+	}
+
+	filesDir := filepath.Join(agent.Directory, ".forge", "files")
+	for _, subdir := range []string{"generated", "inbound"} {
+		fpath := filepath.Join(filesDir, subdir, name)
+		f, err := os.Open(fpath)
+		if err != nil {
+			continue
+		}
+		defer func() { _ = f.Close() }()
+		info, err := f.Stat()
+		if err != nil || info.IsDir() {
+			continue
+		}
+		// Content-Type from extension; fall back to a sniff of the head.
+		ctype := mime.TypeByExtension(filepath.Ext(name))
+		if ctype == "" {
+			var head [512]byte
+			n, _ := f.Read(head[:])
+			ctype = http.DetectContentType(head[:n])
+			if _, serr := f.Seek(0, io.SeekStart); serr != nil {
+				writeError(w, http.StatusInternalServerError, "failed to read file")
+				return
+			}
+		}
+		w.Header().Set("Content-Type", ctype)
+		w.Header().Set("Cache-Control", "private, max-age=3600")
+		http.ServeContent(w, r, name, info.ModTime(), f)
+		return
+	}
+	writeError(w, http.StatusNotFound, "file not found")
 }
 
 // extractPreview extracts the first user message text from a messages JSON array.

@@ -96,7 +96,7 @@ Before running the Slack adapter, create and configure a Slack App:
 The Slack adapter resolves the bot's own user ID **and** `bot_id` at startup via `auth.test`. The user ID drives @mention matching; the `bot_id` powers the self-loop guard.
 
 - **Channel messages** — the bot only responds when explicitly @mentioned (e.g. `@ForgeBot what's the status?`)
-- **Thread replies** — the bot responds to all messages in a thread it's participating in, unless the message @mentions a different user
+- **Thread replies** — the bot responds to messages in a thread it is **participating in** — it was @mentioned in the thread, or it has already replied there (checked via `conversations.replies`) — unless the message @mentions a *different* user. An unmentioned reply in a thread the bot never joined is ignored, so it doesn't answer unrelated conversations in channels it merely belongs to. Participation is resolved fail-closed: if the lookup errors, the reply is treated as not-participating and dropped.
 - **Direct messages** — all DMs are processed
 - Bot mentions are stripped from the message text before passing to the LLM, so it sees clean input
 

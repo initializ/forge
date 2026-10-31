@@ -454,12 +454,28 @@ func (p *Plugin) readLoop(ctx context.Context, conn *websocket.Conn, handler cha
 					continue
 				}
 			} else {
-				// Threaded message: respond unless another user (not the bot)
-				// is explicitly @mentioned, meaning the question is directed
-				// at someone else.
+				// Threaded message. Respond only when the bot is a PARTICIPANT
+				// in this thread — otherwise it answers unrelated conversations
+				// in any channel it's a member of (#541). Participation means
+				// one of:
+				//   - this message @mentions the bot, or
+				//   - the bot was @mentioned earlier in the thread, or the bot
+				//     has already replied in it (checked via conversations.replies).
+				// A message that @mentions a different user (not the bot) is
+				// always dropped — it's directed at someone else.
 				mentions := extractMentions(payload.Event.Text)
-				if len(mentions) > 0 && !slices.Contains(mentions, p.botUserID) {
+				switch {
+				case slices.Contains(mentions, p.botUserID):
+					// Directed at the bot in this message → admit.
+				case len(mentions) > 0:
+					// Directed at another user → ignore.
 					continue
+				default:
+					// Unmentioned reply: admit only if the bot already
+					// participates in the thread.
+					if !p.botParticipatesInThread(ctx, payload.Event.Channel, payload.Event.ThreadTS) {
+						continue
+					}
 				}
 			}
 		}
@@ -844,6 +860,61 @@ func (p *Plugin) uploadFile(event *channels.ChannelEvent, filename, content stri
 	}
 
 	return nil
+}
+
+// botParticipatesInThread reports whether the bot is a participant in the
+// thread rooted at threadTS in channel: it authored a reply there, or it was
+// @mentioned anywhere in the thread. This is how an unmentioned thread reply is
+// qualified before the bot answers (#541) — the bot engages with threads it has
+// joined, not every thread in a channel it merely belongs to.
+//
+// Fetches the thread via conversations.replies. Fails CLOSED (returns false) on
+// any API/transport error so a transient failure can't reintroduce the noisy
+// over-answering this guards against. Reads up to one page (200 messages, no
+// pagination): participation in an extremely long thread beyond that window is
+// not detected, which only makes the bot quieter — the safe direction.
+func (p *Plugin) botParticipatesInThread(ctx context.Context, channel, threadTS string) bool {
+	if p.botUserID == "" || channel == "" || threadTS == "" {
+		return false
+	}
+	q := url.Values{}
+	q.Set("channel", channel)
+	q.Set("ts", threadTS)
+	q.Set("limit", "200")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.apiBase+"/conversations.replies?"+q.Encode(), nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Authorization", "Bearer "+p.botToken)
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	var out struct {
+		OK       bool   `json:"ok"`
+		Error    string `json:"error"`
+		Messages []struct {
+			User string `json:"user"`
+			Text string `json:"text"`
+		} `json:"messages"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || !out.OK {
+		if !out.OK && out.Error != "" {
+			p.logWarn("conversations.replies failed; treating thread as non-participating", map[string]any{"error": out.Error})
+		}
+		return false
+	}
+	mention := "<@" + p.botUserID
+	for _, m := range out.Messages {
+		// The bot authored a reply (its own posts carry user=botUserID), or it
+		// was @mentioned somewhere in the thread.
+		if m.User == p.botUserID || strings.Contains(m.Text, mention) {
+			return true
+		}
+	}
+	return false
 }
 
 // postMessage posts a JSON payload to the Slack chat.postMessage API.

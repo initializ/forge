@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -3091,6 +3093,24 @@ func (r *Runner) registerAuditHooks(hooks *coreruntime.HookRegistry, auditLogger
 			Duration:  hctx.LLMCallDuration,
 			Fields:    fields,
 		})
+		// Generated-media output (opt-in image_generation, #255). Without this
+		// the image is invisible in the trail — only llm_call fires, and the
+		// image shows up merely as output tokens. The sha256 matches the
+		// content-addressed filename persistMedia writes under
+		// .forge/files/generated/<sha256>.<ext>, so the event correlates to the
+		// file. persistMedia runs AFTER this hook, so URI isn't set yet — the
+		// hash is the stable correlator.
+		if hctx.Response != nil {
+			if media := generatedMediaAuditFields(hctx.Response.Message.Parts); len(media) > 0 {
+				auditLogger.EmitFromContext(ctx, coreruntime.AuditEvent{
+					Event: coreruntime.AuditGeneratedMedia,
+					Fields: map[string]any{
+						"media": media,
+						"count": len(media),
+					},
+				})
+			}
+		}
 		// Accumulate per-invocation usage totals so the response handler
 		// can populate X-Forge-Tokens-In/Out + X-Forge-Duration-Ms +
 		// X-Forge-Model + X-Forge-Provider headers. See issue #87 / FWS-3.
@@ -3099,6 +3119,30 @@ func (r *Runner) registerAuditHooks(hooks *coreruntime.HookRegistry, auditLogger
 		}
 		return nil
 	})
+}
+
+// generatedMediaAuditFields projects the media (image/document) parts of a
+// model response into audit field entries for the generated_media event. Each
+// entry carries the MIME type, byte length, and a sha256 of the bytes — the
+// same content hash persistMedia uses for the on-disk filename, so the event
+// correlates to .forge/files/generated/<sha256>.<ext>. Returns nil for a
+// text-only response (the common case), so the event only fires when the model
+// actually produced media. Parts whose media bytes are empty are skipped.
+func generatedMediaAuditFields(parts []llm.ContentPart) []map[string]any {
+	var out []map[string]any
+	for i := range parts {
+		m := parts[i].Media
+		if m == nil || len(m.Bytes) == 0 {
+			continue
+		}
+		sum := sha256.Sum256(m.Bytes)
+		out = append(out, map[string]any{
+			"mime":   m.MimeType,
+			"bytes":  len(m.Bytes),
+			"sha256": hex.EncodeToString(sum[:]),
+		})
+	}
+	return out
 }
 
 // registerProgressHooks adds hooks that emit progress events via ProgressEmitter.

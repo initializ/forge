@@ -3,6 +3,7 @@ package forgeui
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,6 +16,11 @@ import (
 
 	"github.com/initializ/forge/forge-core/auth"
 )
+
+// maxSSEFrameBytes bounds a single SSE line relayed from the agent. Sized to
+// hold a `result` frame whose inline base64 media derives from the 32 MiB
+// inbound body cap (~1.37× base64 inflation + JSON envelope), with headroom.
+const maxSSEFrameBytes = 48 << 20
 
 // handleChat proxies a chat message to a running agent via A2A JSON-RPC
 // and streams the SSE response back to the browser.
@@ -115,15 +121,37 @@ func (s *UIServer) handleChat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	flusher.Flush()
 
-	// Parse agent SSE and re-emit to browser.
-	scanner := bufio.NewScanner(agentResp.Body)
+	relayAgentSSE(r.Context(), w, flusher, agentResp.Body)
+
+	// Send final done event with session_id.
+	doneData, _ := json.Marshal(map[string]string{"session_id": sessionID})
+	_, _ = fmt.Fprintf(w, "event: done\ndata: %s\n\n", doneData)
+	flusher.Flush()
+}
+
+// relayAgentSSE reads the agent's SSE stream frame-by-frame and re-emits each
+// frame to the browser, flushing per frame. It stops when src is exhausted or
+// ctx is cancelled (client disconnect).
+//
+// A model-generated image (#255) is carried inline as base64 in a single
+// `data:` line of the agent's `result` frame, which far exceeds
+// bufio.Scanner's default 64 KiB line cap — Scan() would abort with
+// ErrTooLong, the frame would be dropped, and the browser would get `done`
+// with no message ("chat spins forever / never shows anything"). The buffer is
+// raised to comfortably hold a frame built from a 32 MiB media body (the
+// inbound cap) plus base64 inflation and JSON envelope. On any scan failure it
+// emits an `error` frame so the browser can surface it instead of ending
+// silently.
+func relayAgentSSE(ctx context.Context, w io.Writer, flusher http.Flusher, src io.Reader) {
+	scanner := bufio.NewScanner(src)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxSSEFrameBytes)
 	var eventType string
 	var dataLines []string
 
 	for scanner.Scan() {
-		// Check if client disconnected.
+		// Stop if the browser disconnected.
 		select {
-		case <-r.Context().Done():
+		case <-ctx.Done():
 			return
 		default:
 		}
@@ -146,10 +174,14 @@ func (s *UIServer) handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Send final done event with session_id.
-	doneData, _ := json.Marshal(map[string]string{"session_id": sessionID})
-	_, _ = fmt.Fprintf(w, "event: done\ndata: %s\n\n", doneData)
-	flusher.Flush()
+	// Surface a relay failure (e.g. a frame larger than maxSSEFrameBytes)
+	// instead of silently ending with no message — otherwise the browser just
+	// gets `done` and shows nothing, indistinguishable from an empty reply.
+	if err := scanner.Err(); err != nil {
+		errData, _ := json.Marshal(map[string]string{"error": "streaming the agent response failed: " + err.Error()})
+		_, _ = fmt.Fprintf(w, "event: error\ndata: %s\n\n", errData)
+		flusher.Flush()
+	}
 }
 
 // buildChatParts projects the chat message text plus any attachments into A2A

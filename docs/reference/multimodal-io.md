@@ -105,7 +105,9 @@ Inbound uploads and model-generated output are written under the agent's files d
 
 ## In the web dashboard
 
-The [chat UI](web-dashboard.md) has a **📎 attach** button: select one or more images/PDFs (validated against the accepted types and size caps above), send them with your message, and see images rendered inline and documents as download links — in both your message and the agent's reply.
+The [chat UI](web-dashboard.md) has a **📎 attach** button: select one or more images/PDFs (validated against the accepted types and size caps above), send them with your message, and see images rendered inline and documents as download links — in both your message and the agent's reply. Model-**generated** images come back the same way and render inline in the reply. (The dashboard relays the agent's SSE stream frame-by-frame; a generated image is a single large base64 frame, so the relay buffer is sized to carry a full media-bearing response — a frame too large to relay surfaces an error in the chat rather than ending silently.)
+
+Each generated image also emits a [`generated_media` audit event](../security/audit-logging.md) carrying its `{mime, bytes, sha256}`, where `sha256` matches the `.forge/files/generated/<sha256>.<ext>` filename — so image output is visible in the audit trail, not just as `llm_call` output tokens.
 
 ## Follow-ups (not yet supported)
 

@@ -729,6 +729,7 @@ function useChatStream(agentId) {
       let agentText = '';
       let agentFiles = []; // file parts (images/docs the agent returned) — #255
       let receivedSessionId = sessionId;
+      let streamError = ''; // set on an `error` SSE event (e.g. frame too large)
 
       // Collect `file` parts from a message, newest frame wins (frames carry
       // the complete message, so replace rather than append to avoid dupes).
@@ -845,6 +846,10 @@ function useChatStream(agentId) {
                 }
                 return [...prev, { role: 'agent', content: agentText, tools: [...currentTools], files: [...agentFiles], isStreaming: true }];
               });
+            } else if (eventType === 'error') {
+              // Relay/agent error (e.g. an SSE frame too large to relay).
+              // Surface it instead of silently finishing with no message.
+              streamError = parsed.error || 'the agent response could not be streamed';
             } else if (eventType === 'done') {
               if (parsed.session_id) {
                 receivedSessionId = parsed.session_id;
@@ -861,6 +866,10 @@ function useChatStream(agentId) {
           const filtered = prev.filter(m => !m.isStreaming);
           return [...filtered, { role: 'agent', content: agentText, tools: currentTools, files: agentFiles }];
         });
+      } else if (streamError) {
+        // Nothing usable arrived and the relay reported an error — show it so
+        // the chat doesn't just stop silently with no reply.
+        setMessages(prev => [...prev.filter(m => !m.isStreaming), { role: 'error', content: streamError }]);
       }
 
       if (receivedSessionId) {

@@ -906,11 +906,15 @@ func (p *Plugin) botParticipatesInThread(ctx context.Context, channel, threadTS 
 		}
 		return false
 	}
-	mention := "<@" + p.botUserID
 	for _, m := range out.Messages {
 		// The bot authored a reply (its own posts carry user=botUserID), or it
-		// was @mentioned somewhere in the thread.
-		if m.User == p.botUserID || strings.Contains(m.Text, mention) {
+		// was @mentioned somewhere in the thread. Match the mention by EXACT
+		// user ID via extractMentions (same as the current-message gate), not a
+		// substring: Slack IDs aren't fixed-length, so a plain Contains of
+		// "<@"+botUserID would treat a superstring participant (bot UBOT,
+		// user UBOTX → "<@UBOTX>") as the bot and over-answer — the exact #541
+		// regression.
+		if m.User == p.botUserID || slices.Contains(extractMentions(m.Text), p.botUserID) {
 			return true
 		}
 	}

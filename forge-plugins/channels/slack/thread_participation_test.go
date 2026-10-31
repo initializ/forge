@@ -55,6 +55,14 @@ func TestBotParticipatesInThread(t *testing.T) {
 			want:     false,
 		},
 		{
+			// Prefix-collision guard: a participant whose ID is a strict
+			// superstring of the bot's (UBOT vs UBOTX) must NOT count as the
+			// bot — a substring mention check would over-answer (#541 regress).
+			name:     "superstring-id participant is not the bot",
+			messages: `[{"user":"UALICE","text":"hey <@UBOTX> look"},{"user":"UBOTX","text":"ok"}]`,
+			want:     false,
+		},
+		{
 			name:     "empty thread",
 			messages: `[]`,
 			want:     false,

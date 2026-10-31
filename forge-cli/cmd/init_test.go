@@ -5,8 +5,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"text/template"
 
 	"github.com/initializ/forge/forge-cli/config"
+	"github.com/initializ/forge/forge-cli/templates"
 )
 
 func TestParseSkillsFileHeadings(t *testing.T) {
@@ -897,6 +899,73 @@ func TestBuildTemplateData_DefaultModels(t *testing.T) {
 				t.Errorf("model: got %q, want %q", data.ModelName, tt.expectedModel)
 			}
 		})
+	}
+}
+
+// buildTemplateData gates model.image_generation on BOTH the opt-in and the
+// provider+model capability (runtime.ModelSupportsImageGen) — a defensive net
+// so neither UI can scaffold a meaningless flag.
+func TestBuildTemplateData_ImageGeneration(t *testing.T) {
+	tests := []struct {
+		name        string
+		provider    string
+		customModel string
+		optIn       bool
+		want        bool
+	}{
+		{"openai-responses opt-in", "openai-responses", "", true, true},
+		{"openai-responses no opt-in", "openai-responses", "", false, false},
+		{"gemini image model opt-in", "gemini", "gemini-3-pro-image", true, true},
+		{"gemini non-image model opt-in gated off", "gemini", "gemini-3.8-flash", true, false},
+		{"anthropic opt-in gated off", "anthropic", "", true, false},
+		{"openai chat opt-in gated off", "openai", "", true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := &initOptions{
+				Name:            "test",
+				AgentID:         "test",
+				Framework:       "forge",
+				ModelProvider:   tt.provider,
+				CustomModel:     tt.customModel,
+				ImageGeneration: tt.optIn,
+				EnvVars:         map[string]string{},
+			}
+			data := buildTemplateData(opts)
+			if data.ImageGeneration != tt.want {
+				t.Errorf("ImageGeneration: got %v, want %v (provider=%q model=%q)", data.ImageGeneration, tt.want, tt.provider, data.ModelName)
+			}
+		})
+	}
+}
+
+// The forge.yaml template emits model.image_generation only when the gated
+// flag is set — present for an opted-in image-capable model, absent otherwise.
+func TestForgeYAMLTemplate_ImageGeneration(t *testing.T) {
+	tmplContent, err := templates.GetInitTemplate("forge.yaml.tmpl")
+	if err != nil {
+		t.Fatalf("GetInitTemplate: %v", err)
+	}
+	tmpl, err := template.New("forge.yaml.tmpl").Funcs(initTemplateFuncs).Parse(tmplContent)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	render := func(opts *initOptions) string {
+		var out strings.Builder
+		if err := tmpl.Execute(&out, buildTemplateData(opts)); err != nil {
+			t.Fatalf("execute: %v", err)
+		}
+		return out.String()
+	}
+
+	on := render(&initOptions{Name: "t", AgentID: "t", Framework: "forge", ModelProvider: "openai-responses", ImageGeneration: true, EnvVars: map[string]string{}})
+	if !strings.Contains(on, "image_generation: true") {
+		t.Errorf("opted-in image-capable model should emit image_generation: true\n%s", on)
+	}
+
+	off := render(&initOptions{Name: "t", AgentID: "t", Framework: "forge", ModelProvider: "anthropic", ImageGeneration: true, EnvVars: map[string]string{}})
+	if strings.Contains(off, "image_generation") {
+		t.Errorf("non-capable model must NOT emit image_generation (gated off)\n%s", off)
 	}
 }
 

@@ -26,7 +26,7 @@ A hidden companion, `forge mcp-serve`, is the stdio MCP server Claude Code spawn
 
 ## `forge init`
 
-Initialize a new agent project. Without `--non-interactive`, a TUI wizard walks through: name → model provider → fallbacks → channel → tools → skills → context compression → authentication → egress review → summary.
+Initialize a new agent project. Without `--non-interactive`, a TUI wizard walks through: name → model provider → fallbacks → image generation → channel → tools → skills → context compression → authentication → egress review → summary. The **image generation** step appears only when the chosen provider + model can generate images (`openai-responses`, or a Gemini image model) — otherwise the wizard skips over it in both directions; enabling it writes `model.image_generation: true`. See [Multimodal I/O](../reference/multimodal-io.md).
 
 Honors [settings](settings.md): a `models.gateway` is injected into the scaffolded `forge.yaml` (both modes); in `--non-interactive` mode a `models.default` seeds `--model-provider`/model and `tools.builtins.enabled` / `skills.enabled` seed `--tools` / `--skills` when omitted; `channels.enabled` and `skills.enabled` gate `--channels` / `--skills`, and the interactive wizard offers only the enabled channels and skills.
 

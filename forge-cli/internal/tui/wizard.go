@@ -47,6 +47,13 @@ type WizardContext struct {
 	// compression.enabled.
 	Compression bool
 
+	// ImageGeneration opts the model into generating image output (#255),
+	// written to forge.yaml as model.image_generation. Only offered by the
+	// wizard when the selected provider+model supports it
+	// (runtime.ModelSupportsImageGen): openai-responses, or a Gemini image
+	// model. Honored by the openai-responses + gemini clients.
+	ImageGeneration bool
+
 	// AuthMode is the user's selection from the auth step:
 	//   ""             — wizard step did not run
 	//   "none"         — anonymous access (no auth: block written)
@@ -112,13 +119,38 @@ func (w WizardModel) Init() tea.Cmd {
 	return nil
 }
 
-// advanceStep applies the current step's data and moves to the next one.
+// Skipper lets a step opt out of being shown for the current context — e.g.
+// the image-generation toggle only applies to providers/models that can
+// generate images. A skipped step is stepped over in BOTH directions (forward
+// advance and esc/back), so it never strands navigation the way a step that
+// self-completes in Init() would (that bounces esc straight back forward).
+type Skipper interface {
+	// Skip reports whether this step should be hidden for the given context.
+	// Called with the context accumulated so far, so it can depend on earlier
+	// steps' selections (e.g. the chosen provider + model).
+	Skip(ctx *WizardContext) bool
+}
+
+// shouldSkip reports whether the step at index i opts out for the current ctx.
+func (w *WizardModel) shouldSkip(i int) bool {
+	if i < 0 || i >= len(w.steps) {
+		return false
+	}
+	s, ok := w.steps[i].(Skipper)
+	return ok && s.Skip(w.ctx)
+}
+
+// advanceStep applies the current step's data and moves to the next one,
+// stepping over any skipped steps.
 func (w *WizardModel) advanceStep() tea.Cmd {
 	if w.current < len(w.steps) {
 		w.steps[w.current].Apply(w.ctx)
 	}
 
 	w.current++
+	for w.shouldSkip(w.current) {
+		w.current++
+	}
 	if w.current >= len(w.steps) {
 		w.done = true
 		return tea.Quit
@@ -129,6 +161,20 @@ func (w *WizardModel) advanceStep() tea.Cmd {
 		preparer.Prepare(w.ctx)
 	}
 	return w.steps[w.current].Init()
+}
+
+// retreatStep moves back one step, stepping over any skipped steps. Returns
+// false when there is no earlier step to land on (caller cancels).
+func (w *WizardModel) retreatStep() bool {
+	i := w.current - 1
+	for i >= 0 && w.shouldSkip(i) {
+		i--
+	}
+	if i < 0 {
+		return false
+	}
+	w.current = i
+	return true
 }
 
 // Update handles messages for the wizard.
@@ -155,8 +201,7 @@ func (w WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// esc is never an editing key, so intercepting it here is safe. On
 		// the first step there's nowhere to go back to, so esc cancels.
 		if msg.String() == "esc" {
-			if w.current > 0 {
-				w.current--
+			if w.retreatStep() {
 				return w, w.steps[w.current].Init()
 			}
 			w.err = fmt.Errorf("wizard cancelled")
@@ -164,8 +209,7 @@ func (w WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case StepBackMsg:
-		if w.current > 0 {
-			w.current--
+		if w.retreatStep() {
 			return w, w.steps[w.current].Init()
 		}
 		return w, nil

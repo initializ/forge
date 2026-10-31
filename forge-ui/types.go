@@ -299,10 +299,15 @@ type AgentCreateOptions struct {
 	Skills            []string           `json:"skills,omitempty"`
 	Fallbacks         []FallbackProvider `json:"fallbacks,omitempty"`
 	WebSearchProvider string             `json:"web_search_provider,omitempty"` // "tavily" or "perplexity"
-	Passphrase        string             `json:"passphrase,omitempty"`
-	EnvVars           map[string]string  `json:"env_vars,omitempty"`
-	Force             bool               `json:"force,omitempty"`
-	Auth              *AuthCreateOptions `json:"auth,omitempty"` // A2A server auth chain (PR6+)
+	// ImageGeneration opts the model into generating image output (#255),
+	// scaffolded as model.image_generation. Only meaningful (and only offered
+	// by the create form) where the provider+model supports it — see
+	// runtime.ModelSupportsImageGen; the scaffold re-checks defensively.
+	ImageGeneration bool               `json:"image_generation,omitempty"`
+	Passphrase      string             `json:"passphrase,omitempty"`
+	EnvVars         map[string]string  `json:"env_vars,omitempty"`
+	Force           bool               `json:"force,omitempty"`
+	Auth            *AuthCreateOptions `json:"auth,omitempty"` // A2A server auth chain (PR6+)
 	// Description + SystemPrompt are set by the AI agent builder (the
 	// conversational create flow). Description is a one-line summary;
 	// SystemPrompt is the agent's persona/instructions, written to the

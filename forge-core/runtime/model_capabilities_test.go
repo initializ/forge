@@ -26,6 +26,40 @@ func TestModelSupportsVision(t *testing.T) {
 	}
 }
 
+func TestModelSupportsImageGen(t *testing.T) {
+	yes := []struct{ provider, model string }{
+		// openai-responses: any model qualifies (built-in image_generation tool).
+		{"openai-responses", "gpt-5"},
+		{"openai-responses", ""},
+		{"OpenAI-Responses", "gpt-4o"}, // case-insensitive
+		// gemini: only image models (name contains "image").
+		{"gemini", "gemini-3-pro-image"},
+		{"gemini", "gemini-3.1-flash-lite-image"},
+		{"gemini", "gemini-2.5-flash-image"},
+		{"Gemini", "GEMINI-3-PRO-IMAGE"}, // case-insensitive
+	}
+	for _, c := range yes {
+		if !ModelSupportsImageGen(c.provider, c.model) {
+			t.Errorf("ModelSupportsImageGen(%q, %q) = false, want true", c.provider, c.model)
+		}
+	}
+	no := []struct{ provider, model string }{
+		{"gemini", "gemini-3.8-flash"}, // non-image Gemini model
+		{"gemini", "gemini-4-argon"},
+		{"gemini", ""},
+		{"openai", "gpt-5"}, // chat completions, no image_generation tool
+		{"anthropic", "claude-opus-4-8"},
+		{"bedrock", "claude-sonnet-5"},
+		{"ollama", "llama3.1"},
+		{"", "gemini-3-pro-image"}, // empty provider
+	}
+	for _, c := range no {
+		if ModelSupportsImageGen(c.provider, c.model) {
+			t.Errorf("ModelSupportsImageGen(%q, %q) = true, want false", c.provider, c.model)
+		}
+	}
+}
+
 func TestModelSupportsPDF(t *testing.T) {
 	pdf := []string{
 		"claude-3-5-sonnet", "claude-3-7-sonnet", "claude-opus-4-8", "claude-sonnet-5", "claude-sonnet-4-5", "claude-haiku-4-5", "claude-fable-5",

@@ -64,6 +64,29 @@ func ModelSupportsPDF(model string) bool {
 	return matchesPrefix(model, pdfCapablePrefixes)
 }
 
+// ModelSupportsImageGen reports whether a provider+model can GENERATE images
+// (the `image_generation`/EnableImageGeneration opt-in is meaningful), so UIs
+// can offer the toggle only where it does something (#255):
+//   - openai-responses: the image_generation built-in tool works on the general
+//     models, so any model qualifies.
+//   - gemini: only the image models — identified by "image" in the name
+//     (gemini-3-pro-image, gemini-2.5-flash-image, …); responseModalities errors
+//     on non-image Gemini models.
+//
+// Every other provider (openai chat, anthropic, bedrock, ollama) returns false.
+func ModelSupportsImageGen(provider, model string) bool {
+	p := strings.ToLower(strings.TrimSpace(provider))
+	m := strings.ToLower(strings.TrimSpace(model))
+	switch p {
+	case "openai-responses":
+		return true
+	case "gemini":
+		return strings.Contains(m, "image")
+	default:
+		return false
+	}
+}
+
 func matchesPrefix(model string, prefixes []string) bool {
 	m := strings.ToLower(strings.TrimSpace(model))
 	if m == "" {

@@ -19,6 +19,7 @@ import (
 	"github.com/initializ/forge/forge-cli/templates"
 	"github.com/initializ/forge/forge-core/catalog"
 	"github.com/initializ/forge/forge-core/llm/oauth"
+	"github.com/initializ/forge/forge-core/runtime"
 	"github.com/initializ/forge/forge-core/secrets"
 	coresettings "github.com/initializ/forge/forge-core/settings"
 	"github.com/initializ/forge/forge-core/tools/builtins"
@@ -61,6 +62,11 @@ type initOptions struct {
 	ModelAuthHeaderName string
 	AuthMethod          string // "apikey" or "oauth"
 	Compression         bool   // reversible context compression (ctxzip) — compression.enabled in forge.yaml
+	// ImageGeneration opts the model into generating image output (#255).
+	// Emitted as model.image_generation; only meaningful where
+	// runtime.ModelSupportsImageGen(provider, model) is true (openai-responses,
+	// gemini image models). Honored by the openai-responses + gemini clients.
+	ImageGeneration bool
 
 	// OutputDir overrides the scaffold target directory. Empty falls back
 	// to ./<AgentID> (the classic `forge init` layout). `forge try` sets
@@ -115,6 +121,7 @@ type templateData struct {
 	EnvVars             []envVarEntry
 	HasSecrets          bool
 	Compression         bool
+	ImageGeneration     bool // emits model.image_generation: true (#255)
 
 	// Auth chain rendering (see forge.yaml.tmpl). Pre-rendered as a YAML
 	// fragment because nested maps in the settings block (e.g. claim_map)
@@ -468,6 +475,7 @@ func collectInteractive(opts *initOptions, set coresettings.Settings) error {
 		steps.NewNameStep(styles, opts.Name),
 		steps.NewProviderStep(styles, validateKeyFn, defProvider, defModel, oauthFlowFn),
 		steps.NewFallbackStep(styles, validateKeyFn),
+		steps.NewImageGenerationStep(styles),
 		steps.NewChannelStep(styles, set.Channels.Enabled),
 		steps.NewWebSearchStep(styles, validateWebSearchKeyFn),
 		steps.NewSkillsStep(styles, skillInfos),
@@ -529,6 +537,7 @@ func collectInteractive(opts *initOptions, set coresettings.Settings) error {
 	opts.BuiltinTools = mergeBuiltinTools(opts.BuiltinTools, ctx.BuiltinTools)
 	opts.Skills = ctx.Skills
 	opts.Compression = ctx.Compression
+	opts.ImageGeneration = ctx.ImageGeneration
 
 	// Store provider env var
 	storeProviderEnvVar(opts)
@@ -1383,6 +1392,11 @@ func buildTemplateData(opts *initOptions) templateData {
 	} else {
 		data.ModelName = defaultModelNameForProvider(opts.ModelProvider)
 	}
+
+	// Emit model.image_generation only when the user opted in AND the
+	// resolved provider+model can actually generate images — a defensive
+	// gate so neither UI can scaffold a meaningless flag (#255).
+	data.ImageGeneration = opts.ImageGeneration && runtime.ModelSupportsImageGen(opts.ModelProvider, data.ModelName)
 
 	// Build fallback entries for templates
 	for _, fb := range opts.Fallbacks {

@@ -38,6 +38,71 @@ func (s *navMockStep) Complete() bool       { return s.complete }
 func (s *navMockStep) Summary() string      { return "" }
 func (s *navMockStep) Apply(*WizardContext) {}
 
+// navSkipStep is a navMockStep that opts out via the Skipper interface.
+// skip controls the opt-out; applied records whether the wizard called Apply
+// (it must NOT for a skipped step).
+type navSkipStep struct {
+	navMockStep
+	skip    bool
+	applied bool
+}
+
+func (s *navSkipStep) Skip(*WizardContext) bool { return s.skip }
+func (s *navSkipStep) Apply(*WizardContext)     { s.applied = true }
+
+// TestWizard_SkipsStepForward: a Skipper that opts out is stepped over on
+// forward advance (and its Apply is not called), landing on the next real step.
+func TestWizard_SkipsStepForward(t *testing.T) {
+	skipper := &navSkipStep{navMockStep: navMockStep{n: "b"}, skip: true}
+	w := NewWizardModel(TermTheme{}, []Step{&navMockStep{n: "a"}, skipper, &navMockStep{n: "c"}}, "v")
+
+	// Advance off step a — should land on c (2), stepping over b.
+	m, _ := w.Update(StepCompleteMsg{})
+	w = m.(WizardModel)
+	if w.current != 2 {
+		t.Fatalf("forward advance should skip b and land on c (2), got %d", w.current)
+	}
+	if skipper.applied {
+		t.Error("a skipped step's Apply must not be called")
+	}
+}
+
+// TestWizard_SkipsStepBackward: esc-back steps over a skipped step too, so the
+// user isn't trapped (a self-completing Init would bounce esc straight forward).
+func TestWizard_SkipsStepBackward(t *testing.T) {
+	skipper := &navSkipStep{navMockStep: navMockStep{n: "b"}, skip: true}
+	w := NewWizardModel(TermTheme{}, []Step{&navMockStep{n: "a"}, skipper, &navMockStep{n: "c"}}, "v")
+
+	m, _ := w.Update(StepCompleteMsg{}) // a -> c (skips b)
+	w = m.(WizardModel)
+	if w.current != 2 {
+		t.Fatalf("setup: current=%d want 2", w.current)
+	}
+
+	// esc from c must skip b and land on a (0).
+	m, _ = w.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	w = m.(WizardModel)
+	if w.current != 0 {
+		t.Errorf("esc should skip b and return to a (0), got %d", w.current)
+	}
+	if w.err != nil {
+		t.Errorf("skip-back must not cancel the wizard: %v", w.err)
+	}
+}
+
+// TestWizard_ShownStepNotSkipped: a Skipper that does NOT opt out is shown
+// normally (the openai-responses / gemini-image case).
+func TestWizard_ShownStepNotSkipped(t *testing.T) {
+	skipper := &navSkipStep{navMockStep: navMockStep{n: "b"}, skip: false}
+	w := NewWizardModel(TermTheme{}, []Step{&navMockStep{n: "a"}, skipper, &navMockStep{n: "c"}}, "v")
+
+	m, _ := w.Update(StepCompleteMsg{}) // a -> b
+	w = m.(WizardModel)
+	if w.current != 1 {
+		t.Fatalf("non-skipped step should be shown (1), got %d", w.current)
+	}
+}
+
 // TestWizard_EscGoesBack pins the global back-navigation: esc returns to
 // the previous step from anywhere.
 func TestWizard_EscGoesBack(t *testing.T) {

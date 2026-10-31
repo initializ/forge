@@ -9,6 +9,9 @@ model:
   provider: {{.ModelProvider}}
   name: {{.ModelName}}
   version: "latest"
+{{- if .ImageGeneration}}
+  image_generation: true
+{{- end}}
 {{- if .OrganizationID}}
   organization_id: {{.OrganizationID}}
 {{- end}}

@@ -93,9 +93,11 @@ Also the existing A2A shape: the response `message.parts` can carry `file` parts
 File parts come from two sources:
 
 - **Tools** that produce files (`file_create`, `browser_screenshot`) — always on.
-- **Model-generated images** — opt-in via `models.default.image_generation: true` on an image-capable model (see [forge.yaml schema](forge-yaml-schema.md)):
+- **Model-generated images** — opt-in via `model.image_generation: true` on an image-capable model (see [forge.yaml schema](forge-yaml-schema.md)):
   - `provider: openai-responses` — sends the `image_generation` built-in tool.
   - `provider: gemini` (native client) — sets `responseModalities: ["TEXT","IMAGE"]`; use an image model such as `gemini-3-pro-image`.
+
+  Both `forge init` (the **Image generation** wizard step) and the web dashboard create form (the **Image generation** checkbox) offer this toggle, but only for providers/models that support it (`runtime.ModelSupportsImageGen`) — elsewhere the flag is a no-op and both surfaces hide it.
 
   Video generation (Veo) is **not** supported — it's a long-running async operation that doesn't fit the synchronous chat loop; a future tool will cover it.
 

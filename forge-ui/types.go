@@ -299,7 +299,12 @@ type AgentCreateOptions struct {
 	Skills            []string           `json:"skills,omitempty"`
 	Fallbacks         []FallbackProvider `json:"fallbacks,omitempty"`
 	WebSearchProvider string             `json:"web_search_provider,omitempty"` // "tavily" or "perplexity"
-	Passphrase        string             `json:"passphrase,omitempty"`
+	// ImageGeneration opts the model into generating image output (#255),
+	// scaffolded as model.image_generation. Only meaningful (and only offered
+	// by the create form) where the provider+model supports it — see
+	// runtime.ModelSupportsImageGen; the scaffold re-checks defensively.
+	ImageGeneration bool              `json:"image_generation,omitempty"`
+	Passphrase      string            `json:"passphrase,omitempty"`
 	EnvVars           map[string]string  `json:"env_vars,omitempty"`
 	Force             bool               `json:"force,omitempty"`
 	Auth              *AuthCreateOptions `json:"auth,omitempty"` // A2A server auth chain (PR6+)

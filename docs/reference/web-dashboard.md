@@ -66,7 +66,7 @@ A multi-step wizard (web equivalent of `forge init`) that walks through the full
 |------|-------------|
 | Name | Set agent name with live slug preview |
 | Provider | Select LLM provider (OpenAI, Anthropic, Gemini, Ollama, Custom) with descriptions |
-| Model & Auth | Pick from provider-specific model lists; OpenAI supports API key or browser OAuth login, plus optional Organization ID for enterprise accounts |
+| Model & Auth | Pick from provider-specific model lists; OpenAI supports API key or browser OAuth login, plus optional Organization ID for enterprise accounts. An **Image generation** checkbox appears only when the selected provider + model can generate images (`openai-responses`, or a Gemini image model) — checking it writes `model.image_generation: true` (see [Multimodal I/O](multimodal-io.md)) |
 | Channels | Select Slack/Telegram with inline token collection |
 | Tools | Select builtin tools; web_search shows Tavily vs Perplexity provider choice with API key input |
 | Skills | Browse registry skills by category with inline required/optional env var collection |

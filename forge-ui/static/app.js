@@ -1688,6 +1688,19 @@ function isSecretKey(key) {
   return /_API_KEY$|_TOKEN$|_SECRET$|_PASSWORD$/.test(key);
 }
 
+// modelSupportsImageGen mirrors runtime.ModelSupportsImageGen (forge-core):
+// image-generation output is meaningful only for openai-responses (any model)
+// or a Gemini image model (name contains "image"). The create form uses it to
+// offer the toggle only where it does something; the scaffold re-checks the
+// same rule server-side defensively. Keep the two in sync (#255).
+function modelSupportsImageGen(provider, model) {
+  const p = (provider || '').trim().toLowerCase();
+  const m = (model || '').trim().toLowerCase();
+  if (p === 'openai-responses') return true;
+  if (p === 'gemini') return m.includes('image');
+  return false;
+}
+
 function CreatePage() {
   const [step, setStep] = useState(0);
   const [meta, setMeta] = useState(null);
@@ -1697,6 +1710,7 @@ function CreatePage() {
     organization_id: '', // OpenAI enterprise org ID
     aws_region: '', // AWS region for provider "bedrock" (#205)
     web_search_provider: '', // "tavily" or "perplexity"
+    image_generation: false, // model.image_generation — only for image-gen-capable models (#255)
     channels: [], builtin_tools: [], skills: [],
     fallbacks: [], // [{provider, api_key}]
     passphrase: '',
@@ -1719,6 +1733,15 @@ function CreatePage() {
   useEffect(() => {
     fetchWizardMeta().then(setMeta).catch(err => setError(err.message));
   }, []);
+
+  // Clear the image-generation flag whenever the chosen provider+model can't
+  // generate images, so switching away from an image model can't leave a stale
+  // true in the payload (the checkbox is also hidden in that case).
+  useEffect(() => {
+    if (!modelSupportsImageGen(form.model_provider, form.model_name) && form.image_generation) {
+      setForm(prev => ({ ...prev, image_generation: false }));
+    }
+  }, [form.model_provider, form.model_name, form.image_generation]);
 
   const updateForm = useCallback((key, val) => {
     setForm(prev => ({ ...prev, [key]: val }));
@@ -2011,6 +2034,21 @@ function CreatePage() {
                   value=${form.model_name} onInput=${(e) => updateForm('model_name', e.target.value)} />
               `}
             </div>
+
+            ${modelSupportsImageGen(form.model_provider, form.model_name) && html`
+              <div style="margin-bottom: 12px;">
+                <div class="wizard-checkbox-list">
+                  <div class="wizard-checkbox-item ${form.image_generation ? 'checked' : ''}"
+                    onClick=${() => updateForm('image_generation', !form.image_generation)}>
+                    <div class="wizard-checkbox-box">${form.image_generation ? '✓' : ''}</div>
+                    <div>
+                      <div class="wizard-checkbox-label">Image generation 🎨</div>
+                      <div class="wizard-checkbox-desc">Let this model return generated images in its responses. Written as model.image_generation: true.</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            `}
 
             ${providerMeta?.needs_aws_region && html`
               <div style="margin-top: 16px;">

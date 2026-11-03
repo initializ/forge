@@ -2362,12 +2362,15 @@ func (r *Runner) checkInboundMedia(ctx context.Context, msg a2a.Message, auditLo
 	// (Phase 3). Everything else — media on a model that can't consume it, or an
 	// unsupported type (other documents/video) — is rejected loudly rather than
 	// silently dropped.
-	model := ""
+	model, provider := "", ""
 	if r.modelConfig != nil {
 		model = r.modelConfig.Client.Model
+		provider = r.modelConfig.Provider
 	}
 	visionCapable := coreruntime.ModelSupportsVision(model)
-	pdfCapable := coreruntime.ModelSupportsPDF(model)
+	// PDF capability is provider-aware: OpenAI accepts PDFs only on the
+	// Responses transport (input_file), never on plain chat-completions (#559).
+	pdfCapable := coreruntime.ModelSupportsPDFForProvider(provider, model)
 
 	var dropped []string
 	reason := "unsupported_media_type"

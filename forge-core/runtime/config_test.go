@@ -325,6 +325,56 @@ func TestResolveModelConfig_EnvBaseURLOverridesYAML(t *testing.T) {
 	}
 }
 
+// GEMINI_BASE_URL overrides model.base_url for a gemini agent, same as the
+// other providers — the precedence the ModelRef.BaseURL docstring promises
+// (#554): previously there was no gemini case, so the env var was egress-only
+// and never reached the client.
+func TestResolveModelConfig_GeminiEnvBaseURLOverridesYAML(t *testing.T) {
+	cfg := &types.ForgeConfig{
+		Model: types.ModelRef{
+			Provider: "gemini",
+			Name:     "gemini-3-pro-image",
+			BaseURL:  "https://yaml.internal/v1beta",
+		},
+	}
+	envVars := map[string]string{
+		"GEMINI_API_KEY":  "gem-test",
+		"GEMINI_BASE_URL": "https://env.internal/v1beta",
+	}
+
+	mc := ResolveModelConfig(cfg, envVars, "")
+	if mc == nil {
+		t.Fatal("expected non-nil ModelConfig")
+	}
+	if mc.Client.BaseURL != "https://env.internal/v1beta" {
+		t.Errorf("BaseURL = %q, want the GEMINI_BASE_URL override to win", mc.Client.BaseURL)
+	}
+}
+
+// GEMINI_BASE_URL is provider-gated: it must NOT override a non-gemini agent's
+// base URL (mirrors how OPENAI/ANTHROPIC/OLLAMA overrides are each scoped).
+func TestResolveModelConfig_GeminiBaseURLDoesNotLeakToOtherProviders(t *testing.T) {
+	cfg := &types.ForgeConfig{
+		Model: types.ModelRef{
+			Provider: "anthropic",
+			Name:     "claude-opus-4-8",
+			BaseURL:  "https://yaml.internal/anthropic",
+		},
+	}
+	envVars := map[string]string{
+		"ANTHROPIC_API_KEY": "sk-test",
+		"GEMINI_BASE_URL":   "https://env.internal/v1beta",
+	}
+
+	mc := ResolveModelConfig(cfg, envVars, "")
+	if mc == nil {
+		t.Fatal("expected non-nil ModelConfig")
+	}
+	if mc.Client.BaseURL != "https://yaml.internal/anthropic" {
+		t.Errorf("BaseURL = %q, want the anthropic forge.yaml URL (GEMINI_BASE_URL must not apply)", mc.Client.BaseURL)
+	}
+}
+
 func TestResolveModelConfig_OrgIDEnvOverridesYAML(t *testing.T) {
 	cfg := &types.ForgeConfig{
 		Model: types.ModelRef{

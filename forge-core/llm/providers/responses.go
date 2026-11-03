@@ -195,9 +195,11 @@ type responsesRequest struct {
 // responsesInput is a union type for Responses API input items.
 // It can be a message (role+content) or a function_call_output.
 type responsesInput struct {
-	// For messages
+	// For messages. Content is a union: a plain string for text-only messages
+	// (byte-identical to the pre-#559 wire form), or a []responsesContentBlock
+	// for multimodal user messages carrying images/PDFs.
 	Role    string `json:"role,omitempty"`
-	Content string `json:"content,omitempty"`
+	Content any    `json:"content,omitempty"`
 
 	// For function_call items from assistant
 	Type      string `json:"type,omitempty"`
@@ -208,6 +210,75 @@ type responsesInput struct {
 
 	// For function_call_output
 	Output string `json:"output,omitempty"`
+}
+
+// responsesContentBlock is one block of a multimodal Responses message content
+// array (#255/#559). The Responses API input types are input_text / input_image
+// / input_file; image_url and file_data carry a data: URL.
+type responsesContentBlock struct {
+	Type     string `json:"type"`                // input_text | input_image | input_file
+	Text     string `json:"text,omitempty"`      // input_text
+	ImageURL string `json:"image_url,omitempty"` // input_image (data: URL)
+	FileData string `json:"file_data,omitempty"` // input_file (data: URL)
+	Filename string `json:"filename,omitempty"`  // input_file
+}
+
+// responsesUserContent returns the Responses `content` for a user message: a
+// plain string for the text-only case (unchanged wire form), or a block array
+// when the message carries media. Image parts become input_image, PDF/document
+// parts become input_file (OpenAI's native document path, #559); media parts
+// with no inline bytes are skipped (rehydration is the caller's job).
+func responsesUserContent(msg llm.ChatMessage) any {
+	if !msg.HasMedia() {
+		return msg.Content
+	}
+	blocks := make([]responsesContentBlock, 0, len(msg.Parts))
+	for _, p := range msg.Parts {
+		switch p.Type {
+		case llm.ContentPartImage:
+			if p.Media == nil || len(p.Media.Bytes) == 0 {
+				continue
+			}
+			blocks = append(blocks, responsesContentBlock{
+				Type:     "input_image",
+				ImageURL: dataURL(p.Media.MimeType, p.Media.Bytes),
+			})
+		case llm.ContentPartDocument:
+			if p.Media == nil || len(p.Media.Bytes) == 0 {
+				continue
+			}
+			blocks = append(blocks, responsesContentBlock{
+				Type:     "input_file",
+				Filename: documentFilename(p.Media),
+				FileData: dataURL(p.Media.MimeType, p.Media.Bytes),
+			})
+		default: // text
+			blocks = append(blocks, responsesContentBlock{Type: "input_text", Text: p.Text})
+		}
+	}
+	return blocks
+}
+
+// dataURL builds a base64 data: URL for inline media.
+func dataURL(mimeType string, data []byte) string {
+	mt := mimeType
+	if mt == "" {
+		mt = "application/octet-stream"
+	}
+	return "data:" + mt + ";base64," + base64.StdEncoding.EncodeToString(data)
+}
+
+// documentFilename returns a filename for an input_file block. OpenAI requires
+// a filename on input_file; derive one from the URI basename, else a default
+// with the right extension so the API accepts it.
+func documentFilename(m *llm.MediaRef) string {
+	if m.URI != "" {
+		if i := strings.LastIndexAny(m.URI, "/\\"); i >= 0 && i+1 < len(m.URI) {
+			return m.URI[i+1:]
+		}
+		return m.URI
+	}
+	return "document.pdf"
 }
 
 // responsesTool is the Responses API tool format (flat, not nested under "function").
@@ -239,7 +310,7 @@ func (c *ResponsesClient) buildRequest(req *llm.ChatRequest, stream bool) respon
 		case llm.RoleUser:
 			inputs = append(inputs, responsesInput{
 				Role:    "user",
-				Content: msg.Content,
+				Content: responsesUserContent(msg),
 			})
 
 		case llm.RoleAssistant:

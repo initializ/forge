@@ -46,10 +46,24 @@ var visionCapablePrefixes = []string{
 //     fall through to a loud reject.
 //
 // Unknown-model default is fail-closed (loud reject, not a provider error).
-// OpenAI Responses input_file document support remains a deferred follow-up.
+// OpenAI PDF support is handled separately (openaiResponsesPDFCapablePrefixes),
+// because it only works on the Responses transport (input_file blocks), not on
+// plain chat-completions — so it must be gated on the provider, not just the
+// model name. See ModelSupportsPDFForProvider.
 var pdfCapablePrefixes = []string{
 	"claude-3-5-sonnet", "claude-3-7-sonnet", "claude-opus", "claude-sonnet", "claude-haiku", "claude-fable",
 	"gemini-1.5", "gemini-2", "gemini-3", "gemini-4",
+}
+
+// openaiResponsesPDFCapablePrefixes lists OpenAI model-name prefixes that accept
+// a PDF via the Responses API's native input_file document block (#559). Scoped
+// to the "openai-responses" provider ONLY: plain chat-completions ("openai")
+// has no document block, so the same models are NOT PDF-capable there. The set
+// mirrors the OpenAI vision prefixes (OpenAI document input rides the same
+// multimodal models); older gpt-4-turbo/gpt-4-vision are omitted (fail-closed
+// for the ones whose input_file support isn't confirmed).
+var openaiResponsesPDFCapablePrefixes = []string{
+	"gpt-4o", "gpt-4.1", "gpt-5", "o1", "o3", "o4",
 }
 
 // ModelSupportsVision reports whether the named model accepts image input.
@@ -59,9 +73,34 @@ func ModelSupportsVision(model string) bool {
 }
 
 // ModelSupportsPDF reports whether the named model accepts a PDF document
-// natively. Case-insensitive prefix match; unknown/empty models return false.
+// natively, by model name alone (the Anthropic/Gemini families whose capability
+// doesn't depend on the transport). Case-insensitive prefix match; unknown/empty
+// models return false. For provider-dependent cases (OpenAI, where PDF rides the
+// Responses transport only) use ModelSupportsPDFForProvider.
 func ModelSupportsPDF(model string) bool {
 	return matchesPrefix(model, pdfCapablePrefixes)
+}
+
+// ModelSupportsPDFForProvider reports whether a provider+model can accept a PDF
+// document (#559). It is provider-aware because OpenAI PDF input works only on
+// the Responses transport (input_file blocks):
+//   - "openai-responses": PDF-capable for the modern multimodal models
+//     (openaiResponsesPDFCapablePrefixes).
+//   - "openai" (plain chat-completions): never PDF-capable — no document block,
+//     even for models that carry PDF on the Responses path.
+//   - everything else (anthropic, gemini, bedrock, …): falls back to the
+//     name-based ModelSupportsPDF, so existing behavior is unchanged.
+//
+// Fail-closed for unknown provider+model, matching ModelSupportsPDF.
+func ModelSupportsPDFForProvider(provider, model string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "openai-responses":
+		return matchesPrefix(model, openaiResponsesPDFCapablePrefixes)
+	case "openai":
+		return false
+	default:
+		return ModelSupportsPDF(model)
+	}
 }
 
 // ModelSupportsImageGen reports whether a provider+model can GENERATE images

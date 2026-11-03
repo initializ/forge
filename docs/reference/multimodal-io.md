@@ -60,7 +60,9 @@ Media the resolved model can't consume is **rejected loudly** (a 4xx / JSON-RPC 
 | Media | MIME | Capable models |
 |-------|------|----------------|
 | Image | `image/png`, `image/jpeg`, `image/gif`, `image/webp` | vision models — OpenAI `gpt-4o`/`gpt-4.1`/`gpt-5`/`o1`/`o3`/`o4`, Anthropic Claude 3+, Gemini 1.5/2/3.x/4 |
-| PDF | `application/pdf` | Anthropic Sonnet 3.5+, Opus 4+, Haiku 4.5+, Fable 5; Gemini 1.5/2.x/3.x/4 |
+| PDF | `application/pdf` | Anthropic Sonnet 3.5+, Opus 4+, Haiku 4.5+, Fable 5; Gemini 1.5/2.x/3.x/4; OpenAI `gpt-4o`/`gpt-4.1`/`gpt-5`/`o1`/`o3`/`o4` **on the `openai-responses` provider only** (via the Responses `input_file` block) |
+
+> **OpenAI PDF is Responses-only.** PDF input for OpenAI works solely through `provider: openai-responses` (the Responses API has a native `input_file` document block). The plain `provider: openai` chat-completions path has no document block, so a PDF there is still rejected (`model_not_document_capable`) — switch the agent to `openai-responses`. Images work on both OpenAI providers.
 
 ### Limits (enforced at ingest)
 

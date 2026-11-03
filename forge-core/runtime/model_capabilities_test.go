@@ -79,13 +79,62 @@ func TestModelSupportsPDF(t *testing.T) {
 	}
 }
 
+// TestModelSupportsPDFForProvider covers the provider-aware PDF gate (#559):
+// OpenAI accepts PDFs only on the Responses transport (input_file), never on
+// plain chat-completions; Anthropic/Gemini are unchanged (name-based).
+func TestModelSupportsPDFForProvider(t *testing.T) {
+	yes := []struct{ provider, model string }{
+		// OpenAI Responses: modern multimodal models carry PDF via input_file.
+		{"openai-responses", "gpt-4o"},
+		{"openai-responses", "gpt-4.1"},
+		{"openai-responses", "gpt-5"},
+		{"openai-responses", "o3"},
+		{"OpenAI-Responses", "gpt-5"}, // case-insensitive provider
+		// Non-OpenAI families keep working, independent of provider spelling.
+		{"anthropic", "claude-sonnet-5"},
+		{"gemini", "gemini-3-pro-image"},
+	}
+	for _, c := range yes {
+		if !ModelSupportsPDFForProvider(c.provider, c.model) {
+			t.Errorf("ModelSupportsPDFForProvider(%q, %q) = false, want true", c.provider, c.model)
+		}
+	}
+	no := []struct{ provider, model string }{
+		// Plain chat-completions has no document block — never PDF-capable,
+		// even for a model that carries PDF on the Responses path.
+		{"openai", "gpt-5"},
+		{"openai", "gpt-4o"},
+		// Responses on an unknown/old model (fail-closed).
+		{"openai-responses", "gpt-3.5-turbo"},
+		{"openai-responses", "gpt-4-vision"},
+		{"openai-responses", ""},
+		// Non-OpenAI with a non-PDF model.
+		{"gemini", "gemini-nano"},
+		{"anthropic", "claude-2.1"},
+	}
+	for _, c := range no {
+		if ModelSupportsPDFForProvider(c.provider, c.model) {
+			t.Errorf("ModelSupportsPDFForProvider(%q, %q) = true, want false", c.provider, c.model)
+		}
+	}
+	// The name-only ModelSupportsPDF must NOT have gained OpenAI models — the
+	// OpenAI path is Responses-gated via the provider-aware function only.
+	for _, m := range []string{"gpt-4o", "gpt-5", "o3"} {
+		if ModelSupportsPDF(m) {
+			t.Errorf("ModelSupportsPDF(%q) = true; OpenAI PDF must stay provider-gated, not name-based", m)
+		}
+	}
+}
+
 // TestPDFCapableImpliesVisionCapable pins the invariant that every PDF-capable
 // model is also vision-capable — Claude document support is built on vision
 // infra, so a model declared document-capable must accept images too (#534
 // review). This catches the class of bug where a family is added to
 // pdfCapablePrefixes but forgotten in visionCapablePrefixes.
 func TestPDFCapableImpliesVisionCapable(t *testing.T) {
-	for _, prefix := range pdfCapablePrefixes {
+	// Both PDF allowlists must be subsets of the vision allowlist — document
+	// input rides the same multimodal models as image input.
+	for _, prefix := range append(append([]string{}, pdfCapablePrefixes...), openaiResponsesPDFCapablePrefixes...) {
 		sample := prefix + "-x" // a concrete model name in that family
 		if !ModelSupportsVision(sample) {
 			t.Errorf("model %q is PDF-capable but not vision-capable — mirror %q into visionCapablePrefixes", sample, prefix)

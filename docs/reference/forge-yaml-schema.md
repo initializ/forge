@@ -18,6 +18,7 @@ entrypoint: "agent.py"              # Required for crewai/langchain, omit for fo
 model:
   provider: "openai"                # openai, openai-responses, anthropic, bedrock, gemini, ollama
   name: "gpt-4o"                    # Model name
+  max_tokens: 0                     # Per-call output token limit; 0 keeps the provider default
   base_url: ""                      # Override the provider's default API host (issue #139)
   organization_id: "org-xxx"        # OpenAI Organization ID (enterprise, optional)
   auth_scheme: ""                   # "" (default) / "x_api_key" / "bearer" (Authorization: Bearer; for anthropic replaces x-api-key — #455) / "aws_sigv4" (#202) / "apikey_header" (#302) / "apikey_header_only"
@@ -311,6 +312,14 @@ observability:                      # OpenTelemetry tracing (off by default)
     redact: true                    # PII redaction posture flag
     capture_content: false          # reserved — Phase 3 ships metadata-only
 ```
+
+## `model.max_tokens` — output token limit
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| `max_tokens` | `0` | Non-negative output token limit per agent-loop LLM call; applies to fallback models too |
+
+`model.max_tokens` sets the output token limit for each agent-loop LLM call, including empty-response retries and fallback models. It must be non-negative; `0` (default) keeps the provider default (4096 for anthropic and bedrock). Internal summarization calls use their own limits.
 
 ## `server.rate_limit` — per-IP A2A rate limits (FWS-10)
 

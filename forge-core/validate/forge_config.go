@@ -96,6 +96,10 @@ func ValidateForgeConfig(cfg *types.ForgeConfig) *ValidationResult {
 		}
 	}
 
+	if cfg.Model.MaxTokens < 0 {
+		r.Errors = append(r.Errors, "model.max_tokens must be non-negative")
+	}
+
 	if cfg.Model.Provider != "" && cfg.Model.Name == "" {
 		r.Warnings = append(r.Warnings, "model.provider is set but model.name is empty")
 	}

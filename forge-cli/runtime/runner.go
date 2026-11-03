@@ -1376,6 +1376,7 @@ func (r *Runner) Run(ctx context.Context) error {
 					}
 
 					execCfg := coreruntime.LLMExecutorConfig{
+						MaxTokens:     r.cfg.Config.Model.MaxTokens,
 						Client:        llmClient,
 						Tools:         reg,
 						Hooks:         hooks,

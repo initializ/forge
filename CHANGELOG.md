@@ -4,6 +4,12 @@
 
 ### Added
 
+- **Configurable output token limit** (`model.max_tokens`). Sets the
+  output token limit of each agent-loop LLM call, fallback models
+  included. `0` (the default) keeps the provider default, which is 4096
+  on anthropic and bedrock, so a long final answer was cut at 4096
+  tokens with no way to raise it.
+
 - **Native AWS Bedrock Converse API** (`provider: bedrock`, #205). A new
   LLM provider that speaks Bedrock's model-agnostic Converse wire format
   directly (`POST <base_url>/model/<modelId>/converse` and

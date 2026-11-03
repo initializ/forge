@@ -315,3 +315,24 @@ func TestValidateForgeConfig_Bedrock(t *testing.T) {
 		}
 	})
 }
+
+func TestValidateForgeConfig_MaxTokens(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		maxTokens int
+		wantErr   bool
+	}{
+		{"negative", -1, true},
+		{"default", 0, false},
+		{"configured", 16000, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Model.MaxTokens = tc.maxTokens
+			r := ValidateForgeConfig(cfg)
+			if !r.IsValid() != tc.wantErr || hasSubstr(r.Errors, "model.max_tokens") != tc.wantErr {
+				t.Fatalf("want max_tokens error=%v, got errors=%v", tc.wantErr, r.Errors)
+			}
+		})
+	}
+}

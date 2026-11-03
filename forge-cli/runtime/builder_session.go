@@ -116,6 +116,7 @@ func NewBuilderSession(ctx context.Context, opts BuilderSessionOptions) (*Builde
 	})
 
 	executor := coreruntime.NewLLMExecutor(coreruntime.LLMExecutorConfig{
+		MaxTokens:    r.cfg.Config.Model.MaxTokens,
 		Client:       llmClient,
 		Tools:        reg,
 		Hooks:        hooks,

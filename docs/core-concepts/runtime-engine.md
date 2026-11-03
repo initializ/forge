@@ -8,6 +8,8 @@ The runtime engine powers `forge run` — executing agent tasks via LLM provider
 
 ## Agent Loop
 
+`model.max_tokens` sets the output token limit for each agent-loop LLM call, including retries and fallback models; `0` keeps the provider default (4096 for anthropic and bedrock).
+
 The core agent loop follows a simple pattern:
 
 1. **Initialize memory** with the system prompt and task history

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -169,6 +170,8 @@ type openaiRequest struct {
 	MaxTokens     int                  `json:"max_tokens,omitempty"`
 	Stream        bool                 `json:"stream,omitempty"`
 	StreamOptions *streamOptions       `json:"stream_options,omitempty"`
+	// MaxCompletionTokens replaces MaxTokens on api.openai.com.
+	MaxCompletionTokens int `json:"max_completion_tokens,omitempty"`
 	// PromptCacheKey pins OpenAI's prompt-cache routing so requests from
 	// this agent land on the same cache shard. Prefix caching itself is
 	// automatic (≥1024 tokens); the key improves hit locality. Only set
@@ -237,8 +240,16 @@ func (c *OpenAIClient) toOpenAIRequest(req *llm.ChatRequest, stream bool) openai
 		Messages:    msgs,
 		Tools:       req.Tools,
 		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
 		Stream:      stream,
+	}
+
+	// OpenAI rejects the legacy field on reasoning models; compatible servers
+	// still expect max_tokens, so select by endpoint rather than model name.
+	endpoint, err := url.Parse(c.baseURL)
+	if err == nil && strings.EqualFold(endpoint.Hostname(), "api.openai.com") {
+		r.MaxCompletionTokens = req.MaxTokens
+	} else {
+		r.MaxTokens = req.MaxTokens
 	}
 
 	if stream {

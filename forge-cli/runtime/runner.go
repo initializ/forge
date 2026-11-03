@@ -3490,9 +3490,10 @@ func (r *Runner) buildLLMClient(mc *coreruntime.ModelConfig) (llm.Client, error)
 			continue
 		}
 		candidates = append(candidates, llm.FallbackCandidate{
-			Provider: fb.Provider,
-			Model:    fb.Client.Model,
-			Client:   fbClient,
+			Provider:  fb.Provider,
+			Model:     fb.Client.Model,
+			Client:    fbClient,
+			MaxTokens: fb.MaxTokens,
 		})
 	}
 

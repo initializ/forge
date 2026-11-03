@@ -96,6 +96,12 @@ func ValidateForgeConfig(cfg *types.ForgeConfig) *ValidationResult {
 		}
 	}
 
+	for i, fb := range cfg.Model.Fallbacks {
+		if fb.MaxTokens < 0 {
+			r.Errors = append(r.Errors, fmt.Sprintf("model.fallbacks[%d].max_tokens must be non-negative", i))
+		}
+	}
+
 	if cfg.Model.MaxTokens < 0 {
 		r.Errors = append(r.Errors, "model.max_tokens must be non-negative")
 	}

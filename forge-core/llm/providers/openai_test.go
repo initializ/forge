@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -59,5 +60,37 @@ func TestOpenAIClient_NoOrgIDHeader(t *testing.T) {
 	}
 	if gotHeader != "" {
 		t.Errorf("expected no OpenAI-Organization header, got %q", gotHeader)
+	}
+}
+
+func TestOpenAIClient_MaxTokens(t *testing.T) {
+	for _, baseURL := range []string{"", "https://api.openai.com/v1", "https://api.openai.com:443/v1", "https://example.com/v1", "https://api.openai.com.example.com/v1"} {
+		for _, stream := range []bool{false, true} {
+			for _, limit := range []int{0, 16000} {
+				c := NewOpenAIClient(llm.ClientConfig{BaseURL: baseURL})
+				body, err := json.Marshal(c.toOpenAIRequest(&llm.ChatRequest{MaxTokens: limit}, stream))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var got map[string]any
+				if err := json.Unmarshal(body, &got); err != nil {
+					t.Fatal(err)
+				}
+				key, absent := "max_tokens", "max_completion_tokens"
+				if baseURL == "" || baseURL == "https://api.openai.com/v1" || baseURL == "https://api.openai.com:443/v1" {
+					key, absent = absent, key
+				}
+				if _, ok := got[absent]; ok {
+					t.Errorf("base=%q stream=%v: unexpected %s", baseURL, stream, absent)
+				}
+				if limit == 0 {
+					if _, ok := got[key]; ok {
+						t.Errorf("zero limit emitted %s", key)
+					}
+				} else if got[key] != float64(limit) {
+					t.Errorf("base=%q stream=%v: %s = %v", baseURL, stream, key, got[key])
+				}
+			}
+		}
 	}
 }

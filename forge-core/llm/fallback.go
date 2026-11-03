@@ -10,6 +10,8 @@ type FallbackCandidate struct {
 	Provider string
 	Model    string
 	Client   Client
+	// MaxTokens, when > 0, replaces the request's MaxTokens for this candidate.
+	MaxTokens int
 }
 
 // FallbackChain implements the Client interface by trying multiple LLM
@@ -37,7 +39,7 @@ func NewFallbackChain(candidates []FallbackCandidate) *FallbackChain {
 func (fc *FallbackChain) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
 	// Single-candidate optimization: delegate directly, no classification.
 	if len(fc.candidates) == 1 {
-		return fc.candidates[0].Client.Chat(ctx, req)
+		return fc.candidates[0].Client.Chat(ctx, fc.candidates[0].request(req))
 	}
 
 	var errors []*FailoverError
@@ -53,7 +55,7 @@ func (fc *FallbackChain) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 			continue
 		}
 
-		resp, err := c.Client.Chat(ctx, req)
+		resp, err := c.Client.Chat(ctx, c.request(req))
 		if err == nil {
 			fc.cooldown.MarkSuccess(c.Provider)
 			return resp, nil
@@ -81,7 +83,7 @@ func (fc *FallbackChain) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 func (fc *FallbackChain) ChatStream(ctx context.Context, req *ChatRequest) (<-chan StreamDelta, error) {
 	// Single-candidate optimization: delegate directly, no classification.
 	if len(fc.candidates) == 1 {
-		return fc.candidates[0].Client.ChatStream(ctx, req)
+		return fc.candidates[0].Client.ChatStream(ctx, fc.candidates[0].request(req))
 	}
 
 	var errors []*FailoverError
@@ -97,7 +99,7 @@ func (fc *FallbackChain) ChatStream(ctx context.Context, req *ChatRequest) (<-ch
 			continue
 		}
 
-		ch, err := c.Client.ChatStream(ctx, req)
+		ch, err := c.Client.ChatStream(ctx, c.request(req))
 		if err == nil {
 			fc.cooldown.MarkSuccess(c.Provider)
 			return ch, nil
@@ -127,4 +129,15 @@ func (fc *FallbackChain) ModelID() string {
 		return fc.candidates[0].Client.ModelID()
 	}
 	return ""
+}
+
+// request preserves the caller's limit so a smaller fallback ceiling cannot
+// leak into subsequent calls using the same request.
+func (c FallbackCandidate) request(req *ChatRequest) *ChatRequest {
+	if c.MaxTokens > 0 {
+		clone := *req
+		clone.MaxTokens = c.MaxTokens
+		return &clone
+	}
+	return req
 }

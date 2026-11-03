@@ -1159,6 +1159,10 @@ type ModelFallback struct {
 	Provider string `yaml:"provider"`
 	Name     string `yaml:"name,omitempty"`
 
+	// MaxTokens overrides model.max_tokens for this fallback; 0 inherits
+	// model.max_tokens.
+	MaxTokens int `yaml:"max_tokens,omitempty"`
+
 	// BaseURL — same semantics as ModelRef.BaseURL. Fallback
 	// providers commonly run on a different base URL than the
 	// primary; both need to make it into the egress allowlist.

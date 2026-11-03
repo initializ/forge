@@ -336,3 +336,14 @@ func TestValidateForgeConfig_MaxTokens(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateForgeConfig_FallbackMaxTokens(t *testing.T) {
+	for _, limit := range []int{-1, 0, 2000} {
+		cfg := validConfig()
+		cfg.Model.Fallbacks = []types.ModelFallback{{Provider: "ollama", MaxTokens: limit}}
+		r := ValidateForgeConfig(cfg)
+		if hasSubstr(r.Errors, "model.fallbacks[0].max_tokens") != (limit < 0) {
+			t.Fatalf("limit=%d: errors=%v", limit, r.Errors)
+		}
+	}
+}

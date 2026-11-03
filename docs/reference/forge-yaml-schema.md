@@ -319,7 +319,7 @@ observability:                      # OpenTelemetry tracing (off by default)
 |-------|---------|-------|
 | `max_tokens` | `0` | Non-negative output token limit per agent-loop LLM call; applies to fallback models too |
 
-`model.max_tokens` sets the output token limit for each agent-loop LLM call, including empty-response retries and fallback models. It must be non-negative; `0` (default) keeps the provider default (4096 for anthropic and bedrock). Internal summarization calls use their own limits.
+Zero keeps the provider default (4096 for anthropic and bedrock). Set `model.fallbacks[].max_tokens` to override the limit for a fallback; zero inherits `model.max_tokens`. OpenAI's `api.openai.com` receives `max_completion_tokens`; compatible hosts receive `max_tokens`. `forge validate` does not know each model's output ceiling: exceeding it makes the provider reject every call. Empty-response retries use the same limit; internal summarization calls use their own limits.
 
 ## `server.rate_limit` — per-IP A2A rate limits (FWS-10)
 

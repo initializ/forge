@@ -93,6 +93,7 @@ type LLMExecutor struct {
 	tools              ToolExecutor
 	hooks              *HookRegistry
 	systemPrompt       string
+	maxTokens          int
 	maxIter            int
 	compactor          *Compactor
 	store              SessionStore
@@ -127,6 +128,7 @@ type LLMExecutorConfig struct {
 	Tools          ToolExecutor
 	Hooks          *HookRegistry
 	SystemPrompt   string
+	MaxTokens      int // output token limit of each LLM call (0 = provider default)
 	MaxIterations  int
 	Compactor      *Compactor
 	Store          SessionStore
@@ -198,6 +200,7 @@ func NewLLMExecutor(cfg LLMExecutorConfig) *LLMExecutor {
 		hooks:               hooks,
 		systemPrompt:        cfg.SystemPrompt,
 		maxIter:             maxIter,
+		maxTokens:           cfg.MaxTokens,
 		compactor:           cfg.Compactor,
 		store:               cfg.Store,
 		logger:              logger,
@@ -475,8 +478,9 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 
 		// Call LLM
 		req := &llm.ChatRequest{
-			Messages: messages,
-			Tools:    toolDefs,
+			MaxTokens: e.maxTokens,
+			Messages:  messages,
+			Tools:     toolDefs,
 		}
 
 		// Capture wall-clock duration of the provider call so the
@@ -760,7 +764,8 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 					Content: "Your response was empty. Please provide a brief summary of what you found, what you were unable to do, and suggest next steps.",
 				})
 				retryReq := &llm.ChatRequest{
-					Messages: mem.Messages(),
+					MaxTokens: e.maxTokens,
+					Messages:  mem.Messages(),
 				}
 				retryStart := time.Now()
 				if retryResp, retryErr := e.client.Chat(ctx, retryReq); retryErr == nil && strings.TrimSpace(retryResp.Message.Content) != "" {

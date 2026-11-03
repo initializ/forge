@@ -18,6 +18,7 @@ entrypoint: "agent.py"              # Required for crewai/langchain, omit for fo
 model:
   provider: "openai"                # openai, openai-responses, anthropic, bedrock, gemini, ollama
   name: "gpt-4o"                    # Model name
+  max_tokens: 0                     # Per-call output token limit; 0 keeps the provider default
   base_url: ""                      # Override the provider's default API host (issue #139)
   organization_id: "org-xxx"        # OpenAI Organization ID (enterprise, optional)
   auth_scheme: ""                   # "" (default) / "x_api_key" / "bearer" (Authorization: Bearer; for anthropic replaces x-api-key — #455) / "aws_sigv4" (#202) / "apikey_header" (#302) / "apikey_header_only"
@@ -311,6 +312,14 @@ observability:                      # OpenTelemetry tracing (off by default)
     redact: true                    # PII redaction posture flag
     capture_content: false          # reserved — Phase 3 ships metadata-only
 ```
+
+## `model.max_tokens` — output token limit
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| `max_tokens` | `0` | Non-negative output token limit per agent-loop LLM call; applies to fallback models too |
+
+Zero keeps the provider default (4096 for anthropic and bedrock). Set `model.fallbacks[].max_tokens` to override the limit for a fallback; zero inherits `model.max_tokens`. OpenAI's `api.openai.com` receives `max_completion_tokens`; compatible hosts receive `max_tokens`. `forge validate` does not know each model's output ceiling: exceeding it makes the provider reject every call. Empty-response retries use the same limit; internal summarization calls use their own limits.
 
 ## `server.rate_limit` — per-IP A2A rate limits (FWS-10)
 

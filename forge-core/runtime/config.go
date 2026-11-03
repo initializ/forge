@@ -17,8 +17,9 @@ type ModelConfig struct {
 
 // FallbackModelConfig holds a resolved fallback provider's configuration.
 type FallbackModelConfig struct {
-	Provider string
-	Client   llm.ClientConfig
+	Provider  string
+	Client    llm.ClientConfig
+	MaxTokens int // overrides model.max_tokens for this fallback; 0 inherits
 }
 
 // ResolveModelConfig resolves the LLM provider and configuration from multiple
@@ -185,7 +186,7 @@ func resolveFallbacks(cfg *types.ForgeConfig, envVars map[string]string, primary
 	seen := map[string]bool{primaryProvider: true}
 	var fallbacks []FallbackModelConfig
 
-	addFallback := func(provider, model, orgID string) {
+	addFallback := func(provider, model, orgID string, maxTokens int) {
 		if seen[provider] {
 			return
 		}
@@ -198,7 +199,8 @@ func resolveFallbacks(cfg *types.ForgeConfig, envVars map[string]string, primary
 			model = defaultModelForProvider(provider)
 		}
 		fc := FallbackModelConfig{
-			Provider: provider,
+			Provider:  provider,
+			MaxTokens: maxTokens,
 			Client: llm.ClientConfig{
 				APIKey: apiKey,
 				Model:  model,
@@ -225,7 +227,7 @@ func resolveFallbacks(cfg *types.ForgeConfig, envVars map[string]string, primary
 
 	// Source 1: forge.yaml model.fallbacks
 	for _, fb := range cfg.Model.Fallbacks {
-		addFallback(fb.Provider, fb.Name, fb.OrganizationID)
+		addFallback(fb.Provider, fb.Name, fb.OrganizationID, fb.MaxTokens)
 	}
 
 	// Source 2: FORGE_MODEL_FALLBACKS env var
@@ -236,7 +238,7 @@ func resolveFallbacks(cfg *types.ForgeConfig, envVars map[string]string, primary
 				continue
 			}
 			provider, model, _ := strings.Cut(entry, ":")
-			addFallback(provider, model, "")
+			addFallback(provider, model, "", 0)
 		}
 	}
 
@@ -248,7 +250,7 @@ func resolveFallbacks(cfg *types.ForgeConfig, envVars map[string]string, primary
 	}
 	for provider, keyName := range providerKeys {
 		if envVars[keyName] != "" {
-			addFallback(provider, "", "")
+			addFallback(provider, "", "", 0)
 		}
 	}
 

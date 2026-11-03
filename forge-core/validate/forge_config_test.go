@@ -315,3 +315,35 @@ func TestValidateForgeConfig_Bedrock(t *testing.T) {
 		}
 	})
 }
+
+func TestValidateForgeConfig_MaxTokens(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		maxTokens int
+		wantErr   bool
+	}{
+		{"negative", -1, true},
+		{"default", 0, false},
+		{"configured", 16000, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Model.MaxTokens = tc.maxTokens
+			r := ValidateForgeConfig(cfg)
+			if !r.IsValid() != tc.wantErr || hasSubstr(r.Errors, "model.max_tokens") != tc.wantErr {
+				t.Fatalf("want max_tokens error=%v, got errors=%v", tc.wantErr, r.Errors)
+			}
+		})
+	}
+}
+
+func TestValidateForgeConfig_FallbackMaxTokens(t *testing.T) {
+	for _, limit := range []int{-1, 0, 2000} {
+		cfg := validConfig()
+		cfg.Model.Fallbacks = []types.ModelFallback{{Provider: "ollama", MaxTokens: limit}}
+		r := ValidateForgeConfig(cfg)
+		if hasSubstr(r.Errors, "model.fallbacks[0].max_tokens") != (limit < 0) {
+			t.Fatalf("limit=%d: errors=%v", limit, r.Errors)
+		}
+	}
+}

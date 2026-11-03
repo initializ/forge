@@ -522,3 +522,11 @@ func TestDefaultModelForProviderTracksCatalog(t *testing.T) {
 			llm.ProviderOpenAIResponses, got, openai.DefaultModel)
 	}
 }
+
+func TestResolveFallbacks_MaxTokens(t *testing.T) {
+	cfg := &types.ForgeConfig{Model: types.ModelRef{Fallbacks: []types.ModelFallback{{Provider: "ollama", MaxTokens: 2000}}}}
+	got := resolveFallbacks(cfg, nil, "openai")
+	if len(got) != 1 || got[0].MaxTokens != 2000 {
+		t.Fatalf("fallbacks = %+v, want ollama with max_tokens=2000", got)
+	}
+}

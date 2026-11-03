@@ -121,6 +121,7 @@ type RuntimeConfig struct {
 	Tools         runtime.ToolExecutor
 	Hooks         *runtime.HookRegistry
 	SystemPrompt  string
+	MaxTokens     int // output token limit of each LLM call (0 = provider default)
 	MaxIterations int
 	Guardrails    runtime.GuardrailChecker // optional
 	Logger        runtime.Logger           // optional
@@ -134,5 +135,6 @@ func NewRuntime(cfg RuntimeConfig) *runtime.LLMExecutor {
 		Hooks:         cfg.Hooks,
 		SystemPrompt:  cfg.SystemPrompt,
 		MaxIterations: cfg.MaxIterations,
+		MaxTokens:     cfg.MaxTokens,
 	})
 }

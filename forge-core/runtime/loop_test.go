@@ -1361,3 +1361,45 @@ func TestNoStopNudgeForQAConversation(t *testing.T) {
 		t.Errorf("expected 2 LLM calls for Q&A, got %d", callIdx)
 	}
 }
+
+func TestLLMExecutor_MaxTokens(t *testing.T) {
+	for _, maxTokens := range []int{0, 16000} {
+		t.Run(fmt.Sprintf("max_tokens=%d", maxTokens), func(t *testing.T) {
+			var requests []*llm.ChatRequest
+			client := &mockLLMClient{chatFunc: func(_ context.Context, req *llm.ChatRequest) (*llm.ChatResponse, error) {
+				requests = append(requests, req)
+				switch len(requests) {
+				case 1:
+					return &llm.ChatResponse{Message: llm.ChatMessage{
+						Role:      llm.RoleAssistant,
+						ToolCalls: []llm.ToolCall{{ID: "call_1", Type: "function", Function: llm.FunctionCall{Name: "lookup", Arguments: `{}`}}},
+					}, FinishReason: "tool_calls"}, nil
+				case 2:
+					// An empty response after a tool call triggers the summary retry.
+					return &llm.ChatResponse{Message: llm.ChatMessage{Role: llm.RoleAssistant}, FinishReason: "stop"}, nil
+				default:
+					return &llm.ChatResponse{Message: llm.ChatMessage{Role: llm.RoleAssistant, Content: "Done"}, FinishReason: "stop"}, nil
+				}
+			}}
+			tools := &mockToolExecutor{
+				executeFunc: func(context.Context, string, json.RawMessage) (string, error) { return "found", nil },
+				toolDefs:    []llm.ToolDefinition{{Type: "function", Function: llm.FunctionSchema{Name: "lookup"}}},
+			}
+			executor := NewLLMExecutor(LLMExecutorConfig{Client: client, Tools: tools, MaxTokens: maxTokens})
+			_, err := executor.Execute(context.Background(), &a2a.Task{ID: "max-tokens"}, &a2a.Message{
+				Role: a2a.MessageRoleUser, Parts: []a2a.Part{a2a.NewTextPart("look it up")},
+			})
+			if err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if len(requests) != 3 {
+				t.Fatalf("got %d requests, want 3 (two main calls and empty-response retry)", len(requests))
+			}
+			for i, req := range requests {
+				if req.MaxTokens != maxTokens {
+					t.Errorf("request %d MaxTokens = %d, want %d", i, req.MaxTokens, maxTokens)
+				}
+			}
+		})
+	}
+}

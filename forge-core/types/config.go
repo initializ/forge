@@ -1073,6 +1073,11 @@ type ModelRef struct {
 	Provider string `yaml:"provider"`
 	Name     string `yaml:"name"`
 
+	// MaxTokens is the per-call output token limit sent to the provider for
+	// agent-loop calls, including fallback models. Zero keeps the provider
+	// default (4096 for anthropic and bedrock).
+	MaxTokens int `yaml:"max_tokens,omitempty"`
+
 	// BaseURL overrides the provider's default API host. Operators
 	// configure this when running against an OpenAI-compatible
 	// (Together.ai, OpenRouter, Groq, Fireworks, Anyscale, vLLM,
@@ -1153,6 +1158,10 @@ type ModelRef struct {
 type ModelFallback struct {
 	Provider string `yaml:"provider"`
 	Name     string `yaml:"name,omitempty"`
+
+	// MaxTokens overrides model.max_tokens for this fallback; 0 inherits
+	// model.max_tokens.
+	MaxTokens int `yaml:"max_tokens,omitempty"`
 
 	// BaseURL — same semantics as ModelRef.BaseURL. Fallback
 	// providers commonly run on a different base URL than the

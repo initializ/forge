@@ -1376,6 +1376,7 @@ func (r *Runner) Run(ctx context.Context) error {
 					}
 
 					execCfg := coreruntime.LLMExecutorConfig{
+						MaxTokens:     r.cfg.Config.Model.MaxTokens,
 						Client:        llmClient,
 						Tools:         reg,
 						Hooks:         hooks,
@@ -3489,9 +3490,10 @@ func (r *Runner) buildLLMClient(mc *coreruntime.ModelConfig) (llm.Client, error)
 			continue
 		}
 		candidates = append(candidates, llm.FallbackCandidate{
-			Provider: fb.Provider,
-			Model:    fb.Client.Model,
-			Client:   fbClient,
+			Provider:  fb.Provider,
+			Model:     fb.Client.Model,
+			Client:    fbClient,
+			MaxTokens: fb.MaxTokens,
 		})
 	}
 

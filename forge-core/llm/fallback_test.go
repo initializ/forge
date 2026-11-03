@@ -400,3 +400,59 @@ func TestFallbackChain_SuccessResetsCooldown(t *testing.T) {
 		t.Errorf("second: expected recovered, got %s", resp.Message.Content)
 	}
 }
+
+func TestFallbackChain_MaxTokens(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		for _, single := range []bool{false, true} {
+			for _, limit := range []int{0, 2000} {
+				req := &ChatRequest{MaxTokens: 16000}
+				want := limit
+				if want == 0 {
+					want = req.MaxTokens
+				}
+				calls := 0
+				check := func(got *ChatRequest) {
+					calls++
+					if got.MaxTokens != want {
+						t.Errorf("stream=%v single=%v: limit=%d, want %d", stream, single, got.MaxTokens, want)
+					}
+					if limit > 0 && got == req {
+						t.Error("override reused caller request")
+					}
+				}
+				client := &mockClient{
+					chatFunc: func(_ context.Context, got *ChatRequest) (*ChatResponse, error) {
+						check(got)
+						return &ChatResponse{}, nil
+					},
+					chatStreamFunc: func(_ context.Context, got *ChatRequest) (<-chan StreamDelta, error) {
+						check(got)
+						ch := make(chan StreamDelta)
+						close(ch)
+						return ch, nil
+					},
+				}
+				candidates := []FallbackCandidate{{Provider: "fallback", Client: client, MaxTokens: limit}}
+				if !single {
+					candidates = append([]FallbackCandidate{{Provider: "primary", Client: errorClient("primary", fmt.Errorf("status 429"))}}, candidates...)
+				}
+				chain := NewFallbackChain(candidates)
+				var err error
+				if stream {
+					_, err = chain.ChatStream(context.Background(), req)
+				} else {
+					_, err = chain.Chat(context.Background(), req)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if calls != 1 {
+					t.Fatalf("calls=%d, want 1", calls)
+				}
+				if req.MaxTokens != 16000 {
+					t.Fatal("caller request mutated")
+				}
+			}
+		}
+	}
+}

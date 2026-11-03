@@ -232,7 +232,7 @@ cache-heavy stage can't slip past an orchestrator cost ceiling-check.
 
 ## 5. LLM provider abstraction
 
-Common `llm.Client` interface (`forge-core/llm/`). Providers:
+Common `llm.Client` interface (`forge-core/llm/`). `model.max_tokens` sets the output token limit for each agent-loop call, including retries and fallback models. It must be non-negative; `0` keeps the provider default (4096 for anthropic and bedrock). Fallbacks can override it with `model.fallbacks[].max_tokens` (0 inherits). OpenAI's `api.openai.com` receives `max_completion_tokens`; compatible hosts receive `max_tokens`. `forge validate` cannot check model output ceilings; exceeding one makes the provider reject every call. Internal summarization calls use their own limits. Providers:
 
 | Provider | Notes |
 |---|---|

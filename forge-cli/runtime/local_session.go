@@ -149,6 +149,7 @@ func NewLocalSession(ctx context.Context, opts LocalSessionOptions) (*LocalSessi
 	})
 
 	executor := coreruntime.NewLLMExecutor(coreruntime.LLMExecutorConfig{
+		MaxTokens:    r.cfg.Config.Model.MaxTokens,
 		Client:       llmClient,
 		Tools:        reg,
 		Hooks:        hooks,

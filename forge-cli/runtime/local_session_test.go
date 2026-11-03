@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -100,7 +101,14 @@ func TestLocalSession_GatewayAutoRefreshesExpiredToken(t *testing.T) {
 // assembly (client + tools + hooks + executor) runs and that history
 // accumulates across the user and agent messages.
 func TestLocalSession_RunTurn(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		if body["max_tokens"] != float64(16000) {
+			t.Errorf("max_tokens = %v, want 16000", body["max_tokens"])
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","choices":[{"message":{"role":"assistant","content":"2 plus 2 is 4."},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
 	}))
@@ -112,7 +120,7 @@ func TestLocalSession_RunTurn(t *testing.T) {
 
 	cfg := &types.ForgeConfig{
 		AgentID: "quickstart",
-		Model:   types.ModelRef{Provider: "openai", Name: "gpt-test"},
+		Model:   types.ModelRef{Provider: "openai", Name: "gpt-test", MaxTokens: 16000},
 		Egress:  types.EgressRef{Mode: "dev-open"}, // skip the subprocess proxy in tests
 	}
 	sess, err := NewLocalSession(context.Background(), LocalSessionOptions{
@@ -167,7 +175,7 @@ func TestLocalSession_RendersToolLoop(t *testing.T) {
 
 	cfg := &types.ForgeConfig{
 		AgentID: "quickstart",
-		Model:   types.ModelRef{Provider: "openai", Name: "gpt-test"},
+		Model:   types.ModelRef{Provider: "openai", Name: "gpt-test", MaxTokens: 16000},
 		Egress:  types.EgressRef{Mode: "dev-open"},
 	}
 	sess, err := NewLocalSession(context.Background(), LocalSessionOptions{Config: cfg, WorkDir: t.TempDir()})

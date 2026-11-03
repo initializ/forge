@@ -26,6 +26,7 @@ order: 3
 | `OPENAI_BASE_URL` | Override OpenAI base URL |
 | `ANTHROPIC_BASE_URL` | Override Anthropic base URL |
 | `OLLAMA_BASE_URL` | Override Ollama base URL (default: `http://localhost:11434`) |
+| `GEMINI_BASE_URL` | Override Gemini base URL (must include the version segment, e.g. `.../v1beta`; a bare host 404s) |
 | `FORGE_CORS_ORIGINS` | Comma-separated CORS allowed origins for A2A server |
 | `FORGE_AUTH_URL` | External auth provider URL for token validation |
 | `FORGE_AUTH_ORG_ID` | Organization ID sent to external auth provider |

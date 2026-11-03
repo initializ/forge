@@ -98,6 +98,15 @@ func ResolveModelConfig(cfg *types.ForgeConfig, envVars map[string]string, provi
 	if u := envVars["OLLAMA_BASE_URL"]; u != "" && mc.Provider == "ollama" {
 		mc.Client.BaseURL = u
 	}
+	// GEMINI_BASE_URL mirrors the other providers so a deploy-time env can
+	// repoint the native Gemini client without a forge.yaml rebuild — the
+	// precedence the ModelRef.BaseURL docstring already promises (#554). Set
+	// verbatim like the others: the client appends `/models/<model>:…` to it,
+	// and its built-in default carries the `/v1beta` version segment, so an
+	// override must include that segment too (a bare host 404s).
+	if u := envVars["GEMINI_BASE_URL"]; u != "" && mc.Provider == "gemini" {
+		mc.Client.BaseURL = u
+	}
 
 	// Issue #202 Phase 2 — forge.yaml auth_scheme + aws_region carry
 	// onto the client config when the operator points at AWS Bedrock

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.20.0 — Multimodal input/output, native Gemini & Bedrock, and a configurable output-token limit (2026-11-04)
 
 ### Added
 

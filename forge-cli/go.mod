@@ -7,8 +7,8 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/glamour v1.0.0
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
-	github.com/chromedp/cdproto v0.0.0-20250724212937-08a3db8b4327
-	github.com/chromedp/chromedp v0.14.1
+	github.com/chromedp/cdproto v0.0.0-20260714215040-dc233986426f
+	github.com/chromedp/chromedp v0.16.0
 	github.com/initializ/forge/forge-core v0.0.0
 	github.com/initializ/forge/forge-plugins v0.0.0
 	github.com/initializ/forge/forge-skills v0.0.0
@@ -55,7 +55,7 @@ require (
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
-	github.com/go-json-experiment/json v0.0.0-20250725192818-e39067aee2d2 // indirect
+	github.com/go-json-experiment/json v0.0.0-20260623181947-01eb4420fa68 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-openapi/jsonpointer v1.0.0 // indirect
@@ -82,13 +82,12 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/css v1.0.1 // indirect
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
-	github.com/gowebpki/jcs v1.0.1 // indirect
+	github.com/gowebpki/jcs v1.0.2 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/initializ/ctxzip v0.4.1 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/klauspost/compress v1.16.7 // indirect
-	github.com/kr/text v0.2.0 // indirect
+	github.com/klauspost/compress v1.18.7 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
@@ -110,6 +109,7 @@ require (
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/rs/zerolog v1.35.1 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
+	github.com/stretchr/objx v0.5.3 // indirect
 	github.com/vektah/gqlparser/v2 v2.5.27 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
@@ -151,10 +151,10 @@ require (
 	k8s.io/klog/v2 v2.130.1 // indirect
 	k8s.io/kube-openapi v0.0.0-20250710124328-f3f2b991d03b // indirect
 	k8s.io/utils v0.0.0-20250604170112-4c0f3b243397 // indirect
-	modernc.org/libc v1.75.6 // indirect
+	modernc.org/libc v1.75.7 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
-	modernc.org/sqlite v1.58.0 // indirect
+	modernc.org/sqlite v1.59.0 // indirect
 	rsc.io/qr v0.2.0 // indirect
 	sigs.k8s.io/json v0.0.0-20241014173422-cfa47c3a1cc8 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect

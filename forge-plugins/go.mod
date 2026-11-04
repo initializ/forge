@@ -5,7 +5,7 @@ go 1.26.0
 require github.com/initializ/forge/forge-core v0.0.0
 
 require (
-	github.com/gorilla/websocket v1.5.3
+	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	go.mau.fi/whatsmeow v0.0.0-20260816113502-fb386f152837
 	google.golang.org/protobuf v1.36.12
 	modernc.org/sqlite v1.59.0
@@ -23,7 +23,7 @@ require (
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/gowebpki/jcs v1.0.1 // indirect
+	github.com/gowebpki/jcs v1.0.2 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
 	github.com/initializ/forge/forge-skills v0.0.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect

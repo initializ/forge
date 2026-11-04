@@ -1,0 +1,158 @@
+# OpenTelemetry Collector → Datadog (US1) for Forge GenAI traces.
+#
+# PLAIN-MANIFEST ALTERNATIVE (single Deployment). For production, prefer the
+# Helm daemonset in ./helm/ — see README.md.
+#
+# Pipeline: Forge --OTLP--> this collector --datadog exporter--> Datadog APM.
+# The `datadog/connector` computes APM trace stats (hits/errors/latency) from
+# the incoming spans, so the APM UI shows service/resource stats for the
+# gen_ai spans (llm.completion, tool.<name>, agent.execute).
+#
+# Prereq: create the API-key Secret first (see datadog-secret.yaml or the
+# kubectl command in README.md).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: monitoring
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          http:
+            endpoint: 0.0.0.0:4318   # Forge default (http/protobuf, /v1/traces)
+          grpc:
+            endpoint: 0.0.0.0:4317
+
+    processors:
+      # Guardrail against OOM; keep the % below the container memory limit.
+      memory_limiter:
+        check_interval: 5s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+      batch:
+        send_batch_size: 100
+        send_batch_max_size: 1000
+        timeout: 10s
+      # Cheap host/env enrichment (no RBAC). For pod/deployment tags add the
+      # k8sattributes processor — needs a ServiceAccount + ClusterRole (see README).
+      resourcedetection:
+        detectors: [env, system]
+        timeout: 5s
+        override: false
+
+    connectors:
+      # Computes APM trace metrics from spans AND forwards the spans onward.
+      datadog/connector:
+
+    exporters:
+      datadog:
+        api:
+          site: datadoghq.com          # US1
+          key: ${env:DD_API_KEY}
+      # Flip verbosity to `detailed` during bring-up to eyeball spans in the
+      # collector logs, then remove `debug` from the pipeline.
+      debug:
+        verbosity: normal
+
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+
+    service:
+      extensions: [health_check]
+      telemetry:
+        logs:
+          level: info
+      pipelines:
+        # 1) Ingest OTLP spans, hand them to the connector.
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, resourcedetection, batch]
+          exporters: [datadog/connector]
+        # 2) Connector forwards the spans to Datadog APM.
+        traces/export:
+          receivers: [datadog/connector]
+          processors: [memory_limiter, batch]
+          exporters: [datadog]   # add `debug` here during bring-up
+        # 3) APM trace metrics the connector computed.
+        metrics:
+          receivers: [datadog/connector]
+          processors: [memory_limiter, batch]
+          exporters: [datadog]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: monitoring
+  labels: { app: otel-collector }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: otel-collector }
+  template:
+    metadata:
+      labels: { app: otel-collector }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: otel-collector
+          # Datadog exporter ships only in the -contrib distribution.
+          # Pin to the latest contrib tag you have validated:
+          # https://github.com/open-telemetry/opentelemetry-collector-releases/releases
+          image: otel/opentelemetry-collector-contrib:0.119.0
+          args: ["--config=/etc/otelcol-contrib/config.yaml"]
+          env:
+            - name: DD_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: datadog-secret
+                  key: DD_API_KEY
+          ports:
+            - { name: otlp-http, containerPort: 4318 }
+            - { name: otlp-grpc, containerPort: 4317 }
+            - { name: health,    containerPort: 13133 }
+          livenessProbe:
+            httpGet: { path: /, port: 13133 }
+            initialDelaySeconds: 5
+          readinessProbe:
+            httpGet: { path: /, port: 13133 }
+            initialDelaySeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: "200m", memory: "400Mi" }
+            limits:   { cpu: "1",    memory: "1Gi" }
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otelcol-contrib
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: monitoring
+  labels: { app: otel-collector }
+spec:
+  selector: { app: otel-collector }
+  ports:
+    - { name: otlp-http, port: 4318, targetPort: 4318 }
+    - { name: otlp-grpc, port: 4317, targetPort: 4317 }
+  # DNS: otel-collector.monitoring.svc.cluster.local

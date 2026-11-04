@@ -1,0 +1,18 @@
+# Add to your agent's forge.yaml. `forge build && forge package` auto-adds the
+# collector host to the egress allowlist + NetworkPolicy — no second egress edit.
+observability:
+  tracing:
+    enabled: true
+    # In-cluster hop is plaintext OTLP over http (see README on TLS). Include
+    # the /v1/traces path — Forge posts to this exact URL.
+    endpoint: http://otel-collector.monitoring.svc.cluster.local:4318/v1/traces
+    protocol: http/protobuf
+    sampler: parentbased_always_on   # honor upstream sampling; sample roots
+    # service_name: ""               # defaults to agent_id (your DD service)
+
+    # Prompt / completion / tool-arg / tool-result CONTENT is OFF by default.
+    # Enabling ships gen_ai.input.messages / .output.messages /
+    # gen_ai.tool.call.arguments / .result to Datadog. Turn on only if you want
+    # that content in DD; redact stays on unless you disable it.
+    # capture_content: true
+    # redact: true

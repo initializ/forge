@@ -2,7 +2,7 @@ module github.com/initializ/forge/forge-plugins
 
 go 1.26.0
 
-require github.com/initializ/forge/forge-core v0.0.0
+require github.com/initializ/forge/forge-core v0.20.0
 
 require (
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
@@ -60,11 +60,8 @@ require (
 	modernc.org/memory v1.12.1 // indirect
 )
 
-replace (
-	github.com/initializ/forge/forge-core => ../forge-core
-	// Reached transitively via forge-core/runtime. Without this, `go mod tidy`
-	// cannot resolve the module and the whole file drifts untidied — which is
-	// how the stale whatsmeow hash survived in go.sum. forge-cli and forge-ui
-	// already carry the same replace.
-	github.com/initializ/forge/forge-skills => ../forge-skills
-)
+// Reached transitively via forge-core/runtime. Without this, `go mod tidy`
+// cannot resolve the module and the whole file drifts untidied — which is
+// how the stale whatsmeow hash survived in go.sum. forge-cli and forge-ui
+// already carry the same replace.
+replace github.com/initializ/forge/forge-skills => ../forge-skills

@@ -290,6 +290,7 @@ func (t *grepSearchTool) searchWithGo(ctx context.Context, searchPath, pattern, 
 	}
 
 	if include != "" && selectedFiles == 0 {
+		// Include globs match basenames only.
 		return "(no files matched include pattern)", nil
 	}
 	if sb.Len() == 0 {

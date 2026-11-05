@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.20.1 — Packaging fix (2026-11-04)
+
+### Fixed
+- Container image (`ghcr.io/initializ/forge`) now builds. The Go 1.26 workspace bump (#548) missed the Dockerfile builder base image, leaving it on `golang:1.25-alpine`; with `GOTOOLCHAIN=local` the v0.20.0 image build aborted (`go.work requires go >= 1.26.0`). Bumped to `golang:1.26-alpine`. CLI binaries and the Homebrew formula were unaffected — v0.20.1 is code-identical to v0.20.0 plus this packaging fix. (#563)
+
 ## v0.20.0 — Multimodal input/output, native Gemini & Bedrock, and a configurable output-token limit (2026-11-04)
 
 ### Added

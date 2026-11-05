@@ -90,6 +90,9 @@ func (t *grepSearchTool) Execute(ctx context.Context, args json.RawMessage) (str
 	if err != nil {
 		return "", err
 	}
+	if _, statErr := os.Stat(searchPath); os.IsNotExist(statErr) {
+		return fmt.Sprintf("(path not found: %s)", input.Path), nil
+	}
 
 	maxResults := input.MaxResults
 	if maxResults <= 0 {
@@ -139,6 +142,20 @@ func (t *grepSearchTool) searchWithRipgrep(ctx context.Context, rgPath, searchPa
 	if err != nil {
 		// Exit code 1 means no matches — not an error.
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			if include != "" {
+				// Use ripgrep's own filters to distinguish an empty file selection.
+				fileArgs := []string{"--files", "--glob", include}
+				if exclude != "" {
+					fileArgs = append(fileArgs, "--glob", "!"+exclude)
+				}
+				fileArgs = append(fileArgs, searchPath)
+				if fileErr := exec.Command(rgPath, fileArgs...).Run(); fileErr != nil {
+					if exitErr, ok := fileErr.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+						return "(no files matched include pattern)", nil
+					}
+					return "", fmt.Errorf("ripgrep file listing error: %w", fileErr)
+				}
+			}
 			return "(no matches found)", nil
 		}
 		return "", fmt.Errorf("ripgrep error: %s", stderr.String())
@@ -169,6 +186,7 @@ func (t *grepSearchTool) searchWithGo(ctx context.Context, searchPath, pattern, 
 
 	var sb strings.Builder
 	totalLines := 0
+	selectedFiles := 0
 
 	walkErr := filepath.WalkDir(searchPath, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -199,6 +217,7 @@ func (t *grepSearchTool) searchWithGo(ctx context.Context, searchPath, pattern, 
 				return nil
 			}
 		}
+		selectedFiles++
 
 		// Skip binary files (check first 512 bytes).
 		if isBinaryFile(path) {
@@ -270,6 +289,9 @@ func (t *grepSearchTool) searchWithGo(ctx context.Context, searchPath, pattern, 
 		return "", fmt.Errorf("search error: %w", walkErr)
 	}
 
+	if include != "" && selectedFiles == 0 {
+		return "(no files matched include pattern)", nil
+	}
 	if sb.Len() == 0 {
 		return "(no matches found)", nil
 	}

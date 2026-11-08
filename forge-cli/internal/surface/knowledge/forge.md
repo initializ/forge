@@ -311,8 +311,11 @@ The agent loop calls tools the LLM asks for. The registry merges:
 - **Builtin tools** (`forge-core/tools/builtins/`): `web_search`,
   `http_request`, `json_parse`, `csv_parse`, `datetime_now`,
   `uuid_generate`, `math_calculate`, `cli_execute`, `read_skill`,
-  `file_create`, `suggest_actions`. `suggest_actions` (#562) offers the user
-  channel-neutral clickable follow-ups `{label, prompt}`: the model calls it →
+  `file_create`. `suggest_actions` (#562) is NOT in `RegisterAll` — the runner
+  registers it only when `interactiveChannelConfigured(cfg.Channels)` (an
+  interactive-capable channel, Slack today), via `builtins.NewSuggestActionsTool()`,
+  so it stays out of every other agent's tool context (Option B). It offers the
+  user channel-neutral clickable follow-ups `{label, prompt}`: the model calls it →
   a per-turn `runtime.ActionsCollector` (seeded in `Execute`) collects them →
   `finalizeResponse` attaches to `a2a.Message.Metadata["forge.actions"]`. Slack
   renders a Block Kit `actions` block (`buildActionsBlocks`, block_id

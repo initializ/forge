@@ -28,7 +28,7 @@ Tools are capabilities that an LLM agent can invoke during execution. Forge prov
 | `web_search` | Search the web for quick lookups and recent information |
 | `web_fetch` | Fetch a URL and return its main content as clean, readable text/markdown (strips nav/scripts/styling; preserves `<pre>`/`<code>` and transcodes non-UTF-8 charsets). Read-only GET, egress-controlled (refuses if no egress client is present — no `DefaultTransport` fallback), with redirect + size caps and a content-type guard. A non-2xx response still returns the error page's content with its `status`. Use to *read* a page; `web_search` finds pages, `http_request` returns raw bytes |
 | `file_create` | Create a downloadable file, written to the agent's `.forge/files/` directory |
-| `suggest_actions` | Offer the user up to 8 clickable follow-up actions (`{label, prompt}`). Rendered as buttons on channels that support them (Slack Block Kit); a click re-enters the agent with that action's `prompt` as the user's next message. Channels without interactive components deliver the text reply unchanged. See [Channels → Interactive actions](channels.md#interactive-actions) |
+| `suggest_actions` | Offer the user up to 8 clickable follow-up actions (`{label, prompt}`). **Registered only when the agent has an interactive-capable channel configured** (Slack today) — so it's absent from every other agent's tool context. Rendered as Block Kit buttons; a click re-enters the agent with that action's `prompt` as the user's next message. See [Channels → Interactive actions](channels.md#interactive-actions) |
 | `read_skill` | Load full instructions for an available skill on demand |
 | `memory_search` | Search long-term memory (when enabled) |
 | `memory_get` | Read memory files (when enabled) |

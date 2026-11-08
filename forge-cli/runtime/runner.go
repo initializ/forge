@@ -959,6 +959,17 @@ func (r *Runner) Run(ctx context.Context) error {
 				r.logger.Warn("failed to register builtin tools", map[string]any{"error": err.Error()})
 			}
 
+			// Interactive follow-up actions (#562) only do something on a
+			// channel that can render them (Slack Block Kit today), so
+			// suggest_actions is registered ONLY when such a channel is
+			// configured — it stays out of every other agent's tool context
+			// rather than being an always-on builtin.
+			if interactiveChannelConfigured(r.cfg.Config.Channels) {
+				if err := reg.Register(builtins.NewSuggestActionsTool()); err != nil {
+					r.logger.Warn("failed to register suggest_actions tool", map[string]any{"error": err.Error()})
+				}
+			}
+
 			// Register search/exploration tools (grep, glob, tree).
 			// Compute the code-agent state ONCE — both the searchRoot scoping
 			// and the general-file-tool decision below read it, and they must
@@ -3123,6 +3134,22 @@ func (r *Runner) registerAuditHooks(hooks *coreruntime.HookRegistry, auditLogger
 		}
 		return nil
 	})
+}
+
+// interactiveActionChannels lists the configured channel types that can render
+// interactive follow-up actions (#562). Slack (Block Kit) is the only one
+// today; add Telegram/Teams/WhatsApp here as native rendering lands.
+var interactiveActionChannels = map[string]bool{"slack": true}
+
+// interactiveChannelConfigured reports whether any configured channel can render
+// interactive follow-up actions — the gate for registering suggest_actions.
+func interactiveChannelConfigured(channels []string) bool {
+	for _, c := range channels {
+		if interactiveActionChannels[strings.ToLower(strings.TrimSpace(c))] {
+			return true
+		}
+	}
+	return false
 }
 
 // generatedMediaAuditFields projects the media (image/document) parts of a

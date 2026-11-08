@@ -36,9 +36,15 @@ func All(opts ...Options) []tools.Tool {
 		&mathCalculateTool{},
 		&webSearchTool{},
 		&fileCreateTool{},
-		&suggestActionsTool{},
 	}
 }
+
+// NewSuggestActionsTool returns the suggest_actions builtin (#562). It is NOT
+// in All(): follow-up actions only do something on a channel that can render
+// them (Slack Block Kit today), so the runtime registers it conditionally — on
+// agents with an interactive-capable channel configured — rather than exposing
+// it in every agent's tool context. See forge-cli runner.
+func NewSuggestActionsTool() tools.Tool { return &suggestActionsTool{} }
 
 // RegisterAll registers all built-in tools with the given registry.
 // Same variadic-Options convention as All(); pass at most one.

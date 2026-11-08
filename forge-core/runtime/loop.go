@@ -224,6 +224,11 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 		ctx = WithFilesDir(ctx, e.filesDir)
 	}
 
+	// Seed the per-turn Actions collector so the suggest_actions builtin can
+	// record follow-up actions the agent offers; finalizeResponse attaches them
+	// to the response metadata for interactive channels to render (#562).
+	ctx = WithActionsCollector(ctx, NewActionsCollector())
+
 	// Phase 3 (#104) — open the agent-execution span. Parent (when
 	// present) is the inbound dispatch span set by
 	// forge-cli/server/a2a_server.go; otherwise this span is a root
@@ -1389,6 +1394,15 @@ func (e *LLMExecutor) finalizeResponse(ctx context.Context, msg llm.ChatMessage,
 	out := llmMessageToA2A(msg, extraParts...)
 	if len(msg.Content) > summaryInlineThreshold {
 		out.Summary = generateSummary(ctx, e.client, msg.Content)
+	}
+	// Attach any follow-up actions the agent offered this turn (#562) so an
+	// interactive channel can render them as buttons. Absent for the common
+	// case (no suggest_actions call) → metadata stays nil.
+	if actions := ActionsCollectorFromContext(ctx).Actions(); len(actions) > 0 {
+		if out.Metadata == nil {
+			out.Metadata = make(map[string]any)
+		}
+		out.Metadata[MetadataKeyActions] = actions
 	}
 	return out
 }

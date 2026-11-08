@@ -36,6 +36,7 @@ func All(opts ...Options) []tools.Tool {
 		&mathCalculateTool{},
 		&webSearchTool{},
 		&fileCreateTool{},
+		&suggestActionsTool{},
 	}
 }
 

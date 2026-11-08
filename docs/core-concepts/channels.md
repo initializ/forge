@@ -141,6 +141,22 @@ The Telegram adapter mirrors Slack's processing feedback:
 
 **Context isolation:** Each handler goroutine runs with an independent context (10-minute timeout), detached from the polling loop. This prevents in-flight tasks from being cancelled if the polling context is interrupted during server restarts or errors.
 
+## Interactive actions
+
+An agent can offer the user **clickable follow-up actions** by calling the [`suggest_actions`](tools-and-builtins.md) builtin. Each action is a channel-neutral `{label, prompt}`:
+
+- **`label`** — the button text.
+- **`prompt`** — the message sent back as the user's next turn when the action is chosen.
+
+The runtime attaches the actions to the response (as `a2a.Message.Metadata["forge.actions"]`); each channel adapter renders them however it can:
+
+| Channel | Rendering |
+|---------|-----------|
+| **Slack** | A Block Kit `actions` block of buttons, posted as a compact message in-thread beside the reply. Clicking a button **re-enters the agent** with that action's `prompt` as a new message — attributed to the **clicker** (not the original asker, so delegated MCP tools key on the person who clicked), threaded under the same conversation. The buttons are disabled once one is chosen. |
+| **Telegram / WhatsApp / Teams** | No native rendering yet — the text reply is delivered unchanged (actions are additive; nothing is lost). A numbered-text fallback and native keyboards/cards are follow-ups. |
+
+The model decides when to offer actions (the tool is opt-in per agent via `tools.builtins.enabled`). This is the **synthesized-follow-up** model: a click is exactly equivalent to the user typing the `prompt`, so no agent-side action-handling state is required. The reply text itself is always delivered — the buttons are offered alongside it, and the top-level message `text` carries the labels as the accessibility / notification fallback.
+
 ## Configuration
 
 ### Slack (`slack-config.yaml`)

@@ -63,6 +63,12 @@ type Message struct {
 	Role    MessageRole `json:"role"`
 	Parts   []Part      `json:"parts"`
 	Summary string      `json:"summary,omitempty"`
+	// Metadata carries out-of-band, non-content annotations on a message —
+	// e.g. the runtime attaches channel-neutral follow-up actions here
+	// (runtime.MetadataKeyActions, #562) for interactive adapters to render.
+	// It is NOT projected into PromptText (so it never reaches the model or the
+	// scanners as content) and is omitted on the wire when empty.
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 // dataPartProjectionCap bounds each data part's projected JSON block in

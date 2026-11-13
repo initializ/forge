@@ -86,6 +86,8 @@ func deriveEgressDomains(opts *initOptions, skills []contract.SkillDescriptor) [
 			switch provider {
 			case "perplexity":
 				add("api.perplexity.ai")
+			case "keenable":
+				add("api.keenable.ai")
 			default:
 				add("api.tavily.com")
 			}

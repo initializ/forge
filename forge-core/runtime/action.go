@@ -47,6 +47,40 @@ type ActionsCollector struct {
 // NewActionsCollector returns an empty collector.
 func NewActionsCollector() *ActionsCollector { return &ActionsCollector{} }
 
+// sanitizeAction trims and length-caps one action to the Slack button bounds.
+// ok=false when it has no label or prompt after trimming. Shared by Set and
+// ActionsFromMetadata so EVERY path that produces Actions enforces the same
+// bounds — a persisted/remote over-length value can't reach a renderer and trip
+// a Block Kit API error (#574 review).
+func sanitizeAction(a Action) (Action, bool) {
+	a.Label = strings.TrimSpace(a.Label)
+	a.Prompt = strings.TrimSpace(a.Prompt)
+	if a.Label == "" || a.Prompt == "" {
+		return Action{}, false
+	}
+	if len(a.Label) > MaxActionLabelLen {
+		a.Label = a.Label[:MaxActionLabelLen]
+	}
+	if len(a.Prompt) > MaxActionPromptLen {
+		a.Prompt = a.Prompt[:MaxActionPromptLen]
+	}
+	return a, true
+}
+
+// sanitizeActions trims/caps each action and bounds the set to MaxActions.
+func sanitizeActions(actions []Action) []Action {
+	cleaned := make([]Action, 0, len(actions))
+	for _, a := range actions {
+		if s, ok := sanitizeAction(a); ok {
+			cleaned = append(cleaned, s)
+			if len(cleaned) >= MaxActions {
+				break
+			}
+		}
+	}
+	return cleaned
+}
+
 // Set replaces the collected actions (the latest suggest_actions call wins, so
 // a re-offer within a turn supersedes an earlier one rather than appending).
 // Invalid/empty entries are dropped and the set is capped at MaxActions.
@@ -54,24 +88,7 @@ func (c *ActionsCollector) Set(actions []Action) {
 	if c == nil {
 		return
 	}
-	cleaned := make([]Action, 0, len(actions))
-	for _, a := range actions {
-		a.Label = strings.TrimSpace(a.Label)
-		a.Prompt = strings.TrimSpace(a.Prompt)
-		if a.Label == "" || a.Prompt == "" {
-			continue
-		}
-		if len(a.Label) > MaxActionLabelLen {
-			a.Label = a.Label[:MaxActionLabelLen]
-		}
-		if len(a.Prompt) > MaxActionPromptLen {
-			a.Prompt = a.Prompt[:MaxActionPromptLen]
-		}
-		cleaned = append(cleaned, a)
-		if len(cleaned) >= MaxActions {
-			break
-		}
-	}
+	cleaned := sanitizeActions(actions)
 	c.mu.Lock()
 	c.actions = cleaned
 	c.mu.Unlock()
@@ -115,11 +132,18 @@ func ActionsFromMetadata(meta map[string]any) []Action {
 	if meta == nil {
 		return nil
 	}
+	// Every branch runs through sanitizeActions so a renderer always receives
+	// trimmed, length-capped, count-bounded actions regardless of whether they
+	// arrived in-process ([]Action) or via a JSON round-trip ([]any) (#574).
 	switch v := meta[MetadataKeyActions].(type) {
 	case []Action:
-		return v
+		out := sanitizeActions(v)
+		if len(out) == 0 {
+			return nil
+		}
+		return out
 	case []any:
-		out := make([]Action, 0, len(v))
+		raw := make([]Action, 0, len(v))
 		for _, item := range v {
 			m, ok := item.(map[string]any)
 			if !ok {
@@ -127,11 +151,9 @@ func ActionsFromMetadata(meta map[string]any) []Action {
 			}
 			label, _ := m["label"].(string)
 			prompt, _ := m["prompt"].(string)
-			if label == "" || prompt == "" {
-				continue
-			}
-			out = append(out, Action{Label: label, Prompt: prompt})
+			raw = append(raw, Action{Label: label, Prompt: prompt})
 		}
+		out := sanitizeActions(raw)
 		if len(out) == 0 {
 			return nil
 		}

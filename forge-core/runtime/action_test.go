@@ -107,6 +107,19 @@ func TestActionsFromMetadata(t *testing.T) {
 		t.Errorf("[]any shape not decoded: %+v", got)
 	}
 
+	// Over-length values in BOTH branches are clamped (a persisted/remote
+	// over-length action must not reach a renderer and trip a Block Kit error).
+	longAny := map[string]any{MetadataKeyActions: []any{
+		map[string]any{"label": strings.Repeat("L", 200), "prompt": strings.Repeat("P", 5000)},
+	}}
+	if a := ActionsFromMetadata(longAny); len(a) != 1 || len(a[0].Label) != MaxActionLabelLen || len(a[0].Prompt) != MaxActionPromptLen {
+		t.Errorf("[]any branch must clamp to bounds, got label=%d prompt=%d", len(a[0].Label), len(a[0].Prompt))
+	}
+	longNative := map[string]any{MetadataKeyActions: []Action{{Label: strings.Repeat("L", 200), Prompt: "ok"}}}
+	if a := ActionsFromMetadata(longNative); len(a[0].Label) != MaxActionLabelLen {
+		t.Errorf("[]Action branch must clamp too, got label=%d", len(a[0].Label))
+	}
+
 	// Absent / nil / wrong type → nil.
 	if ActionsFromMetadata(nil) != nil {
 		t.Error("nil metadata must yield nil")

@@ -100,6 +100,16 @@ func (p *Plugin) sendActions(event *channels.ChannelEvent, actions []coreruntime
 	}
 }
 
+// truncateForDisplay shortens s to at most n characters (rune-safe) with an
+// ellipsis, for the in-thread "running: …" confirmation.
+func truncateForDisplay(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
 // actionClick is a parsed forge_action button press.
 type actionClick struct {
 	prompt    string // the synthesized follow-up message
@@ -151,14 +161,42 @@ func (p *Plugin) handleActionClick(ctx context.Context, click actionClick) {
 		return
 	}
 
+	// Dedup guard: button-disabling below is a best-effort chat.update and is
+	// NOT atomic, so two near-simultaneous clicks on the same actions message
+	// could each fire a turn. Claim the message by its ts via the existing
+	// TTL'd dedup cache so only the first click proceeds (#574 review).
+	if click.msgTS != "" && p.isDuplicate("action:"+click.msgTS) {
+		return
+	}
+
+	// Record the click for operators. This is the confused-deputy surface: the
+	// clicker saw only the Label, but the PROMPT (button value) is what runs
+	// under THEIR identity — so capture {clicker, label, prompt, thread} so a
+	// benign-label/divergent-prompt action is auditable after the fact (#574
+	// review). The re-entry turn below is additionally attributed to the clicker
+	// via the normal channel auth_verify path.
+	if p.logger != nil {
+		p.logger.Info("channel action clicked", map[string]any{
+			"event":   "channel_action_click",
+			"channel": click.channelID,
+			"clicker": click.userID,
+			"label":   click.label,
+			"prompt":  click.prompt,
+			"thread":  click.threadTS,
+		})
+	}
+
 	// Disable the buttons by replacing the actions message with the chosen
-	// outcome, so a second click can't re-fire the turn. Best-effort.
+	// outcome. Surface the PROMPT (not just the Label) so the executed text is
+	// visible in-thread — a mitigation for the label≠prompt gap (#574 review).
+	// Best-effort.
 	chosen := click.label
 	if chosen == "" {
 		chosen = "your selection"
 	}
 	if click.channelID != "" && click.msgTS != "" {
-		p.updateApprovalMessage(click.channelID, click.msgTS, fmt.Sprintf(":white_check_mark: You chose *%s*.", chosen))
+		p.updateApprovalMessage(click.channelID, click.msgTS,
+			fmt.Sprintf(":white_check_mark: <@%s> chose *%s* — running: _%s_", click.userID, chosen, truncateForDisplay(click.prompt, 200)))
 	}
 
 	event := &channels.ChannelEvent{

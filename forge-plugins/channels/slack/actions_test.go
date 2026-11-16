@@ -1,8 +1,10 @@
 package slack
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/initializ/forge/forge-core/a2a"
 	"github.com/initializ/forge/forge-core/channels"
@@ -128,6 +130,57 @@ func TestSendResponse_NoActionsNoExtraMessage(t *testing.T) {
 		if _, ok := c["blocks"]; ok {
 			t.Errorf("no-actions reply must not post a blocks message: %+v", c)
 		}
+	}
+}
+
+// A click re-enters the agent with the action's prompt, attributed to the
+// clicker and threaded; a second near-simultaneous click on the same actions
+// message is deduped (the non-atomic button-disable race).
+func TestHandleActionClick_ReentersAndDedups(t *testing.T) {
+	srv, _ := recordingServer(t)
+	defer srv.Close()
+
+	p := New()
+	p.botToken = "xoxb-test"
+	p.apiBase = srv.URL
+
+	type call struct{ ev *channels.ChannelEvent }
+	gotCh := make(chan call, 4)
+	p.eventHandler = func(_ context.Context, ev *channels.ChannelEvent) (*a2a.Message, error) {
+		gotCh <- call{ev}
+		return &a2a.Message{Role: a2a.MessageRoleAgent, Parts: []a2a.Part{a2a.NewTextPart("done")}}, nil
+	}
+
+	click := actionClick{
+		prompt: "deploy to staging", label: "Deploy",
+		threadTS: "1699.0001", channelID: "C123", msgTS: "1699.9999", userID: "UCLICKER",
+	}
+	p.handleActionClick(context.Background(), click)
+	p.handleActionClick(context.Background(), click) // same msgTS → deduped
+
+	// Collect re-entries for a short window; expect exactly one.
+	var got []call
+	timeout := time.After(2 * time.Second)
+loop:
+	for {
+		select {
+		case c := <-gotCh:
+			got = append(got, c)
+		case <-timeout:
+			break loop
+		case <-time.After(300 * time.Millisecond):
+			break loop
+		}
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected exactly 1 re-entry (second click deduped), got %d", len(got))
+	}
+	ev := got[0].ev
+	if ev.Message != "deploy to staging" {
+		t.Errorf("re-entry message = %q, want the action prompt", ev.Message)
+	}
+	if ev.ThreadID != "1699.0001" || ev.UserID != "UCLICKER" {
+		t.Errorf("re-entry not threaded/attributed to clicker: %+v", ev)
 	}
 }
 

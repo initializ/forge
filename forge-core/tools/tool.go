@@ -37,6 +37,22 @@ type Tool interface {
 	Execute(ctx context.Context, args json.RawMessage) (string, error)
 }
 
+// MediaResultTool is an OPTIONAL capability: a Tool whose result includes media
+// (e.g. a screenshot) that the MODEL should see, returned alongside the text
+// result. The executor projects the media into the tool-result message's Parts,
+// and providers that support media in tool results (Anthropic) serialize it as
+// image content blocks; others fall back to the text result (#582 — the
+// image-bearing-tool-result capability that computer use is built on). The media
+// bytes ride inline for the turn only (llm.MediaRef.Bytes is json:"-"), so a
+// screenshot is not persisted into session history — the right default for the
+// ephemeral per-step screenshots of a computer-use loop.
+type MediaResultTool interface {
+	Tool
+	// ExecuteWithMedia runs the tool, returning the text result plus any media
+	// the model should see. Media with empty Bytes is ignored downstream.
+	ExecuteWithMedia(ctx context.Context, args json.RawMessage) (text string, media []llm.MediaRef, err error)
+}
+
 // MCPSource is an optional interface signalling that a tool was
 // discovered from an MCP server. The registry uses this to permit
 // "__" in the tool's name — that separator is reserved for the

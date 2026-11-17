@@ -48,6 +48,16 @@ type ToolExecutor interface {
 	IsMCPTool(name string) bool
 }
 
+// MediaToolExecutor is an OPTIONAL capability a ToolExecutor may implement to let
+// a tool return media (e.g. a screenshot) the MODEL should see, alongside the
+// text result (#582 — the image-bearing-tool-result capability computer use is
+// built on). The executor type-asserts its ToolExecutor to this interface; when
+// present, tool results can carry images. *tools.Registry implements it, falling
+// back to Execute for tools that produce no media.
+type MediaToolExecutor interface {
+	ExecuteWithMedia(ctx context.Context, name string, arguments json.RawMessage) (string, []llm.MediaRef, error)
+}
+
 // Pre-hook safety ceiling for deferred tool-result truncation: hooks must
 // never scan unbounded payloads, but the ceiling must be generous enough
 // that real bulky outputs (e.g. kubectl get -o json on a large cluster)
@@ -893,7 +903,16 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 					))
 				}
 			}
-			result, execErr := e.tools.Execute(toolCtx, tc.Function.Name, json.RawMessage(tc.Function.Arguments))
+			var result string
+			var resultMedia []llm.MediaRef
+			var execErr error
+			// Use the media-capable path when the executor supports it, so a
+			// tool (e.g. a screenshot) can return an image the model sees (#582).
+			if me, ok := e.tools.(MediaToolExecutor); ok {
+				result, resultMedia, execErr = me.ExecuteWithMedia(toolCtx, tc.Function.Name, json.RawMessage(tc.Function.Arguments))
+			} else {
+				result, execErr = e.tools.Execute(toolCtx, tc.Function.Name, json.RawMessage(tc.Function.Arguments))
+			}
 			toolDuration := time.Since(toolStart)
 			if execErr != nil {
 				toolSpan.RecordError(execErr)
@@ -978,13 +997,25 @@ func (e *LLMExecutor) Execute(ctx context.Context, task *a2a.Task, msg *a2a.Mess
 				largeToolOutputs = append(largeToolOutputs, *part)
 			}
 
-			// Append tool result to memory
-			mem.Append(llm.ChatMessage{
+			// Append tool result to memory. When the tool returned media the
+			// model should see (e.g. a screenshot, #582), attach it as image
+			// Parts alongside the text Content; the provider serializes them
+			// into the tool_result (Anthropic) or falls back to text. Bytes ride
+			// inline for the turn only (MediaRef.Bytes is json:"-"), so the image
+			// is not persisted into session history.
+			toolMsg := llm.ChatMessage{
 				Role:       llm.RoleTool,
 				Content:    result,
 				ToolCallID: tc.ID,
 				Name:       tc.Function.Name,
-			})
+			}
+			for i := range resultMedia {
+				if len(resultMedia[i].Bytes) == 0 {
+					continue
+				}
+				toolMsg.Parts = append(toolMsg.Parts, llm.NewMediaContentPart(llm.ContentPartImage, resultMedia[i]))
+			}
+			mem.Append(toolMsg)
 		}
 
 		// Record this iteration's tools for workflow tracking.

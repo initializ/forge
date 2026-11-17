@@ -231,14 +231,18 @@ type anthropicMessage struct {
 }
 
 type anthropicContentBlock struct {
-	Type      string                `json:"type"`
-	Text      string                `json:"text,omitempty"`
-	ID        string                `json:"id,omitempty"`
-	Name      string                `json:"name,omitempty"`
-	Input     json.RawMessage       `json:"input,omitempty"`
-	ToolUseID string                `json:"tool_use_id,omitempty"`
-	Content   string                `json:"content,omitempty"`
-	Source    *anthropicMediaSource `json:"source,omitempty"` // type=="image" | "document" (#255)
+	Type      string          `json:"type"`
+	Text      string          `json:"text,omitempty"`
+	ID        string          `json:"id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
+	ToolUseID string          `json:"tool_use_id,omitempty"`
+	// Content is the tool_result payload: a plain string for a text result, or
+	// an array of content blocks ([]anthropicContentBlock) when the result also
+	// carries images (#582). Request-only — response parsing reads Text/ID/Name,
+	// never this field.
+	Content any                   `json:"content,omitempty"`
+	Source  *anthropicMediaSource `json:"source,omitempty"` // type=="image" | "document" (#255)
 }
 
 // anthropicMediaSource is the base64 source of an image or document content
@@ -323,16 +327,23 @@ func (c *AnthropicClient) convertMessage(m llm.ChatMessage) anthropicMessage {
 		role = "assistant"
 	}
 
-	// Tool result message
+	// Tool result message. When the result carries images (#582 — e.g. a
+	// screenshot the model should see), the tool_result content must be an
+	// ARRAY of blocks (text + image); otherwise it stays a plain string (wire
+	// form unchanged).
 	if m.Role == llm.RoleTool {
-		blocks := []anthropicContentBlock{
-			{
-				Type:      "tool_result",
-				ToolUseID: m.ToolCallID,
-				Content:   m.Content,
-			},
+		tr := anthropicContentBlock{Type: "tool_result", ToolUseID: m.ToolCallID}
+		if imgs := anthropicToolResultImages(m.Parts); len(imgs) > 0 {
+			content := make([]anthropicContentBlock, 0, 1+len(imgs))
+			if m.Content != "" {
+				content = append(content, anthropicContentBlock{Type: "text", Text: m.Content})
+			}
+			content = append(content, imgs...)
+			tr.Content = content
+		} else {
+			tr.Content = m.Content
 		}
-		data, _ := json.Marshal(blocks)
+		data, _ := json.Marshal([]anthropicContentBlock{tr})
 		return anthropicMessage{Role: "user", Content: data}
 	}
 
@@ -369,6 +380,40 @@ func (c *AnthropicClient) convertMessage(m llm.ChatMessage) anthropicMessage {
 // content blocks: text → {type:text}, image → {type:image, source:{base64}}.
 // A media part with no inline bytes is skipped (rehydration is the caller's
 // responsibility before the request is built).
+// anthropicToolResultImages projects the image/document media Parts of a
+// tool-result message into Anthropic content blocks for embedding in a
+// tool_result (#582). Text Parts are ignored here — the tool_result's text comes
+// from the message Content. Media with no inline bytes is skipped.
+func anthropicToolResultImages(parts []llm.ContentPart) []anthropicContentBlock {
+	var out []anthropicContentBlock
+	for _, p := range parts {
+		if p.Media == nil || len(p.Media.Bytes) == 0 {
+			continue
+		}
+		switch p.Type {
+		case llm.ContentPartImage:
+			out = append(out, anthropicContentBlock{
+				Type: "image",
+				Source: &anthropicMediaSource{
+					Type:      "base64",
+					MediaType: p.Media.MimeType,
+					Data:      base64.StdEncoding.EncodeToString(p.Media.Bytes),
+				},
+			})
+		case llm.ContentPartDocument:
+			out = append(out, anthropicContentBlock{
+				Type: "document",
+				Source: &anthropicMediaSource{
+					Type:      "base64",
+					MediaType: p.Media.MimeType,
+					Data:      base64.StdEncoding.EncodeToString(p.Media.Bytes),
+				},
+			})
+		}
+	}
+	return out
+}
+
 func anthropicBlocksFromParts(parts []llm.ContentPart) []anthropicContentBlock {
 	blocks := make([]anthropicContentBlock, 0, len(parts))
 	for _, p := range parts {

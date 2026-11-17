@@ -50,19 +50,27 @@ viewport — so "browser computer use" is just a new **backend over the browser 
 already launch**, no `Xvfb`/X11 desktop required. That makes the containerized
 Linux profile both the simplest to build and the safest to run.
 
-### One model contract, two backends
+### One model contract, two backends — behind a provider-neutral seam
 
 Both providers' computer tools emit the same action vocabulary against an abstract
 coordinate space. So the model side is identical for both profiles; only the
-executor differs. That's the central abstraction:
+executor differs. **Decision (4): the provider↔computer-tool translation sits
+behind a provider-neutral seam from the start** — a small adapter that maps the
+forge-internal action set to/from a provider's native computer tool. Implement
+the **Anthropic** adapter first; **OpenAI Responses** then slots in as a second
+adapter rather than a rewrite. The `computer.Backend` (executor) and the
+`ProviderComputerAdapter` (translation) are independent axes:
 
 ```
-            ┌──────────────── model (Anthropic / OpenAI Responses computer tool)
-            │  emits: screenshot | mouse_move | left_click | type | key | scroll | cursor_position
+   model (Anthropic computer_20250124 first; OpenAI Responses computer_use_preview later)
+            │
             ▼
-   computer.Backend interface            // forge-cli/tools/computer
+   ProviderComputerAdapter               // provider-neutral translation seam (axis 1)
+   │  normalizes to forge actions: screenshot | mouse_move | left_click | type | key | scroll | cursor_position
+            ▼
+   computer.Backend interface            // executor (axis 2) — forge-cli/tools/computer
    ├─ BrowserBackend   (Profile A)       // CDP against the chromedp viewport (reuses browser.Manager)
-   └─ DesktopBackend   (Profile B)       // robotgo (macOS now; Windows later); VM-hosted
+   └─ DesktopBackend   (Profile B)       // robotgo (macOS now; Windows later); VM-hosted or native-host (flagged)
 ```
 
 `Backend`:
@@ -108,16 +116,19 @@ This is the load-bearing change and should be the Phase-0 spike.
 Don't build an action vocabulary — use a native one. Both providers forge already
 has clients for support one:
 
+A `ProviderComputerAdapter` wraps each, so only the first is built now and the
+rest are additive (decision 4):
+
 | Provider | Tool | Notes |
 |---|---|---|
-| **Anthropic** | tool type `computer_20250124` + beta header `computer-use-2025-01-24` | Most mature; model trained on it. Reference: `anthropics/anthropic-quickstarts` → `computer-use-demo` (runs in a Linux/Docker VM by default). **Start here.** |
-| **OpenAI** | Responses `computer_use_preview` tool + `computer-use-preview` model | forge has the `openai-responses` client — natural second provider. |
+| **Anthropic** | tool type `computer_20250124` + beta header `computer-use-2025-01-24` | **First adapter (decision 4).** Most mature; model trained on it. Reference: `anthropics/anthropic-quickstarts` → `computer-use-demo` (runs in a Linux/Docker VM by default). |
+| **OpenAI** | Responses `computer_use_preview` tool + `computer-use-preview` model | Second adapter — forge already has the `openai-responses` client, so it's a new adapter, not a rewrite. |
 | Gemini | "Computer Use" preview | Newest/least proven; later. |
 
-Client work (Anthropic, localized to `anthropic.go`): emit the `computer` tool
-definition (display WxH + scale), set the beta header, accept image `tool_result`
-content. The `computer` builtin's job is only to execute the emitted actions and
-return screenshots.
+Client work for the Anthropic adapter (localized to `anthropic.go`): emit the
+`computer` tool definition (display WxH + scale), set the beta header, accept
+image `tool_result` content. The `computer` builtin's job is only to execute the
+emitted actions and return screenshots.
 
 ## OS support matrix (backend layer)
 
@@ -143,15 +154,21 @@ forge would ship. Containment is a feature, not an afterthought.
 
 - **Off by default; opt-in only at agent creation.** (Same gating style as the
   `image_generation` / `suggest_actions` toggles.)
-- **Never the operator's primary machine for Profile B.** Default to a disposable
-  **VM** (macOS: `cirruslabs/tart` or `trycua/lume` on Apple Silicon; Windows: a
-  throwaway Windows VM). Native-host desktop CU must be a loud, explicitly
-  acknowledged, dev-only mode.
+- **Containment default (decision 3):** a disposable **VM** is the recommended and
+  eventual production default (macOS: `cirruslabs/tart` or `trycua/lume` on Apple
+  Silicon; Windows: a throwaway Windows VM). For **early dogfooding**, native-host
+  desktop CU is **permitted behind an explicit acknowledgment flag** — e.g.
+  `computer_use.allow_native_host: true` (and/or a `FORGE_COMPUTER_USE_I_UNDERSTAND=1`
+  env gate) — which logs a loud startup warning and is audited. Without the flag,
+  a `desktop` profile on a non-VM backend refuses to start.
 - **Profile A** is inherently safer: ephemeral container, no host desktop, and the
   agent's existing **egress allowlist** still bounds where the browser can go.
-- **DEFER approval integration.** forge already has human-in-the-loop approval
-  (`security.defer.tools.<tool>`). Gate mutating actions (click/type/key) behind it
-  — at minimum a session-start approval, ideally per-risky-action.
+- **Approval (decision 5):** a **single session-start DEFER approval** gates the
+  whole computer-use session, paired with a hard **`max_steps` cap** (and idle
+  timeout) — not per-action approval. forge already has the human-in-the-loop
+  approval machinery (`security.defer.tools.<tool>`); the computer tool requests
+  one approval before the first action and the step cap bounds the blast radius
+  thereafter. (Per-action approval remains a future opt-in for high-risk fleets.)
 - **Step cap + idle timeout + kill switch**, and **audit every action** on the
   existing NDJSON stream (one event per action with coordinates/keys, like
   `tool_exec`).
@@ -168,7 +185,9 @@ is CU-capable **and** the deployment matches a supported profile. Enabling it:
 - scaffolds the `computer` tool, **conditionally registered** in the runner
   (mirroring `interactiveChannelConfigured` for `suggest_actions`),
 - writes a `computer_use:` config block — `profile: browser | desktop`,
-  `backend: cdp | robotgo | vm`, display size, `approval:` policy, `max_steps`,
+  `backend: cdp | robotgo | vm`, `display: {width, height}`,
+  `approval: session_start` (decision 5), `max_steps`, and (desktop-only)
+  `allow_native_host: false` (decision 3),
 - prints the permissions + sandbox warning and defaults approval **on**.
 
 ## Phasing (macOS desktop + Linux browser first)
@@ -177,20 +196,20 @@ is CU-capable **and** the deployment matches a supported profile. Enabling it:
 |---|---|---|
 | **0 — spike** | Image-bearing tool-result plumbing + a `robotgo` screenshot+click PoC; round-trip one screenshot→click through the Anthropic loop. | De-risks the one new internal capability. |
 | **1 — read-only** | `screenshot` + `cursor_position` only; Anthropic loop; opt-in; audit every call. Both profiles. | Safe to dogfood. |
-| **2 — control** | `click/type/key/scroll` behind DEFER approval + step cap + kill switch. | Mutating — approval-gated. |
+| **2 — control** | `click/type/key/scroll` behind a **session-start DEFER approval + `max_steps` cap** + kill switch (decision 5). | Mutating — approval-gated. |
 | **3 — containment + breadth** | VM backend for Profile B (Tart/Lume); OpenAI Responses as 2nd provider; Windows desktop backend; Profile A hardening. | Production posture. |
 
 Profile A (containerized browser CU) and Profile B/macOS (desktop CU) can progress
 in parallel after Phase 0, since they share the model contract and the
 image-tool-result plumbing and differ only in the `Backend` impl.
 
-## Open decisions
+## Resolved decisions
 
-1. **Profile B macOS backend:** `robotgo` (self-contained, cgo) vs. `screencapture`+`cliclick` (no cgo, external bin). *Lean: robotgo behind the `Backend` interface.*
-2. **Profile A backend:** CDP-against-the-existing-browser (recommended; reuses `browser.Manager`, no desktop) vs. `Xvfb`+`xdotool` in-container.
-3. **Containment default for Profile B:** require a VM even in Phase 1, or allow native-host behind an explicit "I understand" flag for early dogfooding?
-4. **Provider scope:** Anthropic-only to start (recommended) vs. build the provider-neutral action seam up front so OpenAI Responses slots in.
-5. **Approval granularity (Phase 2):** per-action DEFER vs. one session-start approval + step cap.
+1. **Profile B macOS backend:** **`robotgo`**, behind the `Backend` interface.
+2. **Profile A backend:** **CDP against the existing browser** (`browser.Manager`) — no Linux desktop / Xvfb.
+3. **Containment default for Profile B:** VM is the recommended/production default, but **native-host is allowed behind an explicit acknowledgment flag** for early dogfooding (loud warning + audited; refuses without the flag).
+4. **Provider scope:** build the **provider-neutral action seam up front** (`ProviderComputerAdapter`), implemented **against Anthropic first**; OpenAI Responses slots in as a second adapter.
+5. **Approval granularity (Phase 2):** **one session-start DEFER approval + `max_steps` cap** (not per-action; per-action is a future opt-in).
 
 ## Affected / new components (for the eventual implementation)
 

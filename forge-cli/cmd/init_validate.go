@@ -19,6 +19,7 @@ var (
 	ollamaValidationURL     = "http://localhost:11434/api/tags"
 	tavilyValidationURL     = "https://api.tavily.com/search"
 	perplexityValidationURL = "https://api.perplexity.ai/chat/completions"
+	keenableValidationURL   = "https://api.keenable.ai/v1/search"
 )
 
 // validateProviderKey validates an API key against the specified provider.
@@ -148,6 +149,8 @@ func validateWebSearchKey(provider, apiKey string) error {
 		return validateTavilyKey(apiKey)
 	case "perplexity":
 		return validatePerplexityKey(apiKey)
+	case "keenable":
+		return validateKeenableKey(apiKey)
 	default:
 		return fmt.Errorf("unknown web search provider %q", provider)
 	}
@@ -183,6 +186,43 @@ func validateTavilyKey(apiKey string) error {
 	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("tavily API returned status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// validateKeenableKey validates an (optional) Keenable API key with a minimal
+// keyed search. Keenable also works without a key, so this only runs when the
+// user actually entered one.
+func validateKeenableKey(apiKey string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	body := map[string]any{
+		"query":       "test",
+		"max_results": 1,
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, keenableValidationURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	req.Header.Set("X-Keenable-Title", "Forge")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("connecting to Keenable: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return fmt.Errorf("invalid Keenable API key (%d)", resp.StatusCode)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("keenable API returned status %d", resp.StatusCode)
 	}
 	return nil
 }

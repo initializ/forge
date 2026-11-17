@@ -1709,7 +1709,7 @@ function CreatePage() {
     auth_method: 'apikey', // "apikey" or "oauth"
     organization_id: '', // OpenAI enterprise org ID
     aws_region: '', // AWS region for provider "bedrock" (#205)
-    web_search_provider: '', // "tavily" or "perplexity"
+    web_search_provider: '', // "tavily", "perplexity" or "keenable"
     image_generation: false, // model.image_generation — only for image-gen-capable models (#255)
     channels: [], builtin_tools: [], skills: [],
     fallbacks: [], // [{provider, api_key}]
@@ -2164,7 +2164,7 @@ function CreatePage() {
                 </div>
                 ${selectedWsProvider && html`
                   ${envField(selectedWsProvider.env_var, selectedWsProvider.label + ' API Key', selectedWsProvider.placeholder,
-                    'Required for web search', false)}
+                    selectedWsProvider.key_optional ? 'Optional — keyless works' : 'Required for web search', false)}
                 `}
               </div>
             `}

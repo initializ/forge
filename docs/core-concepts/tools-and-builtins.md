@@ -140,7 +140,7 @@ keys authorization rules per operation. See the
 
 ## Web Search Providers
 
-The `web_search` tool supports two providers:
+The `web_search` tool supports three providers:
 
 | Provider | API Key Env Var | Endpoint |
 |----------|----------------|----------|

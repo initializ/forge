@@ -85,6 +85,14 @@ func (s *UIServer) handleGetWizardMeta(w http.ResponseWriter, _ *http.Request) {
 			EnvVar:      "PERPLEXITY_API_KEY",
 			Placeholder: "pplx-...",
 		},
+		{
+			Name:        "keenable",
+			Label:       "Keenable",
+			Description: "Keyless-capable web search",
+			EnvVar:      "KEENABLE_API_KEY",
+			Placeholder: "API key (optional)",
+			KeyOptional: true,
+		},
 	}
 
 	// Builtin tools

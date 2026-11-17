@@ -7,10 +7,10 @@ package computer
 import "context"
 
 // Backend abstracts the surface the computer tool operates on, so the same tool
-// works against the host desktop (DesktopBackend, macOS screencapture today) or
-// the agent's browser viewport (a future BrowserBackend over the CDP browser
-// Manager). Phase 1 exposes only the read-only Screenshot; control actions are
-// added to this interface in Phase 2.
+// works against the host desktop (DesktopBackend, robotgo on macOS — decision 1)
+// or the agent's browser viewport (a future BrowserBackend over the CDP browser
+// Manager). Phase 1 exposes only the read-only Screenshot; robotgo's
+// mouse/keyboard APIs back the Phase-2 control actions on the same backend.
 type Backend interface {
 	// Screenshot captures the current screen/viewport as PNG bytes plus its
 	// pixel dimensions.

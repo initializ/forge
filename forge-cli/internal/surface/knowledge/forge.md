@@ -332,9 +332,11 @@ The agent loop calls tools the LLM asks for. The registry merges:
 - **Computer use** (#582, experimental): opt-in `computer_use.enabled` → the
   runner registers `computer_screenshot` (`forge-cli/tools/computer/`,
   `computerUseBackend` gating). Phase 1 = read-only desktop screenshot on macOS
-  via `screencapture` (no cgo), `DesktopBackend`; desktop profile requires
-  `allow_native_host` (decision 3). Returns the screen to the model via the #584
-  media path. Control actions + browser profile + robotgo are later phases.
+  via `DesktopBackend` (robotgo `CaptureScreen`→PNG, decision 1), built behind a
+  `darwin && cgo` tag (robotgo v1.3.7; stub for linux/windows/no-cgo). Desktop
+  profile requires `allow_native_host` (decision 3). Returns the screen to the
+  model via the #584 media path. robotgo's mouse/keyboard back the Phase-2
+  control actions; browser profile is a later phase.
 - **Skill tools**: script-backed `SKILL.md` skills auto-register as
   first-class LLM tools (one tool per `## Tool:` heading). A tool `foo_bar`
   binds to `scripts/foo-bar.{sh,py,js}` and runs under bash/python3/node

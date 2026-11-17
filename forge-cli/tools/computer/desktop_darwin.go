@@ -1,4 +1,4 @@
-//go:build darwin
+//go:build darwin && cgo
 
 package computer
 
@@ -6,54 +6,53 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"image"
-	_ "image/png" // register PNG decoder for DecodeConfig
-	"os"
-	"os/exec"
+	"image/png"
+
+	"github.com/go-vgo/robotgo"
 )
 
-// DesktopBackend captures the macOS host screen via the built-in `screencapture`
-// utility — no cgo, no third-party deps. Read-only (Phase 1). Requires the
-// Screen Recording permission (TCC); without it macOS returns a blank/denied
-// capture. Control actions (Phase 2) will need an input backend (robotgo /
-// cliclick) and are not part of this read-only backend.
+// DesktopBackend captures (and, in Phase 2, will control) the macOS host screen
+// via robotgo — the single cross-platform native backend decided for Profile B
+// (#582 decision 1). It uses CoreGraphics under the hood, so screen capture
+// requires the Screen Recording TCC permission; without it macOS returns a
+// black/empty image. Phase 1 exposes only Screenshot; robotgo's mouse/keyboard
+// APIs back the Phase-2 control actions on this same backend.
+//
+// Built only with `darwin && cgo` (robotgo is cgo + requires Xcode frameworks);
+// every other build uses the stub in desktop_stub.go.
 type DesktopBackend struct{}
 
-// NewDesktopBackend returns the macOS desktop backend.
+// NewDesktopBackend returns the macOS robotgo backend.
 func NewDesktopBackend() *DesktopBackend { return &DesktopBackend{} }
 
-// DesktopSupported reports whether read-only desktop capture is available on
-// this OS (macOS only in Phase 1).
+// DesktopSupported reports whether the native desktop backend is available in
+// this build (macOS + cgo).
 func DesktopSupported() bool { return true }
 
 func (b *DesktopBackend) Name() string { return "desktop-macos" }
 
 func (b *DesktopBackend) Screenshot(ctx context.Context) ([]byte, int, int, error) {
-	tmp, err := os.CreateTemp("", "forge-cu-*.png")
-	if err != nil {
-		return nil, 0, 0, fmt.Errorf("screenshot temp file: %w", err)
-	}
-	path := tmp.Name()
-	_ = tmp.Close()
-	defer func() { _ = os.Remove(path) }()
-
-	// -x: silent (no capture sound). -t png: PNG. Whole main display.
-	cmd := exec.CommandContext(ctx, "screencapture", "-x", "-t", "png", path)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return nil, 0, 0, fmt.Errorf("screencapture failed (grant Screen Recording permission?): %w: %s", err, string(out))
+	// CaptureScreen is a blocking cgo call with no ctx hook; honor cancellation
+	// up front so a cancelled turn doesn't start a capture.
+	if err := ctx.Err(); err != nil {
+		return nil, 0, 0, err
 	}
 
-	png, err := os.ReadFile(path)
-	if err != nil {
-		return nil, 0, 0, fmt.Errorf("reading screenshot: %w", err)
+	bit := robotgo.CaptureScreen() // main display, full size
+	if bit == nil {
+		return nil, 0, 0, fmt.Errorf("screen capture failed (grant Screen Recording permission?)")
 	}
-	if len(png) == 0 {
-		return nil, 0, 0, fmt.Errorf("screencapture produced an empty image (Screen Recording permission may be denied)")
+	defer robotgo.FreeBitmap(bit)
+
+	img := robotgo.ToImage(bit)
+	if img == nil {
+		return nil, 0, 0, fmt.Errorf("screen capture produced no image (Screen Recording permission may be denied)")
 	}
-	cfg, _, err := image.DecodeConfig(bytes.NewReader(png))
-	if err != nil {
-		// Still return the bytes; dimensions are best-effort metadata.
-		return png, 0, 0, nil
+
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return nil, 0, 0, fmt.Errorf("encoding screenshot: %w", err)
 	}
-	return png, cfg.Width, cfg.Height, nil
+	r := img.Bounds()
+	return buf.Bytes(), r.Dx(), r.Dy(), nil
 }

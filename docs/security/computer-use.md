@@ -35,8 +35,12 @@ When enabled and gated, the agent gains one read-only tool: **`computer_screensh
 
 ## macOS permission (Screen Recording)
 
-Desktop capture uses the built-in `screencapture` utility (no extra binaries, no
-cgo). macOS gates screen capture behind the **Screen Recording** TCC permission:
+Desktop capture uses [robotgo](https://github.com/go-vgo/robotgo) (the single
+native desktop backend; it also drives mouse/keyboard for the Phase-2 control
+actions). robotgo is **cgo** and builds only on macOS with the Xcode command-line
+tools — forge builds it behind a `darwin && cgo` tag, so Linux/Windows and
+non-cgo builds compile a stub instead. macOS gates screen capture behind the
+**Screen Recording** TCC permission:
 
 1. Run the agent once; macOS prompts for Screen Recording for the terminal/host
    process (or grant it in **System Settings → Privacy & Security → Screen
@@ -44,7 +48,7 @@ cgo). macOS gates screen capture behind the **Screen Recording** TCC permission:
 2. Restart the process after granting — macOS only applies the permission to new
    processes.
 
-Without the permission, `screencapture` returns a blank/denied image and the tool
+Without the permission, the capture returns a blank/denied image and the tool
 surfaces an error (it does not silently send an empty screen).
 
 ## Security posture

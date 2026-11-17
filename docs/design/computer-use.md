@@ -6,7 +6,7 @@ status: proposal
 
 # Design: Computer Use for forge agents
 
-**Status:** proposal (not yet implemented) · **Owner:** TBD · **Tracking issue:** TBD
+**Status:** proposal (not yet implemented) · **Owner:** TBD · **Tracking issue:** [#582](https://github.com/initializ/forge/issues/582)
 
 Give a forge agent the ability to **operate a computer** — look at a screen, move the
 mouse, click, type, and scroll — driven by a vision model in a screenshot→action

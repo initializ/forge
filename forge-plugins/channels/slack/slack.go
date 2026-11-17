@@ -69,6 +69,12 @@ type Plugin struct {
 	// "Cancel" click on an MCP consent prompt fails the parked call fast
 	// (#343). nil when consent delivery isn't wired.
 	consentCanceler channels.ConsentCanceler
+
+	// eventHandler is the runtime's inbound-event handler, captured in Start so
+	// an interactive action-button click (#562) can re-enter the agent with the
+	// action's prompt as a synthesized follow-up message, exactly as a typed
+	// message would. nil until Start runs.
+	eventHandler channels.EventHandler
 }
 
 // SetLogger wires a structured ops logger (channels.LoggerAware). Optional.
@@ -279,6 +285,9 @@ func (p *Plugin) openConnection() (string, error) {
 
 func (p *Plugin) Start(ctx context.Context, handler channels.EventHandler) error {
 	p.stopCh = make(chan struct{})
+	// Capture the handler so an interactive action click can re-enter the agent
+	// (#562) from the interactive-envelope path, which otherwise has no handler.
+	p.eventHandler = handler
 
 	// Start background eviction of expired dedup entries.
 	go func() {
@@ -627,12 +636,15 @@ func (p *Plugin) NormalizeEvent(raw []byte) (*channels.ChannelEvent, error) {
 	}, nil
 }
 
-// SendResponse posts a message back to Slack via chat.postMessage.
+// sendReply posts the agent's text/file reply back to Slack via chat.postMessage.
 // If the runtime attached file parts (large tool outputs), those are used
 // for the file upload since the LLM text may be truncated.
 // For large responses (>4096 chars), uploads the full report as a file
 // with a summary message. Falls back to chunked messages on failure.
-func (p *Plugin) SendResponse(event *channels.ChannelEvent, response *a2a.Message) error {
+//
+// SendResponse (actions.go) wraps this to additionally render any follow-up
+// action buttons the response carries (#562).
+func (p *Plugin) sendReply(event *channels.ChannelEvent, response *a2a.Message) error {
 	text := extractText(response)
 	fileContent, fileName := extractLargestFile(response)
 

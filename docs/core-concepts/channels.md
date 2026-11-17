@@ -141,6 +141,24 @@ The Telegram adapter mirrors Slack's processing feedback:
 
 **Context isolation:** Each handler goroutine runs with an independent context (10-minute timeout), detached from the polling loop. This prevents in-flight tasks from being cancelled if the polling context is interrupted during server restarts or errors.
 
+## Interactive actions
+
+An agent can offer the user **clickable follow-up actions** by calling the [`suggest_actions`](tools-and-builtins.md) builtin. Each action is a channel-neutral `{label, prompt}`:
+
+- **`label`** — the button text.
+- **`prompt`** — the message sent back as the user's next turn when the action is chosen.
+
+The runtime attaches the actions to the response (as `a2a.Message.Metadata["forge.actions"]`); each channel adapter renders them however it can:
+
+| Channel | Rendering |
+|---------|-----------|
+| **Slack** | A Block Kit `actions` block of buttons, posted as a compact message in-thread beside the reply. Clicking a button **re-enters the agent** with that action's `prompt` as a new message — attributed to the **clicker** (not the original asker, so delegated MCP tools key on the person who clicked), threaded under the same conversation. The buttons are disabled once one is chosen. |
+| **Telegram / WhatsApp / Teams** | No native rendering yet — the text reply is delivered unchanged (actions are additive; nothing is lost). A numbered-text fallback and native keyboards/cards are follow-ups. |
+
+> **Security — `Label` vs `Prompt` (confused-deputy surface).** A clicker sees only the button `Label`; the `Prompt` that actually runs is hidden in the button value. A model influenced by another user's content (incl. prompt injection) could emit a benign `Label` with a divergent `Prompt`, and in a shared thread a different user could click and have **their** identity execute a prompt they never saw. This is bounded: the re-entry is scanned as a normal turn at click time, tools still require the clicker's own authorization (and DEFER approval where configured), the capability is Slack-only and size-capped, and **every click is recorded** (`channel_action_click`: `{clicker, label, prompt, thread}`) and the executed prompt is echoed back into the thread on click. Still, prefer short, self-descriptive labels, and treat this like any other agent action that runs under the invoker's authority.
+
+The `suggest_actions` tool is **registered only for agents that have an interactive-capable channel configured** (Slack today) — so it never appears in the tool context of an agent that can't render it. Within such an agent, the **model** decides when to offer actions (and only passes `{label, prompt}` — it never produces Slack-specific JSON; the adapter renders it). This is the **synthesized-follow-up** model: a click is exactly equivalent to the user typing the `prompt`, so no agent-side action-handling state is required. The reply text itself is always delivered — the buttons are offered alongside it, and the top-level message `text` carries the labels as the accessibility / notification fallback.
+
 ## Configuration
 
 ### Slack (`slack-config.yaml`)

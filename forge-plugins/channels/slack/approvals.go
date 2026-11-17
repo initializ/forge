@@ -226,6 +226,10 @@ type slackInteraction struct {
 	Actions []struct {
 		ActionID string `json:"action_id"`
 		Value    string `json:"value"`
+		BlockID  string `json:"block_id"` // carries the forge_action thread ref (#562)
+		Text     struct {
+			Text string `json:"text"`
+		} `json:"text"` // button label, for the post-click message update
 	} `json:"actions"`
 	Channel struct {
 		ID string `json:"id"`
@@ -359,6 +363,13 @@ func (p *Plugin) handleBlockAction(ctx context.Context, payload []byte) error {
 	// opened the link).
 	if handled, err := p.handleConsentCancel(ctx, payload); handled {
 		return err
+	}
+	// Interactive follow-up action buttons (#562) — a click re-enters the agent
+	// with the action's prompt. Routed before the approval parse; the namespaced
+	// action_id/block_id mean it never collides with approval/consent buttons.
+	if click, ok := parseActionClick(payload); ok {
+		p.handleActionClick(ctx, click)
+		return nil
 	}
 	dec, userID, channelID, msgTS, triggerID, ok := parseApprovalInteraction(payload)
 	if !ok {

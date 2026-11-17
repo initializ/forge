@@ -310,7 +310,19 @@ The agent loop calls tools the LLM asks for. The registry merges:
 
 - **Builtin tools** (`forge-core/tools/builtins/`): `web_search`,
   `http_request`, `json_parse`, `csv_parse`, `datetime_now`,
-  `uuid_generate`, `math_calculate`, `cli_execute`, `read_skill`.
+  `uuid_generate`, `math_calculate`, `cli_execute`, `read_skill`,
+  `file_create`. `suggest_actions` (#562) is NOT in `RegisterAll` — the runner
+  registers it only when `interactiveChannelConfigured(cfg.Channels)` (an
+  interactive-capable channel, Slack today), via `builtins.NewSuggestActionsTool()`,
+  so it stays out of every other agent's tool context (Option B). It offers the
+  user channel-neutral clickable follow-ups `{label, prompt}`: the model calls it →
+  a per-turn `runtime.ActionsCollector` (seeded in `Execute`) collects them →
+  `finalizeResponse` attaches to `a2a.Message.Metadata["forge.actions"]`. Slack
+  renders a Block Kit `actions` block (`buildActionsBlocks`, block_id
+  `forge_action:<threadTS>`); a click re-enters the agent (`handleActionClick`
+  → `p.eventHandler`) with the action's `prompt` as a synthesized follow-up,
+  attributed to the clicker, async (envelope already acked). Other channels
+  ignore the metadata and deliver the text unchanged.
 - **Skill tools**: script-backed `SKILL.md` skills auto-register as
   first-class LLM tools (one tool per `## Tool:` heading). A tool `foo_bar`
   binds to `scripts/foo-bar.{sh,py,js}` and runs under bash/python3/node

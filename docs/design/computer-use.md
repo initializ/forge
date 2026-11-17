@@ -62,7 +62,7 @@ adapter rather than a rewrite. The `computer.Backend` (executor) and the
 `ProviderComputerAdapter` (translation) are independent axes:
 
 ```
-   model (Anthropic computer_20250124 first; OpenAI Responses computer_use_preview later)
+   model (Anthropic computer_toolset_20260801 first; OpenAI Responses computer_use_preview later)
             │
             ▼
    ProviderComputerAdapter               // provider-neutral translation seam (axis 1)
@@ -158,14 +158,20 @@ rest are additive (decision 4):
 
 | Provider | Tool | Notes |
 |---|---|---|
-| **Anthropic** | tool type `computer_20250124` + beta header `computer-use-2025-01-24` | **First adapter (decision 4).** Most mature; model trained on it. Reference: `anthropics/anthropic-quickstarts` → `computer-use-demo` (runs in a Linux/Docker VM by default). |
+| **Anthropic** | tool type `computer_toolset_20260801` (**no beta header** — current). The toolset bundles 17 fixed member tools (`screenshot`, `left_click`, `type`, `scroll`, …). | **First adapter (decision 4).** Most mature; model trained on it. **Target the toolset, not the superseded single-tool versions** `computer_20250124` / `computer_20251124` — current models (incl. forge's default Opus 4.8) return **400** for those. Reference: `anthropics/anthropic-quickstarts` → `computer-use-demo`. |
 | **OpenAI** | Responses `computer_use_preview` tool + `computer-use-preview` model | Second adapter — forge already has the `openai-responses` client, so it's a new adapter, not a rewrite. |
 | Gemini | "Computer Use" preview | Newest/least proven; later. |
 
 Client work for the Anthropic adapter (localized to `anthropic.go`): emit the
-`computer` tool definition (display WxH + scale), set the beta header, accept
-image `tool_result` content. The `computer` builtin's job is only to execute the
-emitted actions and return screenshots.
+`computer_toolset_20260801` toolset definition (display WxH + scale) — **no beta
+header**. Dispatch tool calls on the pair **`(toolset_name, name)`** (e.g.
+`toolset_name:"computer", name:"left_click"`), not a single `computer` tool with
+an `action` field. Tool results for member tools must carry `toolset_name:"computer"`
+and **content blocks** (text or image) — the image-bearing `tool_result` content
+array the keystone (#584) already serializes covers the screenshot/zoom case; the
+only Phase-1 addition on the wire is stamping `toolset_name` on those result blocks.
+The `computer` builtin's job is only to execute the emitted member-tool actions and
+return screenshots.
 
 ## OS support matrix (backend layer)
 
@@ -260,6 +266,6 @@ image-tool-result plumbing and differ only in the `Backend` impl.
 
 - **New:** `forge-cli/tools/computer/` — `Backend` interface, `BrowserBackend` (CDP, reuses `browser.Manager`), `DesktopBackend` (robotgo/macOS), the `computer` tool family + conditional registration.
 - `forge-core/tools/tool.go` + `forge-core/runtime/loop.go` — image-bearing tool-result path.
-- `forge-core/llm/providers/anthropic.go` (+ later `responses.go`) — native computer tool definition, beta header, image `tool_result` content.
+- `forge-core/llm/providers/anthropic.go` (+ later `responses.go`) — native `computer_toolset_20260801` toolset definition (no beta header), `(toolset_name, name)` member-tool dispatch, and image `tool_result` content with `toolset_name` stamped on result blocks.
 - `forge-core/types/config.go` + `forge-cli/cmd/init.go` + `forge-ui` — `computer_use` config + creation toggle.
 - Docs: `core-concepts/tools-and-builtins.md`, a new `security/computer-use.md` (permissions + sandbox runbook), `reference/forge-yaml-schema.md`.

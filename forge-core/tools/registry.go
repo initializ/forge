@@ -104,6 +104,26 @@ func (r *Registry) Execute(ctx context.Context, name string, arguments json.RawM
 	return t.Execute(ctx, arguments)
 }
 
+// ExecuteWithMedia runs the named tool, returning its text result plus any media
+// the model should see (#582). If the tool implements MediaResultTool its media
+// is returned; otherwise this falls back to Execute (nil media), so the caller
+// has a single call site regardless of whether the tool produces media. This
+// method satisfies the runtime's optional media-tool-executor capability.
+func (r *Registry) ExecuteWithMedia(ctx context.Context, name string, arguments json.RawMessage) (string, []llm.MediaRef, error) {
+	r.mu.RLock()
+	t, ok := r.tools[name]
+	r.mu.RUnlock()
+
+	if !ok {
+		return "", nil, fmt.Errorf("unknown tool: %q", name)
+	}
+	if mt, ok := t.(MediaResultTool); ok {
+		return mt.ExecuteWithMedia(ctx, arguments)
+	}
+	text, err := t.Execute(ctx, arguments)
+	return text, nil, err
+}
+
 // Filter returns a new Registry containing only tools whose names are in the allowed list.
 // This is useful for Command to restrict which tools are available at runtime.
 func (r *Registry) Filter(allowed []string) *Registry {

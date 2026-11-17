@@ -20,6 +20,7 @@ import (
 	cliskills "github.com/initializ/forge/forge-cli/skills"
 	clitools "github.com/initializ/forge/forge-cli/tools"
 	"github.com/initializ/forge/forge-cli/tools/browser"
+	"github.com/initializ/forge/forge-cli/tools/computer"
 	"github.com/initializ/forge/forge-core/a2a"
 	"github.com/initializ/forge/forge-core/agentspec"
 	"github.com/initializ/forge/forge-core/auth"
@@ -1103,6 +1104,23 @@ func (r *Runner) Run(ctx context.Context) error {
 						"binary":   binPath,
 						"headless": browser.HeadlessFromEnv(),
 						"skills":   r.derivedBrowserConfig.SourceSkills,
+					})
+				}
+			}
+
+			// Computer use (read-only, #582 Phase 1): register the screenshot
+			// tool when the agent opts in and the profile is supported. The
+			// desktop profile captures the host screen so it requires an
+			// explicit allow_native_host acknowledgment (decision 3) and macOS.
+			if cu := r.cfg.Config.ComputerUse; cu.Enabled {
+				if backend, ok, reason := computerUseBackend(cu); !ok {
+					r.logger.Error("computer use enabled but tools not registered", map[string]any{"reason": reason})
+				} else if regErr := computer.RegisterTools(reg, backend); regErr != nil {
+					r.logger.Error("failed to register computer tools", map[string]any{"error": regErr.Error()})
+				} else {
+					r.logger.Info("computer-use tools registered (read-only)", map[string]any{
+						"backend": backend.Name(),
+						"profile": cu.Profile,
 					})
 				}
 			}
@@ -3140,6 +3158,30 @@ func (r *Runner) registerAuditHooks(hooks *coreruntime.HookRegistry, auditLogger
 // interactive follow-up actions (#562). Slack (Block Kit) is the only one
 // today; add Telegram/Teams/WhatsApp here as native rendering lands.
 var interactiveActionChannels = map[string]bool{"slack": true}
+
+// computerUseBackend selects the computer-use Backend for the config, or returns
+// a reason it can't be enabled (#582 Phase 1). Only the read-only desktop
+// profile (macOS) is supported today; the browser profile is a follow-up.
+func computerUseBackend(cu types.ComputerUseConfig) (computer.Backend, bool, string) {
+	profile := cu.Profile
+	if profile == "" {
+		profile = "desktop"
+	}
+	switch profile {
+	case "desktop":
+		if !computer.DesktopSupported() {
+			return nil, false, "desktop computer use is macOS-only in Phase 1"
+		}
+		if !cu.AllowNativeHost {
+			return nil, false, "desktop profile captures the host screen and requires computer_use.allow_native_host: true (a full-screen capture is sensitive — decision 3)"
+		}
+		return computer.NewDesktopBackend(), true, ""
+	case "browser":
+		return nil, false, "browser computer-use profile is not implemented yet (Phase 1 ships read-only desktop)"
+	default:
+		return nil, false, fmt.Sprintf("unknown computer_use profile %q (want 'desktop' or 'browser')", profile)
+	}
+}
 
 // interactiveChannelConfigured reports whether any configured channel can render
 // interactive follow-up actions — the gate for registering suggest_actions.

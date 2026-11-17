@@ -141,14 +141,15 @@ keys authorization rules per operation. See the
 
 ## Web Search Providers
 
-The `web_search` tool supports two providers:
+The `web_search` tool supports three providers:
 
 | Provider | API Key Env Var | Endpoint |
 |----------|----------------|----------|
 | Tavily (recommended) | `TAVILY_API_KEY` | `api.tavily.com/search` |
 | Perplexity | `PERPLEXITY_API_KEY` | `api.perplexity.ai/chat/completions` |
+| Keenable | `KEENABLE_API_KEY` (optional) | `api.keenable.ai/v1/search` (or `/v1/search/public` with no key) |
 
-Provider selection: `WEB_SEARCH_PROVIDER` env var, or auto-detect from available API keys (Tavily first).
+Provider selection: `WEB_SEARCH_PROVIDER` env var (`tavily`, `perplexity`, or `keenable`), or auto-detect from available API keys (Tavily first). Keenable is only used when `WEB_SEARCH_PROVIDER=keenable`.
 
 ## CLI Execute
 

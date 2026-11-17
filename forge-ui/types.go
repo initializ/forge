@@ -298,7 +298,7 @@ type AgentCreateOptions struct {
 	BuiltinTools      []string           `json:"builtin_tools,omitempty"`
 	Skills            []string           `json:"skills,omitempty"`
 	Fallbacks         []FallbackProvider `json:"fallbacks,omitempty"`
-	WebSearchProvider string             `json:"web_search_provider,omitempty"` // "tavily" or "perplexity"
+	WebSearchProvider string             `json:"web_search_provider,omitempty"` // "tavily", "perplexity" or "keenable"
 	// ImageGeneration opts the model into generating image output (#255),
 	// scaffolded as model.image_generation. Only meaningful (and only offered
 	// by the create form) where the provider+model supports it — see
@@ -401,6 +401,10 @@ type WebSearchProviderOption struct {
 	Description string `json:"description"`
 	EnvVar      string `json:"env_var"`
 	Placeholder string `json:"placeholder"`
+	// KeyOptional marks providers that also work without an API key
+	// (e.g. Keenable's public endpoint); the create form then renders the
+	// key field as optional.
+	KeyOptional bool `json:"key_optional,omitempty"`
 }
 
 // WizardMetadata holds all reference data the frontend wizard needs.

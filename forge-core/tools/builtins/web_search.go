@@ -87,6 +87,10 @@ func resolveWebSearchProvider() (webSearchProvider, error) {
 		}
 		return newPerplexityProvider(key), nil
 
+	case "keenable":
+		// Key is optional; the public endpoint is used when KEENABLE_API_KEY is unset.
+		return newKeenableProvider(os.Getenv("KEENABLE_API_KEY")), nil
+
 	case "":
 		// Auto-detect: try Tavily first, then Perplexity
 		if key := os.Getenv("TAVILY_API_KEY"); key != "" {
@@ -98,6 +102,6 @@ func resolveWebSearchProvider() (webSearchProvider, error) {
 		return nil, fmt.Errorf("no web search API key set. Set TAVILY_API_KEY or PERPLEXITY_API_KEY in your .env file to enable web search")
 
 	default:
-		return nil, fmt.Errorf("unknown WEB_SEARCH_PROVIDER %q: must be tavily or perplexity", override)
+		return nil, fmt.Errorf("unknown WEB_SEARCH_PROVIDER %q: must be tavily, perplexity, or keenable", override)
 	}
 }

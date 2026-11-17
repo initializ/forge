@@ -500,6 +500,22 @@ func TestHandleGetWizardMeta(t *testing.T) {
 	if len(meta.WebSearchProviders) == 0 {
 		t.Error("expected non-empty web_search_providers list")
 	}
+	// Keenable is selectable in the create form, and is the only provider
+	// whose key is optional (it also works keyless).
+	var sawKeenable bool
+	for _, p := range meta.WebSearchProviders {
+		if p.Name == "keenable" {
+			sawKeenable = true
+			if !p.KeyOptional || p.EnvVar != "KEENABLE_API_KEY" {
+				t.Errorf("keenable option = %+v, want key_optional with KEENABLE_API_KEY", p)
+			}
+		} else if p.KeyOptional {
+			t.Errorf("%s must keep a required key", p.Name)
+		}
+	}
+	if !sawKeenable {
+		t.Error("expected keenable in web_search_providers")
+	}
 
 	// PR6: auth_provider_types is server-driven so the frontend doesn't
 	// hardcode the list. Phase 2 adds aws_sigv4, gcp_iap, azure_ad — the

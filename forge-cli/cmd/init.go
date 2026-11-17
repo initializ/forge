@@ -1512,7 +1512,14 @@ func buildEnvVars(opts *initOptions) []envVarEntry {
 	// Web search provider key if web_search selected
 	if containsStr(opts.BuiltinTools, "web_search") {
 		provider := opts.EnvVars["WEB_SEARCH_PROVIDER"]
-		if provider == "perplexity" {
+		if provider == "keenable" {
+			// Keenable works without a key (public endpoint), so no
+			// placeholder: only write the key when the user provided one.
+			if val := opts.EnvVars["KEENABLE_API_KEY"]; val != "" {
+				vars = append(vars, envVarEntry{Key: "KEENABLE_API_KEY", Value: val, Comment: "Keenable API key for web_search (optional)"})
+			}
+			vars = append(vars, envVarEntry{Key: "WEB_SEARCH_PROVIDER", Value: "keenable", Comment: "Web search provider"})
+		} else if provider == "perplexity" {
 			val := opts.EnvVars["PERPLEXITY_API_KEY"]
 			if val == "" {
 				val = "your-perplexity-key-here"

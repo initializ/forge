@@ -835,6 +835,51 @@ func TestBuildEnvVars(t *testing.T) {
 	}
 }
 
+func TestBuildEnvVars_KeenableKeyless(t *testing.T) {
+	opts := &initOptions{
+		ModelProvider: "openai",
+		BuiltinTools:  []string{"web_search"},
+		EnvVars:       map[string]string{"OPENAI_API_KEY": "sk-test", "WEB_SEARCH_PROVIDER": "keenable"},
+	}
+	vars := buildEnvVars(opts)
+
+	found := make(map[string]string)
+	for _, v := range vars {
+		found[v.Key] = v.Value
+	}
+	if found["WEB_SEARCH_PROVIDER"] != "keenable" {
+		t.Errorf("WEB_SEARCH_PROVIDER = %q, want keenable", found["WEB_SEARCH_PROVIDER"])
+	}
+	if _, ok := found["KEENABLE_API_KEY"]; ok {
+		t.Error("keyless Keenable must not write KEENABLE_API_KEY")
+	}
+	if _, ok := found["TAVILY_API_KEY"]; ok {
+		t.Error("Keenable must not fall back to a Tavily key placeholder")
+	}
+}
+
+func TestBuildEnvVars_KeenableWithKey(t *testing.T) {
+	opts := &initOptions{
+		ModelProvider: "openai",
+		BuiltinTools:  []string{"web_search"},
+		EnvVars: map[string]string{
+			"OPENAI_API_KEY": "sk-test", "WEB_SEARCH_PROVIDER": "keenable", "KEENABLE_API_KEY": "keen-test",
+		},
+	}
+	vars := buildEnvVars(opts)
+
+	found := make(map[string]string)
+	for _, v := range vars {
+		found[v.Key] = v.Value
+	}
+	if found["KEENABLE_API_KEY"] != "keen-test" {
+		t.Errorf("KEENABLE_API_KEY = %q, want keen-test", found["KEENABLE_API_KEY"])
+	}
+	if found["WEB_SEARCH_PROVIDER"] != "keenable" {
+		t.Errorf("WEB_SEARCH_PROVIDER = %q, want keenable", found["WEB_SEARCH_PROVIDER"])
+	}
+}
+
 func TestContainsStr(t *testing.T) {
 	if !containsStr([]string{"a", "b", "c"}, "b") {
 		t.Error("expected true for 'b' in [a,b,c]")

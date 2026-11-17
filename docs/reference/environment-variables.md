@@ -22,7 +22,8 @@ order: 3
 | `GEMINI_API_KEY` | Google Gemini API key |
 | `TAVILY_API_KEY` | Tavily web search API key |
 | `PERPLEXITY_API_KEY` | Perplexity web search API key |
-| `WEB_SEARCH_PROVIDER` | Force web search provider (`tavily` or `perplexity`) |
+| `KEENABLE_API_KEY` | Optional Keenable web search API key (keyless works when `WEB_SEARCH_PROVIDER=keenable`) |
+| `WEB_SEARCH_PROVIDER` | Force web search provider (`tavily`, `perplexity`, or `keenable`) |
 | `OPENAI_BASE_URL` | Override OpenAI base URL |
 | `ANTHROPIC_BASE_URL` | Override Anthropic base URL |
 | `OLLAMA_BASE_URL` | Override Ollama base URL (default: `http://localhost:11434`) |

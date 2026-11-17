@@ -22,7 +22,7 @@ const (
 )
 
 // WebSearchStep configures the built-in web_search tool: pick a provider
-// (Tavily / Perplexity) or skip, and capture + validate its API key. Every
+// (Tavily / Perplexity / Keenable) or skip, and capture + validate its API key. Every
 // builtin tool is auto-registered at runtime; web_search is the only one that
 // needs operator input, so it gets a focused step of its own rather than being
 // buried in a bulk tool checklist.
@@ -34,8 +34,8 @@ type WebSearchStep struct {
 	complete   bool
 	validating bool
 
-	provider   string // "tavily" or "perplexity"; "" when web search is disabled
-	keyName    string // "TAVILY_API_KEY" or "PERPLEXITY_API_KEY"
+	provider   string // "tavily", "perplexity" or "keenable"; "" when web search is disabled
+	keyName    string // "TAVILY_API_KEY", "PERPLEXITY_API_KEY" or "KEENABLE_API_KEY"
 	key        string
 	keyFromEnv bool
 
@@ -55,11 +55,16 @@ func NewWebSearchStep(styles *tui.StyleSet, validateFn ValidateWebSearchKeyFunc)
 	if os.Getenv("PERPLEXITY_API_KEY") != "" {
 		perplexityLabel += " · key detected in env"
 	}
+	keenableLabel := "Keenable"
+	if os.Getenv("KEENABLE_API_KEY") != "" {
+		keenableLabel += " · key detected in env"
+	}
 
 	choose := components.NewSingleSelect(
 		[]components.SingleSelectItem{
 			{Label: tavilyLabel, Value: "tavily", Description: "LLM-optimized search with structured results", Icon: "🔍"},
 			{Label: perplexityLabel, Value: "perplexity", Description: "AI-powered search with citations", Icon: "🌐"},
+			{Label: keenableLabel, Value: "keenable", Description: "Keyless-capable web search (API key optional)", Icon: "🔑"},
 			{Label: "No web search", Value: "", Description: "Skip — agents have no live web access", Icon: "🚫"},
 		},
 		styles.Theme.Accent,
@@ -125,10 +130,7 @@ func (s *WebSearchStep) Update(msg tea.Msg) (tui.Step, tea.Cmd) {
 				return s.finish()
 			}
 
-			s.keyName = "TAVILY_API_KEY"
-			if s.provider == "perplexity" {
-				s.keyName = "PERPLEXITY_API_KEY"
-			}
+			s.keyName = webSearchKeyName(s.provider)
 
 			// If the provider key is already in the environment, adopt it
 			// without prompting.
@@ -186,9 +188,15 @@ func (s *WebSearchStep) finish() (tui.Step, tea.Cmd) {
 // initKeyInput creates a fresh SecretInput for the provider API key.
 func (s *WebSearchStep) initKeyInput(suffix string) {
 	keyLabel := "Tavily API key for web_search"
-	if s.provider == "perplexity" {
+	switch s.provider {
+	case "perplexity":
 		keyLabel = "Perplexity API key for web_search"
+	case "keenable":
+		keyLabel = "Keenable API key for web_search (optional — skip to use it keyless)"
 	}
+	// Keenable works without a key (public endpoint), so its key is skippable;
+	// Tavily and Perplexity require one.
+	allowSkip := s.provider == "keenable"
 	if suffix != "" {
 		keyLabel = fmt.Sprintf("%s (%s)", keyLabel, suffix)
 	}
@@ -196,7 +204,7 @@ func (s *WebSearchStep) initKeyInput(suffix string) {
 	s.phase = webSearchKeyPhase
 	s.keyInput = components.NewSecretInput(
 		keyLabel,
-		false, true, // required — cannot skip; masked
+		allowSkip, true, // skippable only for keyless-capable providers; masked
 		s.styles.Theme.Accent,
 		s.styles.Theme.Success,
 		s.styles.Theme.Error,
@@ -261,6 +269,7 @@ func (s *WebSearchStep) Apply(ctx *tui.WizardContext) {
 	delete(ctx.EnvVars, "WEB_SEARCH_PROVIDER")
 	delete(ctx.EnvVars, "TAVILY_API_KEY")
 	delete(ctx.EnvVars, "PERPLEXITY_API_KEY")
+	delete(ctx.EnvVars, "KEENABLE_API_KEY")
 	ctx.BuiltinTools = removeStr(ctx.BuiltinTools, "web_search")
 
 	if s.provider == "" {
@@ -272,6 +281,18 @@ func (s *WebSearchStep) Apply(ctx *tui.WizardContext) {
 	ctx.EnvVars["WEB_SEARCH_PROVIDER"] = s.provider
 	if s.key != "" && s.keyName != "" {
 		ctx.EnvVars[s.keyName] = s.key
+	}
+}
+
+// webSearchKeyName returns the API key env var for a web search provider.
+func webSearchKeyName(provider string) string {
+	switch provider {
+	case "perplexity":
+		return "PERPLEXITY_API_KEY"
+	case "keenable":
+		return "KEENABLE_API_KEY"
+	default:
+		return "TAVILY_API_KEY"
 	}
 }
 

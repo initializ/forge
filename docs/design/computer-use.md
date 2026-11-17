@@ -6,7 +6,7 @@ status: proposal
 
 # Design: Computer Use for forge agents
 
-**Status:** proposal (not yet implemented) · **Owner:** TBD · **Tracking issue:** TBD
+**Status:** proposal (not yet implemented) · **Owner:** TBD · **Tracking issue:** [#582](https://github.com/initializ/forge/issues/582)
 
 Give a forge agent the ability to **operate a computer** — look at a screen, move the
 mouse, click, type, and scroll — driven by a vision model in a screenshot→action
@@ -39,7 +39,7 @@ decides the infra and trust model:
 | OS | **Linux**, as a disposable **container** | **macOS** and **Windows / Windows Server** |
 | Why not the other OS | Desktop apps that need automating are Windows/macOS; Linux is the server/container target, not a desktop-app target | A browser alone doesn't need a full desktop |
 | Execution backend | **CDP against the headless browser** (no desktop needed — see below) | **robotgo** (or OS built-ins) against the real/VM desktop |
-| Containment | Ephemeral container; no host desktop; egress-bounded | Throwaway **VM** strongly recommended; TCC/UAC perms |
+| Containment | Ephemeral container; no host desktop; egress-bounded | **Topology-dependent** (see below): on-host (attended) or dedicated runner VM/VDI, scoped by a constrained account + app authorizations; TCC/UAC perms |
 | Coordinate space | Browser viewport (WxH) | Screen (WxH) |
 
 The key realization: **Profile A does not need a Linux desktop at all.** forge's
@@ -85,6 +85,43 @@ type Backend interface {
     CursorPosition(ctx) (x, y int, err error)
 }
 ```
+
+## Deployment topologies (desktop CU) — containment is not one thing
+
+The two profiles say *what* is driven (browser vs. desktop). **Topology** says
+*where the target app and its session live* — and that, not the profile, decides
+the containment model. A clean-room VM only fits untrusted/greenfield work.
+Automating an app that is **already installed and logged in on a specific machine**
+(e.g. the **SAP GUI thick client**) needs a different topology: a sandbox VM with an
+empty desktop has no visibility of the host's SAP session and defeats the purpose.
+
+| Topology | Where CU runs | Target app / session | Containment model | Fits |
+|---|---|---|---|---|
+| **Clean-room VM** | throwaway VM desktop | none (greenfield) | VM isolation | Profile A (browser), untrusted web tasks, tests — **not** host apps |
+| **On-host (attended)** | the operator's machine | the **real** app + the user's live session | **not a VM** — dedicated constrained OS account, app/window scoping, session-start approval, **supervised**, step cap, kill switch, audit | "automate the app on MY machine" (SAP GUI on my laptop), human present |
+| **Dedicated runner VM/VDI (unattended)** | a provisioned Windows VM/VDI | the app **installed on the runner** + its **own service/named user** + backend connectivity | OS-account + **app-authorization scoping** (e.g. SAP roles) + network segmentation; operator's laptop untouched | production / unattended RPA — the UiPath / Automation Anywhere / Blue Prism pattern |
+
+For the SAP thick client: **on-host (attended)** to drive the client already on the
+user's machine, or — the production-grade answer — a **dedicated Windows runner**
+with SAP GUI installed and a scoped SAP **service/named user**. Both give the agent
+real app access; the dedicated runner additionally keeps the operator's primary
+machine out of scope. On-host is a **first-class enterprise topology**, not a
+dogfooding escape hatch.
+
+**The reframe:** for host-app automation, containment shifts from *VM isolation* to
+**identity + authorization scoping** — run the agent as a dedicated account whose OS
+permissions and (critically, for SAP) **application authorizations/roles** bound
+what it can do, as a hard backstop the model cannot exceed no matter what it clicks.
+SAP's own authorization objects are the real control plane. The VM, when used for
+host-app automation, is a **provisioned runner**, not an isolation bubble.
+
+**Prefer native automation APIs where they exist.** Vision-based CU is the general
+fallback for any thick client, but where the app exposes a scripting/automation API
+it is more reliable and auditable — e.g. **SAP GUI Scripting** (a COM API). A mature
+forge design prefers an API/scripting path when available and falls back to vision
+CU only for apps with none. (Possible future `sap_gui`/`win_automation` backends
+sit alongside the vision backend behind the same `computer.Backend` seam, or as
+sibling tools.)
 
 ## The one genuinely new internal capability: image-bearing tool results
 
@@ -154,13 +191,20 @@ forge would ship. Containment is a feature, not an afterthought.
 
 - **Off by default; opt-in only at agent creation.** (Same gating style as the
   `image_generation` / `suggest_actions` toggles.)
-- **Containment default (decision 3):** a disposable **VM** is the recommended and
-  eventual production default (macOS: `cirruslabs/tart` or `trycua/lume` on Apple
-  Silicon; Windows: a throwaway Windows VM). For **early dogfooding**, native-host
-  desktop CU is **permitted behind an explicit acknowledgment flag** — e.g.
-  `computer_use.allow_native_host: true` (and/or a `FORGE_COMPUTER_USE_I_UNDERSTAND=1`
-  env gate) — which logs a loud startup warning and is audited. Without the flag,
-  a `desktop` profile on a non-VM backend refuses to start.
+- **Containment is topology-dependent (decision 3), not "always a VM"** (see
+  Deployment topologies):
+  - *Clean-room VM* (Profile A / untrusted / greenfield): VM isolation is the
+    control. Preferred where the agent doesn't need a host app.
+  - *On-host (attended)* and *dedicated runner (unattended)* for host-app
+    automation: the VM gives no isolation benefit over the app it must reach, so
+    containment is **identity + authorization scoping** — a dedicated constrained
+    OS account + app-level authorizations (e.g. SAP roles) + network segmentation,
+    plus approval/step-cap/audit below.
+  - **On-host** desktop CU is permitted but **requires an explicit acknowledgment**
+    — `computer_use.allow_native_host: true` (and/or `FORGE_COMPUTER_USE_I_UNDERSTAND=1`)
+    — which logs a loud startup warning, is audited, and should run under a
+    dedicated constrained account (not the operator's admin), supervised. Without
+    the flag, an on-host `desktop` backend refuses to start.
 - **Profile A** is inherently safer: ephemeral container, no host desktop, and the
   agent's existing **egress allowlist** still bounds where the browser can go.
 - **Approval (decision 5):** a **single session-start DEFER approval** gates the
@@ -185,8 +229,9 @@ is CU-capable **and** the deployment matches a supported profile. Enabling it:
 - scaffolds the `computer` tool, **conditionally registered** in the runner
   (mirroring `interactiveChannelConfigured` for `suggest_actions`),
 - writes a `computer_use:` config block — `profile: browser | desktop`,
+  `topology: clean_room_vm | on_host | dedicated_runner` (desktop only),
   `backend: cdp | robotgo | vm`, `display: {width, height}`,
-  `approval: session_start` (decision 5), `max_steps`, and (desktop-only)
+  `approval: session_start` (decision 5), `max_steps`, and (on_host only)
   `allow_native_host: false` (decision 3),
 - prints the permissions + sandbox warning and defaults approval **on**.
 
@@ -207,7 +252,7 @@ image-tool-result plumbing and differ only in the `Backend` impl.
 
 1. **Profile B macOS backend:** **`robotgo`**, behind the `Backend` interface.
 2. **Profile A backend:** **CDP against the existing browser** (`browser.Manager`) — no Linux desktop / Xvfb.
-3. **Containment default for Profile B:** VM is the recommended/production default, but **native-host is allowed behind an explicit acknowledgment flag** for early dogfooding (loud warning + audited; refuses without the flag).
+3. **Containment for Profile B is topology-dependent** (see Deployment topologies), not "always a VM": clean-room VM for untrusted/greenfield; **identity + authorization scoping** (dedicated account + app roles, e.g. SAP) for host-app automation via **on-host (attended)** or a **dedicated runner VM/VDI (unattended)**. On-host is a first-class topology, gated by an explicit `allow_native_host` acknowledgment (loud warning + audited; refuses without it).
 4. **Provider scope:** build the **provider-neutral action seam up front** (`ProviderComputerAdapter`), implemented **against Anthropic first**; OpenAI Responses slots in as a second adapter.
 5. **Approval granularity (Phase 2):** **one session-start DEFER approval + `max_steps` cap** (not per-action; per-action is a future opt-in).
 

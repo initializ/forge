@@ -111,3 +111,23 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: cd forge-cli && go build -ldflags "-s -w" -o ../forge-${{ matrix.goos }}-${{ matrix.goarch }} ./cmd/forge
+
+  computer-use-darwin:
+    name: Computer-use cgo backend (darwin)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      # Compile-check the robotgo (darwin && cgo) desktop backend (#582/#585).
+      # The ubuntu jobs build it only as the !cgo stub, so a compile regression in
+      # desktop_darwin.go would otherwise pass CI. macOS runners ship Xcode, which
+      # robotgo's cgo needs.
+      - name: Build + vet computer-use backend with cgo
+        run: |
+          cd forge-cli
+          CGO_ENABLED=1 go build ./tools/computer/...
+          CGO_ENABLED=1 go vet ./tools/computer/...

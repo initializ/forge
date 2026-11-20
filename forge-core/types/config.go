@@ -26,6 +26,7 @@ type ForgeConfig struct {
 	Skills         SkillsRef           `yaml:"skills,omitempty"`
 	Memory         MemoryConfig        `yaml:"memory,omitempty"`
 	Compression    CompressionConfig   `yaml:"compression,omitempty"`
+	ComputerUse    ComputerUseConfig   `yaml:"computer_use,omitempty"`
 	Secrets        SecretsConfig       `yaml:"secrets,omitempty"`
 	Auth           AuthConfig          `yaml:"auth,omitempty"`
 	MCP            MCPConfig           `yaml:"mcp,omitempty"`
@@ -1018,6 +1019,25 @@ type MemoryConfig struct {
 // retrievable via the context_expand tool, so compression is lossy on the
 // wire but lossless end-to-end. Enable via `compression.enabled: true` in
 // forge.yaml or FORGE_COMPRESSION=true (env wins; "false" forces off).
+// ComputerUseConfig opts an agent into vision-driven computer use (#582) — a
+// screenshot→action loop. Phase 1 is read-only (screenshot). Off by default;
+// enabling requires a supported profile and, for the on-host desktop profile, an
+// explicit AllowNativeHost acknowledgment (a full-screen capture is sensitive).
+type ComputerUseConfig struct {
+	Enabled bool `yaml:"enabled,omitempty"`
+	// Profile selects what is driven: "desktop" (the host screen) or "browser"
+	// (the agent's headless browser viewport). Default "desktop".
+	Profile string `yaml:"profile,omitempty"`
+	// AllowNativeHost is the explicit acknowledgment required to run the desktop
+	// profile against the operator's own machine (decision 3). Without it, an
+	// on-host desktop profile refuses to register. Ignored for the browser
+	// profile (no host desktop is touched).
+	AllowNativeHost bool `yaml:"allow_native_host,omitempty"`
+	// MaxSteps caps actions per computer-use session (Phase 2 control). 0 = a
+	// built-in default once control actions land.
+	MaxSteps int `yaml:"max_steps,omitempty"`
+}
+
 type CompressionConfig struct {
 	Enabled *bool `yaml:"enabled,omitempty"` // default: false
 	// StorePath is the bbolt file holding offloaded originals.

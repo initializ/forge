@@ -323,6 +323,20 @@ The agent loop calls tools the LLM asks for. The registry merges:
   → `p.eventHandler`) with the action's `prompt` as a synthesized follow-up,
   attributed to the clicker, async (envelope already acked). Other channels
   ignore the metadata and deliver the text unchanged.
+- **Image-bearing tool results** (#584): a tool can return an image the MODEL
+  sees via `tools.MediaResultTool` (`ExecuteWithMedia → text + []llm.MediaRef`)
+  + `Registry.ExecuteWithMedia`; the executor (`MediaToolExecutor` type-assert)
+  attaches it as image `Parts` on the tool-result message, and the Anthropic
+  client serializes an array `tool_result` (text+image blocks). Bytes inline for
+  the turn only (not persisted). Foundation for computer use.
+- **Computer use** (#582, experimental): opt-in `computer_use.enabled` → the
+  runner registers `computer_screenshot` (`forge-cli/tools/computer/`,
+  `computerUseBackend` gating). Phase 1 = read-only desktop screenshot on macOS
+  via `DesktopBackend` (robotgo `CaptureScreen`→PNG, decision 1), built behind a
+  `darwin && cgo` tag (robotgo v1.3.7; stub for linux/windows/no-cgo). Desktop
+  profile requires `allow_native_host` (decision 3). Returns the screen to the
+  model via the #584 media path. robotgo's mouse/keyboard back the Phase-2
+  control actions; browser profile is a later phase.
 - **Skill tools**: script-backed `SKILL.md` skills auto-register as
   first-class LLM tools (one tool per `## Tool:` heading). A tool `foo_bar`
   binds to `scripts/foo-bar.{sh,py,js}` and runs under bash/python3/node

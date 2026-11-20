@@ -29,6 +29,10 @@ func NewDesktopBackend() *DesktopBackend { return &DesktopBackend{} }
 // this build (macOS + cgo).
 func DesktopSupported() bool { return true }
 
+// DesktopUnsupportedReason explains why the desktop backend is unavailable, or
+// "" when it is available (as here).
+func DesktopUnsupportedReason() string { return "" }
+
 func (b *DesktopBackend) Name() string { return "desktop-macos" }
 
 func (b *DesktopBackend) Screenshot(ctx context.Context) ([]byte, int, int, error) {

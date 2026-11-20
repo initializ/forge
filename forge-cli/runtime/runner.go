@@ -3170,7 +3170,7 @@ func computerUseBackend(cu types.ComputerUseConfig) (computer.Backend, bool, str
 	switch profile {
 	case "desktop":
 		if !computer.DesktopSupported() {
-			return nil, false, "desktop computer use is macOS-only in Phase 1"
+			return nil, false, computer.DesktopUnsupportedReason()
 		}
 		if !cu.AllowNativeHost {
 			return nil, false, "desktop profile captures the host screen and requires computer_use.allow_native_host: true (a full-screen capture is sensitive — decision 3)"

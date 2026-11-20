@@ -26,7 +26,9 @@ func (f *fakeBackend) Screenshot(context.Context) ([]byte, int, int, error) {
 var _ coretools.MediaResultTool = (*screenshotTool)(nil)
 
 func TestScreenshotTool_ReturnsImageMedia(t *testing.T) {
-	be := &fakeBackend{png: []byte{0x89, 'P', 'N', 'G', 1, 2}, w: 1920, h: 1080, name: "desktop-test"}
+	// Within the downscale bound so the (non-PNG) fake bytes pass through
+	// unchanged — this test asserts the media plumbing, not the resize.
+	be := &fakeBackend{png: []byte{0x89, 'P', 'N', 'G', 1, 2}, w: 800, h: 600, name: "desktop-test"}
 	tool := &screenshotTool{backend: be}
 
 	text, media, err := tool.ExecuteWithMedia(context.Background(), nil)

@@ -14,6 +14,23 @@ tool-result capability. Control actions (click/type/key/scroll) are a later phas
 > See the [design doc](../design/computer-use.md) and the tracking issue for the
 > full plan (profiles, topologies, containment, phasing).
 
+## Availability — source build required (for now)
+
+The desktop backend (robotgo) is **cgo** and compiles only on macOS with the
+Xcode command-line tools. Forge's **shipped release / Homebrew binaries are built
+`CGO_ENABLED=0`**, so they contain the **stub** — on those binaries the desktop
+profile refuses to register (with a message saying a cgo source build is needed).
+
+To use desktop computer use today, **build from source on macOS with cgo**:
+
+```sh
+CGO_ENABLED=1 go build ./forge-cli/cmd/forge   # requires Xcode command-line tools
+```
+
+A cgo-enabled, notarized macOS release lane (plus a CI job that compiles the cgo
+backend) is tracked in the computer-use issue; until then, treat desktop CU as a
+source-build feature.
+
 ## Enabling it
 
 ```yaml

@@ -49,6 +49,12 @@ func (t *screenshotTool) ExecuteWithMedia(ctx context.Context, _ json.RawMessage
 	if err != nil {
 		return "", nil, err
 	}
+	// Downscale a Retina/large capture so it stays under the provider's per-image
+	// size ceiling (and keeps frames cheap); small captures pass through (#585).
+	png, w, h, err = normalizeScreenshot(png, w, h)
+	if err != nil {
+		return "", nil, err
+	}
 	text := fmt.Sprintf("Screenshot captured (%dx%d) via %s.", w, h, t.backend.Name())
 	return text, []llm.MediaRef{{MimeType: "image/png", Bytes: png}}, nil
 }
